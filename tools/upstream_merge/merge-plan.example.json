@@ -1,0 +1,1835 @@
+{
+  "version": 1,
+  "oursRef": "main",
+  "upstreamRef": "upstream/main",
+  "candidateRef": "sync/upstream-0.2.21",
+  "decision": "hybrid",
+  "rationale": "Демонстрационный план: upstream-owned lifecycle и metadata сочетаются с нашим проверенным FA-маршрутом, а быстрый predicate переносится минимальной дельтой. Все пути artifacts/merge-plan/EXAMPLE, revision вида <...>, команды и численные results ниже — placeholders для замены реальными прогонами; ссылки на несуществующие документы не используются. Строка hip-route намеренно остаётся defer, поэтому acceptance pending и mainFastForwardRef отсутствует.",
+  "matrix": [
+    {
+      "id": "metadata",
+      "oursAnchor": "gguf_head_count_kv",
+      "upstreamAnchor": "llama_model_meta_val_u32",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "src/model-loader.cpp",
+          "line": 420,
+          "symbol": "load_head_count_kv"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "src/llama-model.cpp",
+          "line": 610,
+          "symbol": "llama_model_meta_val_u32"
+        }
+      },
+      "anchorStatus": "adapted",
+      "anchorMethod": {
+        "method": "symbol-search",
+        "command": ["git", "grep", "-n", "head_count_kv", "<candidateRef>", "--", "src"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Искать и старое чтение metadata, и новый вызов upstream helper; сверить тип, единицы и обработку отсутствующего ключа."
+      },
+      "anchorEvidence": [
+        {
+          "category": "quality",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/metadata.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "full",
+      "oursAlgorithm": "O(L) проход по слоям: чтение head_count_kv из GGUF, проверка положительности и запись в model metadata; памяти O(L).",
+      "upstreamAlgorithm": "O(L) типизированное чтение GGUF metadata через общий helper с валидацией диапазона и единого места ошибки; памяти O(L).",
+      "contract": {
+        "ours": "head_count_kv — целое число голов на слой, без масштабирования.",
+        "upstream": "Тот же ключ и тип; отсутствующее или нулевое значение даёт ошибку загрузки модели.",
+        "equivalence": "bit-exact",
+        "numericalTolerance": {
+          "metric": "head_count_kv",
+          "kind": "exact",
+          "limit": 0,
+          "unit": "heads"
+        },
+        "determinism": "preserved",
+        "boundaryBehavior": "Значение 0, отрицательное число и отсутствующий ключ отклоняются до создания context.",
+        "errorBehavior": "Ошибка metadata возвращается через общий upstream loader error path.",
+        "sessionSemantics": "Не меняет KV layout, MTP, copy_session и lifetime context."
+      },
+      "route": {
+        "ours": "model loader → наш parser → hparams.",
+        "upstream": "model loader → typed GGUF helper → hparams.",
+        "candidate": "Только upstream helper; наш дублирующий parser удалён.",
+        "gate": "Положительный head_count_kv и поддержанная модель.",
+        "dispatch": "Один loader path для всех backend.",
+        "fallback": "Ошибка metadata блокирует загрузку; скрытого default нет.",
+        "defaultFlags": "Без изменений.",
+        "target": "Qwen3.6-35B-A3B, GGUF, CUDA/HIP/SYCL.",
+        "verified": true,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/metadata.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "head-count-positive",
+          "statement": "head_count_kv положителен и одинаков до и после создания context.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "correctness",
+              "artifact": "artifacts/merge-plan/EXAMPLE/correctness/metadata.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "not-measured",
+        "ours": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "upstream": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "candidate": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "comparison": "Отдельный benchmark не требуется: изменение только на этапе загрузки; coldStartMs измеряется общим profile.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "declared",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA", "HIP", "SYCL"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["missing-key", "zero-value"]
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA", "HIP", "SYCL"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["missing-key", "zero-value"]
+        },
+        "candidate": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA", "HIP", "SYCL"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["missing-key", "zero-value"]
+        },
+        "gaps": [],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/targets.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["GGUF metadata", "model load error path"],
+        "upstream": ["typed GGUF metadata", "model load error path"],
+        "candidate": ["typed GGUF metadata", "model load error path"],
+        "assessment": "compatible",
+        "conditions": ["Сохранить имя и единицы head_count_kv."],
+        "evidence": [
+          {
+            "category": "tests",
+            "artifact": "artifacts/merge-plan/EXAMPLE/tests/metadata.log",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 2,
+        "changedLines": 80,
+        "conflictZones": 1,
+        "adapterLines": 0,
+        "effort": "low",
+        "reversible": true,
+        "nextMergeRisk": "low",
+        "rationale": "Удаляется дублирующий parser; общий upstream helper уменьшает будущую поверхность конфликта."
+      },
+      "reworkEffect": "better",
+      "decision": "drop",
+      "reason": "Upstream полностью заменяет наш parser и сохраняет контракт; отдельная наша реализация больше не нужна.",
+      "evidence": [
+        {
+          "category": "correctness",
+          "artifact": "artifacts/merge-plan/EXAMPLE/correctness/metadata.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "commitRef": "pending:metadata",
+      "replacementUpstreamAnchor": "llama_model_meta_val_u32",
+      "fullReplacementEvidence": [
+        {
+          "category": "correctness",
+          "artifact": "artifacts/merge-plan/EXAMPLE/correctness/metadata-full-replacement.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "route",
+          "artifact": "artifacts/merge-plan/EXAMPLE/routes/metadata.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ]
+    },
+    {
+      "id": "fast-kernel",
+      "oursAnchor": "STRATA_Q36_FA_TILE",
+      "upstreamAnchor": "ggml_cuda_flash_attn_ext",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "ggml/src/ggml-cuda/fa.cu",
+          "line": 240,
+          "symbol": "q36_fa_tile"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "ggml/src/ggml-cuda/fa.cu",
+          "line": 180,
+          "symbol": "flash_attn_ext"
+        }
+      },
+      "anchorStatus": "preserved",
+      "anchorMethod": {
+        "method": "runtime-route",
+        "command": ["git", "grep", "-n", "STRATA_Q36_FA_TILE", "<candidateRef>", "--", "ggml/src/ggml-cuda"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Symbol-search дополняется runtime-route: лог должен показать выбранную плитку и фактический launcher."
+      },
+      "anchorEvidence": [
+        {
+          "category": "route",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/fast-kernel-route.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "partial",
+      "oursAlgorithm": "Tiled online-softmax FA с выбором tile/map, фиксированным порядком reduction и одним KV layout; O(N*D) работы и O(tile*D) shared памяти.",
+      "upstreamAlgorithm": "Базовый flash-attention launcher с общим lifecycle, но без нашего tile/map и принятого fast predicate.",
+      "contract": {
+        "ours": "Та же форма output [B,H,N,D]; fp16/fp32 accumulator по выбранному profile, max_abs/cos против cuBLAS.",
+        "upstream": "Та же форма output и accumulator policy для поддерживаемой геометрии.",
+        "equivalence": "within-tolerance",
+        "numericalTolerance": {
+          "metric": "max_abs_error_vs_cublas",
+          "kind": "absolute",
+          "limit": 0.005,
+          "unit": "output-unit",
+          "baselineValue": 0.0042
+        },
+        "determinism": "preserved",
+        "boundaryBehavior": "Чужая геометрия, неполный KV или неподдерживаемый dtype не запускают наш kernel.",
+        "errorBehavior": "Launcher возвращает unsupported, caller выбирает upstream fallback без частичной записи output.",
+        "sessionSemantics": "Не меняет KV layout, MTP slots и copy_session; указатели действительны только во время вызова."
+      },
+      "route": {
+        "ours": "q36 gate → наш tile/map → FA launcher.",
+        "upstream": "backend gate → базовый FA launcher.",
+        "candidate": "Upstream lifecycle → сохранённый q36 predicate → наш FA launcher.",
+        "gate": "Модель, backend, dtype, head geometry и STRATA_Q36_FA_TILE.",
+        "dispatch": "Upstream выбирает descriptor, наш predicate подтверждает быстрый маршрут.",
+        "fallback": "Базовый upstream FA, затем cuBLAS при неподдерживаемой геометрии.",
+        "defaultFlags": "Значения по умолчанию не меняются; fast path включается существующим opt-in flag.",
+        "target": "Qwen3.6-35B-A3B, GGUF q4_0 KV, RTX 3060 Ti, CUDA.",
+        "verified": true,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/fast-kernel.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "fa-numeric",
+          "statement": "max_abs против cuBLAS не выше 0.005, cos не ниже 0.999999.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "correctness",
+              "artifact": "artifacts/merge-plan/EXAMPLE/correctness/fast-kernel.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        },
+        {
+          "id": "kv-layout",
+          "statement": "K/V layout и слоты MTP не меняются на границе dispatcher/kernel.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "implementationCombinations",
+              "artifact": "artifacts/merge-plan/EXAMPLE/combinations/hybrid.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "measured",
+        "ours": {
+          "pp": 620.5,
+          "tg": 15.2,
+          "kernelLaunches": 96,
+          "memoryTrafficBytes": 734003200,
+          "synchronizations": 2,
+          "occupancy": 0.5,
+          "vramBytes": 8589934592,
+          "notes": "Демонстрационный profile; заменить реальным same-day запуском."
+        },
+        "upstream": {
+          "pp": 601.0,
+          "tg": 14.8,
+          "kernelLaunches": 104,
+          "memoryTrafficBytes": 771751936,
+          "synchronizations": 3,
+          "occupancy": 0.375,
+          "vramBytes": 8589934592
+        },
+        "candidate": {
+          "pp": 625.0,
+          "tg": 15.4,
+          "kernelLaunches": 96,
+          "memoryTrafficBytes": 734003200,
+          "synchronizations": 2,
+          "occupancy": 0.5,
+          "vramBytes": 8589934592
+        },
+        "comparison": "Скорость сравнивается отдельно от max_abs/cos; шум и прогрев должны быть отражены в repeats и tolerance.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "measured",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_LAYER=all", "STRATA_Q36_FA_TILE=0"],
+          "edgeCases": ["foreign-geometry", "incomplete-kv"]
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["unsupported-dtype"]
+        },
+        "candidate": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_LAYER=all", "STRATA_Q36_FA_TILE=0"],
+          "edgeCases": ["foreign-geometry", "incomplete-kv", "unsupported-dtype"]
+        },
+        "gaps": [],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/fast-kernel.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["STRATA_Q36_FA_LAYER", "STRATA_Q36_FA_TILE", "STRATA_Q36_FA_CHECK"],
+        "upstream": ["backend FA descriptor", "unsupported fallback"],
+        "candidate": ["STRATA_Q36_FA_LAYER", "STRATA_Q36_FA_TILE", "STRATA_Q36_FA_CHECK", "backend FA descriptor"],
+        "assessment": "compatible-with-conditions",
+        "conditions": ["Fast path только при совпадении layout и geometry.", "Fallback обязан очистить состояние до вызова базового пути."],
+        "evidence": [
+          {
+            "category": "fallback",
+            "artifact": "artifacts/merge-plan/EXAMPLE/fallback/fast-kernel.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 4,
+        "changedLines": 240,
+        "conflictZones": 2,
+        "adapterLines": 48,
+        "effort": "medium",
+        "reversible": true,
+        "nextMergeRisk": "medium",
+        "rationale": "Сохранён один adapter boundary; будущий upstream launcher можно менять без переноса tile/map."
+      },
+      "reworkEffect": "worse",
+      "decision": "ours",
+      "reason": "Upstream частичный и не покрывает принятый tile/map; замена нашего kernel ухудшила бы проверенный маршрут.",
+      "evidence": [
+        {
+          "category": "correctness",
+          "artifact": "artifacts/merge-plan/EXAMPLE/correctness/fast-kernel.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "benchmarksResources",
+          "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "commitRef": "pending:fast-kernel"
+    },
+    {
+      "id": "dispatch",
+      "oursAnchor": "q36_layer_route",
+      "upstreamAnchor": "ggml_backend_sched_graph_compute",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "src/program/generate.cpp",
+          "line": 880,
+          "symbol": "q36_layer_route"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "src/llama-graph.cpp",
+          "line": 520,
+          "symbol": "ggml_backend_sched_graph_compute"
+        }
+      },
+      "anchorStatus": "adapted",
+      "anchorMethod": {
+        "method": "call-trace",
+        "command": ["git", "grep", "-n", "q36_layer_route", "<candidateRef>", "--", "src"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Проверить единственный вызов predicate из upstream dispatch и отсутствие второго владельца lifecycle."
+      },
+      "anchorEvidence": [
+        {
+          "category": "quality",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/dispatch-call-trace.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "partial",
+      "oursAlgorithm": "Локальный per-layer predicate выбирает FA/cuBLAS; вне lifecycle upstream нет единой очереди и fallback state machine.",
+      "upstreamAlgorithm": "Единый graph dispatch с lifecycle буферов, backend selection и fallback; нашего fast predicate нет.",
+      "contract": {
+        "ours": "Per-layer route descriptor; порядок stream соблюдается внутри нашего пути.",
+        "upstream": "Graph-level route descriptor с явным владельцем буферов и lifecycle.",
+        "equivalence": "compatible",
+        "numericalTolerance": null,
+        "determinism": "preserved",
+        "boundaryBehavior": "Неизвестный backend или geometry возвращают unsupported до allocation/launch.",
+        "errorBehavior": "Один upstream error path; наш predicate не меняет exception/error state.",
+        "sessionSemantics": "Descriptor не переживает вызов; MTP slots и copy_session остаются во владении context."
+      },
+      "route": {
+        "ours": "generate → q36_layer_route → kernel.",
+        "upstream": "graph build → backend scheduler → kernel/fallback.",
+        "candidate": "Upstream graph dispatch → минимальный q36 predicate → kernel или upstream fallback.",
+        "gate": "Backend capability, geometry, flags и lifecycle readiness.",
+        "dispatch": "Один upstream dispatcher; predicate возвращает только route enum.",
+        "fallback": "Штатный upstream path без повторного владения буферами.",
+        "defaultFlags": "Существующие defaults не меняются.",
+        "target": "Qwen3.6-35B-A3B, CUDA, GGUF, RTX 3060 Ti.",
+        "verified": true,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/dispatch.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "single-owner",
+          "statement": "У graph dispatch один владелец buffer lifecycle.",
+          "ours": "changed",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "architectureReview",
+              "artifact": "artifacts/merge-plan/EXAMPLE/architecture/review.md",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        },
+        {
+          "id": "stream-order",
+          "statement": "Подготовка, launch и sync выполняются в заданном stream order.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "route",
+              "artifact": "artifacts/merge-plan/EXAMPLE/routes/dispatch.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "measured",
+        "ours": { "pp": 620.5, "tg": 15.2, "kernelLaunches": 96, "synchronizations": 2, "vramBytes": 8589934592 },
+        "upstream": { "pp": 601.0, "tg": 14.8, "kernelLaunches": 104, "synchronizations": 3, "vramBytes": 8589934592 },
+        "candidate": { "pp": 625.0, "tg": 15.4, "kernelLaunches": 96, "synchronizations": 2, "vramBytes": 8589934592 },
+        "comparison": "Дельта измеряется на том же profile, что fast-kernel; числа демонстрационные.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "measured",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_LAYER=all"],
+          "edgeCases": ["fallback-after-unsupported"]
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["backend-failure"]
+        },
+        "candidate": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_LAYER=all"],
+          "edgeCases": ["fallback-after-unsupported", "backend-failure"]
+        },
+        "gaps": [],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/dispatch.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["q36_layer_route", "per-layer FA selection"],
+        "upstream": ["graph lifecycle", "backend scheduler", "fallback state machine"],
+        "candidate": ["q36_layer_route", "graph lifecycle", "backend scheduler", "fallback state machine"],
+        "assessment": "compatible-with-conditions",
+        "conditions": ["Predicate не получает ownership буферов.", "Insertion находится после readiness gate и до allocation."],
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/delta.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 3,
+        "changedLines": 180,
+        "conflictZones": 2,
+        "adapterLines": 64,
+        "effort": "medium",
+        "reversible": true,
+        "nextMergeRisk": "medium",
+        "rationale": "Минимальная вставка локализована в одной точке; риск следующего мержа определяется стабильностью upstream dispatch API."
+      },
+      "reworkEffect": "better",
+      "decision": "delta",
+      "reason": "Берём upstream lifecycle целиком, но переносим только наш быстрый predicate в одну проверяемую точку.",
+      "evidence": [
+        {
+          "category": "implementationCombinations",
+          "artifact": "artifacts/merge-plan/EXAMPLE/combinations/delta.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "route",
+          "artifact": "artifacts/merge-plan/EXAMPLE/routes/dispatch.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "commitRef": "pending:dispatch"
+    },
+    {
+      "id": "q36-tile-map",
+      "oursAnchor": "q36_fa_tile_map",
+      "upstreamAnchor": "flash_attn_ext_descriptor",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "ggml/src/ggml-cuda/fa.cu",
+          "line": 310,
+          "symbol": "q36_fa_tile_map"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "ggml/src/ggml-cuda/fa.cu",
+          "line": 205,
+          "symbol": "flash_attn_ext_descriptor"
+        }
+      },
+      "anchorStatus": "adapted",
+      "anchorMethod": {
+        "method": "source-review",
+        "command": ["git", "grep", "-n", "q36_fa_tile_map", "<candidateRef>", "--", "ggml/src/ggml-cuda"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Сверить descriptor fields, единицы tile и единственную точку преобразования layout."
+      },
+      "anchorEvidence": [
+        {
+          "category": "quality",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/q36-tile-map.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "partial",
+      "oursAlgorithm": "Статическая tile/map таблица выбирает форму launch и shared-memory budget; O(1) выбор, память задаётся таблицей.",
+      "upstreamAlgorithm": "Descriptor рассчитывает launch geometry по общим capability правилам, но не знает наших tile/map ограничений.",
+      "contract": {
+        "ours": "Descriptor: tile queries/KV slice, shared bytes, accumulator dtype и output layout.",
+        "upstream": "Descriptor: launch geometry, backend capability и output layout.",
+        "equivalence": "compatible",
+        "numericalTolerance": {
+          "metric": "shared_memory_budget",
+          "kind": "absolute",
+          "limit": 0,
+          "unit": "bytes"
+        },
+        "determinism": "preserved",
+        "boundaryBehavior": "Таблица отказывает для геометрии вне проверенного набора.",
+        "errorBehavior": "Adapter возвращает unsupported; upstream выбирает свой descriptor без частичной инициализации.",
+        "sessionSemantics": "Tile/map не хранит session state и не меняет MTP/KV slots."
+      },
+      "route": {
+        "ours": "q36 predicate → tile/map → наш launcher.",
+        "upstream": "capability probe → upstream descriptor → launcher.",
+        "candidate": "Upstream descriptor + наш tile/map adapter → сохранённый launcher.",
+        "gate": "Shared memory, register budget, geometry и dtype.",
+        "dispatch": "Adapter только дополняет descriptor; lifecycle остаётся upstream.",
+        "fallback": "Upstream descriptor при отказе tile/map.",
+        "defaultFlags": "По умолчанию сохраняется штатный upstream descriptor.",
+        "target": "RTX 3060 Ti, CUDA, Qwen3.6-35B-A3B, q4_0 KV.",
+        "verified": true,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/q36-tile-map.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "shared-memory-budget",
+          "statement": "Shared memory выбранной плитки не превышает capability с обязательным резервом.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "backends",
+              "artifact": "artifacts/merge-plan/EXAMPLE/backends/cuda.log",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        },
+        {
+          "id": "layout-single-conversion",
+          "statement": "Между нашим и upstream layout существует одна явная точка преобразования.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "architectureReview",
+              "artifact": "artifacts/merge-plan/EXAMPLE/architecture/review.md",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "measured",
+        "ours": { "pp": 620.5, "tg": 15.2, "kernelLaunches": 96, "memoryTrafficBytes": 734003200, "occupancy": 0.5, "vramBytes": 8589934592 },
+        "upstream": { "pp": 601.0, "tg": 14.8, "kernelLaunches": 104, "memoryTrafficBytes": 771751936, "occupancy": 0.375, "vramBytes": 8589934592 },
+        "candidate": { "pp": 625.0, "tg": 15.4, "kernelLaunches": 96, "memoryTrafficBytes": 734003200, "occupancy": 0.5, "vramBytes": 8589934592 },
+        "comparison": "Adapter не добавляет launch/sync; прирост измеряется общим benchmark, а не выводится из occupancy.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "measured",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_TILE=0", "STRATA_Q36_FA_TILE=1"],
+          "edgeCases": ["shared-memory-limit", "foreign-geometry"]
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": ["capability-mismatch"]
+        },
+        "candidate": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_TILE=0", "STRATA_Q36_FA_TILE=1"],
+          "edgeCases": ["shared-memory-limit", "foreign-geometry", "capability-mismatch"]
+        },
+        "gaps": [],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/q36-tile-map.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["tile/map table", "STRATA_Q36_FA_TILE"],
+        "upstream": ["launch descriptor", "capability probe"],
+        "candidate": ["tile/map table", "STRATA_Q36_FA_TILE", "launch descriptor", "capability probe"],
+        "assessment": "compatible-with-conditions",
+        "conditions": ["Единицы bytes и tile dimensions указаны явно.", "Неизвестная плитка не получает default."],
+        "evidence": [
+          {
+            "category": "fallback",
+            "artifact": "artifacts/merge-plan/EXAMPLE/fallback/q36-tile-map.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 3,
+        "changedLines": 160,
+        "conflictZones": 1,
+        "adapterLines": 72,
+        "effort": "medium",
+        "reversible": true,
+        "nextMergeRisk": "medium",
+        "rationale": "Один adapter изолирует таблицу tile/map от upstream descriptor; следующая правка geometry не требует копирования launcher."
+      },
+      "reworkEffect": "better",
+      "decision": "hybrid",
+      "reason": "Наш tile/map даёт проверенный быстрый маршрут, upstream descriptor даёт capability и lifecycle; граница явно разделена.",
+      "evidence": [
+        {
+          "category": "implementationCombinations",
+          "artifact": "artifacts/merge-plan/EXAMPLE/combinations/hybrid.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "architectureReview",
+          "artifact": "artifacts/merge-plan/EXAMPLE/architecture/review.md",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "commitRef": "pending:q36-tile-map"
+    },
+    {
+      "id": "session-copy",
+      "oursAnchor": "strata_copy_session",
+      "upstreamAnchor": "llama_context_copy_session",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "src/llama-context.cpp",
+          "line": 1180,
+          "symbol": "strata_copy_session"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "src/llama-context.cpp",
+          "line": 1240,
+          "symbol": "llama_context_copy_session"
+        }
+      },
+      "anchorStatus": "removed",
+      "anchorMethod": {
+        "method": "call-trace",
+        "command": ["git", "grep", "-n", "copy_session", "<candidateRef>", "--", "src"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Подтвердить отсутствие нашего wrapper и наличие единственного upstream call site для CUDA/MTP/copy_session."
+      },
+      "anchorEvidence": [
+        {
+          "category": "quality",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/session-copy.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "full",
+      "oursAlgorithm": "Ручной copy buffers и state с отдельной проверкой MTP slots; O(state size), риск расхождения lifecycle.",
+      "upstreamAlgorithm": "Единый context copy path с проверкой layout, scheduler state и MTP slots; O(state size).",
+      "contract": {
+        "ours": "Копирует KV/session state; ошибки возвращаются локальным wrapper.",
+        "upstream": "Копирует тот же state и явно проверяет capability/layout.",
+        "equivalence": "compatible",
+        "numericalTolerance": {
+          "metric": "copied_token_logits",
+          "kind": "absolute",
+          "limit": 0.0001,
+          "unit": "logit",
+          "baselineValue": 0
+        },
+        "determinism": "preserved",
+        "boundaryBehavior": "Несовместимый layout или активная операция отклоняются до copy.",
+        "errorBehavior": "Ошибка возвращается upstream context API без частично изменённого destination.",
+        "sessionSemantics": "MTP slots, copy_session и последующий decode должны совпадать с исходной сессией."
+      },
+      "route": {
+        "ours": "API wrapper → ручной buffer copy.",
+        "upstream": "Context API → scheduler-aware copy.",
+        "candidate": "Только upstream context copy path.",
+        "gate": "Одинаковый layout, capability и отсутствие активной graph операции.",
+        "dispatch": "Единый upstream call site.",
+        "fallback": "Отказ copy возвращает ошибку; неисправная сессия не используется.",
+        "defaultFlags": "Без изменений.",
+        "target": "Qwen3.6-35B-A3B, CUDA, MTP on/off, context 16k.",
+        "verified": true,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/session-copy.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "copy-session-equivalence",
+          "statement": "После copy_session decode destination совпадает с source в пределах допуска.",
+          "ours": "preserved",
+          "upstream": "preserved",
+          "candidate": "preserved",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "correctness",
+              "artifact": "artifacts/merge-plan/EXAMPLE/correctness/session-copy.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "not-measured",
+        "ours": { "pp": null, "tg": null, "vramBytes": null, "ramBytes": null },
+        "upstream": { "pp": null, "tg": null, "vramBytes": null, "ramBytes": null },
+        "candidate": { "pp": null, "tg": null, "vramBytes": null, "ramBytes": null },
+        "comparison": "Для copy path важен объём state и отсутствие лишнего allocation; отдельный memory trace требуется перед переносом на другой backend.",
+        "evidence": [
+          {
+            "category": "tests",
+            "artifact": "artifacts/merge-plan/EXAMPLE/tests/session-copy.log",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "measured",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["MTP=on", "MTP=off"],
+          "edgeCases": ["copy-before-decode", "copy-after-prefill"]
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["MTP=on", "MTP=off"],
+          "edgeCases": ["copy-before-decode", "copy-after-prefill", "layout-mismatch"]
+        },
+        "candidate": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["CUDA"],
+          "formats": ["GGUF"],
+          "flags": ["MTP=on", "MTP=off"],
+          "edgeCases": ["copy-before-decode", "copy-after-prefill", "layout-mismatch"]
+        },
+        "gaps": [],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/session-copy.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["copy_session", "MTP slots"],
+        "upstream": ["copy_session", "MTP slots", "scheduler state"],
+        "candidate": ["copy_session", "MTP slots", "scheduler state"],
+        "assessment": "compatible",
+        "conditions": ["Сохранить публичный error contract."],
+        "evidence": [
+          {
+            "category": "regression",
+            "artifact": "artifacts/merge-plan/EXAMPLE/regression/session-copy.log",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 2,
+        "changedLines": 120,
+        "conflictZones": 1,
+        "adapterLines": 0,
+        "effort": "low",
+        "reversible": true,
+        "nextMergeRisk": "low",
+        "rationale": "Удаление wrapper снижает дублирование; upstream остаётся единственным владельцем copy semantics."
+      },
+      "reworkEffect": "better",
+      "decision": "drop",
+      "reason": "Upstream полностью реализует copy_session с scheduler/MTP проверками; наш wrapper удаляется.",
+      "evidence": [
+        {
+          "category": "correctness",
+          "artifact": "artifacts/merge-plan/EXAMPLE/correctness/session-copy.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "regression",
+          "artifact": "artifacts/merge-plan/EXAMPLE/regression/session-copy.log",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "commitRef": "pending:session-copy",
+      "replacementUpstreamAnchor": "llama_context_copy_session",
+      "fullReplacementEvidence": [
+        {
+          "category": "correctness",
+          "artifact": "artifacts/merge-plan/EXAMPLE/correctness/session-copy.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "regression",
+          "artifact": "artifacts/merge-plan/EXAMPLE/regression/session-copy.log",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ]
+    },
+    {
+      "id": "hip-route",
+      "oursAnchor": "strata_hip_layer_route",
+      "upstreamAnchor": "ggml_hip_flash_attn",
+      "anchorLocations": {
+        "ours": {
+          "ref": "<oursRef>",
+          "path": "ggml/src/ggml-hip/fa.cpp",
+          "line": 160,
+          "symbol": "strata_hip_layer_route"
+        },
+        "upstream": {
+          "ref": "<upstreamRef>",
+          "path": "ggml/src/ggml-hip/fa.cpp",
+          "line": 120,
+          "symbol": "ggml_hip_flash_attn"
+        }
+      },
+      "anchorStatus": "preserved",
+      "anchorMethod": {
+        "method": "source-review",
+        "command": ["git", "grep", "-n", "hip_flash_attn", "<candidateRef>", "--", "ggml/src/ggml-hip"],
+        "checkedRefs": ["<oursRef>", "<upstreamRef>", "<candidateRef>"],
+        "notes": "Существующий HIP route остаётся в candidate; новая fast-интеграция отложена до runtime evidence и не выдаётся за готовую."
+      },
+      "anchorEvidence": [
+        {
+          "category": "quality",
+          "artifact": "artifacts/merge-plan/EXAMPLE/anchors/hip-route-missing.txt",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "upstreamStatus": "partial",
+      "oursAlgorithm": "HIP per-layer route с нашим predicate; runtime trace и численная эквивалентность на target GPU ещё не измерены.",
+      "upstreamAlgorithm": "Частичный HIP FA path без нашего route contract; полный capability/lifecycle контракт не подтверждён.",
+      "contract": {
+        "ours": "HIP route descriptor; числовой контракт заявлен, но не измерен.",
+        "upstream": "Частичный HIP FA descriptor; отличие boundary/error behavior не закрыто evidence.",
+        "equivalence": "unknown",
+        "numericalTolerance": null,
+        "determinism": "unknown",
+        "boundaryBehavior": "Требуется runtime probe на целевом GPU.",
+        "errorBehavior": "Требуется проверка unsupported/fallback без частичной записи.",
+        "sessionSemantics": "MTP и KV layout на HIP не подтверждены отдельным прогоном."
+      },
+      "route": {
+        "ours": "HIP backend → наш per-layer predicate.",
+        "upstream": "HIP backend → частичный FA path.",
+        "candidate": "Интеграция отложена; маршрут в candidate отсутствует.",
+        "gate": "HIP capability, geometry, dtype и target GPU.",
+        "dispatch": "Не реализовано до получения runtime evidence.",
+        "fallback": "До подтверждения используется общий non-FA upstream путь.",
+        "defaultFlags": "Fast HIP route не включается по умолчанию.",
+        "target": "AMD RDNA3, HIP, Qwen3.6-35B-A3B, GGUF q4_0.",
+        "verified": false,
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/hip-route-not-run.txt",
+            "status": "not-run",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "invariants": [
+        {
+          "id": "hip-numeric",
+          "statement": "HIP FA совпадает с reference в пределах max_abs/cos допуска.",
+          "ours": "unknown",
+          "upstream": "unknown",
+          "candidate": "unknown",
+          "changed": false,
+          "evidence": [
+            {
+              "category": "correctness",
+              "artifact": "artifacts/merge-plan/EXAMPLE/correctness/hip-route-not-run.txt",
+              "status": "not-run",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "resources": {
+        "measurementStatus": "not-measured",
+        "ours": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "upstream": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "candidate": { "pp": null, "tg": null, "kernelLaunches": null, "vramBytes": null },
+        "comparison": "Нулевые значения не подставляются: отсутствие измерения отражено null.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/hip-route-not-run.txt",
+            "status": "not-run",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "coverage": {
+        "status": "unknown",
+        "ours": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["HIP"],
+          "formats": ["GGUF"],
+          "flags": ["STRATA_Q36_FA_LAYER=all"],
+          "edgeCases": []
+        },
+        "upstream": {
+          "models": ["Qwen3.6-35B-A3B"],
+          "backends": ["HIP"],
+          "formats": ["GGUF"],
+          "flags": [],
+          "edgeCases": []
+        },
+        "candidate": {
+          "models": [],
+          "backends": [],
+          "formats": [],
+          "flags": [],
+          "edgeCases": []
+        },
+        "gaps": ["HIP runtime route trace", "HIP max_abs/cos", "HIP pp/tg и VRAM", "MTP/copy_session на HIP"],
+        "evidence": [
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/hip-route-gaps.json",
+            "status": "not-run",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "compatibility": {
+        "ours": ["HIP per-layer route"],
+        "upstream": ["Частичный HIP FA path"],
+        "candidate": ["Общий HIP non-FA path"],
+        "assessment": "unknown",
+        "conditions": ["Не включать fast route до закрытия всех missingEvidence.", "Сохранить рабочий non-FA fallback."],
+        "evidence": [
+          {
+            "category": "backends",
+            "artifact": "artifacts/merge-plan/EXAMPLE/backends/hip-build.log",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "adaptationCost": {
+        "changedFiles": 4,
+        "changedLines": 260,
+        "conflictZones": 3,
+        "adapterLines": 96,
+        "effort": "high",
+        "reversible": true,
+        "nextMergeRisk": "high",
+        "rationale": "Без runtime evidence высока вероятность повторной адаптации HIP descriptor и lifecycle."
+      },
+      "reworkEffect": "unknown",
+      "decision": "defer",
+      "reason": "Сборка HIP не доказывает runtime route, численную эквивалентность и ресурсы; интеграция отложена.",
+      "evidence": [],
+      "commitRef": "pending:hip-route",
+      "missingEvidence": [
+        "Runtime trace фактического HIP route и fallback на целевом GPU.",
+        "max_abs/cos против reference для MTP on/off и q4_0 KV.",
+        "Same-day pp/tg, VRAM, kernel launches и synchronizations с repeats.",
+        "Проверка copy_session и KV layout на HIP."
+      ],
+      "unblockConditions": [
+        "Все четыре категории evidence имеют status=passed, revision=<candidateRef>, command и artifact.",
+        "Route trace подтверждает единственный dispatcher и штатный fallback.",
+        "Независимый reviewer принимает HIP contract и mitigation warnings.",
+        "Повторный gate даёт pass без defer-not-ready."
+      ],
+      "experimentRef": "experiment/hip-route-evidence",
+      "reviewer": "independent-reviewer"
+    }
+  ],
+  "hybridContract": {
+    "id": "hybrid-q36-dispatch",
+    "matrixIds": ["fast-kernel", "dispatch", "q36-tile-map"],
+    "boundary": "Upstream graph dispatch владеет lifecycle и вызывает наш predicate/adapter только после readiness gate.",
+    "inputs": "Model metadata, backend capability, KV/MTP layout, dtype, geometry, stream и существующие FA flags.",
+    "outputs": "Route descriptor и числовой output того же контракта, что у upstream-only path в пределах заявленных tolerance.",
+    "ownership": "Буферы, scheduler state и sync принадлежат upstream dispatcher; наш код не сохраняет указатели после вызова.",
+    "streamOrder": "Capability/readiness → descriptor adapter → allocation → launch → sync; все шаги на одном stream.",
+    "fallback": "Unsupported predicate/tile возвращает upstream descriptor; базовый FA и cuBLAS остаются штатными fallback.",
+    "responsibilitySplit": {
+      "ours": "q36 predicate, tile/map, FAST kernel и численные проверки max_abs/cos.",
+      "upstream": "Graph lifecycle, buffer ownership, backend capability, scheduler, fallback state machine и session copy."
+    },
+    "dataFlow": "GGUF metadata → hparams → upstream graph → q36 predicate → tile/map adapter → kernel → output; fallback возвращается в upstream graph до launch.",
+    "layout": "K/V и MTP slots не переупаковываются; единственная точка преобразования — descriptor adapter с явными units.",
+    "units": "Токены, heads, tile dimensions, bytes, milliseconds, tokens/s; числовой output — в единицах модели.",
+    "invariants": ["fa-numeric", "kv-layout", "single-owner", "stream-order", "shared-memory-budget", "layout-single-conversion"],
+    "targets": ["Qwen3.6-35B-A3B", "GGUF q4_0 KV", "CUDA", "RTX 3060 Ti", "context 16k", "MTP on/off"],
+    "extensionPoint": "Стабильный route descriptor/predicate interface; новый backend добавляет descriptor adapter, не копируя graph lifecycle.",
+    "errorIsolation": "Наш adapter не владеет ресурсами и возвращает unsupported до allocation/launch; upstream затем выбирает чистый fallback path.",
+    "separateRuns": [
+      {
+        "implementation": "upstream-only",
+        "revision": "<upstreamRef>",
+        "status": "passed",
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/upstream-only.json",
+            "status": "passed",
+            "revision": "<upstreamRef>"
+          }
+        ]
+      },
+      {
+        "implementation": "ours-only",
+        "revision": "<oursRef>",
+        "status": "passed",
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/ours-only.json",
+            "status": "passed",
+            "revision": "<oursRef>"
+          }
+        ]
+      },
+      {
+        "implementation": "hybrid",
+        "revision": "<candidateRef>",
+        "status": "passed",
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/hybrid.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      {
+        "implementation": "delta",
+        "revision": "<candidateRef>",
+        "status": "passed",
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/delta.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      }
+    ],
+    "adaptationCost": {
+      "changedFiles": 6,
+      "changedLines": 420,
+      "conflictZones": 3,
+      "adapterLines": 120,
+      "effort": "medium",
+      "reversible": true,
+      "nextMergeRisk": "medium",
+      "rationale": "Один adapter boundary и отдельные прогоны ограничивают стоимость следующего upstream dispatch change."
+    },
+    "rollback": "Отключить fast predicate flag и вернуть candidateRef к oursRef; upstream lifecycle остаётся рабочим, state сессии не переиспользуется между реализациями."
+  },
+  "deltaContract": {
+    "id": "delta-fast-predicate",
+    "matrixIds": ["dispatch"],
+    "upstreamBaseAnchor": "ggml_backend_sched_graph_compute",
+    "minimalInsertion": "Один вызов q36_fast_predicate после readiness gate; возвращает route enum и не копирует upstream dispatch.",
+    "insertionPoint": "Между проверкой backend capability и выбором allocation/launch descriptor.",
+    "boundary": "Чистый predicate interface: входные capability/layout/flags, выходной route enum.",
+    "inputs": "Backend capability, geometry, dtype, KV/MTP layout, stream readiness и FA flags.",
+    "outputs": "Route enum fast-fa/upstream-fa/cublas/unsupported; output buffer не принадлежит predicate.",
+    "ownership": "Upstream dispatcher владеет буферами и ошибками; predicate не выделяет и не освобождает память.",
+    "streamOrder": "Readiness → predicate → upstream descriptor → allocation → launch → sync.",
+    "fallback": "Любой unsupported или неполный вход выбирает штатный upstream path без повторного входа в dispatcher.",
+    "invariants": ["single-owner", "stream-order", "kv-layout", "fa-numeric"],
+    "validation": [
+      "Сравнить upstream-only и delta на одном profile с repeats и tolerance.",
+      "Проверить runtime route log и отсутствие второго dispatch owner.",
+      "Проверить foreign geometry, unsupported dtype и backend failure.",
+      "Проверить MTP on/off и copy_session после fallback."
+    ],
+    "adaptationCost": {
+      "changedFiles": 3,
+      "changedLines": 180,
+      "conflictZones": 2,
+      "adapterLines": 64,
+      "effort": "medium",
+      "reversible": true,
+      "nextMergeRisk": "medium",
+      "rationale": "Вставка локальна и обратима; основной риск — изменение сигнатуры upstream readiness gate."
+    },
+    "rollback": "Удалить единственный вызов predicate и оставить upstream dispatch без изменений; заново создать session после переключения."
+  },
+  "invariantsChanged": [],
+  "evidence": {
+    "build": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["cmake", "--build", "build/cuda", "--config", "Release"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/build/cuda.log",
+      "artifacts": [
+        "artifacts/merge-plan/EXAMPLE/build/cuda-config.json",
+        "artifacts/merge-plan/EXAMPLE/build/cuda.log"
+      ],
+      "date": "2026-11-24",
+      "results": [
+        { "name": "configured_backends", "value": 1, "unit": "backend", "passed": true },
+        { "name": "build_errors", "value": 0, "unit": "error", "passed": true }
+      ],
+      "notes": "Placeholder команды и лога; перед использованием заменить build dir и сохранить реальный вывод."
+    },
+    "tests": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "-m", "pytest", "tests", "-q"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/tests/pytest.log",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "test_cases", "value": 12288, "unit": "case", "passed": true },
+        { "name": "failed_cases", "value": 0, "unit": "case", "passed": true }
+      ],
+      "notes": "Демонстрационные counts; фактический запуск должен сохранить версию Python, pytest и список тестов."
+    },
+    "correctness": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/check_merge_correctness.py", "--candidate", "<candidateRef>", "--output", "artifacts/merge-plan/EXAMPLE/correctness/report.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/correctness/report.json",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "max_abs_error_vs_cublas", "value": 0.0042, "unit": "output-unit", "baselineValue": 0, "delta": 0.0042, "passed": true },
+        { "name": "min_cosine_similarity", "value": 0.9999997, "unit": "ratio", "baselineValue": 1, "delta": -0.0000003, "passed": true }
+      ],
+      "tolerances": [
+        { "metric": "max_abs_error_vs_cublas", "kind": "absolute", "limit": 0.005, "unit": "output-unit", "baselineValue": 0 },
+        { "metric": "min_cosine_similarity", "kind": "absolute", "limit": 0.000001, "unit": "ratio", "baselineValue": 1 }
+      ],
+      "notes": "Команда-заглушка для реального correctness runner; числа показывают форму typed results, а не заявляют проведённый замер."
+    },
+    "quality": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["git", "diff", "--check", "<oursRef>...<candidateRef>"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/quality/diff-check.txt",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "changed_files", "value": 42, "unit": "file", "passed": true },
+        { "name": "changed_lines", "value": 1800, "unit": "line", "passed": true },
+        { "name": "ifdef_added", "value": 8, "unit": "line", "passed": true }
+      ],
+      "notes": "Лог должен быть снят с candidateRef в чистом worktree; demo counts не являются фактом."
+    },
+    "route": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/verify_merge_routes.py", "--candidate", "<candidateRef>", "--output", "artifacts/merge-plan/EXAMPLE/routes/report.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/routes/report.json",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "verified_routes", "value": 5, "unit": "route", "passed": true },
+        { "name": "unexpected_routes", "value": 0, "unit": "route", "passed": true }
+      ],
+      "notes": "Runner должен фиксировать runtime log, выбранный descriptor и revision; hip-route в этот count не входит."
+    },
+    "fallback": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/verify_merge_fallbacks.py", "--candidate", "<candidateRef>", "--output", "artifacts/merge-plan/EXAMPLE/fallback/report.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/fallback/report.json",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "fallback_cases", "value": 6, "unit": "case", "passed": true },
+        { "name": "partial_output_cases", "value": 0, "unit": "case", "passed": true }
+      ],
+      "notes": "Проверять foreign geometry, unsupported dtype, backend failure, incomplete KV и MTP/copy_session после fallback."
+    },
+    "backends": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/build_merge_backends.py", "--backends", "cuda,hip,sycl", "--log-dir", "artifacts/merge-plan/EXAMPLE/backends"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/backends/summary.json",
+      "artifacts": [
+        "artifacts/merge-plan/EXAMPLE/backends/cuda.log",
+        "artifacts/merge-plan/EXAMPLE/backends/hip-build.log",
+        "artifacts/merge-plan/EXAMPLE/backends/sycl.log"
+      ],
+      "date": "2026-11-24",
+      "results": [
+        { "name": "built_backends", "value": 3, "unit": "backend", "passed": true },
+        { "name": "failed_builds", "value": 0, "unit": "backend", "passed": true }
+      ],
+      "notes": "Passed означает только успешную сборку; HIP runtime route остаётся отдельным defer."
+    },
+    "architectureReview": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["git", "diff", "--stat", "<oursRef>...<candidateRef>"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/architecture/review.md",
+      "reviewer": "independent-reviewer",
+      "manualVerdict": "accepted",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "review_questions", "value": 6, "unit": "question", "passed": true },
+        { "name": "unresolved_blockers", "value": 0, "unit": "blocker", "passed": true }
+      ],
+      "notes": "Placeholder ручного вердикта; reviewer должен отличаться от единоличного автора кандидата."
+    },
+    "benchmarksResources": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/run_merge_benchmark.py", "--candidate", "<candidateRef>", "--output", "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+      "date": "2026-11-24",
+      "baseline": {
+        "label": "ours-only",
+        "ref": "<oursRef>",
+        "revision": "<oursRef>",
+        "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/ours-only.json",
+        "experimentProfile": {
+          "id": "q36-cuda-3060ti-16k",
+          "model": "<Qwen3.6-35B-A3B.gguf>",
+          "hardware": "NVIDIA RTX 3060 Ti; host RAM и driver — placeholders",
+          "backend": "CUDA",
+          "format": "GGUF",
+          "quantization": "q4_0 KV",
+          "prompt": "<фиксированный prompt dataset>",
+          "contextTokens": 16384,
+          "seed": 0,
+          "flags": {
+            "STRATA_Q36_FA_LAYER": "all",
+            "STRATA_Q36_FA_TILE": 0,
+            "STRATA_Q36_FDEC": "off"
+          },
+          "environment": "Одинаковый thermal/power state и отсутствие параллельных GPU jobs; заменить реальными значениями."
+        }
+      },
+      "experimentProfile": {
+        "id": "q36-cuda-3060ti-16k",
+        "model": "<Qwen3.6-35B-A3B.gguf>",
+        "hardware": "NVIDIA RTX 3060 Ti; host RAM и driver — placeholders",
+        "backend": "CUDA",
+        "format": "GGUF",
+        "quantization": "q4_0 KV",
+        "prompt": "<фиксированный prompt dataset>",
+        "contextTokens": 16384,
+        "seed": 0,
+        "flags": {
+          "STRATA_Q36_FA_LAYER": "all",
+          "STRATA_Q36_FA_TILE": 0,
+          "STRATA_Q36_FDEC": "off"
+        },
+        "environment": "Тот же профиль, что baseline; прогрев и паузы фиксируются runner."
+      },
+      "repeats": 5,
+      "results": [
+        { "name": "prefill_tokens_per_second", "value": 625.0, "unit": "tokens/s", "baselineValue": 620.5, "delta": 4.5, "tolerance": { "metric": "prefill_tokens_per_second", "kind": "relative", "limit": 0.02, "unit": "ratio", "baselineValue": 620.5 }, "passed": true, "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json", "notes": "Демонстрационное значение." },
+        { "name": "decode_tokens_per_second", "value": 15.4, "unit": "tokens/s", "baselineValue": 15.2, "delta": 0.2, "tolerance": { "metric": "decode_tokens_per_second", "kind": "relative", "limit": 0.03, "unit": "ratio", "baselineValue": 15.2 }, "passed": true, "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json", "notes": "Демонстрационное значение." },
+        { "name": "peak_vram", "value": 8589934592, "unit": "bytes", "baselineValue": 8589934592, "delta": 0, "tolerance": { "metric": "peak_vram", "kind": "absolute", "limit": 0, "unit": "bytes", "baselineValue": 8589934592 }, "passed": true, "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json", "notes": "Демонстрационное значение." },
+        { "name": "kernel_launches", "value": 96, "unit": "launch", "baselineValue": 96, "delta": 0, "tolerance": { "metric": "kernel_launches", "kind": "absolute", "limit": 0, "unit": "launch", "baselineValue": 96 }, "passed": true, "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json", "notes": "Демонстрационное значение." }
+      ],
+      "tolerances": [
+        { "metric": "prefill_tokens_per_second", "kind": "relative", "limit": 0.02, "unit": "ratio", "baselineValue": 620.5 },
+        { "metric": "decode_tokens_per_second", "kind": "relative", "limit": 0.03, "unit": "ratio", "baselineValue": 15.2 },
+        { "metric": "peak_vram", "kind": "absolute", "limit": 0, "unit": "bytes", "baselineValue": 8589934592 },
+        { "metric": "max_abs_error_vs_cublas", "kind": "absolute", "limit": 0.005, "unit": "output-unit", "baselineValue": 0 }
+      ],
+      "notes": "Все численные results — пример формы. Реальный отчёт должен содержать сырые repeats, профиль, revision и дату."
+    },
+    "implementationCombinations": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/run_implementation_matrix.py", "--output", "artifacts/merge-plan/EXAMPLE/combinations/summary.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/combinations/summary.json",
+      "date": "2026-11-24",
+      "combinations": [
+        {
+          "implementation": "upstream-only",
+          "revision": "<upstreamRef>",
+          "status": "passed",
+          "evidence": [
+            {
+              "category": "implementationCombinations",
+              "artifact": "artifacts/merge-plan/EXAMPLE/combinations/upstream-only.json",
+              "status": "passed",
+              "revision": "<upstreamRef>"
+            }
+          ]
+        },
+        {
+          "implementation": "ours-only",
+          "revision": "<oursRef>",
+          "status": "passed",
+          "evidence": [
+            {
+              "category": "implementationCombinations",
+              "artifact": "artifacts/merge-plan/EXAMPLE/combinations/ours-only.json",
+              "status": "passed",
+              "revision": "<oursRef>"
+            }
+          ]
+        },
+        {
+          "implementation": "hybrid",
+          "revision": "<candidateRef>",
+          "status": "passed",
+          "evidence": [
+            {
+              "category": "implementationCombinations",
+              "artifact": "artifacts/merge-plan/EXAMPLE/combinations/hybrid.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        },
+        {
+          "implementation": "delta",
+          "revision": "<candidateRef>",
+          "status": "passed",
+          "evidence": [
+            {
+              "category": "implementationCombinations",
+              "artifact": "artifacts/merge-plan/EXAMPLE/combinations/delta.json",
+              "status": "passed",
+              "revision": "<candidateRef>"
+            }
+          ]
+        }
+      ],
+      "results": [
+        { "name": "passed_combinations", "value": 4, "unit": "combination", "passed": true },
+        { "name": "failed_combinations", "value": 0, "unit": "combination", "passed": true }
+      ],
+      "notes": "Каждый implementation запускается отдельно на одном profile; сырые логи не смешиваются."
+    },
+    "targetCoverage": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "tools/verify_target_coverage.py", "--output", "artifacts/merge-plan/EXAMPLE/coverage/targets.json"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/coverage/targets.json",
+      "date": "2026-11-24",
+      "targets": {
+        "models": ["Qwen3.6-35B-A3B"],
+        "backends": ["CUDA", "HIP-build", "SYCL-build"],
+        "formats": ["GGUF"],
+        "flags": ["STRATA_Q36_FA_LAYER=all", "STRATA_Q36_FA_TILE=0", "MTP=on", "MTP=off"],
+        "edgeCases": ["missing-key", "zero-value", "foreign-geometry", "incomplete-kv", "unsupported-dtype", "copy-before-decode", "copy-after-prefill", "layout-mismatch"]
+      },
+      "gaps": [],
+      "results": [
+        { "name": "covered_target_cases", "value": 12, "unit": "case", "passed": true },
+        { "name": "uncovered_target_cases", "value": 0, "unit": "case", "passed": true }
+      ],
+      "notes": "Покрытие ограничено перечисленным target set; HIP runtime намеренно не выдан за покрытый."
+    },
+    "regression": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["python", "-m", "pytest", "tests/test_merge_regressions.py", "-q"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/regression/merge.log",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "regression_cases", "value": 19, "unit": "case", "passed": true },
+        { "name": "failed_regressions", "value": 0, "unit": "case", "passed": true }
+      ],
+      "notes": "Добавить регрессии для anchor missing, fallback, copy_session и отдельного dispatch owner."
+    },
+    "bisect": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["git", "bisect", "run", "python", "-m", "pytest", "tests/test_merge_regressions.py", "-q"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/bisect/result.txt",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "suspect_commits", "value": 1, "unit": "commit", "passed": true },
+        { "name": "unexplained_failures", "value": 0, "unit": "failure", "passed": true }
+      ],
+      "notes": "Пример команды; реальный диапазон good/bad и результат должны быть сохранены в артефакте."
+    },
+    "rollback": {
+      "status": "passed",
+      "revision": "<candidateRef>",
+      "command": ["git", "merge-tree", "--write-tree", "<oursRef>", "<candidateRef>"],
+      "artifact": "artifacts/merge-plan/EXAMPLE/rollback/merge-tree.txt",
+      "date": "2026-11-24",
+      "results": [
+        { "name": "rollback_conflicts", "value": 0, "unit": "conflict", "passed": true },
+        { "name": "rollback_steps", "value": 3, "unit": "step", "passed": true }
+      ],
+      "notes": "Read-only проверка схемы отката; фактический rollback выполняется только в отдельном worktree."
+    }
+  },
+  "checks": [
+    {
+      "name": "git diff check",
+      "command": ["git", "diff", "--check", "<oursRef>...<candidateRef>"],
+      "cwd": ".",
+      "timeoutMs": 30000,
+      "description": "Проверить пробелы и conflict markers в diff кандидата."
+    },
+    {
+      "name": "merge regression tests",
+      "command": ["python", "-m", "pytest", "tests/test_merge_regressions.py", "-q"],
+      "cwd": ".",
+      "timeoutMs": 120000,
+      "description": "Прогнать регрессии маршрутов, fallback и copy_session."
+    }
+  ],
+  "warningAcknowledgments": [
+    {
+      "code": "weak-contract",
+      "reason": "Upstream dispatch descriptor ещё не закреплён публичным стабильным API; сигнатура readiness gate может измениться.",
+      "scope": ["dispatch", "q36-tile-map"],
+      "mitigation": "Изолировать predicate/adapter за одним interface, зафиксировать compile/runtime regression и не копировать upstream lifecycle.",
+      "evidence": [
+        {
+          "category": "architectureReview",
+          "artifact": "artifacts/merge-plan/EXAMPLE/warnings/weak-contract-adapter.md",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "regression",
+          "artifact": "artifacts/merge-plan/EXAMPLE/regression/merge.log",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "reviewer": "independent-reviewer",
+      "date": "2026-11-24",
+      "outcome": "mitigated"
+    },
+    {
+      "code": "missing-combination-tests",
+      "reason": "В текущем наборе нет отдельного сочетания MTP on × copy_session × fast fallback на CUDA.",
+      "scope": ["fast-kernel", "dispatch", "session-copy"],
+      "mitigation": "Добавить fixture и отдельный combination run до снятия defer; до этого не расширять target set.",
+      "evidence": [
+        {
+          "category": "implementationCombinations",
+          "artifact": "artifacts/merge-plan/EXAMPLE/combinations/gaps.json",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "tests",
+          "artifact": "artifacts/merge-plan/EXAMPLE/tests/combination-gaps.log",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "reviewer": "independent-reviewer",
+      "date": "2026-11-24",
+      "outcome": "deferred"
+    },
+    {
+      "code": "unverified-coverage",
+      "reason": "HIP backend собран, но runtime route, численная эквивалентность и ресурсы на целевом AMD GPU не измерены.",
+      "scope": ["hip-route", "global"],
+      "mitigation": "Оставить hip-route как defer, сохранить non-FA fallback и потребовать полный evidence bundle перед включением fast path.",
+      "evidence": [
+        {
+          "category": "backends",
+          "artifact": "artifacts/merge-plan/EXAMPLE/backends/hip-build.log",
+          "status": "passed",
+          "revision": "<candidateRef>"
+        },
+        {
+          "category": "targetCoverage",
+          "artifact": "artifacts/merge-plan/EXAMPLE/coverage/hip-route-gaps.json",
+          "status": "not-run",
+          "revision": "<candidateRef>"
+        }
+      ],
+      "reviewer": "independent-reviewer",
+      "date": "2026-11-24",
+      "outcome": "deferred"
+    }
+  ],
+  "thresholds": {
+    "maxChangedFiles": 60,
+    "maxChangedLines": 3000,
+    "maxIfdefAdded": 25,
+    "maxInvariantsChanged": 0
+  },
+  "architectureReview": {
+    "status": "completed",
+    "scope": ["metadata", "fast-kernel", "dispatch", "q36-tile-map", "session-copy", "hip-route"],
+    "author": "plan-author",
+    "questions": {
+      "algorithmMeaning": {
+        "verdict": "pass",
+        "rationale": "Каждая строка отдельно описывает алгоритм, сложность, единицы и числовой/невозвратный контракт; неизвестное помечено unknown, а не выведено из наличия кода.",
+        "evidence": [
+          {
+            "category": "architectureReview",
+            "artifact": "artifacts/merge-plan/EXAMPLE/architecture/algorithm-meaning.md",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "bufferOwnershipAndReadiness": {
+        "verdict": "pass",
+        "rationale": "Upstream dispatcher единолично владеет буферами и readiness; наш predicate/adapter не выделяет память и не сохраняет указатели.",
+        "evidence": [
+          {
+            "category": "route",
+            "artifact": "artifacts/merge-plan/EXAMPLE/routes/dispatch.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          },
+          {
+            "category": "architectureReview",
+            "artifact": "artifacts/merge-plan/EXAMPLE/architecture/ownership.md",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "mtpDeterminismAndFallback": {
+        "verdict": "concern",
+        "rationale": "CUDA MTP on/off и fallback проверяются отдельно; HIP MTP/copy_session ещё не измерены и остаются в defer.",
+        "evidence": [
+          {
+            "category": "correctness",
+            "artifact": "artifacts/merge-plan/EXAMPLE/correctness/session-copy.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          },
+          {
+            "category": "targetCoverage",
+            "artifact": "artifacts/merge-plan/EXAMPLE/coverage/hip-route-gaps.json",
+            "status": "not-run",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "partIndependence": {
+        "verdict": "pass",
+        "rationale": "Metadata, session copy, dispatcher и tile/map имеют отдельные matrix ids, anchors и commitRef; hybrid/delta contracts ссылаются на эти ids.",
+        "evidence": [
+          {
+            "category": "architectureReview",
+            "artifact": "artifacts/merge-plan/EXAMPLE/architecture/part-independence.md",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "nextMergeCost": {
+        "verdict": "concern",
+        "rationale": "Adapter boundary снижает стоимость, но weak-contract и высокая стоимость HIP адаптации требуют повторной оценки на следующем upstream ref.",
+        "evidence": [
+          {
+            "category": "quality",
+            "artifact": "artifacts/merge-plan/EXAMPLE/warnings/weak-contract-adapter.md",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          },
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/resources.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      },
+      "separateAdaptation": {
+        "verdict": "pass",
+        "rationale": "upstream-only, ours-only, hybrid и delta запускаются раздельно со своей revision и artifacts; результаты не смешиваются.",
+        "evidence": [
+          {
+            "category": "implementationCombinations",
+            "artifact": "artifacts/merge-plan/EXAMPLE/combinations/summary.json",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      }
+    },
+    "alternatives": [
+      {
+        "name": "upstream-only",
+        "reasonRejected": "Теряет проверенный tile/map и fast route; частичный upstream FA не покрывает наш контракт.",
+        "evidence": [
+          {
+            "category": "benchmarksResources",
+            "artifact": "artifacts/merge-plan/EXAMPLE/benchmarks/upstream-only.json",
+            "status": "passed",
+            "revision": "<upstreamRef>"
+          }
+        ]
+      },
+      {
+        "name": "ours-only",
+        "reasonRejected": "Сохраняет дублирование lifecycle и ручной copy_session, увеличивая риск следующего мержа.",
+        "evidence": [
+          {
+            "category": "architectureReview",
+            "artifact": "artifacts/merge-plan/EXAMPLE/architecture/ours-only-risk.md",
+            "status": "passed",
+            "revision": "<oursRef>"
+          }
+        ]
+      },
+      {
+        "name": "copy-entire-upstream-tree",
+        "reasonRejected": "Копирует lifecycle целиком вместо минимальной дельты и усиливает weak-contract/conflict surface.",
+        "evidence": [
+          {
+            "category": "quality",
+            "artifact": "artifacts/merge-plan/EXAMPLE/warnings/copy-tree-risk.txt",
+            "status": "passed",
+            "revision": "<candidateRef>"
+          }
+        ]
+      }
+    ],
+    "reviewer": "independent-reviewer",
+    "independent": true,
+    "date": "2026-11-24",
+    "verdict": "approved",
+    "signature": "example://architecture-review/2026-11-24#independent-reviewer",
+    "artifact": "artifacts/merge-plan/EXAMPLE/architecture/review.md"
+  },
+  "acceptance": {
+    "status": "pending",
+    "gateResult": "not-run",
+    "reviewer": "release-reviewer",
+    "notes": "Пример не запускался на реальном candidateRef. Заменить все placeholders, закрыть defer hip-route или исключить его из принимаемого scope, получить gateResult=pass и только затем заполнить candidateCommitRef и mainFastForwardRef после фактического --ff-only."
+  }
+}

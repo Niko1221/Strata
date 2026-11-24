@@ -1,0 +1,44 @@
+{
+  "patches": [
+    {
+      "id": "fa-v2",
+      "oursAnchor": "STRATA_Q36_FA",
+      "upstreamAnchor": "q36_fa_launch",
+      "statusReviewed": false,
+      "statusEvidence": [],
+      "notes": "Сравнить tile/map, маршрут prompt FA и численные допуски. Наличие якоря не определяет статус."
+    },
+    {
+      "id": "fdec",
+      "oursAnchor": "STRATA_Q36_FDEC",
+      "upstreamAnchor": "k_fdec_part",
+      "statusReviewed": false,
+      "statusEvidence": [],
+      "notes": "Проверить, не появился ли upstream FDEC или альтернативный decode route."
+    },
+    {
+      "id": "p4",
+      "oursAnchor": "STRATA_Q36_P4",
+      "upstreamAnchor": "p4_on",
+      "statusReviewed": false,
+      "statusEvidence": [],
+      "notes": "Сравнить fused route и условия native_supported."
+    },
+    {
+      "id": "map-d1",
+      "oursAnchor": "STRATA_Q36_EXPERT_CACHE_MB",
+      "upstreamAnchor": "cache_limit_on",
+      "statusReviewed": false,
+      "statusEvidence": [],
+      "notes": "Сравнить prefetch, layer-major и lifecycle expert cache."
+    },
+    {
+      "id": "down-sub8",
+      "oursAnchor": "STRATA_DOWN_SUB8",
+      "upstreamAnchor": "allow_sub8",
+      "statusReviewed": false,
+      "statusEvidence": [],
+      "notes": "Проверить, не вошёл ли opt-out в upstream и не изменился ли predicate."
+    }
+  ]
+}

@@ -1,0 +1,2880 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "План мержа только по доказательствам",
+  "description": "Самодостаточная JSON Schema draft 2020-12 для merge-plan: сравнение строк matrix, проверка якорей, решения defer/drop/hybrid/delta, evidence, warnings, architecture review и commitRef. Связи с matrix[].id и проверка уникальности идентификаторов остаются семантическими проверками merge-gate.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "oursRef",
+    "upstreamRef",
+    "candidateRef",
+    "decision",
+    "rationale",
+    "matrix",
+    "invariantsChanged",
+    "evidence",
+    "checks",
+    "warningAcknowledgments",
+    "thresholds",
+    "architectureReview",
+    "acceptance"
+  ],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Версия формата плана."
+    },
+    "oursRef": {
+      "$ref": "#/$defs/gitRef"
+    },
+    "upstreamRef": {
+      "$ref": "#/$defs/gitRef"
+    },
+    "candidateRef": {
+      "$ref": "#/$defs/gitRef"
+    },
+    "decision": {
+      "$ref": "#/$defs/decision"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Общее основание решения без ссылок на неподтверждённые предположения."
+    },
+    "matrix": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/matrixItem"
+      },
+      "description": "По одной строке на каждый наш патч. Значения id должны быть уникальны."
+    },
+    "hybridContract": {
+      "$ref": "#/$defs/hybridContract"
+    },
+    "deltaContract": {
+      "$ref": "#/$defs/deltaContract"
+    },
+    "invariantsChanged": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "description": "Идентификаторы инвариантов matrix[].invariants, у которых changed=true."
+    },
+    "evidence": {
+      "$ref": "#/$defs/evidenceBundle"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    },
+    "warningAcknowledgments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/warningAcknowledgment"
+      }
+    },
+    "thresholds": {
+      "$ref": "#/$defs/thresholds"
+    },
+    "architectureReview": {
+      "$ref": "#/$defs/architectureReview"
+    },
+    "acceptance": {
+      "$ref": "#/$defs/acceptance"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "decision": {
+                "const": "hybrid"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "properties": {
+              "matrix": {
+                "contains": {
+                  "properties": {
+                    "decision": {
+                      "const": "hybrid"
+                    }
+                  },
+                  "required": [
+                    "decision"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "matrix"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "hybridContract"
+        ],
+        "properties": {
+          "evidence": {
+            "properties": {
+              "implementationCombinations": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "combinations": {
+                    "minItems": 3,
+                    "allOf": [
+                      {
+                        "contains": {
+                          "properties": {
+                            "implementation": {
+                              "const": "upstream-only"
+                            }
+                          },
+                          "required": [
+                            "implementation"
+                          ]
+                        }
+                      },
+                      {
+                        "contains": {
+                          "properties": {
+                            "implementation": {
+                              "const": "ours-only"
+                            }
+                          },
+                          "required": [
+                            "implementation"
+                          ]
+                        }
+                      },
+                      {
+                        "contains": {
+                          "properties": {
+                            "implementation": {
+                              "const": "hybrid"
+                            }
+                          },
+                          "required": [
+                            "implementation"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "combinations"
+                ]
+              }
+            },
+            "required": [
+              "implementationCombinations"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "decision": {
+                "const": "delta"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "properties": {
+              "matrix": {
+                "contains": {
+                  "properties": {
+                    "decision": {
+                      "const": "delta"
+                    }
+                  },
+                  "required": [
+                    "decision"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "matrix"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "deltaContract"
+        ],
+        "properties": {
+          "evidence": {
+            "properties": {
+              "implementationCombinations": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "combinations": {
+                    "minItems": 2,
+                    "allOf": [
+                      {
+                        "contains": {
+                          "properties": {
+                            "implementation": {
+                              "const": "upstream-only"
+                            }
+                          },
+                          "required": [
+                            "implementation"
+                          ]
+                        }
+                      },
+                      {
+                        "contains": {
+                          "properties": {
+                            "implementation": {
+                              "const": "delta"
+                            }
+                          },
+                          "required": [
+                            "implementation"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "combinations"
+                ]
+              }
+            },
+            "required": [
+              "implementationCombinations"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "properties": {
+              "architectureReview": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "architectureReview"
+            ]
+          }
+        },
+        "required": [
+          "evidence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "architectureReview": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              },
+              "verdict": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status",
+              "verdict"
+            ]
+          }
+        },
+        "required": [
+          "architectureReview"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "acceptance": {
+            "properties": {
+              "status": {
+                "const": "accepted"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "acceptance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "architectureReview": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              },
+              "verdict": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status",
+              "verdict"
+            ]
+          },
+          "evidence": {
+            "properties": {
+              "build": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "tests": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "correctness": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "quality": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "route": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "fallback": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "backends": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "architectureReview": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "benchmarksResources": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "implementationCombinations": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "targetCoverage": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "regression": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "bisect": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              },
+              "rollback": {
+                "$ref": "#/$defs/acceptedEvidenceItem"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "gitRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Имя ветки, тега, commit-ish или полный SHA. Конкретный ref проверяет merge-gate.py."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "ours",
+        "upstream",
+        "delta",
+        "hybrid",
+        "defer",
+        "drop"
+      ]
+    },
+    "evidenceStatus": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "not-run",
+        "not-applicable"
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+$",
+      "description": "Портативный путь относительно корня репозитория с разделителем /. Абсолютные пути, буквы дисков и выход через .. запрещены."
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Аргументы запуска без shell-строки."
+    },
+    "evidenceReference": {
+      "description": "Ссылка на артефакт или типизированную запись корневого evidence.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/relativePath"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "category"
+          ],
+          "properties": {
+            "category": {
+              "$ref": "#/$defs/evidenceCategory"
+            },
+            "artifact": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "status": {
+              "$ref": "#/$defs/evidenceStatus"
+            },
+            "revision": {
+              "$ref": "#/$defs/gitRef"
+            }
+          }
+        }
+      ]
+    },
+    "evidenceCategory": {
+      "type": "string",
+      "enum": [
+        "build",
+        "tests",
+        "correctness",
+        "quality",
+        "route",
+        "fallback",
+        "backends",
+        "architectureReview",
+        "benchmarksResources",
+        "implementationCombinations",
+        "targetCoverage",
+        "regression",
+        "bisect",
+        "rollback"
+      ]
+    },
+    "anchorStatus": {
+      "type": "string",
+      "enum": [
+        "preserved",
+        "adapted",
+        "removed"
+      ]
+    },
+    "anchorMethod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "command"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "symbol-search",
+            "source-review",
+            "call-trace",
+            "runtime-route",
+            "binary-symbol-check",
+            "manual-review",
+            "other"
+          ]
+        },
+        "command": {
+          "description": "Точная команда или argv проверки якоря.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/argv"
+            }
+          ]
+        },
+        "checkedRefs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/gitRef"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "anchorLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "path"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tolerance": {
+      "description": "Численный допуск либо явное отсутствие численного контракта.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "metric",
+            "kind",
+            "limit",
+            "unit"
+          ],
+          "properties": {
+            "metric": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "absolute",
+                "relative",
+                "exact"
+              ]
+            },
+            "limit": {
+              "type": "number",
+              "minimum": 0
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baselineValue": {
+              "type": "number"
+            }
+          }
+        }
+      ]
+    },
+    "contractComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ours",
+        "upstream",
+        "equivalence",
+        "numericalTolerance",
+        "determinism",
+        "boundaryBehavior",
+        "errorBehavior",
+        "sessionSemantics"
+      ],
+      "properties": {
+        "ours": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Контракт результата нашей реализации, включая единицы."
+        },
+        "upstream": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Контракт upstream или явное описание его отсутствия."
+        },
+        "equivalence": {
+          "type": "string",
+          "enum": [
+            "bit-exact",
+            "within-tolerance",
+            "compatible",
+            "different",
+            "unknown"
+          ]
+        },
+        "numericalTolerance": {
+          "$ref": "#/$defs/tolerance"
+        },
+        "determinism": {
+          "type": "string",
+          "enum": [
+            "preserved",
+            "changed",
+            "not-applicable",
+            "unknown"
+          ]
+        },
+        "boundaryBehavior": {
+          "type": "string",
+          "minLength": 1
+        },
+        "errorBehavior": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionSemantics": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Состояние сессии, MTP, copy_session и KV layout."
+        }
+      }
+    },
+    "routeComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ours",
+        "upstream",
+        "candidate",
+        "gate",
+        "dispatch",
+        "fallback",
+        "defaultFlags",
+        "target",
+        "verified"
+      ],
+      "properties": {
+        "ours": {
+          "type": "string",
+          "minLength": 1
+        },
+        "upstream": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Фактически выбранный маршрут кандидата."
+        },
+        "gate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dispatch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultFlags": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Модель, backend, формат и целевое железо."
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "true только после трассировки реального запуска; наличие функции недостаточно."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "statement",
+        "ours",
+        "upstream",
+        "candidate",
+        "changed"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ours": {
+          "type": "string",
+          "enum": [
+            "preserved",
+            "changed",
+            "violated",
+            "unknown",
+            "not-applicable"
+          ]
+        },
+        "upstream": {
+          "type": "string",
+          "enum": [
+            "preserved",
+            "changed",
+            "violated",
+            "unknown",
+            "not-applicable"
+          ]
+        },
+        "candidate": {
+          "type": "string",
+          "enum": [
+            "preserved",
+            "changed",
+            "violated",
+            "unknown",
+            "not-applicable"
+          ]
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "resourceProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "null означает отсутствие измерения, а не нулевой расход.",
+      "properties": {
+        "pp": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "tg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "kernelLaunches": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "memoryTrafficBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "synchronizations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "occupancy": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "vramBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ramBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "diskBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "coldStartMs": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "resourcesComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measurementStatus",
+        "ours",
+        "upstream",
+        "comparison",
+        "evidence"
+      ],
+      "properties": {
+        "measurementStatus": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "partial",
+            "not-measured"
+          ]
+        },
+        "ours": {
+          "$ref": "#/$defs/resourceProfile"
+        },
+        "upstream": {
+          "$ref": "#/$defs/resourceProfile"
+        },
+        "candidate": {
+          "$ref": "#/$defs/resourceProfile"
+        },
+        "comparison": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Скорость отдельно от качества; шум и ограничения сравнения."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "coverageSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "models",
+        "backends",
+        "formats",
+        "flags",
+        "edgeCases"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "backends": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "formats": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "edgeCases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "coverageComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "ours",
+        "upstream",
+        "candidate",
+        "gaps",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "declared",
+            "unknown"
+          ]
+        },
+        "ours": {
+          "$ref": "#/$defs/coverageSet"
+        },
+        "upstream": {
+          "$ref": "#/$defs/coverageSet"
+        },
+        "candidate": {
+          "$ref": "#/$defs/coverageSet"
+        },
+        "gaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "compatibilityComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ours",
+        "upstream",
+        "candidate",
+        "assessment",
+        "conditions",
+        "evidence"
+      ],
+      "properties": {
+        "ours": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Совместимые функции и переключатели нашей реализации."
+        },
+        "upstream": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "candidate": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assessment": {
+          "type": "string",
+          "enum": [
+            "compatible",
+            "compatible-with-conditions",
+            "incompatible",
+            "unknown"
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "adaptationCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effort",
+        "reversible",
+        "nextMergeRisk",
+        "rationale"
+      ],
+      "properties": {
+        "changedFiles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changedLines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conflictZones": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adapterLines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "unknown"
+          ]
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "nextMergeRisk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "unknown"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "matrixItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "oursAnchor",
+        "upstreamAnchor",
+        "anchorLocations",
+        "anchorStatus",
+        "anchorMethod",
+        "anchorEvidence",
+        "upstreamStatus",
+        "oursAlgorithm",
+        "upstreamAlgorithm",
+        "contract",
+        "route",
+        "invariants",
+        "resources",
+        "coverage",
+        "compatibility",
+        "adaptationCost",
+        "reworkEffect",
+        "decision",
+        "reason",
+        "evidence",
+        "commitRef"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "oursAnchor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Стабильный символ, файл, тест или другой проверяемый якорь нашего патча."
+        },
+        "upstreamAnchor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Якорь upstream; null допустим только при upstreamStatus=none."
+        },
+        "anchorLocations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ours",
+            "upstream"
+          ],
+          "properties": {
+            "ours": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/anchorLocation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "upstream": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/anchorLocation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "anchorStatus": {
+          "$ref": "#/$defs/anchorStatus"
+        },
+        "anchorMethod": {
+          "$ref": "#/$defs/anchorMethod"
+        },
+        "anchorEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          },
+          "description": "Доказательство результата поиска, включая отсутствие якоря."
+        },
+        "upstreamStatus": {
+          "type": "string",
+          "enum": [
+            "full",
+            "partial",
+            "none"
+          ]
+        },
+        "oursAlgorithm": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Алгоритм и вычислительная/памятная сложность нашей реализации."
+        },
+        "upstreamAlgorithm": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Алгоритм upstream или явное описание отсутствия реализации."
+        },
+        "contract": {
+          "$ref": "#/$defs/contractComparison"
+        },
+        "route": {
+          "$ref": "#/$defs/routeComparison"
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/invariant"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resourcesComparison"
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverageComparison"
+        },
+        "compatibility": {
+          "$ref": "#/$defs/compatibilityComparison"
+        },
+        "adaptationCost": {
+          "$ref": "#/$defs/adaptationCost"
+        },
+        "reworkEffect": {
+          "type": "string",
+          "enum": [
+            "better",
+            "same",
+            "worse",
+            "unknown"
+          ]
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        },
+        "commitRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Commit SHA/ref или именованный раздел merge-коммита. До создания коммита допустима явная пометка pending."
+        },
+        "missingEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unblockConditions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "experimentRef": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replacementUpstreamAnchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fullReplacementEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "upstreamStatus": {
+                "enum": [
+                  "full",
+                  "partial"
+                ]
+              }
+            },
+            "required": [
+              "upstreamStatus"
+            ]
+          },
+          "then": {
+            "properties": {
+              "upstreamAnchor": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "upstreamStatus": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "upstreamStatus"
+            ]
+          },
+          "then": {
+            "properties": {
+              "upstreamAnchor": {
+                "type": "null"
+              },
+              "anchorLocations": {
+                "properties": {
+                  "upstream": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorStatus": {
+                "enum": [
+                  "preserved",
+                  "adapted"
+                ]
+              }
+            },
+            "required": [
+              "anchorStatus"
+            ]
+          },
+          "then": {
+            "properties": {
+              "anchorLocations": {
+                "properties": {
+                  "upstream": {
+                    "$ref": "#/$defs/anchorLocation"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorStatus": {
+                "const": "removed"
+              }
+            },
+            "required": [
+              "anchorStatus"
+            ]
+          },
+          "then": {
+            "required": [
+              "decision",
+              "upstreamStatus",
+              "replacementUpstreamAnchor",
+              "fullReplacementEvidence"
+            ],
+            "properties": {
+              "decision": {
+                "const": "drop"
+              },
+              "upstreamStatus": {
+                "const": "full"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "defer"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          "then": {
+            "required": [
+              "missingEvidence",
+              "unblockConditions",
+              "experimentRef",
+              "reviewer"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "drop"
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          "then": {
+            "required": [
+              "replacementUpstreamAnchor",
+              "fullReplacementEvidence"
+            ],
+            "properties": {
+              "upstreamStatus": {
+                "const": "full"
+              },
+              "anchorStatus": {
+                "enum": [
+                  "preserved",
+                  "adapted",
+                  "removed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "not": {
+                  "const": "defer"
+                }
+              }
+            },
+            "required": [
+              "decision"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "hybridContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "matrixIds",
+        "boundary",
+        "inputs",
+        "outputs",
+        "ownership",
+        "streamOrder",
+        "fallback",
+        "responsibilitySplit",
+        "dataFlow",
+        "layout",
+        "units",
+        "invariants",
+        "targets",
+        "extensionPoint",
+        "errorIsolation",
+        "separateRuns",
+        "adaptationCost",
+        "rollback"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "matrixIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Ссылки на matrix[].id. Наличие каждого id проверяется вне JSON Schema."
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputs": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownership": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamOrder": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback": {
+          "type": "string",
+          "minLength": 1
+        },
+        "responsibilitySplit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ours",
+            "upstream"
+          ],
+          "properties": {
+            "ours": {
+              "type": "string",
+              "minLength": 1
+            },
+            "upstream": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "dataFlow": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Поток данных до и после границы."
+        },
+        "layout": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Общий layout или одна явная точка преобразования."
+        },
+        "units": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invariants": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "extensionPoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "errorIsolation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Почему отказ нашей части не разрушает upstream-путь."
+        },
+        "separateRuns": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/implementationRun",
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "allOf": [
+            {
+              "contains": {
+                "properties": {
+                  "implementation": {
+                    "const": "upstream-only"
+                  }
+                },
+                "required": [
+                  "implementation"
+                ]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "implementation": {
+                    "const": "ours-only"
+                  }
+                },
+                "required": [
+                  "implementation"
+                ]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "implementation": {
+                    "const": "hybrid"
+                  }
+                },
+                "required": [
+                  "implementation"
+                ]
+              }
+            }
+          ]
+        },
+        "adaptationCost": {
+          "$ref": "#/$defs/adaptationCost"
+        },
+        "rollback": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "deltaContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "matrixIds",
+        "upstreamBaseAnchor",
+        "minimalInsertion",
+        "insertionPoint",
+        "boundary",
+        "inputs",
+        "outputs",
+        "ownership",
+        "streamOrder",
+        "fallback",
+        "invariants",
+        "validation",
+        "adaptationCost",
+        "rollback"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "matrixIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "upstreamBaseAnchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimalInsertion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Минимальная наша вставка поверх upstream-основы без копирования всей функции."
+        },
+        "insertionPoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputs": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownership": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamOrder": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invariants": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "validation": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "adaptationCost": {
+          "$ref": "#/$defs/adaptationCost"
+        },
+        "rollback": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "implementationRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation",
+        "revision",
+        "status",
+        "evidence"
+      ],
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "enum": [
+            "upstream-only",
+            "ours-only",
+            "hybrid",
+            "delta"
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not-run"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "experimentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "model",
+        "hardware",
+        "backend",
+        "flags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hardware": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantization": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contextTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "environment": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "revision"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "revision": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "artifact": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "experimentProfile": {
+          "$ref": "#/$defs/experimentProfile"
+        }
+      }
+    },
+    "numericResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "value",
+        "unit"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baselineValue": {
+          "type": "number"
+        },
+        "delta": {
+          "type": "number"
+        },
+        "tolerance": {
+          "$ref": "#/$defs/tolerance"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "artifact": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/evidenceStatus"
+        },
+        "artifact": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "command": {
+          "description": "Точная команда; для нового плана предпочтителен argv.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/argv"
+            }
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relativePath"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argv"
+          }
+        },
+        "revision": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline": {
+          "$ref": "#/$defs/baseline"
+        },
+        "experimentProfile": {
+          "$ref": "#/$defs/experimentProfile"
+        },
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/numericResult"
+          }
+        },
+        "tolerances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tolerance"
+          }
+        },
+        "combinations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/implementationRun"
+          }
+        },
+        "targets": {
+          "$ref": "#/$defs/targetSet"
+        },
+        "gaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manualVerdict": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected"
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "revision"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "artifact"
+                ]
+              },
+              {
+                "required": [
+                  "command"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "failed",
+                  "not-run"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason",
+              "details"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not-applicable"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason",
+              "reviewer",
+              "date",
+              "manualVerdict"
+            ]
+          }
+        }
+      ]
+    },
+    "targetSet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/coverageSet"
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "models": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "models"
+              ]
+            },
+            {
+              "properties": {
+                "backends": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "backends"
+              ]
+            },
+            {
+              "properties": {
+                "formats": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "formats"
+              ]
+            },
+            {
+              "properties": {
+                "flags": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "flags"
+              ]
+            },
+            {
+              "properties": {
+                "edgeCases": {
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "edgeCases"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "benchmarksResourcesEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "baseline",
+              "experimentProfile",
+              "repeats",
+              "results",
+              "tolerances"
+            ],
+            "properties": {
+              "results": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "implementationCombinationsEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "combinations"
+            ],
+            "properties": {
+              "combinations": {
+                "items": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "targetCoverageEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "targets",
+              "gaps"
+            ]
+          }
+        }
+      ]
+    },
+    "acceptedEvidenceItem": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "passed",
+                "not-applicable"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not-applicable"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "manualVerdict": {
+                "const": "accepted"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evidenceBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build",
+        "tests",
+        "correctness",
+        "quality",
+        "route",
+        "fallback",
+        "backends",
+        "architectureReview",
+        "benchmarksResources",
+        "implementationCombinations",
+        "targetCoverage",
+        "regression",
+        "bisect",
+        "rollback"
+      ],
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "tests": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "correctness": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "quality": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "route": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "fallback": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "backends": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "architectureReview": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/evidenceItem"
+            },
+            {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "not-run"
+                  ]
+                }
+              }
+            }
+          ],
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reviewer",
+              "artifact"
+            ]
+          }
+        },
+        "benchmarksResources": {
+          "$ref": "#/$defs/benchmarksResourcesEvidence"
+        },
+        "implementationCombinations": {
+          "$ref": "#/$defs/implementationCombinationsEvidence"
+        },
+        "targetCoverage": {
+          "$ref": "#/$defs/targetCoverageEvidence"
+        },
+        "regression": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "bisect": {
+          "$ref": "#/$defs/evidenceItem"
+        },
+        "rollback": {
+          "$ref": "#/$defs/evidenceItem"
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "$ref": "#/$defs/argv"
+        },
+        "cwd": {
+          "$ref": "#/$defs/relativePath",
+          "default": "."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 120000
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "warningAcknowledgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "reason",
+        "scope",
+        "mitigation",
+        "evidence",
+        "reviewer",
+        "date",
+        "outcome"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?::[a-z0-9-]+)?$",
+          "description": "Код gate или weak-contract, missing-combination-tests, unverified-coverage.",
+          "examples": [
+            "large-diff-files",
+            "ifdef-growth",
+            "offset-coupling",
+            "invariants-changed",
+            "checks-not-run",
+            "evidence-not-applicable:backends",
+            "weak-contract",
+            "missing-combination-tests",
+            "unverified-coverage"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "matrix[].id или global."
+        },
+        "mitigation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "mitigated",
+            "deferred",
+            "rejected"
+          ]
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxChangedFiles",
+        "maxChangedLines",
+        "maxIfdefAdded",
+        "maxInvariantsChanged"
+      ],
+      "properties": {
+        "maxChangedFiles": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 60
+        },
+        "maxChangedLines": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3000
+        },
+        "maxIfdefAdded": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 25
+        },
+        "maxInvariantsChanged": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1
+        }
+      }
+    },
+    "reviewAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "rationale",
+        "evidence"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "concern",
+            "fail",
+            "not-applicable"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        }
+      }
+    },
+    "architectureReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "scope",
+        "author",
+        "alternatives"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "completed"
+          ]
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "matrix[].id, охваченные ревью."
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithmMeaning",
+            "bufferOwnershipAndReadiness",
+            "mtpDeterminismAndFallback",
+            "partIndependence",
+            "nextMergeCost",
+            "separateAdaptation"
+          ],
+          "properties": {
+            "algorithmMeaning": {
+              "$ref": "#/$defs/reviewAnswer"
+            },
+            "bufferOwnershipAndReadiness": {
+              "$ref": "#/$defs/reviewAnswer"
+            },
+            "mtpDeterminismAndFallback": {
+              "$ref": "#/$defs/reviewAnswer"
+            },
+            "partIndependence": {
+              "$ref": "#/$defs/reviewAnswer"
+            },
+            "nextMergeCost": {
+              "$ref": "#/$defs/reviewAnswer"
+            },
+            "separateAdaptation": {
+              "$ref": "#/$defs/reviewAnswer"
+            }
+          }
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "reasonRejected"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reasonRejected": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/evidenceReference"
+                }
+              }
+            }
+          }
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "independent": {
+          "type": "boolean",
+          "const": true,
+          "description": "Reviewer не является единоличным автором кандидата; совпадение имён проверяется вручную."
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "changes-requested",
+            "rejected"
+          ]
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Подпись или ссылка на датированный вердикт."
+        },
+        "artifact": {
+          "$ref": "#/$defs/relativePath"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verdict": {
+                "const": "pending"
+              }
+            },
+            "required": [
+              "verdict"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "questions",
+              "alternatives",
+              "reviewer",
+              "independent",
+              "date",
+              "verdict",
+              "signature",
+              "artifact"
+            ],
+            "properties": {
+              "alternatives": {
+                "minItems": 1
+              },
+              "verdict": {
+                "enum": [
+                  "approved",
+                  "changes-requested",
+                  "rejected"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "gateResult",
+        "notes"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "accepted",
+            "rejected"
+          ]
+        },
+        "gateResult": {
+          "type": "string",
+          "enum": [
+            "not-run",
+            "pass",
+            "review",
+            "blocked",
+            "invalid"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "candidateCommitRef": {
+          "$ref": "#/$defs/gitRef"
+        },
+        "mainFastForwardRef": {
+          "$ref": "#/$defs/gitRef",
+          "description": "Заполняется только после фактического перевода main через --ff-only."
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "accepted"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reviewer",
+              "date",
+              "candidateCommitRef"
+            ],
+            "properties": {
+              "gateResult": {
+                "const": "pass"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "rejected"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reviewer",
+              "date"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
