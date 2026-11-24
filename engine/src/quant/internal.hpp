@@ -34,8 +34,11 @@ inline float ue4m3_formula(uint8_t x) {
     if (x == 0 || x == 0x7F) return 0.0f;
     const int exp = (x >> 3) & 0xF;
     const int man = x & 0x7;
-    const float raw = exp == 0 ? std::ldexp((float) man, -9) : std::ldexp(1.0f + (float) man / 8.0f, exp - 7);
-    return raw * 0.5f;
+    // double ldexp, narrowed: Windows SYCL (-fsycl) links the float ldexpf as an import it cannot resolve
+    // (LNK2019 __imp_ldexpf).  Every value here is a 3-bit mantissa times a power of two, so the narrowing is exact
+    // and the 256-entry table is bit-identical.
+    const double raw = exp == 0 ? std::ldexp((double) man, -9) : std::ldexp(1.0 + (double) man / 8.0, exp - 7);
+    return (float) raw * 0.5f;
 }
 struct Ue4m3Table {
     float v[256];
