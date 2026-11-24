@@ -268,6 +268,10 @@ def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
         want_kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
         if desc.get("kv") not in (None, want_kv) and (s.context or 32768) > 8192:
             return False
+    if s.family == "inkling-2-mini" and s.kv:
+        eff_kv, _ = S.safe_inkling_kv(s.kv, desc.get("backend"))   # strata-inkling's name for it (int8 is k8v8 on CUDA)
+        if eff_kv and desc.get("kv") != eff_kv:
+            return False
     images = desc.get("images") or "off"
     if s.vision is None:
         return True                                          # no preference yet: the run settles it before it compares

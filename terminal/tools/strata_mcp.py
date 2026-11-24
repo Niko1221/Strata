@@ -871,6 +871,7 @@ class Strata:
                 "port": cfg.get("port", self.default_port()), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
+                "backend": cfg.get("backend"),   # hip / metal / sycl (None: CUDA): which KV formats a native engine takes
                 "start_script": script.name if script.exists() else None,
                 "ready": not missing and bool(cfg), "missing_files": missing[:3], "parts_missing": len(gaps),
                 "disk_gb": own_usage["gb"], "disk_bytes": own_usage["bytes"],

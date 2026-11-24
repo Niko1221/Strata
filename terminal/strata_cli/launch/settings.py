@@ -50,6 +50,8 @@ def safe_inkling_kv(kv: str | None, backend: str | None = None) -> tuple[str | N
     allowed = inkling_kv_modes(backend)
     if val in allowed:
         return val, False
+    if val == "int8":                    # the Qwen name for 8-bit KV: on Inkling that is k8v8 (INT8 K and V), fp8 where k8v8 is not offered
+        return ("k8v8" if "k8v8" in allowed else "fp8"), True
     if val in ("k8v4", "k8v8"):
         return "fp8", True
     return None, False

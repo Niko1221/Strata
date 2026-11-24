@@ -10672,6 +10672,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"), backend=ink_backend)
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
+    if kv_asked == "int8":                             # the Qwen name for 8-bit KV (k8v8 on CUDA, fp8 where k8v8 is not offered)
+        from strata_cli.launch import settings as launch_settings
+        kv_asked = launch_settings.safe_inkling_kv("int8", ink_backend)[0]
+        ok(f"memory format: --kv int8 is --kv {kv_asked} for {fam['title']}")
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
         if ink_backend in ("hip", "metal", "sycl") and kv_asked in ("k8v4", "k8v8"):
             warn(f"--kv {kv_asked} is not supported for {fam['title']} on {ink_backend}; using --kv fp8 instead")
