@@ -252,7 +252,35 @@ class _Amd:
                 "pcie_width_max": cap, "pcie_path": "%d/%d" % (read, len(hops))}
 
 
+    # Runtime power management: an idle amdgpu card suspends (~20 W less on an R9700) 5 s after its last access, and every
+    # sysfs read restarts that timer, so a once-a-second sampler kept every idle card awake for the life of the server
+    # (with the model unloaded too).  power/runtime_status and runtime_usage are PCI core files: reading them never wakes
+    # or touches the card, so they are read first:
+    #   - suspended: the card is idle; util 0, power/temp/VRAM unknown, nothing else is read;
+    #   - awake but held by no one (runtime_usage 0): read at most every IDLE_READ_S (longer than the 5 s autosuspend
+    #     delay) so the card can fall asleep between two readings; the last reading is reused in between;
+    #   - held (an engine has it) or no runtime-PM files (no Linux runtime PM, the tests' trees): read every sample.
+    IDLE_READ_S = 12.0
+
+    def _rpm(self):
+        pm = os.path.join(self.dev or "", "power")
+        return _Amd._read(pm, "runtime_status"), self._int(os.path.join(pm, "runtime_usage"))
+
     def read(self):
+        status, usage = self._rpm()
+        last = getattr(self, "_last", None)
+        if status in ("suspended", "suspending"):
+            out = {k: v for k, v in (last or {}).items() if k in ("mem_total", "power_limit") or k.startswith("pcie_")}
+            out.update({"util": 0, "mem_used": None, "temp": None, "power": None})
+            return out
+        if status == "active" and usage == 0 and last is not None and \
+                time.monotonic() - getattr(self, "_last_at", 0.0) < self.IDLE_READ_S:
+            return dict(last)
+        out = self._read_all()
+        self._last, self._last_at = dict(out), time.monotonic()
+        return out
+
+    def _read_all(self):
         own = self.dev or ""      # (#4884) a box with no amdgpu sysfs device (Windows): None readings, never a TypeError
         out = {"util": self._int(os.path.join(own, "gpu_busy_percent")),
                "mem_used": self._int(os.path.join(own, "mem_info_vram_used")),
