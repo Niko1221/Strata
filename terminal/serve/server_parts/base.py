@@ -96,6 +96,7 @@ REPEAT_STOP_TOKENS = 256
 
 
 ANSWER_ROOM_MIN_CAP = 1024    # 0.1.45: from this max_tokens on, thinking without a budget is closed early enough to leave room to answer
+SHORT_ANSWER_ROOM_MIN_CAP = 48  # opt-in short_answer_room: below ANSWER_ROOM_MIN_CAP, cap thinking at half
 
 
 ANSWER_RESERVE_MIN = 512     # #984: the tokens kept for the answer when a thinking budget is cut down to fit max_tokens
