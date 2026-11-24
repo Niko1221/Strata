@@ -530,10 +530,10 @@ class ImageMarkers(unittest.TestCase):
             m, _, _ = anthropic_to_messages({"messages": [{"role": "user", "content": [good]}]})
             with self.assertRaises(ValueError):
                 svc.prepare(m, None, {})
-        # a text-only tool result renders exactly as before: one string
+        # a text-only tool result renders exactly as before: one string (named after its call, #7051)
         msgs = [{"role": "user", "content": "q"}, call,
                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "r"}]}]}]
-        self.assertEqual(anthropic_to_messages({"messages": msgs})[0][-1], {"role": "tool", "content": "r"})
+        self.assertEqual(anthropic_to_messages({"messages": msgs})[0][-1], {"role": "tool", "content": "r", "name": "Read"})
 
 
     def test_the_whole_marker_in_text_before_images(self):

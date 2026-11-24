@@ -6723,7 +6723,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         messages.append({"role": "assistant", "content": "".join(text).strip(),
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
-        messages += [{"role": "tool", "content": r} for r in results]
+        messages += [{"role": "tool", "content": r, "name": c.name} for c, r in zip(calls, results)]   # #7051
         if rounds >= max_rounds:
             finalizing = True
             tools = None

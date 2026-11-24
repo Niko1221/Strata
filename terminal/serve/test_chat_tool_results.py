@@ -43,7 +43,7 @@ class ChatToolResults(unittest.TestCase):
         self.assertEqual(raw, before)
         messages = normalized(raw)
         self.assertEqual([m["content"] for m in messages[2:]], ["RESULT_FROM_A", "RESULT_FROM_B"])
-        self.assertTrue(all(set(m) == {"role", "content"} for m in messages[2:]))
+        self.assertTrue(all(set(m) <= {"role", "content", "name"} for m in messages[2:]))
         self.assertTrue(all(set(c) == {"function"} for c in messages[1]["tool_calls"]))
 
     def test_already_ordered_and_legacy_prompts_are_identical(self):
@@ -54,7 +54,10 @@ class ChatToolResults(unittest.TestCase):
             call.pop("id")
         for result in legacy[2:]:
             result.pop("tool_call_id")
-        self.assertEqual(normalized(ordered), normalized(legacy))
+        # #7051: with ids each result also gets its call's name; without ids there is nothing to name it from
+        named = normalized(ordered)
+        self.assertEqual([m.pop("name") for m in named[2:]], ["read_file", "read_file"])
+        self.assertEqual(named, normalized(legacy))
         self.assertEqual(rendered(ordered), rendered(legacy))
 
     def test_ambiguous_or_incomplete_ids_preserve_received_order(self):
@@ -84,6 +87,8 @@ class ChatToolResults(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual([m["content"] for m in normalized(raw)[2:]],
                                  [m["content"] for m in raw[2:]])
+                if case == "duplicate_call":          # call_a twice in one turn: ambiguous, so neither result is named
+                    self.assertEqual([m.get("name") for m in normalized(raw)[2:]], [None, None])
 
     def test_each_tool_run_is_scoped_to_its_assistant_turn(self):
         raw = history() + history()
@@ -127,6 +132,79 @@ class ChatToolResults(unittest.TestCase):
             connection.close()
             httpd.shutdown()
             httpd.server_close()
+
+
+DATA = Path(__file__).resolve().parents[1] / "tests" / "data"
+INKLING = ChatTemplate(DATA / "inkling" / "chat_template.jinja")
+
+
+def call(cid, name):
+    return {"id": cid, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+def result(cid, content, **extra):
+    return {"role": "tool", "tool_call_id": cid, "content": content, **extra}
+
+
+def names(messages):
+    return [m.get("name") for m in normalized(messages) if m["role"] == "tool"]
+
+
+class ChatToolResultNames(unittest.TestCase):
+    """#7051: Inkling's template heads a tool result with its tool's name, from `name` or the matching call id."""
+
+    def test_a_result_is_named_after_its_call_in_the_inkling_prompt(self):
+        raw = [{"role": "user", "content": "Weather?"},
+               {"role": "assistant", "content": "", "tool_calls": [call("call_1", "get_weather")]},
+               result("call_1", "18 C")]
+        self.assertEqual(names(raw), ["get_weather"])
+        self.assertIn("<|message_tool|>get_weather<|content_text|>18 C", INKLING.render(normalized(raw)))
+
+    def test_a_client_name_is_kept(self):
+        raw = [{"role": "user", "content": "Weather?"},
+               {"role": "assistant", "content": "", "tool_calls": [call("call_1", "get_weather")]},
+               result("call_1", "18 C", name="weather_v2")]
+        self.assertEqual(names(raw), ["weather_v2"])
+        raw[2]["name"] = 7                              # not a name: resolved from the call instead
+        self.assertEqual(names(raw), ["get_weather"])
+
+    def test_an_unmatched_empty_or_missing_id_gets_no_name(self):
+        raw = [{"role": "user", "content": "Weather?"},
+               {"role": "assistant", "content": "", "tool_calls": [call("", "get_weather"), call("call_2", None)]},
+               result("call_9", "a"), result("", "b"), {"role": "tool", "content": "c"}, result("call_2", "d")]
+        self.assertEqual(names(raw), [None, None, None, None])
+
+    def test_parallel_results_take_their_own_calls_names(self):
+        raw = [{"role": "user", "content": "Weather and time?"},
+               {"role": "assistant", "content": "", "tool_calls": [call("call_w", "get_weather"), call("call_t", "get_time")]},
+               result("call_t", "noon"), result("call_w", "18 C")]
+        messages = normalized(raw)
+        self.assertEqual([(m["content"], m["name"]) for m in messages[2:]], [("18 C", "get_weather"), ("noon", "get_time")])
+        # an incomplete run keeps its received order, and each result is still named by its id, not its position
+        raw = [{"role": "user", "content": "Three things?"},
+               {"role": "assistant", "content": "", "tool_calls": [call("call_1", "a"), call("call_2", "b"), call("call_3", "c")]},
+               result("call_3", "third"), result("call_1", "first")]
+        self.assertEqual([(m["content"], m["name"]) for m in normalized(raw)[2:]], [("third", "c"), ("first", "a")])
+
+    def test_a_reused_id_takes_the_nearest_earlier_call(self):
+        raw = [{"role": "user", "content": "Read, then write."},
+               {"role": "assistant", "content": "", "tool_calls": [call("call_1", "read_file")]}, result("call_1", "old"),
+               {"role": "assistant", "content": "", "tool_calls": [call("call_1", "write_file")]}, result("call_1", "ok")]
+        self.assertEqual(names(raw), ["read_file", "write_file"])
+        raw[3]["tool_calls"].append(call("call_1", "delete_file"))   # twice in the second turn: that result is unnamed
+        self.assertEqual(names(raw), ["read_file", None])
+
+    def test_the_other_templates_render_the_same_with_names(self):
+        messages = normalized(history())
+        unnamed = copy.deepcopy(messages)
+        for m in unnamed:
+            m.pop("name", None)
+        self.assertEqual([m.get("name") for m in messages[2:]], ["read_file", "read_file"])
+        for path in (Path(__file__).with_name("chat_template.jinja"), DATA / "hy4" / "chat_template.jinja",
+                     Path(__file__).resolve().parents[1] / "tools" / "qwen4_intake_fixtures" / "qwen3-0.6b.chat_template.jinja"):
+            with self.subTest(template=path.name, parent=path.parent.name):
+                template = ChatTemplate(path)
+                self.assertEqual(template.render(messages), template.render(unnamed))
 
 
 if __name__ == "__main__":
