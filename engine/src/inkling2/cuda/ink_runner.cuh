@@ -3391,8 +3391,8 @@ struct InkCudaRunner {
                         k_ink_pf_accum_tile<<<dim3(kInkHeads, C), 128, 0, st>>>(
                             d_pf_ot, d_ctrl_gain, l_acc, o_acc, d_gate_attn, d_attn_out, q0, C, is_last);
                     };
-                    // The controller input workspace is idle between QKV and the next sublayer.
-                    // Each query block keeps its own running maximum, denominator and output.
+                    // bind_stage selects each stage's d_ctrl_cat, stream and cuBLAS handle together. On controller layers
+                    // the Q/K/V controllers consume this scratch before attention and the MLP controller refills it afterward.
                     static_assert(kInkQDim + 2 * kInkHeads <= 6 * kInkHidden);
                     float* history_out = d_ctrl_cat;
                     float* history_max = history_out + (size_t)M * kInkQDim;
