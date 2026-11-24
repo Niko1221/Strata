@@ -2121,6 +2121,9 @@ ${note.text}
 
   async function close() {
     for (const c of chats.values()) { c.wake?.close(); c.wake = null; }
+    // Stop during a Harness start stops the turn's wait (beforeAbort in startTurn), not the start. Closed meanwhile, that start
+    // finished after close() and its Harness outlived the bridge, the event stream to it keeping this process alive.
+    if (starting) await starting.catch(() => {});
     const r = rt; rt = null;
     if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
   }
