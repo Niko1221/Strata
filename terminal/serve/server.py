@@ -5145,11 +5145,11 @@ class Service:
                 print(f"[strata] could not save the shared settings: {e}", flush=True)
         return self.shared
 
-    def effort_default(self) -> str | None:
+    def effort_default(self) -> str | None:  # (see also thinking_level_line, the start-up line that says the same)
         """The thinking level of a request that names none: the Chat settings shared with apps first, then the config's
-        "reasoning_effort" (#1641).  Every API reads it here (the Responses API did not: 0.1.44.1)."""
-        if self.inkling:
-            return None
+        "reasoning_effort" (#1641).  Every API reads it here (the Responses API did not: 0.1.44.1).  Inkling-2-Mini
+        too (#7035; it used to return None here, from the time it could not think): a request that names a level and
+        finds none here gets inkling_dialect.DEFAULT_EFFORT (low, or STRATA_INKLING_EFFORT)."""
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
@@ -9136,6 +9136,19 @@ def _ensure_shape_tokenizer(cfg: dict, tpath: Path) -> bool:
     return (tpath / "vocab.json").exists()
 
 
+def thinking_level_line(config_effort: str | None, inkling: bool) -> str | None:
+    """The start-up line about the thinking level of requests that name none, or None when nothing is set.  It names only a
+    level that is used (#7035): the config's `reasoning_effort` (every model), else, for Inkling-2-Mini, the level it falls
+    back to (low, or STRATA_INKLING_EFFORT).  A level from a request or from the Chat settings shared with other apps wins."""
+    if config_effort:
+        return (f"[strata] thinking level: {config_effort} (reasoning_effort in the config; a request, or the "
+                "Chat settings shared with other apps, can set its own)")
+    if inkling:
+        return (f"[strata] thinking level: {inkling_dialect.normalize_effort(None)} (the Inkling default, no reasoning_effort in the "
+                "config; a request, or the Chat settings shared with other apps, can set its own)")
+    return None
+
+
 def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
@@ -9552,9 +9565,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             svc.config_effort = clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}, hy4=hy4_kind.is_hy4(cfg)).get("reasoning_effort")
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
-        if svc.config_effort:
-            print(f"[strata] thinking level: {svc.config_effort} (reasoning_effort in the config; a request, or the "
-                  "Chat settings shared with other apps, can set its own)", flush=True)
+    line = thinking_level_line(svc.config_effort, svc.inkling)
+    if line:
+        print(line, flush=True)
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:

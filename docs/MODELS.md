@@ -308,7 +308,7 @@ the conversation, `0` meaning no thinking. Strata sends the number the model was
 | --- | --- | --- |
 | `"none"`, `"off"`, `0`, `"chat_template_kwargs": {"enable_thinking": false}`, Anthropic `"thinking": {"type": "disabled"}` | `0` | No thinking pass; the answer starts at once. |
 | `"minimal"` | `0.1` | |
-| `"low"` | `0.2` | **The default** when a request names none (config `reasoning_effort`, or `STRATA_INKLING_EFFORT`, changes it). |
+| `"low"` | `0.2` | **The default** when nothing names a level: a request's own level wins, then the level set in the Chat settings shared with other apps, then `reasoning_effort` in the run config (`none`, `low`, `medium` or `high`); only when none of them is set does `low` apply (`STRATA_INKLING_EFFORT` changes that last fallback). |
 | `"medium"` | `0.7` | Anthropic `budget_tokens` 2K to 8K. |
 | `"high"` | `0.9` | |
 | `"xhigh"`, `"max"` | `0.99` | |
