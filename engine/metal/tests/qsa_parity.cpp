@@ -4,9 +4,11 @@
 //                           2051), then a window of 3 tokens: prep, score, top-k, attention, merge.  Each stage is
 //                           checked against the CPU fed with the GPU's inputs to that stage; the ids exactly.
 //   qsa_parity --bench [P]  GPU time of the window's kernels at context P, 1 and 3 tokens
+//   qsa_parity --verify-commit    compare speculative rollback against single-token writes
 #include "mtl_rt.h"
 #include "ref_quant.h"
 #include "engine/geo.h"
+#include "engine/qsa_tail.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,13 +32,15 @@ float h2f(uint16_t h) { return ref::f16_to_f32(h); }
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool bench = false;
+    bool bench = false, verify_commit = false;
     int P = 3000;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--bench") bench = true;
+        else if (a == "--verify-commit") verify_commit = true;
         else P = std::atoi(argv[i]);
     }
+    if (verify_commit) P = 8;
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64);
     mtl::Context cx;
     const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n");
@@ -49,7 +53,7 @@ int main(int argc, char** argv) {
                   pmerge = cx.pipeline(lib, v2 ? "qsa_merge2" : "qsa_merge");
     const int MB = MAXC / 4 + 2;
     // per-cell inputs for every cell (context + window)
-    const int NC = P + MAXT;
+    const int NC = P + MAXT + (verify_commit ? 4 : 0);
     mtl::Buffer qfull = cx.alloc(4 * (size_t)NC * QH * 2 * QD), kc = cx.alloc(4 * (size_t)NC * QKV * QD),
                 vc = cx.alloc(4 * (size_t)NC * QKV * QD), iq = cx.alloc(4 * (size_t)NC * IH * ID),
                 ik = cx.alloc(4 * (size_t)NC * ID), qn = cx.alloc(4 * QD), kn = cx.alloc(4 * QD), iqn = cx.alloc(4 * ID),
@@ -133,6 +137,64 @@ int main(int argc, char** argv) {
         m.tg[0] = 256;
         ds.push_back(m);
     };
+    if (verify_commit) {
+        const auto deferred = cx.pipeline(lib, "qsa_prep", mtl::Constants().b(24, mrope).b(27, true));
+        const auto write_one = [&](int begin, int end) {
+            std::vector<mtl::Dispatch> ds;
+            for (int pos = begin; pos < end; ++pos) ds.push_back(prep(pos, 1));
+            if (!ds.empty()) cx.run(ds);
+        };
+        write_one(0, NC);
+        const auto snapshot = [](const mtl::Buffer& b, size_t n) {
+            return std::vector<uint8_t>(b.as<uint8_t>(), b.as<uint8_t>() + n);
+        };
+        const auto expected_pooled = snapshot(pooled, (size_t) (NC / 4) * ID * sizeof(float));
+        const auto expected_tail = snapshot(tail, tail.bytes);
+        const auto expected_k = snapshot(kq, (size_t) NC * QKV * QD);
+        const auto expected_v = snapshot(vq, expected_k.size());
+        const auto expected_ks = snapshot(ksc, (size_t) NC * QKV * 4 * sizeof(uint16_t));
+        const auto expected_vs = snapshot(vsc, expected_ks.size());
+        mtl::Buffer draft = cx.alloc((size_t) MAXT * ID * sizeof(float));
+        int cases = 0, legacy_mismatches = 0;
+        for (int pos = P; pos < P + 4; ++pos)
+            for (int width = 2; width <= MAXT; ++width)
+                for (int kept = 1; kept <= width; ++kept) {
+                    ++cases;
+                    for (int row = 0; row < width; ++row) {
+                        const float* original = ik.as<float>() + (pos + row) * ID;
+                        auto* dst = draft.as<float>() + row * ID;
+                        for (int c = 0; c < ID; ++c) dst[c] = row < kept ? original[c] : original[c] + 0.5f;
+                    }
+                    for (bool defer : {false, true}) {
+                        write_one(0, pos);
+                        const auto saved_tail = snapshot(tail, tail.bytes);
+                        auto d = prep(pos, width);
+                        d.args[4] = mtl::Arg::B(draft);
+                        if (defer) d.p = &deferred;
+                        cx.run({d});
+                        if (defer) {
+                            if (snapshot(tail, tail.bytes) != saved_tail) {
+                                std::fprintf(stderr, "speculation changed the committed QSA tail\n");
+                                return 1;
+                            }
+                            strata_metal::commit_qsa_tail(tail.as<float>(), draft.as<float>(), (uint32_t) pos, kept);
+                        }
+                        write_one(pos + kept, NC);
+                        const bool valid = snapshot(pooled, expected_pooled.size()) == expected_pooled &&
+                            snapshot(tail, expected_tail.size()) == expected_tail &&
+                            snapshot(kq, expected_k.size()) == expected_k && snapshot(vq, expected_v.size()) == expected_v &&
+                            snapshot(ksc, expected_ks.size()) == expected_ks && snapshot(vsc, expected_vs.size()) == expected_vs;
+                        if (!defer) legacy_mismatches += !valid;
+                        else if (!valid) {
+                            std::fprintf(stderr, "QSA state differs after commit at pos %d, T%d, keeping %d\n", pos, width, kept);
+                            return 1;
+                        }
+                    }
+                }
+        cx.free(draft);
+        std::printf("QSA commit: %d/%d exact, legacy mismatches %d\n", cases, cases, legacy_mismatches);
+        return legacy_mismatches == 0 ? 1 : 0;
+    }
     // the context, one cell at a time
     {
         std::vector<mtl::Dispatch> ds;

@@ -72,6 +72,8 @@ constant bool QSA_MROPE [[function_constant(24)]];
 constant bool qsa_mrope = is_function_constant_defined(QSA_MROPE) && QSA_MROPE;
 constant bool QSA_ROWS_C [[function_constant(30)]];
 constant bool qsa_rows = is_function_constant_defined(QSA_ROWS_C) && QSA_ROWS_C;
+constant bool QSA_DEFER_TAIL [[function_constant(27)]];
+constant bool qsa_defer_tail = is_function_constant_defined(QSA_DEFER_TAIL) && QSA_DEFER_TAIL;
 // QSA_ROWS (function constant 30): the rows of the window are DIFFERENT sequences (batch slots), one token each, each at its own
 // cell and in its own slot of the caches.  A buffer rinfo (uint) carries the strides between the slots' caches, in elements:
 // [0] kq / vq (chars), [1] ksc / vsc (halves), [2] tail, [3] dead, [4] pooled (floats), [5] GDN state (floats), [6] conv history
@@ -156,15 +158,30 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
                 mt = mtab + rinfo[8 + 4 * t + 3];
             }
             const float x = tid < ID ? ikraw[t * ID + tid] : 0.0f;
-            if (tid < ID) tail_t[(cell & 3) * ID + tid] = x;
-            threadgroup_barrier(mem_flags::mem_device);
+            if (!qsa_defer_tail) {
+                if (tid < ID) tail_t[(cell & 3) * ID + tid] = x;
+                threadgroup_barrier(mem_flags::mem_device);
+            }
             if (cell == 0) {
                 const float o = norm_rope(x, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, 0, false, mt);
                 if (tid < ID) dead_t[tid] = o;
             }
             if ((cell & 3) == 3) {
                 float m = 0.0f;
-                if (tid < ID) m = (((tail_t[tid] + tail_t[ID + tid]) + tail_t[2 * ID + tid]) + tail_t[3 * ID + tid]) * 0.25f;
+                if (tid < ID) {
+                    if (qsa_defer_tail) {
+                        // The block can start before this window. Those keys are
+                        // committed; the rest already exist in the projection buffer.
+                        float keys[4];
+                        for (uint i = 0; i < 4; ++i) {
+                            const uint c = cell - 3 + i;
+                            keys[i] = c < a.pos0 ? tail_t[i * ID + tid] : ikraw[(c - a.pos0) * ID + tid];
+                        }
+                        m = (((keys[0] + keys[1]) + keys[2]) + keys[3]) * 0.25f;
+                    } else {
+                        m = (((tail_t[tid] + tail_t[ID + tid]) + tail_t[2 * ID + tid]) + tail_t[3 * ID + tid]) * 0.25f;
+                    }
+                }
                 const uint b = cell >> 2;
                 const float o = norm_rope(m, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, a.pos_base + 4 * b, true, mt);
                 if (tid < ID) pooled_t[b * ID + tid] = o;
