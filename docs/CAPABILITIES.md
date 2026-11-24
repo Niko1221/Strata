@@ -6,7 +6,7 @@ This page is built by `tools/capability_table.py` from [docs/data/capabilities.j
 - **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
-App and Terminal 0.2.21, Control and engines 0.1.67; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3. App, Control and engine versions differ on purpose.
+App and Terminal 0.2.21, Control 0.1.68, engines 0.1.67; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3; these packages stay at 0.1.67: Control linux-aarch64, linux-x86_64, macos-arm64, windows-x86_64. App, Control and engine versions differ on purpose.
 
 ## At a glance
 
