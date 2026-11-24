@@ -35,12 +35,14 @@ class FakeScoreEngine(MockEngine):
         self.score_error: Exception | None = None
 
     def score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
-              cvec: bool | None = None, timeout: float = 300.0) -> dict:
+              cvec: bool | None = None, frontier: str | int | None = None,
+              timeout: float = 300.0) -> dict:
         self.score_calls.append({
             "tokens": list(token_ids),
             "from_pos": from_pos,
             "lora": lora,
             "cvec": cvec,
+            "frontier": frontier,
         })
         if self.score_error is not None:
             raise self.score_error
@@ -125,6 +127,11 @@ class StrataEngineScoreWireTest(unittest.TestCase):
         self.assertEqual(res2["from"], 2)
         self.assertAlmostEqual(res2["sum_logprob"], -1.5)
 
+        for frontier_val, expected_opt in [("auto", "frontier=auto"), (44, "frontier=44"), (0, "frontier=0")]:
+            eng_f, stdin_f = self._make_engine(["SC 2 0 1.000000 2.0 -1.000000 -1.000000\n"])
+            eng_f.score([10, 20, 30], frontier=frontier_val)
+            self.assertEqual(stdin_f.getvalue(), f"SCORE {expected_opt} 10,20,30\n")
+
     def test_err_reply_raises_value_error(self):
         eng, _ = self._make_engine(["ERR score: token id out of vocabulary range\n"])
         with self.assertRaisesRegex(ValueError, "out of vocabulary range"):
@@ -155,6 +162,9 @@ class StrataEngineScoreWireTest(unittest.TestCase):
             eng.score([1, 2, 3], from_pos=2)
         with self.assertRaises(ValueError):
             eng.score([1, 2, 3], lora=1)  # type: ignore[arg-type]
+        for bad_frontier in [-1, True, False, "bad", 44.0]:
+            with self.assertRaises(ValueError):
+                eng.score([1, 2, 3], frontier=bad_frontier)  # type: ignore[arg-type]
         self.assertEqual(stdin_buf.getvalue(), "")
 
 
@@ -182,7 +192,9 @@ class ScoreEndpointTest(_HTTPMixin, unittest.TestCase):
         self.assertEqual(len(body["logprobs"]), 3)
         self.assertAlmostEqual(body["sum_logprob"], sum(body["logprobs"]))
         self.assertAlmostEqual(body["mean_nll"], -body["sum_logprob"] / 3)
-        self.assertEqual(eng.score_calls[-1], {"tokens": [10, 20, 30, 40], "from_pos": 0, "lora": None, "cvec": None})
+        self.assertEqual(eng.score_calls[-1], {
+            "tokens": [10, 20, 30, 40], "from_pos": 0, "lora": None, "cvec": None, "frontier": None,
+        })
 
         status, body = self.request("POST", "/v1/score", {"tokens": [10, 20, 30, 40], "from": 2})
         self.assertEqual(status, 200)
@@ -225,6 +237,17 @@ class ScoreEndpointTest(_HTTPMixin, unittest.TestCase):
         self.assertEqual(eng.score_calls[-1]["lora"], False)
         self.assertEqual(eng.score_calls[-1]["cvec"], True)
         self.assertNotEqual(body_on["logprobs"], body_off["logprobs"])
+
+    def test_frontier_forwarding(self):
+        tok = ByteTokenizer()
+        eng = FakeScoreEngine(tok)
+        self._start(eng)
+
+        for val in ("auto", 44, 0):
+            status, body = self.request("POST", "/v1/score", {"tokens": [1, 2, 3], "frontier": val})
+            self.assertEqual(status, 200)
+            self.assertEqual(body["count"], 2)
+            self.assertEqual(eng.score_calls[-1]["frontier"], val)
 
     def test_409_unloaded_unsupported_and_busy(self):
         tok = ByteTokenizer()
@@ -278,6 +301,11 @@ class ScoreEndpointTest(_HTTPMixin, unittest.TestCase):
             {"prompt": "", "completion": "hi"},
             {"prompt": "hi", "completion": ""},
             {"prompt": "hi", "completion": "ok", "from": 0},
+            {"tokens": [1, 2, 3], "frontier": -1},
+            {"tokens": [1, 2, 3], "frontier": True},
+            {"tokens": [1, 2, 3], "frontier": False},
+            {"tokens": [1, 2, 3], "frontier": "invalid"},
+            {"tokens": [1, 2, 3], "frontier": 44.5},
         ]
         for payload in bad_payloads:
             status, _ = self.request("POST", "/v1/score", payload)

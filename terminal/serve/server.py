@@ -1314,13 +1314,16 @@ class StrataEngine:
             raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
 
     def score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
-              cvec: bool | None = None, timeout: float = 300.0) -> dict:
+              cvec: bool | None = None, frontier: str | int | None = None,
+              timeout: float = 300.0) -> dict:
         with self._exclusive_control():
-            return self._score(token_ids, from_pos=from_pos, lora=lora, cvec=cvec, timeout=timeout)
+            return self._score(token_ids, from_pos=from_pos, lora=lora, cvec=cvec,
+                               frontier=frontier, timeout=timeout)
 
     def _score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
-               cvec: bool | None = None, timeout: float = 300.0) -> dict:
-        """Teacher-forced log-probabilities via `SCORE [lora=0|1] [cvec=0|1] [from=K] id0,id1,...`.
+               cvec: bool | None = None, frontier: str | int | None = None,
+               timeout: float = 300.0) -> dict:
+        """Teacher-forced log-probabilities via `SCORE [lora=0|1] [cvec=0|1] [from=K] [frontier=auto|<L>] id0,id1,...`.
         -> {"count", "from", "mean_nll", "sum_logprob", "ms", "logprobs"}.
         Raises ValueError on invalid inputs or `ERR score: ...`, EngineDied on disconnect, timeout, or malformed reply."""
         if not isinstance(token_ids, (list, tuple)) or len(token_ids) < 2:
@@ -1336,6 +1339,14 @@ class StrataEngine:
             raise ValueError("lora: expected a boolean or null")
         if cvec is not None and not isinstance(cvec, bool):
             raise ValueError("cvec: expected a boolean or null")
+        frontier_opt: str | None = None
+        if frontier is not None:
+            if frontier == "auto":
+                frontier_opt = "frontier=auto"
+            elif not isinstance(frontier, bool) and isinstance(frontier, int) and frontier >= 0:
+                frontier_opt = f"frontier={frontier}"
+            else:
+                raise ValueError('frontier: expected "auto" or a non-negative integer')
         if not self.alive():
             raise EngineDied("the engine is not running")
         parts = ["SCORE"]
@@ -1345,6 +1356,8 @@ class StrataEngine:
             parts.append(f"cvec={1 if cvec else 0}")
         if from_pos > 0:
             parts.append(f"from={from_pos}")
+        if frontier_opt is not None:
+            parts.append(frontier_opt)
         parts.append(",".join(str(t) for t in ids))
         cmd = " ".join(parts) + "\n"
         try:
@@ -4900,6 +4913,10 @@ class Service:
         cvec = req.get("cvec")
         if cvec is not None and not isinstance(cvec, bool):
             raise ValueError("cvec: expected a boolean or null")
+        frontier = req.get("frontier")
+        if frontier is not None:
+            if frontier != "auto" and (isinstance(frontier, bool) or not isinstance(frontier, int) or frontier < 0):
+                raise ValueError('frontier: expected "auto" or a non-negative integer')
 
         has_tokens = "tokens" in req and req["tokens"] is not None
         has_text = ("prompt" in req and req["prompt"] is not None) or (
@@ -4967,7 +4984,7 @@ class Service:
                 self.status.update(busy=True, phase="scoring", started=time.time(), first_token=None,
                                    prompt_tokens=len(tokens), generated=None, max_tokens=None)
             try:
-                res = self.engine.score(tokens, from_pos=from_pos, lora=lora, cvec=cvec)
+                res = self.engine.score(tokens, from_pos=from_pos, lora=lora, cvec=cvec, frontier=frontier)
             except ValueError as e:
                 msg = str(e)
                 if "actively decoding" in msg.lower() or "busy" in msg.lower():
