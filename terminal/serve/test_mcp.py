@@ -399,6 +399,22 @@ class ToolLoop(unittest.TestCase):
         self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
         self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
 
+    def test_results_are_named_after_their_calls(self):
+        """#7051: the template messages of the next round carry each result's tool name (Inkling's header reads it)."""
+        two = call_script("fake__add", a=2, b=3) + call_script("fake__echo", text="hi").split("Let me check.\n\n")[1]
+        self.start(two, "</think>\n\nDone.")
+        seen = []
+        encode = self.svc.encode_prompt
+
+        def spy(messages, *args, **kwargs):
+            seen.append(json.loads(json.dumps(messages)))
+            return encode(messages, *args, **kwargs)
+        self.svc.encode_prompt = spy
+        code, text = self.post({"strata_mcp": True}, stream=False)
+        self.assertEqual(code, 200, text)
+        tools = [(m["name"], m["content"]) for m in seen[-1] if m["role"] == "tool"]
+        self.assertEqual(tools, [("fake__add", "5"), ("fake__echo", "hi")])
+
     def test_non_stream(self):
         self.start(call_script("fake__add", a=2, b=3), "</think>\n\n5.")
         code, text = self.post({"strata_mcp": True}, stream=False)

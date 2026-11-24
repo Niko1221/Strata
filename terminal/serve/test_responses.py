@@ -80,10 +80,12 @@ class Parsing(unittest.TestCase):
             {"role": "assistant", "content": "Looking.", "reasoning_content": "look first", "tool_calls": [
                 {"function": {"name": "exec_command", "arguments": {"cmd": "cat a"}}},
                 {"function": {"name": "multi_agent_v1.spawn_agent", "arguments": {}}}]},
-            {"role": "tool", "content": "before"}, {"role": "tool", "content": "agent"},
+            # #7051: each result is named after its call, for templates that head a result with it (Inkling)
+            {"role": "tool", "content": "before", "name": "exec_command"},
+            {"role": "tool", "content": "agent", "name": "multi_agent_v1.spawn_agent"},
             {"role": "assistant", "content": "", "reasoning_content": "now write", "tool_calls": [
                 {"function": {"name": "exec_command", "arguments": {"cmd": "w"}}}]},
-            {"role": "tool", "content": "ok"}])
+            {"role": "tool", "content": "ok", "name": "exec_command"}])
 
     def test_reasoning_comes_back_from_our_encrypted_content_and_foreign_tokens_are_ignored(self):
         enc = ENCRYPTED_PREFIX + base64.b64encode(json.dumps({"text": "hidden"}).encode()).decode()

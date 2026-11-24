@@ -642,7 +642,8 @@ def _order_chat_tool_results(messages: list[dict]) -> None:
     """The template pairs results by position, so restore call order while IDs are still available.
 
     Only a complete, unambiguous run of results is reordered. Legacy or incomplete histories keep their
-    received order. IDs are private to this conversion and never reach the template.
+    received order. Each result is then named after its call (_name_tool_results). IDs are private to this
+    conversion and never reach the template.
     """
     i = 0
     while i < len(messages):
@@ -660,10 +661,27 @@ def _order_chat_tool_results(messages: list[dict]) -> None:
                 rank = {cid: n for n, cid in enumerate(calls)}
                 messages[i:j] = sorted(messages[i:j], key=lambda m: rank[m["_call_id"]])
         i = j
+    _name_tool_results(messages)
     for message in messages:
         message.pop("_call_id", None)
         for call in message.get("tool_calls") or []:
             call.pop("_call_id", None)
+
+
+def _name_tool_results(messages: list[dict]) -> None:
+    """#7051: a tool result without a `name` takes the function name of the nearest earlier call with its `_call_id`
+    (Inkling's template heads the result with it); an id used twice in that call's turn is ambiguous and names
+    nothing. Run before the private ids are dropped."""
+    names = {}
+    for message in messages:
+        cid = message.get("_call_id")
+        if message["role"] == "tool" and not message.get("name") and isinstance(cid, str) and names.get(cid):
+            message["name"] = names[cid]
+        ids = [c.get("_call_id") for c in message.get("tool_calls") or []]
+        for call in message.get("tool_calls") or []:
+            cid, name = call.get("_call_id"), call["function"].get("name")
+            if isinstance(cid, str) and cid:
+                names[cid] = name if isinstance(name, str) and name and ids.count(cid) == 1 else None
 
 
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
@@ -680,6 +698,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if role == "tool":
             out["_call_id"] = m.get("tool_call_id")
+            if isinstance(m.get("name"), str) and m["name"]:
+                out["name"] = m["name"]
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
