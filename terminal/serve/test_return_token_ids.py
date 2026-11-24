@@ -143,6 +143,20 @@ class ReturnTokenIdsApi(unittest.TestCase):
         self.assertEqual(final["choices"][0]["token_ids"], eng.last_generated_ids)
         self.assertEqual(len(final["choices"][0]["logprobs"]["content"]), len(eng.last_generated_ids))
 
+    def test_return_token_ids_suppresses_synthetic_reasoning_wrapup(self):
+        tok = ThinkTokenizer()
+        base, eng, _ = self._start("long thought here</think>ok", tok=tok)
+        out = self._post(base, {
+            "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_budget_tokens": 4,
+            "return_token_ids": True,
+            "logprobs": True,
+            "top_logprobs": 0,
+        })
+        choice = out["choices"][0]
+        self.assertEqual(choice["token_ids"], eng.last_generated_ids)
+        self.assertEqual(len(choice["logprobs"]["content"]), len(choice["token_ids"]))
+
 
 if __name__ == "__main__":
     unittest.main()

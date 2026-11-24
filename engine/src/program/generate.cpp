@@ -18049,9 +18049,16 @@ int main(int argc, char** argv) {
                 uint64_t last_used = 0;
             };
             enum : size_t {
-                kMaxEntries = 16,
-                kMaxBytes = 256ull * 1024ull * 1024ull,
+                kMaxEntries = 32,
+                kDefaultMaxBytes = 256ull * 1024ull * 1024ull,
             };
+            size_t max_bytes = []() -> size_t {
+                if (const char* v = std::getenv("STRATA_SCORE_FRONTIER_MIB")) {
+                    const long long mib = std::strtoll(v, nullptr, 10);
+                    if (mib >= 16 && mib <= 16384) return (size_t) mib * 1024ull * 1024ull;
+                }
+                return kDefaultMaxBytes;
+            }();
             std::vector<Entry> entries;
             size_t total_bytes = 0;
             uint64_t tick = 0;
@@ -18069,7 +18076,7 @@ int main(int argc, char** argv) {
 
             void put(const int64_t* toks, size_t n_toks, int64_t layer, bool cvec, std::vector<float>&& R) {
                 const size_t bytes = R.size() * sizeof(float);
-                if (bytes == 0 || bytes > kMaxBytes) return;
+                if (bytes == 0 || bytes > max_bytes) return;
                 for (Entry& e : entries) {
                     if (e.layer == layer && e.cvec == cvec && e.tokens.size() == n_toks &&
                         std::memcmp(e.tokens.data(), toks, n_toks * sizeof(int64_t)) == 0) {
@@ -18080,7 +18087,7 @@ int main(int argc, char** argv) {
                         return;
                     }
                 }
-                while (!entries.empty() && (entries.size() >= kMaxEntries || total_bytes + bytes > kMaxBytes)) {
+                while (!entries.empty() && (entries.size() >= kMaxEntries || total_bytes + bytes > max_bytes)) {
                     size_t victim = 0;
                     for (size_t i = 1; i < entries.size(); ++i) {
                         if (entries[i].last_used < entries[victim].last_used) victim = i;
@@ -18646,7 +18653,7 @@ int main(int argc, char** argv) {
                     } else {
                         const size_t cap_floats = (size_t) (N - 1) * row_floats;
                         const size_t cap_bytes = cap_floats * sizeof(float);
-                        if (cap_bytes <= ScoreFrontierCache::kMaxBytes) {
+                        if (cap_bytes <= score_frontier_cache.max_bytes) {
                             std::vector<float> cap(cap_floats);
                             struct FrontierCapGuard {
                                 strata::prefill::Prefill& pf;

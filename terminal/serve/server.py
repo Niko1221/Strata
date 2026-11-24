@@ -5797,9 +5797,13 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # return_token_ids=True requests exact single-pass on-policy token ids & aligned logprobs:
+        # suppress server-side synthetic token injections (answer_room wrap-up, tool_markup_retry,
+        # reasoning_close_retry, reasoning_loop_recovery) that have no engine LP lines.
+        want_raw_ids = (sampling or {}).get("return_token_ids") is True
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
-        budget = self.reasoning_budget(sampling) if thinking else None
-        if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
+        budget = None if want_raw_ids else (self.reasoning_budget(sampling) if thinking else None)
+        if not want_raw_ids and thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
@@ -5830,7 +5834,7 @@ class Service:
                     if isinstance(t, dict) and isinstance(t.get("name"), str)]
         # (a): armed for a request with tools, on the template's own call form (the Qwen form; a JSON-form parser or another
         # family keeps sending the text as it is)
-        hold = ToolMarkupHold(bool(self.tool_markup_retry and declared and self.family is None
+        hold = ToolMarkupHold(bool(not want_raw_ids and self.tool_markup_retry and declared and self.family is None
                                    and self.parser_cls is OutputParser))
         parser_done, markup_retried = False, None
 
@@ -6062,7 +6066,7 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
+                                if (not want_raw_ids and self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
@@ -6159,7 +6163,7 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
-                        if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
+                        if (not want_raw_ids and self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
