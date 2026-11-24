@@ -223,6 +223,10 @@ public:
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    /// SYCL: run eligible neighboring chunks together within this request's checkpoint bounds.
+    bool run_expert_window(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err,
+                           int64_t next_checkpoint, int64_t checkpoint_interval, int64_t prompt_end,
+                           int64_t short_read, bool save_tail);
 
     const PrefillStats& stats() const { return stats_; }
 
@@ -312,6 +316,9 @@ public:
     /// BW-H: a layer split (before arm_cpu_share): arms the default share with the link rule when `floor_ms` (the stages' stream floors summed, share_rules.hpp link_rule_floor) raises the limit above 3,072;
     /// STRATA_PREFILL_CPU_SHARE_AUTO=0 or an explicit STRATA_PREFILL_CPU_SHARE leave it as it was.  `all_cc120`: every stage's card is compute capability 12.0 (the class measured; =1 asks for any).
     static bool arm_cpu_share_split(bool applies, double floor_ms, int pool_workers, bool all_cc120);
+    /// Disarms a default-armed CPU share when the post-complement host-memory check refuses it (an explicit
+    /// STRATA_PREFILL_CPU_SHARE set by the user is kept).
+    static void disarm_default_cpu_share();
     /// STRATA_PREFILL_CPU_SHARE_BATCH=1 (batch slots beside the pool): set before each read - true while a slot decodes
     /// (its windows use the pool), so no chunk of that read takes the share; false lets the read's chunks take it.
     static void set_share_blocked(bool blocked);

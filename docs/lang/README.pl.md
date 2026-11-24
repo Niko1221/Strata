@@ -44,11 +44,40 @@ Najpierw polecamy **ISTA-DASLab**, potem **Unsloth** i innych dostawców — o i
 </details>
 
 <details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pakiet | Twój RAM | Karta graficzna |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 lub 16 GiB |
+| **SQ-96** | 96 GiB | 8 lub 12 GiB |
+| **SQ-128** | 128 GiB | 8 lub 12 GiB |
+
+Liczba w nazwie oznacza ilość pamięci RAM, dla której przygotowano pakiet.
+
+[Pakiety Hy4-Flash na Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. To obecnie udokumentowane pakiety dla tego modelu.
 
 [Przewodnik po modelu i zgodność](../QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Dostawca | Do wyboru |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 jest przeznaczony dla karty graficznej 24 GiB, SQ-15 dla 16 GiB, a SQ-10 dla 12 GiB. Na start wystarczy już karta 4 GiB.
+
+[Pakiety Strata na Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Pliki GGUF Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -67,7 +96,7 @@ Nie wiesz, co się zmieści? [Wybierz model do swojego komputera](../MODELS.md#p
 Zainstaluj aplikację, wybierz model i zacznij rozmawiać. Dla każdego systemu jest jeden instalator. Przy pierwszym
 uruchomieniu aplikacja pobiera silnik dla twojej karty graficznej. [Pomoc z instalatorem](../INSTALL.md#the-app).
 
-<sub>Pliki: `Strata-0.2.17-windows-x64-setup.exe` · `Strata-0.2.17-linux-x86_64.AppImage` · `Strata-0.2.17-macos-arm64.dmg`</sub>
+<sub>Pliki: `Strata-0.2.20-windows-x64-setup.exe` · `Strata-0.2.20-linux-x86_64.AppImage` · `Strata-0.2.20-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="Aplikacja Strata na komputer: czat i podgląd kodu na żywo obok siebie">
@@ -126,6 +155,7 @@ Postępuj zgodnie z podpowiedziami, aby pobrać i uruchomić model. [Przewodnik 
 | **Intel Arc · Linux** | [Konfiguracja Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 lub nowszy** | [Konfiguracja Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Konfiguracja Strix Halo](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [Konfiguracja DGX Spark](../DGX_SPARK_LINUX.md) |
 
 <a id="using-it"></a>
 
@@ -144,6 +174,15 @@ Uruchom **`strata connect`**, aby zobaczyć instrukcję konfiguracji dla swojego
 
 [Wszystkie przewodniki](..) · [Rozwiązywanie problemów](../TROUBLESHOOTING.md) · [Zgłoś błąd](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Testy wydajności](../COMMUNITY_BENCHMARKS.md) · [Jak to działa](../HOW_IT_WORKS.md) · [Współtworzenie](../../.github/CONTRIBUTING.md)
+
+## Sponsorzy Straty
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/linger-logo-white.svg"><img src="../media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
 
 ## Wesprzyj Stratę
 

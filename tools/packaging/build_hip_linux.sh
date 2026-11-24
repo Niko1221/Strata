@@ -9,7 +9,7 @@
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       optional override (kept for two releases): ggml comes from that checkout instead of the vendored engine/third_party/
 #   HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>   (TheRock: _rocm_sdk_devel, _rocm_sdk_core, _rocm_sdk_libraries_*)
-#   OUT=<work folder>  PKGVER=0.1.63  COMMIT=<source commit for the build id>  JOBS=16
+#   OUT=<work folder>  PKGVER=0.1.66  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   SPLIT_DIR=<folder>               ship the strata-split-N-amd binaries of that folder (made by tools/packaging/build_split_hip.sh) beside strata
 #   NO_PACKAGE=1                     stop after the stage folder
@@ -27,7 +27,7 @@ HP=${HP:?HP=<ROCm devel root>}
 CORE=${CORE:-$HP}
 LIBW=${LIBW:-$HP}
 OUT=${OUT:-$PWD/work-$V}
-PKGVER=${PKGVER:-0.1.63}
+PKGVER=${PKGVER:-0.1.66}
 COMMIT=${COMMIT:-unknown}
 JOBS=${JOBS:-16}
 case "$V" in
@@ -91,8 +91,11 @@ EOJ
 # the libraries the engine and the GPU reader load (the CPU reader needs only the system's), collected from the build outputs
 DATA=(--data "$LIBW/lib/rocblas/library=rocblas/library" --data "$LIBW/lib/hipblaslt/library=hipblaslt/library" --data-arch "$DATAARCH")
 BINS=("$OUT/b/strata" "$OUT/bh/bin/strata-vision-hip")
+LLVMTARGET="$CORE/lib/llvm/lib/$(uname -m)-unknown-linux-gnu"
+LLVMSEARCH=(--search "$CORE/lib/llvm/lib")
+[ -d "$LLVMTARGET" ] && LLVMSEARCH+=(--search "$LLVMTARGET")   # ROCm 10.2+ LLVM 24 per-target runtime directory
 for b in "${BINS[@]}"; do
-  python3 tools/packaging/collect_libs.py --binary "$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" --search "$CORE/lib/llvm/lib" ${SYSDEPS:+--search "$HP/lib/rocm_sysdeps/lib"} \
+  python3 tools/packaging/collect_libs.py --binary "$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" "${LLVMSEARCH[@]}" ${SYSDEPS:+--search "$HP/lib/rocm_sysdeps/lib"} \
     --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "$STAGE" \
     "${DATA[@]}" >> "$OUT/collect.log" 2>&1
   chk $? "collected for $(basename "$b")"

@@ -40,7 +40,7 @@ int collect_acts(Type act, Arith a, const ActKernel** out, int cap) {
     const ActTable tables[] = {
         generic_act_table(),
 #ifdef STRATA_QUANT_X86_TIERS
-        avx_act_table(), avx2_act_table(),
+        avx_act_table(), avx2_act_table(), avx512_act_table(),
 #endif
 #ifdef STRATA_QUANT_ARM_TIERS
         neon_act_table(),
@@ -62,6 +62,27 @@ const DotKernel* dot_kernel(Type w, Arith a, Isa max_isa) noexcept {
 }
 
 const DotKernel* dot_kernel(Type w, Arith a) noexcept { return dot_kernel(w, a, best_isa()); }
+
+const DotX4Kernel* dot_x4_kernel(Type w, Arith a, Isa max_isa) noexcept {
+#ifdef STRATA_QUANT_X86_TIERS
+    const DotX4Table tables[] = {avx512_dot_x4_table(), avx2_dot_x4_table()};
+    const DotX4Kernel* best = nullptr;
+    for (const DotX4Table& tb : tables) {
+        for (int i = 0; i < tb.n; ++i) {
+            const DotX4Kernel& k = tb.v[i];
+            if (k.weight == w && k.arith == a && (int) k.isa <= (int) max_isa && isa_ok(k.isa)) {
+                if (!best || (int) k.isa > (int) best->isa) best = &k;
+            }
+        }
+    }
+    return best;
+#else
+    (void) w; (void) a; (void) max_isa;
+    return nullptr;
+#endif
+}
+
+const DotX4Kernel* dot_x4_kernel(Type w, Arith a) noexcept { return dot_x4_kernel(w, a, best_isa()); }
 
 const ActKernel* act_kernel(Type act, Arith a, Isa max_isa) noexcept {
     const ActKernel* v[kMaxK];

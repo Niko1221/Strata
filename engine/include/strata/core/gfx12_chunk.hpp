@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 namespace strata::core {
@@ -19,5 +20,18 @@ inline int64_t gfx12_chunk_ceiling(const char* env) noexcept {
 
 /// The RAM guard (#2090) steps the ceiling down when the extra loan does not fit: 32768 -> 16384 -> 8192.
 inline int64_t gfx12_chunk_step_down(int64_t ceiling) noexcept { return ceiling > 16384 ? 16384 : 8192; }
+
+/// Host RAM reserve (MiB) kept free by the #2090 prompt-chunk RAM guard (#6687).
+/// - STRATA_PREFILL_RAM_RESERVE_MIB: explicit override in MiB (>= 0) when set.
+/// - Default: 6144 MiB when --resident-experts will pin experts after this check (#2090),
+///   or 3072 MiB when experts are not pinned in RAM so 64 GB desktops keep 16K/32K chunks safely (#6687).
+inline uint64_t prefill_ram_reserve_mib(const char* env, bool resident_cpu_experts) noexcept {
+    if (env != nullptr && env[0] != '\0') {
+        char* end = nullptr;
+        const long long v = std::strtoll(env, &end, 10);
+        if (end != env && *end == '\0' && v >= 0) return static_cast<uint64_t>(v);
+    }
+    return resident_cpu_experts ? 6144ull : 3072ull;
+}
 
 }  // namespace strata::core

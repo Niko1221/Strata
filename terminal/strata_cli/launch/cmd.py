@@ -64,9 +64,9 @@ def _parallel(value: str) -> int:
     try:
         p = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 8, or leave it out to fit your card.") from None
-    if not 1 <= p <= 8:
-        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 8.")
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 64, or leave it out to fit your card.") from None
+    if not 1 <= p <= 64:
+        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 64.")
     return p
 
 
@@ -89,7 +89,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
                         "where they are and stay usable, and the new folder gets the new downloads")
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
-    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
+    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16 (Inkling-2-Mini: fp16, fp8; CUDA also k8v8, k8v4)")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
@@ -165,7 +165,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Shows the settings file and environment an app needs to talk to the Strata server that `strata launch` started. "
                     "Without a name it lists the apps. With --write it writes the file after asking, keeping a backup of any file it replaces.")
-    c.add_argument("harness", nargs="?", help="opencode, codex, claude-code, omp, pi, hermes, openclaw, deepseek-harness")
+    c.add_argument("harness", nargs="?", help="opencode, codex, claude-code, cline, omp, pi, hermes, openclaw, deepseek-harness")
     c.add_argument("--url", metavar="URL", help="the server address (default: the running launch, else http://127.0.0.1:8080)")
     c.add_argument("--key", metavar="KEY", help="the API key (default: the running launch's)")
     c.add_argument("--key-env", metavar="NAME", help="read the key from this environment variable")
@@ -174,6 +174,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
     c.add_argument("--check", action="store_true", help="send one prompt and one tool call to the running server the way this app would, and say if each worked")
     c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
+    c.add_argument("--dry-run", action="store_true", help="with --write: preview what would be written or backed up without changing any file on disk")
     c.add_argument("--if-unchanged", action="store_true",
                    help="with --write: a file that already holds exactly the rendered content is left alone - no write, no backup (reported as unchanged)")
     c.add_argument("--yes", action="store_true", help="do not ask before --write")
@@ -313,7 +314,9 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
 
 
 def _parallel_word(plan: dict, s: S.LaunchSettings) -> str:
-    """The plan's parallel word: fit to the card unless a number was given."""
+    """The plan's parallel word: fit to the card unless a number was given (1 for Hy4-Flash)."""
+    if s.family == "hy4-flash":
+        return "1"
     return str(s.parallel or "fit to your card")
 
 
@@ -391,8 +394,8 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
             if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
-                s.vision = catalog.picture_default(r.images)
-                if s.vision == "off" and r.images and catalog.reader_state() == "missing":
+                s.vision = ("on" if r.images else "off") if s.family == "hy4-flash" else catalog.picture_default(r.images)
+                if s.vision == "off" and r.images and s.family != "hy4-flash" and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
@@ -770,9 +773,12 @@ def run_launch(a: argparse.Namespace) -> int:
             else:
                 for i in items:
                     sm = store.summary(i)
+                    is_hy4 = i.family == "hy4-flash"
+                    req = "1 request" if is_hy4 else ((str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card')
+                    tuned = "built-in" if is_hy4 else (('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned')
                     _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
-                         f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
-                         f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
+                         f"{req:<14} "
+                         f"{tuned:<16} {i.last_used or ''}")
             return 0
         if a.delete_preset:
             store.delete(a.delete_preset)
@@ -906,7 +912,8 @@ def run_launch(a: argparse.Namespace) -> int:
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
-                _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
+                tune_word = "built-in" if s.family == "hy4-flash" else s.tune
+                _say(f"  tuning    {tune_word}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
                     _say(f"  [!] {n.line()}")
@@ -1014,7 +1021,8 @@ def _connect_write(harness, out, a, machine: bool):
     message is set only when nothing was written or the ask could not happen."""
     if not out["files"]:
         return [], 0, "Nothing to write for this app."
-    if not a.yes:
+    dry_run = bool(getattr(a, "dry_run", False))
+    if not a.yes and not dry_run:
         if not sys.stdin.isatty():
             return [], 2, "--write asks first; run it in a terminal or add --yes."
         ask = "\nWrite these files now? A file that exists is copied to a backup first. [y/N] "
@@ -1033,13 +1041,13 @@ def _connect_write(harness, out, a, machine: bool):
     results: list[dict] = []
     for n, f in enumerate(out["files"]):
         try:
-            results.append(harness.write_file(f, if_unchanged=bool(getattr(a, "if_unchanged", False))))
+            results.append(harness.write_file(f, if_unchanged=bool(getattr(a, "if_unchanged", False)), dry_run=dry_run))
         except OSError as exc:
             path = str(harness.expand(f["path"]))
             results.append({"path": path, "backup": None, "action": "failed", "error": exc.strerror or str(exc)})
             results += [{"path": str(harness.expand(g["path"])), "backup": None, "action": "not_written"} for g in out["files"][n + 1:]]
             return results, 1, f"Could not write {path}: {exc.strerror or exc}."
-    return results, 0, None
+    return results, 0, ("Dry run: nothing was written." if dry_run else None)
 
 def run_connect(a: argparse.Namespace) -> int:
     from strata_cli.launch import harness
@@ -1097,9 +1105,9 @@ def run_connect(a: argparse.Namespace) -> int:
                     payload["write"] = {"written": []}
                 print(json.dumps(payload))
                 return 1
-        if a.write:                                   # the JSON path writes too, and reports each file
+        if a.write or getattr(a, "dry_run", False):   # the JSON path writes too (or previews with --dry-run), and reports each file
             written, code, message = _connect_write(harness, out, a, True)
-            payload["write"] = {"written": written}
+            payload["write"] = {"written": written, **({"dry_run": True} if getattr(a, "dry_run", False) else {})}
             if code:
                 payload["ok"] = False
                 payload["error"] = {"code": code, "message": message}
@@ -1145,11 +1153,12 @@ def run_connect(a: argparse.Namespace) -> int:
             _say(f"{'PASS' if r.ok else 'FAIL'} {r.name}: {r.detail} ({r.seconds:.0f} s)")
         if not all(r.ok for r in results):
             return 1
-    if a.write:
+    if a.write or getattr(a, "dry_run", False):
         written, code, message = _connect_write(harness, out, a, False)
         for r in written:
             if r["action"] not in ("failed", "not_written"):
-                _say(f"{r['action'].capitalize()} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
+                label = r["action"].replace("_", " ").capitalize()
+                _say(f"{label} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
         if message:
             if code:
                 print(f"strata: {message}", file=sys.stderr)

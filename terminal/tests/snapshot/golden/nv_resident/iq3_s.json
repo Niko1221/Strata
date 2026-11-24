@@ -173,7 +173,8 @@
      "--max-context",
      "131072",
      "--kv",
-     "int8"
+     "int8",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
@@ -206,6 +207,7 @@
      "131072",
      "--kv",
      "int8",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -311,7 +313,8 @@
      "--max-context",
      "131072",
      "--kv",
-     "int8"
+     "int8",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
@@ -348,6 +351,7 @@
      "131072",
      "--kv",
      "int8",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -437,7 +441,8 @@
      "--max-context",
      "131072",
      "--kv",
-     "int8"
+     "int8",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
@@ -475,6 +480,7 @@
      "131072",
      "--kv",
      "int8",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",

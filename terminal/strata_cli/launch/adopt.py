@@ -16,7 +16,8 @@ import re
 from pathlib import Path
 
 SHARD = re.compile(r"^(?P<stem>.+)-(?P<i>\d{5})-of-(?P<n>\d{5})\.gguf$")
-FAMILIES = ("qwen", "swift", "coder", "gyro", "unsloth")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Unsloth's sets since round 0214 (ENG-AMD: UD-IQ1_M ran on an Arc A750)
+FAMILIES = ("qwen", "swift", "coder", "gyro", "unsloth", "inkling-2-mini", "hy4-flash")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Unsloth's sets since round 0214; Inkling-2-Mini & Hy4-Flash local .strata/.gguf/.safetensors since 0.2.20
+_INKLING_AUX = re.compile(r"^(?:mmproj|dspark|imatrix|mtp[-_]).*\.gguf$", re.I)
 UNSUPPORTED = ("no nvidia gpu found", "no amd gpu", "nvidia gpu", "not supported", "cannot be used")
 
 
@@ -59,22 +60,179 @@ def find_single(folder: Path) -> list[Path]:
     return files if len(files) == 1 else []
 
 
+def _is_safetensors_dir(target: Path) -> bool:
+    """True when `target` is a Hugging Face safetensors model directory (config.json + *.safetensors)."""
+    return target.is_dir() and (target / "config.json").is_file() and any(
+        p.is_file() and p.name.lower() != "mtp.safetensors" for p in target.glob("*.safetensors")
+    )
+
+
+def _ensure_inkling_tokenizer(native: Path, folder: Path, data_dir: Path, src: Path, tokenizer: Path) -> bool:
+    """Ensure `tokenizer/vocab.json` exists by extracting from .strata manifest or companion tokenizer files if needed."""
+    if (tokenizer / "vocab.json").is_file():
+        return True
+    try:
+        import sys
+        tools = str(Path(src) / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import inkling_tokenizer
+        from strata_control import inkling_family
+        data_ink = Path(data_dir) / "models" / inkling_family.FAMILY
+        tok_json = next((d / inkling_family.TOKENIZER_FILE for d in (folder, data_ink) if (d / inkling_family.TOKENIZER_FILE).is_file()), None)
+        tmpl = next((d / inkling_family.CHAT_TEMPLATE_FILE for d in (folder, data_ink) if (d / inkling_family.CHAT_TEMPLATE_FILE).is_file()), None)
+        if native.is_file() and native.suffix.lower() == ".strata":
+            try:
+                manifest = inkling_tokenizer.read_manifest(native)
+                inkling_tokenizer.convert_manifest(manifest, tokenizer, tokenizer_json_path=tok_json)
+                if (tokenizer / "vocab.json").is_file():
+                    return True
+            except Exception:                                # noqa: BLE001 - fall back to companion tokenizer files
+                pass
+        if tok_json is not None and tmpl is not None:
+            inkling_tokenizer.convert_files(tok_json, tmpl, tokenizer)
+            return (tokenizer / "vocab.json").is_file()
+    except Exception:                                        # noqa: BLE001 - caller reports missing tokenizer
+        return False
+    return False
+
+
 def model_files(folder: Path, family: str, family_def: dict | None = None) -> list[Path]:
-    """The model files plan() runs: Gyro's one file; a GGUF set's shards; a feed model's shards, or its one file when it is a single GGUF."""
+    """The model files plan() runs: Gyro's one file; a GGUF set's shards; Inkling-2-Mini's .gguf/.strata/.safetensors; Hy4-Flash's .strata/.safetensors; a feed model's shards or single GGUF."""
     if family == "gyro":
         return find_single(folder)
+    if family == "inkling-2-mini":
+        target = Path(folder)
+        if target.is_file() and target.suffix.lower() in (".gguf", ".strata"):
+            return [target]
+        if _is_safetensors_dir(target):
+            return [target]
+        shards = find_shards(target)
+        if shards:
+            return shards
+        ggufs = [p for p in sorted(target.glob("*.gguf")) if p.is_file() and not _INKLING_AUX.match(p.name)]
+        if len(ggufs) == 1:
+            return ggufs
+        stratas = [p for p in sorted(target.glob("*.strata"))
+                   if p.is_file() and "vision" not in p.name.lower() and "engram" not in p.name.lower()]
+        return stratas[:1] if len(stratas) == 1 else []
+    if family == "hy4-flash":
+        target = Path(folder)
+        if target.is_file() and target.suffix.lower() == ".strata":
+            return [target]
+        if _is_safetensors_dir(target):
+            return [target]
+        stratas = [p for p in sorted(target.glob("*.strata"))
+                   if p.is_file() and "vision" not in p.name.lower() and "engram" not in p.name.lower()]
+        return stratas[:1] if len(stratas) == 1 else []
     return find_shards(folder) or (find_single(folder) if (family_def or {}).get("feed") else [])
 
 
 def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path, context: int, kv: str | None, model_name: str, family_def: dict,
-         log: Path, backend: str | None, vram_gb: float = 0.0, notes: list | None = None, pack_name: str | None = None) -> tuple[dict | None, list[str]]:
+         log: Path, backend: str | None, vram_gb: float = 0.0, notes: list | None = None, pack_name: str | None = None,
+         drafting: str | None = None) -> tuple[dict | None, list[str]]:
     """(config, problems): the config to write, or None with plain-words problems (what is missing). `pack_name`: the pack folder under
     packs/ (default the model's name in lower case; Gyro's is its tag, gyro-gyro-s)."""
     problems: list[str] = []
+    if family == "inkling-2-mini":
+        from strata_cli.launch import settings as S
+        from strata_control import inkling_family
+        shards = model_files(model_dir, family, family_def)
+        if not shards:
+            target_dir = Path(model_dir)
+            if target_dir.is_dir() and model in inkling_family.inkling_fit.BUILDS:
+                cand = target_dir / inkling_family.build_file(model)
+                if cand.is_file():
+                    shards = [cand]
+        if not shards:
+            return None, [f"the Inkling-2-Mini .strata, .gguf or safetensors files are not in {model_dir}"]
+        native = shards[0]
+        is_st = native.is_dir()
+        folder = native if is_st else native.parent
+        is_gguf = (not is_st) and native.suffix.lower() == ".gguf"
+        tag = (pack_name or (inkling_family.TAG + model)).lower()
+        tokenizer = Path(data_dir) / "packs" / tag / "tokenizer"
+        if not _ensure_inkling_tokenizer(native, folder, Path(data_dir), Path(src), tokenizer):
+            problems.append(f"the tokenizer {tokenizer} is missing")
+        if problems:
+            return None, problems
+        args = ["--native", str(native), "--max-context", str(context)]
+        eff_kv, clamped = S.safe_inkling_kv(kv, backend)
+        if clamped and notes is not None:
+            notes.append(f"Inkling-2-Mini on {backend} does not support --kv {kv}; using --kv {eff_kv} instead.")
+        if eff_kv:
+            args += ["--kv", eff_kv]
+        vision = next((c for c in (folder / inkling_family.VISION_FILE,
+                                   Path(data_dir) / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE)
+                       if c.is_file()), None)
+        if vision is None and is_gguf:
+            mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
+            vision = mmprojs[0] if mmprojs else None
+        if vision is not None:
+            args += ["--vision", str(vision)]
+        dspark = next((p for p in sorted(folder.glob("dspark*.gguf")) if p.is_file()), None) if is_gguf else None
+        if dspark is None and is_st and (folder / "mtp.safetensors").is_file():
+            dspark = folder / "mtp.safetensors"
+        draft_off = str(drafting or "").strip().lower() == "off"
+        if dspark is not None and not draft_off:
+            args += ["--dspark", str(dspark)]
+        mode = "off" if (draft_off or (is_gguf and dspark is None)) else inkling_family.DEFAULT_DRAFTER
+        if mode == "off":
+            args += ["--draft", "off"]
+        cfg = {"exe": f"component:{inkling_family.COMPONENT}", "args": args, "cwd": str(src), "tokenizer": str(tokenizer),
+               "model_name": model_name, "arch": inkling_family.ARCH, "log": str(log), "lib_dirs": [], "port": 8080,
+               "drafting": mode, "parallel": inkling_family.DEFAULT_PARALLEL}
+        if backend:
+            cfg["backend"] = backend
+        return cfg, []
+    if family == "hy4-flash":
+        from strata_control import hy4_family
+        shards = model_files(model_dir, family, family_def)
+        if not shards:
+            target_dir = Path(model_dir)
+            if target_dir.is_dir() and model in hy4_family.hy4_fit.BUILDS:
+                cand = target_dir / hy4_family.build_file(model)
+                if cand.is_file():
+                    shards = [cand]
+        if not shards:
+            return None, [f"the Hy4-Flash .strata or safetensors files are not in {model_dir}"]
+        native = shards[0]
+        is_st = native.is_dir()
+        folder = native if is_st else native.parent
+        tag = (pack_name or (hy4_family.TAG + model)).lower()
+        tokenizer = Path(data_dir) / "packs" / tag / "tokenizer"
+        engram = next((c for c in (folder / hy4_family.ENGRAM_FILE,
+                                   Path(data_dir) / "models" / hy4_family.FAMILY / hy4_family.ENGRAM_FILE)
+                       if c.is_file()), None)
+        if not is_st and engram is None:
+            problems.append(f"the Hy4-Flash Engram file ({hy4_family.ENGRAM_FILE}) is missing in {folder}")
+        if not (tokenizer / "vocab.json").is_file() and not (tokenizer / "tokenizer.json").is_file():
+            if is_st and (folder / "tokenizer.json").is_file():
+                tokenizer = folder
+            else:
+                problems.append(f"the tokenizer {tokenizer} is missing")
+        if problems:
+            return None, problems
+        args = ["--native", str(native)]
+        if engram is not None:
+            args += ["--engram", str(engram)]
+        args += ["--max-context", str(context), "--session-reuse", "1"]
+        vision = next((c for c in (folder / hy4_family.VISION_FILE,
+                                   Path(data_dir) / "models" / hy4_family.FAMILY / hy4_family.VISION_FILE)
+                       if c.is_file()), None)
+        if vision is not None:
+            args += ["--vision", str(vision)]
+        draft_off = str(drafting or "").strip().lower() == "off"
+        cfg = {"exe": f"component:{hy4_family.COMPONENT}", "args": args, "cwd": str(src), "tokenizer": str(tokenizer),
+               "model_name": model_name, "arch": hy4_family.ARCH, "log": str(log), "lib_dirs": [], "port": 8080,
+               "drafting": "off" if draft_off else hy4_family.DEFAULT_DRAFTER}
+        if backend:
+            cfg["backend"] = backend
+        return cfg, []
     feed = bool((family_def or {}).get("feed"))     # a model of the signed feed (Qwen4 day): the Unsloth layout, its own shape's engine when it has one
     if family not in FAMILIES and not feed:
         # no full stop: the caller joins the problems with "; " and ends the sentence (a "gyro.." came out of the old text, round 8, N11)
-        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder and Gyro files, not for {family}"]
+        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder, Gyro, Inkling-2-Mini and Hy4-Flash files, not for {family}"]
     shards = model_files(model_dir, family, family_def)
     if not shards:
         problems.append(f"the model file is not in {model_dir}" if family == "gyro" else
@@ -102,7 +260,9 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
     mtp = Path(data_dir) / "mtp" / "rt"
     args = ["--pack", str(pack), "--native", str(shards[0])]
     if family != "unsloth" and not feed and (len(shards) > 1 or family == "gyro"):            # Gyro's one file holds the n-gram table too
-        args += ["--ple-gguf", str(shards[-1])]      # (Unsloth's 3-6 shards: the engine finds the n-gram table by its tensor name, as setup.py writes the config; it is shard 2, 3 or the last one by set)
+        # Swift's n-gram table is in shard 1 (with layers 0-12), as setup.py finds it by tensor name; the last shard made the
+        # engine stop with "per_layer_token_embd.weight is not in ...". The other two-file sets keep it in shard 2.
+        args += ["--ple-gguf", str(shards[0] if family == "swift" else shards[-1])]      # (Unsloth's 3-6 shards: the engine finds the n-gram table by its tensor name, as setup.py writes the config; it is shard 2, 3 or the last one by set)
     if backend == "metal":
         # a Mac: the Metal defaults metal/setup_mac.py writes for a model that streams from the SSD (one token per step, no draft layer, the GGUF mapped in place)
         args += ["--expert-profile", str(profile), "--expert-cache", "64", "--prefill", "auto", "--spec", "2", "--suffix-draft", "0",
