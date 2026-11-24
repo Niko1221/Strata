@@ -407,6 +407,7 @@ function render(m) {
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderKeyLimits(m.api_keys);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -441,6 +442,26 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+}
+
+function renderKeyLimits(k) {
+  $("kl-card").hidden = !k;
+  if (!k) return;                                  // no "api_keys" in the config (or an older server)
+  const rows = [...k.keys, {name: "(other keys)", inflight: k.unlisted.inflight, max_concurrent: null,
+                            reserved_capacity: 0, reach: k.unlisted.max}];
+  const reserved = rows.reduce((n, r) => n + r.reserved_capacity, 0);
+  $("kl-sum").textContent = `${k.slots} slots on the server, ${rows.reduce((n, r) => n + r.inflight, 0)} held now`;
+  facts($("kl-facts"), rows.map((r) => {
+    const reach = r.reach != null ? r.reach : Math.max(0, k.slots - (reserved - r.reserved_capacity));
+    const ceiling = r.max_concurrent == null ? reach : Math.min(r.max_concurrent, reach);
+    const bits = [`${r.inflight} of ${ceiling}`];
+    if (r.reserved_capacity) bits.push(`${r.reserved_capacity} reserved`);
+    if (r.max_concurrent != null && ceiling < r.max_concurrent) bits.push("capped by the other keys' reservations");
+    return [r.name, bits.join(" · ")];
+  }));
+  $("kl-note").textContent = "A named key may hold at most its ceiling at once; a reserved slot waits empty for " +
+    "its key rather than being borrowed. Keys the block does not name share what no key reserves. The limits are " +
+    "the \"api_keys\" block in the run config (docs/DETAILS.md).";
 }
 
 function renderTotals(t) {

@@ -230,6 +230,18 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("ok", body["choices"][0]["message"]["content"])
 
+    def test_metrics_carries_the_same_snapshot_as_status(self):
+        # the Monitor tab renders /metrics, not /status: the payload must answer with the same names and figures
+        m = self.req("GET", "/metrics", key="ha-key")[1]
+        k = m["api_keys"]
+        self.assertEqual(k["slots"], 2)
+        self.assertEqual([r["name"] for r in k["keys"]], ["hermes", "home assistant"])
+        self.assertEqual(k["unlisted"], {"inflight": 0, "max": 1})
+
+    def test_metrics_without_the_block_says_none(self):
+        self.svc.key_limits = None
+        self.assertIsNone(self.req("GET", "/metrics", key="ha-key")[1]["api_keys"])
+
     def test_a_key_the_block_does_not_name_is_a_plain_key(self):
         code, _, _ = self.chat("plain-key")
         self.assertEqual(code, 200)
