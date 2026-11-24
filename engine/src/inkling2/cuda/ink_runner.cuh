@@ -1209,6 +1209,14 @@ struct InkCudaModel {
                     stage_n_experts[s]++;
                     if (s == 0) ++n_vram_experts; else ++n_peer_experts;
                 } else {
+                    if (s > 0) {
+                        // Host-RAM (hybrid) experts only run on stage 0: on a later stage they would be skipped
+                        // silently by launch_ink_moe (tier > 1) and the output would be wrong. Refuse instead.
+                        err = "Layer-Split: the experts of GPU " + std::to_string(stage_gpu[s]) +
+                              " do not fit in its VRAM (host-RAM experts only run on the first GPU); give it fewer layers "
+                              "(--layer-split), use --layer-split auto, or free VRAM";
+                        return false;
+                    }
                     // Preserve lossless native FMT_GGUF_RAW blocks in host RAM (zero SF4 quality loss & zero repack startup delay!)
                     const size_t hb = (eff_bytes[di] + 63ull) & ~63ull;
                     target_tier[di] = 2; uh += hb; ++n_host_experts;
