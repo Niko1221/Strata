@@ -28,7 +28,7 @@ impl Default for Prefs {
     }
 }
 
-pub const LANGUAGES: [&str; 10] = ["en", "zh", "ja", "de", "fr", "es", "ru", "pt", "ko", "he"];
+pub const LANGUAGES: [&str; 11] = ["en", "zh", "ja", "de", "fr", "es", "ru", "pt", "ko", "he", "ar"];
 
 pub fn prefs_path() -> PathBuf {
     crate::desktoplog::data_dir().join("shell-prefs.json")
@@ -107,6 +107,7 @@ pub fn tray_labels(language: &str) -> (&'static str, &'static str, &'static str)
         "pt" => ("Abrir o Strata", "Sair do Strata", "Strata"),
         "ko" => ("Strata 열기", "Strata 종료", "Strata"),
         "he" => ("פתיחת Strata", "יציאה מ-Strata", "Strata"),
+        "ar" => ("فتح Strata", "إغلاق Strata", "Strata"),
         _ => ("Open Strata", "Quit Strata", "Strata"),
     }
 }

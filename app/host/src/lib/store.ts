@@ -557,7 +557,7 @@ function applyPrefs() {
   const root = document.documentElement;
   void setTranslationLanguage(state.language);
   root.lang = state.language === 'zh' ? 'zh-CN' : state.language;
-  root.dir = state.language === 'he' ? 'rtl' : 'ltr';             // #6060: Hebrew reads right to left
+  root.dir = state.language === 'ar' || state.language === 'he' ? 'rtl' : 'ltr'; // Arabic (#new) and Hebrew (#6060) read right to left
   if(state.fontFamily)root.style.setProperty('--st-font',`${JSON.stringify(state.fontFamily)},system-ui,-apple-system,"Segoe UI",sans-serif`);
   else root.style.removeProperty('--st-font');
   root.dataset.theme = state.theme === 'system' ? matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light' : state.theme;

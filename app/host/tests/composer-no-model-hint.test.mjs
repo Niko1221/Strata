@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 
 const chat = readFileSync(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const HINT = 'No model is loaded. Load one in Models to send this message.';
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 
 test('the hint shows only for typed text or a picture, no model, no running answer, and not for the command menu or /time-skip', () => {
   const line = chat.split('\n').find(l => l.includes(HINT)) ?? '';
