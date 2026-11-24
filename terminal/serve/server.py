@@ -7812,6 +7812,18 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))      # a bad value is a 400 before anything is sent
+            if (os.environ.get("STRATA_LITERAL_TOOL_JSON") == "1" and svc.family is None
+                    and svc.parser_cls is OutputParser and svc.tool_call_recovery
+                    and force and force.endswith(">\n") and "<function=" in force
+                    and messages[-1].get("role") == "user"):
+                content = messages[-1].get("content")
+                if isinstance(content, str) and any(tag in content for tag in
+                                                     ("</parameter>", "</function>", "</tool_call>")):
+                    hint = (r"Use a single JSON object for the tool arguments. "
+                            r"Escape newlines as \n and less-than signs in string values as \u003c. "
+                            r"The decoded values must match the requested content exactly.")
+                    messages = [*messages[:-1], {**messages[-1], "content": content + "\n\n" + hint}]
+                    force += "<arguments>\n{"
             messages, validator = prepare_format(req.get("response_format"), messages, with_tools=bool(tools))
             if validator is not None and req.get("strata_mcp"):
                 raise ValueError("structured response_format with MCP is not supported")

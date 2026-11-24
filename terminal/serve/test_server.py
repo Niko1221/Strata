@@ -5307,6 +5307,31 @@ class ForcedToolChoice(unittest.TestCase):
                 first, second = self.engine.prompts
                 self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n"))
 
+    def test_forced_json_arguments_preserve_literal_tags(self):
+        value = 'first\n</parameter>\n</function>\n</tool_call>\nlast\n'
+        opening = '<function=search>\n<arguments>\n{'
+        full = json.dumps({"q": value}).replace("<", r"\u003c")
+        original_generate = self.engine.generate
+
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            if not self.tok.decode(ids).endswith(opening):
+                yield from original_generate(ids, max_new, sampling, cancel)
+                return
+            yield from self.tok.encode(full[1:] + "\n</parameter>\n</function>\n</tool_call>")
+            yield from self.tok.encode("<|im_end|>", parse_special=True)
+
+        self.engine.generate = generate
+        messages = [{"role": "user", "content": "Use this exact tool argument: " + json.dumps(value)}]
+        for enabled in ("0", "1"):
+            for stream in (False, True):
+                with self.subTest(enabled=enabled, stream=stream):
+                    with mock.patch.dict(os.environ, {"STRATA_LITERAL_TOOL_JSON": enabled}):
+                        code, body = self.openai(messages=messages, tool_choice=self.NAMED, stream=stream,
+                                                 **self.NO_THINKING)
+                    finish, calls, _ = self.call_of(code, body, stream)
+                    expected = value if enabled == "1" else "2+2"
+                    self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": expected})]))
+
     def test_without_thinking_the_prompt_ends_with_the_opening(self):
         for choice in ("required", self.NAMED):
             for stream in (False, True):
