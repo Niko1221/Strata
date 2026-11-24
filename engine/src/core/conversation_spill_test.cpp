@@ -412,6 +412,80 @@ int main() {
         }
         sp.close();
     }
+    {   // a layer split's conversation (one file per stage), in a per-process folder and in the persistent one
+        auto split_img = [](std::vector<int32_t> ids, uint8_t fill) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.assign(1 << 16, fill);
+            s.cvec = true;
+            ConversationCheckpoint c;
+            c.ids = {ids[0]};
+            s.checkpoints.push_back(c);
+            SavedConversation stage = s;
+            stage.live.gdn.assign(1 << 16, (uint8_t) (fill + 1));
+            s.stage_images.push_back(stage);
+            return s;
+        };
+        const SessionFileIdentity id{11, 22}, other{11, 23};
+        const fs::path kroot = root / "split-root";
+        std::string err;
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err) && !sp.persistent(), "a per-process folder");
+            check(sp.put(split_img({1, 2, 3}, 5), id, err) && sp.size() == 1, "a split entry");
+            check(fs::exists(sp.dir() / "conv-1.session") && fs::exists(sp.dir() / "conv-1.s1.session"), "one file per stage");
+            SavedConversation back;
+            const auto m = sp.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true);
+            check(m.tokens == 3 && sp.take_serial(m.serial, id, {}, back, err) && back.live.gdn == std::vector<uint8_t>(1 << 16, 5) &&
+                  back.stage_images.size() == 1 && back.stage_images[0].live.gdn == std::vector<uint8_t>(1 << 16, 6),
+                  "read back with its stage image, byte for byte");
+            check(sp.size() == 0 && !fs::exists(sp.dir() / "conv-1.session") && !fs::exists(sp.dir() / "conv-1.s1.session"),
+                  "a taken entry's files go");
+            sp.close();
+        }
+        fs::path pdir;
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id) && sp.persistent() && sp.size() == 0, "the persistent folder opens empty");
+            pdir = sp.dir();
+            check(sp.put(split_img({1, 2, 3}, 5), id, err) && sp.put(split_img({7, 8}, 6), id, err) && sp.size() == 2, "two split entries");
+            check(fs::exists(pdir / "conv-1.s1.session") && fs::exists(pdir / "conv-1.meta"), "the stage file and the index");
+            SavedConversation back;
+            const auto m = sp.best(std::vector<int32_t>{7, 8, 9}, {}, true);
+            check(m.tokens == 2 && sp.take_serial(m.serial, id, {}, back, err) && back.stage_images.size() == 1 &&
+                  back.stage_images[0].live.gdn == std::vector<uint8_t>(1 << 16, 7) && sp.size() == 2 &&
+                  fs::exists(pdir / "conv-2.s1.session"), "read back whole; the persistent entry stays");
+            touch(pdir / "conv-9.s1.session");   // a later stage's file no index lists
+            sp.close();
+        }
+        {
+            ConversationSpill sp;
+            size_t adopted = 0;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id, &adopted) && adopted == 2, "the next start adopts both split entries");
+            check(!fs::exists(pdir / "conv-9.s1.session"), "a stage file no index lists goes at that start");
+            SavedConversation back;
+            const auto m = sp.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true);
+            check(m.tokens == 3 && sp.take_serial(m.serial, id, {}, back, err) && back.stage_images.size() == 1 &&
+                  back.stage_images[0].live.gdn == std::vector<uint8_t>(1 << 16, 6), "an adopted split entry reads back whole");
+            std::error_code e2;
+            fs::remove(pdir / "conv-2.s1.session", e2);   // a damaged entry: one stage file lost
+            sp.close();
+        }
+        {
+            ConversationSpill sp;
+            size_t adopted = 0;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id, &adopted) && adopted == 1 && !fs::exists(pdir / "conv-2.session") &&
+                  !fs::exists(pdir / "conv-2.meta"), "an entry with a stage file missing is not adopted and goes");
+            sp.close();
+        }
+        {
+            ConversationSpill sp;
+            size_t adopted = 0;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &other, &adopted) && adopted == 0 && !fs::exists(pdir / "conv-1.s1.session"),
+                  "other settings: none adopted, their stage files went");
+            sp.close();
+        }
+    }
     fs::remove_all(root, ec);
     std::printf("conversation_spill_test: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
