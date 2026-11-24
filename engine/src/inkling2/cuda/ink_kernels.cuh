@@ -1741,6 +1741,71 @@ __global__ void __launch_bounds__(256) k_ink_sk_to_bf16(const uint8_t* __restric
     dst[(size_t)row * K + col] = __float2bfloat16_rn(v);
 }
 
+// Small-M GEMV straight from S_K (S5_K / S6_K / S8_K) weights: Y[m, n] = sum_k W[n, k] * X[m, k] for m < M <= MT,
+// without the dequantize-to-BF16 + cuBLAS round trip. One warp per output row; the weight row is read once for all
+// M inputs. Each input row is reduced in the same order whatever M is, so the result for a token does not depend on
+// how many tokens share the call (M = 1 decode, a DSpark tree verify, a short prefill). FP32 accumulate.
+template <int FMT, int MT>
+__global__ void __launch_bounds__(128) k_ink_gemv_sk(const uint8_t* __restrict__ raw, const float* __restrict__ X,
+                                                     float* __restrict__ Y, int M, int N, int K, int ldy) {
+    const int lane = threadIdx.x & 31;
+    const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
+    if (row >= N) return;
+    constexpr int SB = ink_sb_bytes(FMT);
+    constexpr float HALF = ink_sk_half(FMT);
+    const int nsb = K >> 8;
+    float acc[MT];
+#pragma unroll
+    for (int m = 0; m < MT; ++m) acc[m] = 0.0f;
+    for (int s = 0; s < nsb; ++s) {
+        const uint8_t* blk = raw + ((size_t)row * nsb + s) * SB;
+        const float D = f16_to_f32(ld16_u(blk));
+        const uint8_t* pl = blk + 6;
+        // lane covers 8 consecutive values of the 256: idx = lane * 8 .. lane * 8 + 7 (one group g = lane / 8)
+        const int i0 = lane * 8;
+        const float eff = D * ((float)blk[2 + (i0 >> 6)] * (1.0f / 255.0f));
+        float w[8];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int idx = i0 + j;
+            float v;
+            if constexpr (FMT == FMT_S5_K) {
+                const uint32_t lo = (pl[idx >> 1] >> ((idx & 1) * 4)) & 0x0Fu;
+                const uint32_t hi = (pl[128 + (idx >> 3)] >> (idx & 7)) & 1u;
+                v = ((float)(lo | (hi << 4)) - HALF) * eff;
+            } else if constexpr (FMT == FMT_S6_K) {
+                const uint32_t lo = (pl[idx >> 1] >> ((idx & 1) * 4)) & 0x0Fu;
+                const uint32_t hi = (pl[128 + (idx >> 2)] >> ((idx & 3) * 2)) & 3u;
+                v = ((float)(lo | (hi << 4)) - HALF) * eff;
+            } else {
+                v = (float)((int8_t)pl[idx]) * eff;
+            }
+            w[j] = v;
+        }
+        const int kb = s * 256 + i0;
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) {
+                const float4 xa = *reinterpret_cast<const float4*>(X + (size_t)m * K + kb);
+                const float4 xb = *reinterpret_cast<const float4*>(X + (size_t)m * K + kb + 4);
+                float t = w[0] * xa.x;
+                t = fmaf(w[1], xa.y, t); t = fmaf(w[2], xa.z, t); t = fmaf(w[3], xa.w, t);
+                t = fmaf(w[4], xb.x, t); t = fmaf(w[5], xb.y, t); t = fmaf(w[6], xb.z, t); t = fmaf(w[7], xb.w, t);
+                acc[m] += t;
+            }
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < MT; ++m) {
+        if (m < M) {
+            float v = acc[m];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (lane == 0) Y[(size_t)m * ldy + row] = v;
+        }
+    }
+}
+
 // ============================================================================
 // 7. Exact 2-Stage Cauchy-Schwarz Screened Unembed (0.25 ms on RTX 5090, 100.000% Bit-Exact Argmax!)
 //    Coarse plane: symmetric INT8 per-row quantized unembed [V, 2304] (460 MB) + per-row scale sc[V] + exact L2 error eps[V]!

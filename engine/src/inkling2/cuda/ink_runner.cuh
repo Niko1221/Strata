@@ -1,3 +1,4 @@
+#include <type_traits>
 // engine/src/inkling2/cuda/ink_runner.cuh - Complete 48-Visit Inkling-2-Mini CUDA Runner (B=1..64, Tree-16, Full CUDA Graph, sm_70..sm_121a)
 //
 // MIT License
@@ -2793,6 +2794,30 @@ struct InkCudaRunner {
             const int tile_n = std::min(N, (int)(max_tile / (size_t)K));
             const size_t row_b = (size_t)(K / 256) * ink_sb_bytes(ti.fmt);
             __nv_bfloat16* w_dst = (cur_cc < 70) ? (d_w_scratch + 2 * (cap / 3)) : d_w_scratch;
+            // Small M (decode, DSpark draft and tree verify, short prefill): read the S_K weight directly (k_ink_gemv_sk)
+            // instead of dequantizing all of it to BF16 for cuBLAS; for the 200,058 x 2,304 S6_K unembed that conversion
+            // alone took about 5.9 ms a call on an RTX 5060 Ti. Opt-in for now (STRATA_INK_SK_GEMV=1): it sums in FP32 instead
+            // of rounding W and X to BF16, so its logits differ slightly from the default path.
+            static const bool sk_gemv = [] { const char* e = std::getenv("STRATA_INK_SK_GEMV"); return e && std::strcmp(e, "0") != 0; }();
+            if (sk_gemv && M <= 16 && (K % 256) == 0 && (((uintptr_t)X) & 15) == 0) {
+                const dim3 g((N + 3) / 4);
+                auto launch = [&](auto fmt_tag) {
+                    constexpr int F = decltype(fmt_tag)::value;
+                    if (M == 1)      k_ink_gemv_sk<F, 1><<<g, 128, 0, st>>>(W, X, Y, M, N, K, N);
+                    else if (M <= 4) k_ink_gemv_sk<F, 4><<<g, 128, 0, st>>>(W, X, Y, M, N, K, N);
+                    else if (M <= 8) k_ink_gemv_sk<F, 8><<<g, 128, 0, st>>>(W, X, Y, M, N, K, N);
+                    else             k_ink_gemv_sk<F, 16><<<g, 128, 0, st>>>(W, X, Y, M, N, K, N);
+                };
+                if (ti.fmt == FMT_S5_K)      launch(std::integral_constant<int, FMT_S5_K>{});
+                else if (ti.fmt == FMT_S6_K) launch(std::integral_constant<int, FMT_S6_K>{});
+                else                         launch(std::integral_constant<int, FMT_S8_K>{});
+                // The old path always left X converted in d_x_bf16 (BF16 on sm_80+, FP16 on sm_70..75) and later
+                // projections may reuse it (reuse_x_bf16); keep that side effect.
+                const size_t nx = (size_t)M * K;
+                if (cur_cc >= 80)      k_ink_f32_to_bf16<<<((nx + 3) / 4 + 255) / 256, 256, 0, st>>>(X, d_x_bf16, nx);
+                else if (cur_cc >= 70) k_ink_f32_to_fp16<<<(nx + 255) / 256, 256, 0, st>>>(X, reinterpret_cast<__half*>(d_x_bf16), nx);
+                return;
+            }
             for (int n0 = 0; n0 < N; n0 += tile_n) {
                 const int nt = std::min(tile_n, N - n0);
                 dim3 dg((K + 255) / 256, nt);
