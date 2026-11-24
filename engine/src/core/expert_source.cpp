@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/exclusive_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/tail_skip_default.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -2492,9 +2493,17 @@ void FileExpertSource::claim_todo(int64_t layer, const int64_t* experts, int64_t
             const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) e;
             if (complement_ready_ && resident_blob(index) != nullptr) continue;   // in the RAM copy: no residency query
             if (!override_.empty() && override_[index] != nullptr) continue;
-            uint64_t total = 0;
-            const uint64_t c = cached_bytes(layer, e, total, true);
-            zc_ok[(size_t) i] = total > 0 && c >= total ? 1 : 0;   // no residency query (not Linux): never
+            static const bool zc_all = [] {
+                const char* ev = std::getenv("STRATA_COLD_ZC_ALL");
+                return ev != nullptr && ev[0] != '\0' && ev[0] != '0';
+            }();
+            if (zc_all) {
+                zc_ok[(size_t) i] = 1;
+            } else {
+                uint64_t total = 0;
+                const uint64_t c = cached_bytes(layer, e, total, true);
+                zc_ok[(size_t) i] = total > 0 && c >= total ? 1 : 0;   // no residency query (not Linux): never
+            }
         }
     }
     // experts.bin with io prefetch: a blob whose pages are cached is handed out as the mapping (io_blob); only the
@@ -4801,7 +4810,14 @@ int64_t FileExpertSource::promote_cold_experts(const std::vector<float>& usage_s
         vict.clear();
         for (int32_t e = 0; e < (int32_t) n_expert_; ++e) {
             const size_t idx = lb + (size_t) e;
-            if (host_res[idx] >= 0) continue;   // currently in VRAM
+            if (host_res[idx] >= 0) {
+                // Expert is already in VRAM: if it still holds a RAM complement slot (e.g. after
+                // STRATA_ADAPT_FETCH_RESIDENT=1), reclaim that duplicate RAM slot first!
+                if (complement_offsets_[idx] != kNoComplement &&
+                    (!complement_partial_ || complement_offsets_[idx] + bb <= complement_pin_limit_))
+                    vict.emplace_back(-1.0f, e);
+                continue;
+            }
             if (complement_offsets_[idx] == kNoComplement) {
                 if (usage_snap[idx] >= 0.5f) cold.emplace_back(usage_snap[idx], e);
             } else {
@@ -4835,6 +4851,47 @@ int64_t FileExpertSource::promote_cold_experts(const std::vector<float>& usage_s
         ++promoted;
     }
     return promoted;
+}
+
+int64_t FileExpertSource::exchange_evicted_to_ram(std::vector<ExpertDispatch::FetchEvict>& evicted, int max_per_step) {
+    if (evicted.empty() || !complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() ||
+        complement_offsets_.size() != (size_t) (n_layers_ * n_expert_)) {
+        evicted.clear();
+        return 0;
+    }
+    int64_t done = 0;
+    size_t keep = 0;
+    for (size_t i = 0; i < evicted.size(); ++i) {
+        const auto& ev = evicted[i];
+        if (ev.layer < 0 || ev.layer >= n_layers_ || ev.evicted < 0 || ev.evicted >= n_expert_ ||
+            ev.admitted < 0 || ev.admitted >= n_expert_) continue;
+        const size_t lb = (size_t) ev.layer * (size_t) n_expert_;
+        const size_t v_idx = lb + (size_t) ev.evicted;
+        const size_t e_idx = lb + (size_t) ev.admitted;
+        const uint64_t off = complement_offsets_[e_idx];
+        if (off == kNoComplement || complement_offsets_[v_idx] != kNoComplement) continue;
+        if (complement_partial_ && off + layer_blob_bytes_[(size_t) ev.layer] > complement_pin_limit_) continue;
+        if (done >= max_per_step) {
+            evicted[keep++] = ev;
+            continue;
+        }
+        if (!copy_blob(ev.layer, ev.evicted, const_cast<uint8_t*>(complement_host_) + (size_t) off)) continue;
+        complement_offsets_[v_idx] = off;
+        complement_offsets_[e_idx] = kNoComplement;
+        ++done;
+    }
+    evicted.resize(keep);
+    return done;
+}
+
+bool FileExpertSource::exchange_resident(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || exchange_storage_.active() || layer < 0 || layer >= n_layers_ || in < 0 || out < 0 ||
+        in >= n_expert_ || out >= n_expert_)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    return detail::exchange_cache_complement(complement_offsets_, i_in, i_out);
 }
 
 bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bounce) {
@@ -5709,6 +5766,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             for (int32_t e = 0; e < (int32_t) d.n_expert && nc > 0; ++e) {
                 if (d.res_mut[lb + (size_t) e] < 0 || d.fetch_mark[(size_t) e] != 0 ||
                     (d.fetch_pin != nullptr && d.fetch_pin[lb + (size_t) e] != 0)) continue;
+                if (d.exclusive != nullptr && P.groups > 1 && !d.src->pinned(d.layers, e)) continue;
                 if (nv < nc) vic[nv++] = e;
                 else if (use[e] < use[vic[nv - 1]]) vic[nv - 1] = e;
                 else continue;
@@ -5719,14 +5777,20 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 const int32_t e = ids[pcie_i0[q]], v = vic[j];
                 if (use[e] < use[v] + d.fetch_margin) break;
                 const int32_t slot = d.res_mut[lb + (size_t) v];
-                P.dst2[q] = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
-                                                                                   : (size_t) slot * (size_t) d.cache_blob));
+                const bool swap = d.exclusive != nullptr && !d.src->pinned(d.layers, v);
+                if (swap && !d.exclusive->exchange_resident(d.layers, e, v)) continue;
+                P.dst2[q] = exclusive::fetch_target(
+                    (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
+                                                                           : (size_t) slot * (size_t) d.cache_blob)),
+                    swap);
+                d.fetch_swaps += swap;
                 d.res_mut[lb + (size_t) v] = -1;   // kNotResident
                 d.res_mut[lb + (size_t) e] = slot;
                 ++d.fetch_admitted;
                 d.res_dirty = true;
                 d.res_dirty_idx.push_back((int32_t) (lb + (size_t) v));
                 d.res_dirty_idx.push_back((int32_t) (lb + (size_t) e));
+                d.fetch_evicted.push_back({(int32_t) d.layers, v, e});
                 if (d.fetch_log_on) d.fetch_log.emplace_back((int64_t) (lb + (size_t) e), slot);
             }
             for (int64_t i = 0; i < n; ++i)

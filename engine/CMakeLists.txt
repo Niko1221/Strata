@@ -31,7 +31,7 @@ if(STRATA_ENABLE_SYCL)
   add_subdirectory(sycl)
   return()
 endif()
-add_compile_definitions(STRATA_VERSION="0.2.20-ex.2")
+add_compile_definitions(STRATA_VERSION="0.2.20-ex.3")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
