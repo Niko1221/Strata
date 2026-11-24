@@ -342,6 +342,7 @@ class PickSlot(unittest.TestCase):
         e.slot_order = list(range(n))
         e.slot_busy = [False] * n
         e.slot_held = [[] for _ in range(n)]
+        e.slot_prompt = [[] for _ in range(n)]     # a real engine sets it at start and _slot_prefix reads it (this lazy fixture lacked it)
         e.slot_used = [0.0] * n
         e.slot_live = [None] * n
         e.slot_group = [0] * n
