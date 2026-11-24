@@ -128,6 +128,7 @@
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/checkpoint_budget.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
 #include "strata/program/split_walk.hpp"
@@ -574,6 +575,36 @@ bool slot_ckpt_move_env() {
 // its copies on each device's private copy stream and synchronizes every device once at the end, instead of waiting
 // for each of its ~116 copies.  A streamed K/V state's residency refresh waits for its copies through an event.  The
 // same copies in the same order on one stream, so the slot holds the same bytes
+// STRATA_SLOT_CKPT_CARRY_MIB=N (read once; N = MiB; 0 = no limit): how much of the checkpoint chain a batch admission
+// copies into the slot.  #6533 carries EVERY prefix checkpoint of the chain into the slot, and a checkpoint is a
+// running-state image (~118 MB on Qwen3.8-Flash-Next) plus its token ids and every stage's copy of them: a chain of a
+// thousand checkpoints is tens of gigabytes copied per admission, inside the batch loop, so every request of the
+// engine waits while the GPUs sit idle (the work is host memory, not the SMs).  With a limit the most recently used
+// checkpoints are carried (a rewritten history diverges at a recent turn) and a pinned prefix first of all; 0 carries
+// every one of them, as #6533 does.
+size_t slot_ckpt_carry_mib_env() {
+    static const size_t n = [] {
+        const char* v = std::getenv("STRATA_SLOT_CKPT_CARRY_MIB");
+        if (v == nullptr) return (size_t) 0;
+        const long long r = std::atoll(v);
+        return r > 0 ? (size_t) r : (size_t) 0;
+    }();
+    return n;
+}
+// STRATA_SLOT_CKPT_CHAIN_MIB=N (read once; N = MiB; 0 = no limit): how much host memory one conversation's checkpoint
+// chain may hold.  The count budget (--prompt-cache) bounds how many checkpoints the chain holds, not how much memory
+// that is: a checkpoint's size depends on the model, on the layer split and on the conversation.  The chain is what a
+// parked conversation's image carries, so this is what decides how much memory the serve holds; with the count budget
+// alone a long agent session parked tens of gigabytes per conversation.  0: only the count budget applies.
+size_t slot_ckpt_chain_mib_env() {
+    static const size_t n = [] {
+        const char* v = std::getenv("STRATA_SLOT_CKPT_CHAIN_MIB");
+        if (v == nullptr) return (size_t) 0;
+        const long long r = std::atoll(v);
+        return r > 0 ? (size_t) r : (size_t) 0;
+    }();
+    return n;
+}
 bool slot_copy_batchsync_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_SLOT_COPY_BATCHSYNC");
@@ -19940,6 +19971,35 @@ int main(int argc, char** argv) {
                     } else {
                         live = bs[(size_t) slot_source].ids;
                     }
+                    // The merge above does not go through the path that applies the budgets (only pushing a new
+                    // checkpoint does), so the chain can grow past the --prompt-cache count: the chain is what a
+                    // parked conversation's image carries, so it decides how much host memory the serve holds.
+                    // Trim it here, the way a new checkpoint's eviction does: the count budget first, then the byte
+                    // budget (STRATA_SLOT_CKPT_CHAIN_MIB), the least recently used point first, a pinned one never.
+                    {
+                        const size_t chain_before = checks.size();
+                        const size_t chain_mib = slot_ckpt_chain_mib_env();
+                        std::vector<strata::program::CheckpointBudgetItem> items;
+                        items.reserve(checks.size());
+                        for (const ConvCheckpoint& k : checks) {
+                            strata::program::CheckpointBudgetItem it;
+                            it.bytes = k.bytes();
+                            it.used = k.used;
+                            it.pinned = k.pinned;
+                            items.push_back(it);
+                        }
+                        const std::vector<size_t> victims =
+                            strata::program::checkpoint_budget_victims(items, (size_t) std::max(0, o.prompt_cache),
+                                                                        chain_mib << 20);
+                        for (size_t vi = victims.size(); vi > 0; --vi) {   // the last one first: the indices shift
+                            const size_t v = victims[vi - 1];
+                            ckpt_pool.give(std::move(checks[v]));   // (STRATA_CKPT_POOL; else nothing)
+                            checks.erase(checks.begin() + (std::ptrdiff_t) v);
+                        }
+                        if (checks.size() != chain_before)
+                            std::fprintf(stderr, "strata batch: slot %d: the chain was trimmed to its budget (%zu -> "
+                                                 "%zu checkpoint(s))\n", slot_source, chain_before, checks.size());
+                    }
                     live_imgs.clear();
                     resume = slot_tokens;
                     from_live = true;
@@ -23708,13 +23768,42 @@ int main(int argc, char** argv) {
                         // #6533: carry every checkpoint that prefixes this conversation (not only the longest) so a
                         // branching follow-up that diverges before the final turn can still resume from an earlier
                         // message-boundary or root checkpoint held by the slot.
+                        // STRATA_SLOT_CKPT_CARRY_MIB bounds that copy: every checkpoint is a running-state image
+                        // (~118 MB on Qwen3.8-Flash-Next) plus its ids and every stage's copy of them, so a chain of a
+                        // thousand checkpoints is tens of gigabytes copied per admission, inside the batch loop: every
+                        // request waits while the GPUs sit idle (the work is host memory, not the SMs).  The most
+                        // recently used checkpoints are carried (a rewritten history diverges at a recent turn), a pinned
+                        // prefix first of all; 0 carries every one of them, as #6533 does.
+                        std::vector<size_t> carry_idx;
                         for (size_t i = 0; i < checks.size(); ++i) {
                             if (best != nullptr && !best_lent && i == best_at) continue;
                             const ConvCheckpoint& c = checks[i];
                             if (best != nullptr && c.ids.size() == best->ids.size()) continue;
                             if (c.ids.size() < live.size() && std::equal(c.ids.begin(), c.ids.end(), live.begin()))
-                                push_ckpt_copy(c);
+                                carry_idx.push_back(i);
                         }
+                        const size_t carry_mib = slot_ckpt_carry_mib_env();
+                        if (carry_mib != 0 && carry_idx.size() > 1) {
+                            std::vector<strata::program::CheckpointBudgetItem> items;
+                            items.reserve(carry_idx.size());
+                            for (size_t i : carry_idx) {
+                                strata::program::CheckpointBudgetItem it;
+                                it.bytes = checks[i].bytes();
+                                it.used = checks[i].used;
+                                it.pinned = checks[i].pinned;
+                                items.push_back(it);
+                            }
+                            const std::vector<size_t> keep =
+                                strata::program::checkpoint_budget_select(items, carry_mib << 20);
+                            std::vector<size_t> keep_of_chain;
+                            keep_of_chain.reserve(keep.size());
+                            for (size_t k : keep) keep_of_chain.push_back(carry_idx[k]);
+                            carry_idx.swap(keep_of_chain);
+                            std::fprintf(stderr, "strata batch: slot %d: the chain's copy is bounded to %zu MiB "
+                                                 "(STRATA_SLOT_CKPT_CARRY_MIB): %zu of %zu checkpoint(s) are carried\n",
+                                         admit_slot, carry_mib, carry_idx.size(), checks.size());
+                        }
+                        for (size_t i : carry_idx) push_ckpt_copy(checks[i]);
                         if (move_best) {
                             sl.checks.push_back(std::move(checks[best_at]));
                             checks.erase(checks.begin() + (std::ptrdiff_t) best_at);

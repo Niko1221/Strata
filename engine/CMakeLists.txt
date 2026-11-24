@@ -407,6 +407,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(model_family_test tests/core/model_family_test.cpp)
   target_link_libraries(model_family_test PRIVATE strata_artifact)
   add_test(NAME model_family_test COMMAND model_family_test)
+  # the budgets a checkpoint chain lives under (the count budget, the byte budget): header-only rules, no GPU
+  add_executable(checkpoint_budget_test tests/program/checkpoint_budget_test.cpp)
+  target_include_directories(checkpoint_budget_test PRIVATE include)
+  add_test(NAME checkpoint_budget_test COMMAND checkpoint_budget_test)
+
   # how --batch cuts a prompt read into pieces (a layer split with no slot decoding must still reach a BYIELD)
   add_executable(batch_read_test tests/program/batch_read_test.cpp)
   target_include_directories(batch_read_test PRIVATE include)
