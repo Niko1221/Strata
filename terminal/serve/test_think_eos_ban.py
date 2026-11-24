@@ -148,6 +148,16 @@ class ThinkBan(unittest.TestCase):
         self.assertEqual(r["content"], "OK")
         self.assertEqual(r["done"]["finish"], "stop")
 
+    def test_a_list_of_markers_in_the_thinking_does_not_end_it(self):
+        """The model writes a template out in its reasoning, a marker a line, and the list ends with `</think>` itself:
+        the tag is the next item, and the thinking goes on under the ban until the real one after it."""
+        tokenizer = ThinkTokenizer()
+        listed = "模板里是这样写的：\n<|im_start|>user\n<|im_start|>assistant\n" + THINK_END + "\n然后是正文。\n"
+        engine = HoldSessionEngine(tokenizer, listed + THINK_END + "\n\nOK", ThinkTokenizer.THINK_END)
+        r = run(service_for(engine, tokenizer, quoted_eos_recovery=True, think_eos_ban=True), tokenizer)
+        self.assertEqual((r["reasoning"], r["content"]), (listed, "OK"))
+        self.assertEqual(self.biases(engine), [self.BAN, self.BAN, None])
+
     def test_a_tag_inside_inline_code_is_known_at_once_and_the_thinking_goes_on_banned(self):
         tokenizer = ThinkTokenizer()
         engine = HoldSessionEngine(tokenizer, "The tag `" + THINK_END + "` is quoted.\n" + THINK_END + "\n\nOK",

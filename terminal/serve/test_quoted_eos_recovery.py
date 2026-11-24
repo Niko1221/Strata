@@ -108,6 +108,33 @@ class QuotationContext(unittest.TestCase):
         self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'reasoning'), thought)
         self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'content'), 'OK')
 
+    def test_a_tag_that_continues_a_list_of_markers_keeps_the_reasoning_open(self):
+        """#5839: asked to spell the markers out, the model lists them in its reasoning, a line each, and the list ends
+        with `</think>` itself.  On a line of its own after a line that is a marker's spelling by itself (a bullet or a
+        number may stand before either), the tag is the next item of that list."""
+        for thought in ('原样拼写：\n<|im_end|>\n<|endoftext|>\n</think>\n区别：im_end 结束一条消息。\n',
+                        '拼写：\n1. `<|im_end|>`\n2. `<|endoftext|>`\n3. </think>\n\n下面解释。\n',
+                        '原样输出示例：\n<|im_start|>assistant\n\n</think>\n\n{"name": "get_weather"}\n',
+                        '"<|endoftext|>"\n</think>\n\n再解释区别。\n'):
+            with self.subTest(thought=thought[:22]):
+                parser = OutputParser(thinking=True)
+                parser.line_think_end = True
+                events = parser.feed(thought + '</think>\n\nOK') + parser.finish('stop')
+                self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'reasoning'), thought)
+                self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'content'), 'OK')
+
+    def test_a_tag_still_ends_the_thinking_after_any_other_line(self):
+        """The list rule names marker lines only: after a line with any other text the tag on the next line is the end."""
+        for thought in ('The answer is ready.\n', 'Steps:\n1. first\n2. second\n', 'the marker is <|endoftext|>\n',
+                        '<|endoftext|> is the eos token.\n', 'The marker is `<|im_end|>`\n',
+                        'The list:\n- `<|im_end|>` is the first\n'):
+            with self.subTest(thought=thought):
+                parser = OutputParser(thinking=True)
+                parser.line_think_end = True
+                events = parser.feed(thought + '</think>\n\nOK') + parser.finish('stop')
+                self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'reasoning'), thought)
+                self.assertEqual(''.join(e.text or '' for e in events if e.kind == 'content'), 'OK')
+
     def test_an_unfenced_json_string_keeps_its_markers_as_reasoning(self):
         parser = OutputParser(thinking=True)
         parser.line_think_end = True

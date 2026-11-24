@@ -1009,6 +1009,12 @@ _LEAD_IN_CJK = re.compile(
     r"(?:称|读|写|记|叫|视|看|当|变|化|分|划|定|转)为|"
     r"(?:使|调|应|采|借|运|通|引|停|禁|复|专)用)$")
 
+# #5839 (opt-in, OutputParser._quoted_think_end): a line that is a special token's spelling by itself, the way a list of
+# them writes it (`<|im_end|>`, `<|endoftext|>`, `<|im_start|>assistant`, `</think>`): a bullet or a number before it, a
+# backtick or a quote around it allowed, and nothing else.
+_MARKER_LINE = re.compile(r"""[ \t>]*(?:[-*•]|\d+[.)])?[ \t]*[`"'“”‘’]*(?:<\|[^|<>\s]+\|>[A-Za-z_]*|</?think>)[ \t`"'“”‘’]*$""")
+_LIST_BULLET = re.compile(r"[-*•]|\d+[.)]")
+
 
 #: #4701: how much text after a closing sequence is looked at before the value is taken as ended there (a call followed by a long sentence)
 CLOSE_LOOKAHEAD_CHARS = 1500
@@ -2163,14 +2169,17 @@ class OutputParser:
         tag has not arrived."""
         after = self.buf[i + len(THINK_END):]
         if self.line_think_end:
-            # #5839 (opt-in): inside code or a quotation the tag is a quoted one, whatever follows it; elsewhere it ends
-            # the thinking only where a line break follows it
+            # #5839 (opt-in): inside code or a quotation the tag is a quoted one, whatever follows it, and so is one that
+            # continues a list of markers (the line before is a marker's spelling by itself, _MARKER_LINE; a bullet may
+            # stand before the tag); elsewhere it ends the thinking only where a line break follows it
             snap = self._snap()
             self._track(self.buf[:i])
             quotes = sum(part == '"' for part in re.findall(r'\\.|"', self.line))
             quoted = self._in_code() or (self.quotes + quotes) % 2 == 1
+            item = self.line.strip()
+            listed = (not item or _LIST_BULLET.fullmatch(item)) and _MARKER_LINE.match(self.prev_line) is not None
             self._restore(snap)
-            if quoted:
+            if quoted or listed:
                 return True
             return after[0] not in "\r\n" if after else None
         head = self.line + self.buf[:i]
