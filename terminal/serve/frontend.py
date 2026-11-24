@@ -666,7 +666,58 @@ def _order_chat_tool_results(messages: list[dict]) -> None:
             call.pop("_call_id", None)
 
 
-def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+
+
+def tail_system_reminders(messages: list[dict]) -> list[dict]:
+    """Strip past-turn copies of the system-reminder blocks that the conversation's last user turn already
+    carries.  Clients inject such a block into the last user turn (a mode change, an environment note) and
+    repeat it on every later request, so a copy ends up in past turns as well: the tokens a slot holds for the
+    conversation's next turn stop matching at the turn whose copy is dropped, the restore fails and the whole
+    conversation is read again (measured: 211990 tokens read from nothing, the cut 155306 tokens in, at the
+    block).  Stripping the copies keeps every past turn byte-stable from the turn after the injection, which is
+    what the shared prefix needs.  opencode reports the same effect and has no fix: anomalyco/opencode#23595
+    ("system-reminder keeps moving, causing unnecessary prompt processing in llama.cpp"), #21518, and the
+    proposed PRs #27845 and #24343, both closed unmerged; Claude Code has it too (anthropics/claude-code#48734,
+    anthropics/claude-agent-sdk-typescript#269).  This is the same class of fix as pin_billing_stamp above, for
+    the same reason: what changes inside the history costs the whole conversation.  Opt-in: the config's
+    "system_reminders": "tail" (default "keep" renders the history exactly as the client sent it).  Runs after
+    _env_to_user, the same class of fix at the prompt's start.
+
+    Only copies of a block that is verbatim in the last user turn are stripped: a block that is not in the last
+    turn stays in its own turn, rendered exactly as "keep" renders it, and is never appended to the tail.
+    Reminder blocks carry state (a Plan-mode instruction, a mode switch), and a client keeps them in the
+    history it resends; appending a past block behind the client's current marker makes the model read the
+    stale block as its newest instruction.  Measured on the 2026-11-02 plan→build repro: with the blocks
+    appended, the model quotes the stale plan reminder and refuses to edit after the switch; with "keep" the
+    same switch works.  Dedupe-only keeps the byte-stable-prefix property without moving any state behind the
+    client's current one.  One exception: a turn whose content is nothing but a reminder block is left exactly
+    as the client sent it, because emptying it puts an empty turn in the prompt (see the note in the loop)."""
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    if last_user < 0 or not isinstance(messages[last_user].get("content"), str):
+        return messages
+    tail_blocks = REMINDER.findall(messages[last_user]["content"])
+    if not tail_blocks:
+        return messages
+    for i, m in enumerate(messages):
+        if i == last_user or not isinstance(m.get("content"), str):
+            continue
+        rest = m["content"]
+        for b in tail_blocks:
+            rest = rest.replace(b, "")
+        if rest == m["content"]:
+            continue
+        if not rest.strip():  # a turn that is only a reminder block keeps it: emptying it puts an empty turn in
+            continue          # the prompt (<|im_start|>user\n<|im_end|>), which the template renders as it
+                              # stands (render drops empty assistant turns, #843, not a user one) and which the
+                              # model has no reason to answer.  A block that stays where it is can cost one
+                              # re-read; an empty turn costs the reply.  A client sends such a turn for a date
+                              # or a mode change, so it is common.
+        m["content"] = rest.strip()
+    return messages
+
+
+def openai_to_messages(req: dict, reminders_tail: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
     for i, m in enumerate(_object_list(req.get("messages"), "messages")):
@@ -713,7 +764,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k in ("reasoning_effort", "thinking_mode") and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+    messages = _env_to_user(_late_system_to_user(messages))
+    return (tail_system_reminders(messages) if reminders_tail else messages), tools, kwargs
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -822,7 +874,7 @@ def _tool_references(content, deferred: dict):
             for p in content]
 
 
-def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
+def anthropic_to_messages(req: dict, think_unasked: bool = True, reminders_tail: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False
     renders it without thinking (#278, the config's "anthropic_thinking": "on_request")."""
@@ -924,7 +976,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+    messages = _env_to_user(_late_system_to_user(messages))
+    return (tail_system_reminders(messages) if reminders_tail else messages), tools, kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output parser
