@@ -1,0 +1,2 @@
+prompt_n 50935 prompt_per_second 1476.8
+prompt_n 50935 prompt_per_second 1477.0
