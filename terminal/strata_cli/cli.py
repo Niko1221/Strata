@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from strata_control import profiles
+from strata_cli.i18n import tr as _tr
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,227 +61,227 @@ class _StrataParser(argparse.ArgumentParser):
 
 
 def parser() -> argparse.ArgumentParser:
-    ap = _StrataParser(prog="strata", description="Strata serving and terminal clients")
+    ap = _StrataParser(prog="strata", description=_tr("Strata serving and terminal clients"))
     ap.add_argument("--version", action=_VersionAction, nargs=0,
-                    help="print the version and the interpreter this terminal runs on")
+                    help=_tr("print the version and the interpreter this terminal runs on"))
     sp = ap.add_subparsers(dest="command", required=True)
-    serve = sp.add_parser("serve", help="start the existing Strata inference server in the foreground")
+    serve = sp.add_parser("serve", help=_tr("start the existing Strata inference server in the foreground"))
     serve.add_argument("--profile", "--config", dest="config", required=True, metavar="CONFIG.json")
     serve.add_argument("--engine", choices=("strata", "mock"), default="strata",
-                       help="strata: the engine in the run config (default); mock: a scripted engine for client tests, "
-                            "no GPU and no model")
+                       help=_tr("strata: the engine in the run config (default); mock: a scripted engine for client tests, "
+                            "no GPU and no model"))
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
-    serve.add_argument("--parallel", type=int, help="requested concurrent engine slots")
-    serve.add_argument("--batch-groups", help="requested pipeline groups (auto or positive integer)")
-    serve.add_argument("--max-queue", type=int, help="maximum pending inference calls beyond effective slots")
-    serve.add_argument("--queue-timeout", type=float, help="seconds to wait for the first engine turn (0.1..600)")
+    serve.add_argument("--parallel", type=int, help=_tr("requested concurrent engine slots"))
+    serve.add_argument("--batch-groups", help=_tr("requested pipeline groups (auto or positive integer)"))
+    serve.add_argument("--max-queue", type=int, help=_tr("maximum pending inference calls beyond effective slots"))
+    serve.add_argument("--queue-timeout", type=float, help=_tr("seconds to wait for the first engine turn (0.1..600)"))
     serve.add_argument("--batch-telemetry", action=argparse.BooleanOptionalAction, default=None,
-                       help="sample actual engine decode-window rows for the monitor (opt-in)")
-    serve.add_argument("--offline", action="store_true", help="disable remote image fetches and MCP/tool subprocesses")
-    serve.add_argument("--ready-file", help="absolute path for a new instance record (use a private directory)")
+                       help=_tr("sample actual engine decode-window rows for the monitor (opt-in)"))
+    serve.add_argument("--offline", action="store_true", help=_tr("disable remote image fetches and MCP/tool subprocesses"))
+    serve.add_argument("--ready-file", help=_tr("absolute path for a new instance record (use a private directory)"))
     serve.add_argument("--shutdown-timeout", type=float, default=30,
-                       help="seconds to drain owned inference calls on stop (0..300)")
-    serve.add_argument("--plan", action="store_true", help="validate and print the effective launch without starting")
+                       help=_tr("seconds to drain owned inference calls on stop (0..300)"))
+    serve.add_argument("--plan", action="store_true", help=_tr("validate and print the effective launch without starting"))
     serve.add_argument("--output", choices=("human", "json", "jsonl"), default="human",
-                       help="human output, JSON plan, or JSONL foreground lifecycle")
-    serve.add_argument("--json", action="store_true", help="alias for --plan --output json")
-    serve.add_argument("--quiet", action="store_true", help="suppress human informational output")
+                       help=_tr("human output, JSON plan, or JSONL foreground lifecycle"))
+    serve.add_argument("--json", action="store_true", help=_tr("alias for --plan --output json"))
+    serve.add_argument("--quiet", action="store_true", help=_tr("suppress human informational output"))
 
-    profile = sp.add_parser("profile", help="edit saved serving overrides outside setup's run config")
+    profile = sp.add_parser("profile", help=_tr("edit saved serving overrides outside setup's run config"))
     profile_sp = profile.add_subparsers(dest="profile_command", required=True)
-    profile_create = profile_sp.add_parser("create", help="save a named profile from an installed run config")
+    profile_create = profile_sp.add_parser("create", help=_tr("save a named profile from an installed run config"))
     profile_create.add_argument("name")
     profile_create.add_argument("--from-config", required=True, metavar="CONFIG.json")
     profile_create.add_argument("--output", choices=("human", "json"), default="human")
-    profile_list = profile_sp.add_parser("list", help="list saved profiles")
+    profile_list = profile_sp.add_parser("list", help=_tr("list saved profiles"))
     profile_list.add_argument("--output", choices=("human", "json"), default="human")
-    profile_show = profile_sp.add_parser("show", help="show a profile and optional effective settings")
+    profile_show = profile_sp.add_parser("show", help=_tr("show a profile and optional effective settings"))
     profile_show.add_argument("name")
     profile_show.add_argument("--effective", action="store_true")
     profile_show.add_argument("--output", choices=("human", "json"), default="human")
-    profile_validate = profile_sp.add_parser("validate", help="check the profile and referenced run config")
+    profile_validate = profile_sp.add_parser("validate", help=_tr("check the profile and referenced run config"))
     profile_validate.add_argument("name")
     profile_validate.add_argument("--output", choices=("human", "json"), default="human")
-    profile_set = profile_sp.add_parser("set", help="set typed serving overrides, e.g. parallel=8")
+    profile_set = profile_sp.add_parser("set", help=_tr("set typed serving overrides, e.g. parallel=8"))
     profile_set.add_argument("name")
     profile_set.add_argument("assignments", nargs="+")
-    profile_set.add_argument("--plan", action="store_true", help="show changes without saving")
+    profile_set.add_argument("--plan", action="store_true", help=_tr("show changes without saving"))
     profile_set.add_argument("--output", choices=("human", "json"), default="human")
-    profile_source = profile_sp.add_parser("use-config", help="point a saved profile at another run config file")
+    profile_source = profile_sp.add_parser("use-config", help=_tr("point a saved profile at another run config file"))
     profile_source.add_argument("name")
     profile_source.add_argument("--from-config", required=True, metavar="CONFIG.json")
-    profile_source.add_argument("--plan", action="store_true", help="show the source change without saving")
+    profile_source.add_argument("--plan", action="store_true", help=_tr("show the source change without saving"))
     profile_source.add_argument("--if-revision", metavar="REVISION",
-                                help="fail if the saved profile changed since preview")
+                                help=_tr("fail if the saved profile changed since preview"))
     profile_source.add_argument("--output", choices=("human", "json"), default="human")
-    profile_edit = profile_sp.add_parser("edit", help="edit a temporary JSON copy in VISUAL or EDITOR")
+    profile_edit = profile_sp.add_parser("edit", help=_tr("edit a temporary JSON copy in VISUAL or EDITOR"))
     profile_edit.add_argument("name")
     profile_edit.add_argument("--output", choices=("human", "json"), default="human")
-    profile_history = profile_sp.add_parser("history", help="list saved profile revisions")
+    profile_history = profile_sp.add_parser("history", help=_tr("list saved profile revisions"))
     profile_history.add_argument("name")
     profile_history.add_argument("--output", choices=("human", "json"), default="human")
-    profile_rollback = profile_sp.add_parser("rollback", help="restore a saved profile revision")
+    profile_rollback = profile_sp.add_parser("rollback", help=_tr("restore a saved profile revision"))
     profile_rollback.add_argument("name")
     profile_rollback.add_argument("--to", required=True, metavar="REVISION")
     profile_rollback.add_argument("--output", choices=("human", "json"), default="human")
 
-    repair = sp.add_parser("repair-access", help="give you back Strata files that a run as administrator locked (Windows)")
+    repair = sp.add_parser("repair-access", help=_tr("give you back Strata files that a run as administrator locked (Windows)"))
     repair.add_argument("--output", choices=("human", "json"), default="human")
-    doctor = sp.add_parser("doctor", help="read-only check of installed engine components")
-    doctor.add_argument("--profile", help="saved profile name or run config JSON path")
-    doctor.add_argument("--components", action="store_true", help="include component inventory (default)")
-    doctor.add_argument("--live", action="store_true", help="query host GPUs and compare selected device indices")
+    doctor = sp.add_parser("doctor", help=_tr("read-only check of installed engine components"))
+    doctor.add_argument("--profile", help=_tr("saved profile name or run config JSON path"))
+    doctor.add_argument("--components", action="store_true", help=_tr("include component inventory (default)"))
+    doctor.add_argument("--live", action="store_true", help=_tr("query host GPUs and compare selected device indices"))
     doctor.add_argument("--output", choices=("human", "json"), default="human")
-    components = sp.add_parser("components", help="read-only installed component inventory")
+    components = sp.add_parser("components", help=_tr("read-only installed component inventory"))
     components_sp = components.add_subparsers(dest="components_command", required=True)
-    components_verify = components_sp.add_parser("verify", help="check required files for an installed profile")
+    components_verify = components_sp.add_parser("verify", help=_tr("check required files for an installed profile"))
     components_verify.add_argument("--profile", required=True)
-    components_verify.add_argument("--live", action="store_true", help="query host GPUs and compare selected device indices")
+    components_verify.add_argument("--live", action="store_true", help=_tr("query host GPUs and compare selected device indices"))
     components_verify.add_argument("--output", choices=("human", "json"), default="human")
     components_plan = components_sp.add_parser(
-        "plan", help="read a component-package manifest and say whether it may be used here")
-    components_plan.add_argument("manifest", help="path to the component manifest (JSON)")
+        "plan", help=_tr("read a component-package manifest and say whether it may be used here"))
+    components_plan.add_argument("manifest", help=_tr("path to the component manifest (JSON)"))
     components_plan.add_argument("--backend", default=None,
-                                 help="the backend family to check the component against")
+                                 help=_tr("the backend family to check the component against"))
     components_plan.add_argument("--target", default=None,
-                                 help="override the platform key, for checking another machine's "
-                                      "manifest on this one")
+                                 help=_tr("override the platform key, for checking another machine's "
+                                      "manifest on this one"))
     components_plan.add_argument("--output", choices=("human", "json"), default="human")
     components_backend = components_sp.add_parser(
-        "backends", help="the OS and backend combinations that are committed to, and what is not")
+        "backends", help=_tr("the OS and backend combinations that are committed to, and what is not"))
     components_backend.add_argument("--output", choices=("human", "json"), default="human")
     components_engine = components_sp.add_parser(
-        "engine", help="which engine package in the local component folder this PC would start (never downloads)")
-    components_engine.add_argument("--backend", default=None, help="ask for one backend family instead of detecting it")
+        "engine", help=_tr("which engine package in the local component folder this PC would start (never downloads)"))
+    components_engine.add_argument("--backend", default=None, help=_tr("ask for one backend family instead of detecting it"))
     components_engine.add_argument("--components-dir", default=None,
-                                   help="the component folder (default: STRATA_COMPONENTS_DIR or the per-user folder)")
-    components_engine.add_argument("--full", action="store_true", help="hash every file, not only the entrypoint")
+                                   help=_tr("the component folder (default: STRATA_COMPONENTS_DIR or the per-user folder)"))
+    components_engine.add_argument("--full", action="store_true", help=_tr("hash every file, not only the entrypoint"))
     components_engine.add_argument("--output", choices=("human", "json"), default="human")
     from strata_cli import update_cmd
     update_parsers = update_cmd.add_parsers(sp, components_sp)
-    models = sp.add_parser("models", help="inspect setup-written local model run configs")
+    models = sp.add_parser("models", help=_tr("inspect setup-written local model run configs"))
     models_sp = models.add_subparsers(dest="models_command", required=True)
-    models_list = models_sp.add_parser("list", help="list local installed-model config candidates")
+    models_list = models_sp.add_parser("list", help=_tr("list local installed-model config candidates"))
     models_scope = models_list.add_mutually_exclusive_group()
-    models_scope.add_argument("--installed", action="store_true", help="limit discovery to local setup run configs")
-    models_scope.add_argument("--served", action="store_true", help="inspect the currently served model")
-    models_list.add_argument("--install-dir", help="absolute path to a Strata installation")
-    models_list.add_argument("--url", help="Strata server root; remote connections require HTTPS")
-    models_list.add_argument("--connection", help="saved read-only connection")
-    models_list.add_argument("--credential-env", help="environment variable containing the server credential")
-    models_list.add_argument("--timeout", type=float, help="bounded request timeout in seconds")
+    models_scope.add_argument("--installed", action="store_true", help=_tr("limit discovery to local setup run configs"))
+    models_scope.add_argument("--served", action="store_true", help=_tr("inspect the currently served model"))
+    models_list.add_argument("--install-dir", help=_tr("absolute path to a Strata installation"))
+    models_list.add_argument("--url", help=_tr("Strata server root; remote connections require HTTPS"))
+    models_list.add_argument("--connection", help=_tr("saved read-only connection"))
+    models_list.add_argument("--credential-env", help=_tr("environment variable containing the server credential"))
+    models_list.add_argument("--timeout", type=float, help=_tr("bounded request timeout in seconds"))
     models_list.add_argument("--output", choices=("human", "json"), default="human")
-    models_inspect = models_sp.add_parser("inspect", help="inspect a local model run config and its components")
+    models_inspect = models_sp.add_parser("inspect", help=_tr("inspect a local model run config and its components"))
     models_inspect.add_argument("model_id")
-    models_inspect.add_argument("--install-dir", help="absolute path to a Strata installation")
+    models_inspect.add_argument("--install-dir", help=_tr("absolute path to a Strata installation"))
     models_inspect.add_argument("--output", choices=("human", "json"), default="human")
-    models_explain = models_sp.add_parser("explain", help="show where strata launch looks for a model's files and what it finds (changes nothing)")
-    models_explain.add_argument("name", metavar="NAME", help="a model size (IQ3_S, iq3_s) or family/size (qwen/IQ3_S)")
-    models_explain.add_argument("--family", help="the model family, when the size alone is not enough")
-    models_explain.add_argument("--data-dir", help="look in this data folder instead of the one strata launch uses")
+    models_explain = models_sp.add_parser("explain", help=_tr("show where strata launch looks for a model's files and what it finds (changes nothing)"))
+    models_explain.add_argument("name", metavar="NAME", help=_tr("a model size (IQ3_S, iq3_s) or family/size (qwen/IQ3_S)"))
+    models_explain.add_argument("--family", help=_tr("the model family, when the size alone is not enough"))
+    models_explain.add_argument("--data-dir", help=_tr("look in this data folder instead of the one strata launch uses"))
     models_explain.add_argument("--output", choices=("human", "json"), default="human")
-    models_import = models_sp.add_parser("import", help="preview an existing GGUF file set without adopting it")
+    models_import = models_sp.add_parser("import", help=_tr("preview an existing GGUF file set without adopting it"))
     models_import.add_argument("path", metavar="PATH")
     models_import.add_argument("--plan", action="store_true", required=True,
-                               help="inspect only; adoption requires a qualified model workflow")
+                               help=_tr("inspect only; adoption requires a qualified model workflow"))
     models_import.add_argument("--output", choices=("human", "json"), default="human")
-    models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
-    models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
-    models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
-    models_move.add_argument("--leave", action="store_true", help="give up an interrupted move: keep the old folder and remove the partial copies")
-    models_move.add_argument("--status", action="store_true", help="say whether a move was interrupted (changes nothing)")
-    models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help="the folder the models are in now (default: the data folder in use)")
-    models_move.add_argument("--install-dir", help="absolute path to a Strata installation whose run configs should follow the files")
-    models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
-    models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
+    models_move = models_sp.add_parser("move", help=_tr("move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed"))
+    models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help=_tr("not needed with --resume, --leave or --status"))
+    models_move.add_argument("--resume", action="store_true", help=_tr("finish a move that was interrupted"))
+    models_move.add_argument("--leave", action="store_true", help=_tr("give up an interrupted move: keep the old folder and remove the partial copies"))
+    models_move.add_argument("--status", action="store_true", help=_tr("say whether a move was interrupted (changes nothing)"))
+    models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help=_tr("the folder the models are in now (default: the data folder in use)"))
+    models_move.add_argument("--install-dir", help=_tr("absolute path to a Strata installation whose run configs should follow the files"))
+    models_move.add_argument("--plan", action="store_true", help=_tr("say what would happen and change nothing"))
+    models_move.add_argument("--cancel-file", metavar="PATH", help=_tr("stop (safely) when this file appears"))
     models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
     from strata_cli import drafting_cmd
     drafting_cmd.add_parser(sp)
     from strata_cli import split_cmd
     split_cmd.add_parser(sp)
-    engine = sp.add_parser("engine", help="engine tuning and component actions")
+    engine = sp.add_parser("engine", help=_tr("engine tuning and component actions"))
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
-    calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
+    calibrate = engine_sp.add_parser("calibrate", help=_tr("measure, review and apply engine tuning"))
     calibrate.add_argument("--profile", required=True)
     calibrate_actions = calibrate.add_mutually_exclusive_group(required=True)
-    calibrate_actions.add_argument("--plan", action="store_true", help="read-only calibration preflight")
-    calibrate_actions.add_argument("--measure", action="store_true", help="run decode sweep and save a report")
-    calibrate_actions.add_argument("--review-result", metavar="REPORT.json", help="show a candidate and its freshness")
-    calibrate_actions.add_argument("--apply-result", metavar="REPORT.json", help="smoke-test and apply a fresh report")
+    calibrate_actions.add_argument("--plan", action="store_true", help=_tr("read-only calibration preflight"))
+    calibrate_actions.add_argument("--measure", action="store_true", help=_tr("run decode sweep and save a report"))
+    calibrate_actions.add_argument("--review-result", metavar="REPORT.json", help=_tr("show a candidate and its freshness"))
+    calibrate_actions.add_argument("--apply-result", metavar="REPORT.json", help=_tr("smoke-test and apply a fresh report"))
     calibrate_actions.add_argument("--review-rollback", metavar="REPORT.json",
-                                   help="check whether an applied result can be restored")
+                                   help=_tr("check whether an applied result can be restored"))
     calibrate_actions.add_argument("--rollback-result", metavar="REPORT.json",
-                                   help="smoke-test and restore the configuration before an application")
-    calibrate.add_argument("--out", metavar="REPORT.json", help="new report path for --measure")
-    calibrate.add_argument("--exclusive", action="store_true", help="assert all model instances using these devices are stopped")
+                                   help=_tr("smoke-test and restore the configuration before an application"))
+    calibrate.add_argument("--out", metavar="REPORT.json", help=_tr("new report path for --measure"))
+    calibrate.add_argument("--exclusive", action="store_true", help=_tr("assert all model instances using these devices are stopped"))
     calibrate.add_argument("--output", choices=("human", "json"), default="human")
     install = sp.add_parser(
         "install",
-        help="the explicit installer: engine, models, Python packages (starting and serving never do this)")
+        help=_tr("the explicit installer: engine, models, Python packages (starting and serving never do this)"))
     install.add_argument("--update", action="store_true",
-                         help="update an existing install (what START-HERE.bat --update / ./setup.sh --update run) instead of setting one up")
+                         help=_tr("update an existing install (what START-HERE.bat --update / ./setup.sh --update run) instead of setting one up"))
     install.add_argument("setup_args", nargs=argparse.REMAINDER,
-                         help="options passed to setup.py, e.g. --family qwen --model Q2_0 --yes")
+                         help=_tr("options passed to setup.py, e.g. --family qwen --model Q2_0 --yes"))
     runtime = sp.add_parser(
-        "runtime", help="manage an owned local Strata server instance",
-        description="`runtime start` starts a background service: the engine keeps serving after this terminal "
+        "runtime", help=_tr("manage an owned local Strata server instance"),
+        description=_tr("`runtime start` starts a background service: the engine keeps serving after this terminal "
                     "closes and until `runtime stop` (or the process named by --die-with-pid ends). "
-                    "`strata serve` is the foreground form: it ends with this terminal.")
+                    "`strata serve` is the foreground form: it ends with this terminal."))
     runtime_sp = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_start = runtime_sp.add_parser(
-        "start", help="start a saved profile as a background service under the local owner host (it keeps "
-                      "serving after this terminal closes; stop it with `runtime stop`)")
+        "start", help=_tr("start a saved profile as a background service under the local owner host (it keeps "
+                      "serving after this terminal closes; stop it with `runtime stop`)"))
     runtime_start.add_argument("--profile", required=True)
     runtime_start.add_argument("--die-with-pid", type=int, metavar="PID",
-                               help="stop the instance (drained) when this process ends; for an app that owns it")
+                               help=_tr("stop the instance (drained) when this process ends; for an app that owns it"))
     runtime_start.add_argument("--plan", action="store_true")
     runtime_start.add_argument("--wait", type=float, default=300)
     runtime_start.add_argument("--shutdown-timeout", type=float, default=30)
     runtime_start.add_argument("--output", choices=("human", "json"), default="human")
-    runtime_status = runtime_sp.add_parser("status", help="inspect an owned local instance")
+    runtime_status = runtime_sp.add_parser("status", help=_tr("inspect an owned local instance"))
     runtime_status.add_argument("--profile", required=True)
     runtime_status.add_argument("--output", choices=("human", "json"), default="human")
-    runtime_verify = runtime_sp.add_parser("verify", help="recheck the owned API and one-token generation")
+    runtime_verify = runtime_sp.add_parser("verify", help=_tr("recheck the owned API and one-token generation"))
     runtime_verify.add_argument("--profile", required=True)
     runtime_verify.add_argument("--wait", type=float, default=300)
-    runtime_verify.add_argument("--load", action="store_true", help="load an unloaded model for the generation check")
-    runtime_verify.add_argument("--plan", action="store_true", help="preview the owned instance and verification effect")
+    runtime_verify.add_argument("--load", action="store_true", help=_tr("load an unloaded model for the generation check"))
+    runtime_verify.add_argument("--plan", action="store_true", help=_tr("preview the owned instance and verification effect"))
     runtime_verify.add_argument("--if-owner-id", metavar="OWNER_ID",
-                                help="require the owner shown by verify --plan")
+                                help=_tr("require the owner shown by verify --plan"))
     runtime_verify.add_argument("--if-instance-id", metavar="INSTANCE_ID",
-                                help="require the instance shown by verify --plan")
+                                help=_tr("require the instance shown by verify --plan"))
     runtime_verify.add_argument("--output", choices=("human", "json"), default="human")
-    runtime_stop = runtime_sp.add_parser("stop", help="drain and stop an owned local instance")
+    runtime_stop = runtime_sp.add_parser("stop", help=_tr("drain and stop an owned local instance"))
     runtime_stop.add_argument("--profile", required=True)
-    runtime_stop.add_argument("--plan", action="store_true", help="review the current owner and instance")
+    runtime_stop.add_argument("--plan", action="store_true", help=_tr("review the current owner and instance"))
     runtime_stop.add_argument("--wait", type=float, default=330)
-    runtime_stop.add_argument("--if-owner-id", help="require the owner ID from --plan")
-    runtime_stop.add_argument("--if-instance-id", help="require the instance ID from --plan")
+    runtime_stop.add_argument("--if-owner-id", help=_tr("require the owner ID from --plan"))
+    runtime_stop.add_argument("--if-instance-id", help=_tr("require the instance ID from --plan"))
     runtime_stop.add_argument("--output", choices=("human", "json"), default="human")
     runtime_cleanup = runtime_sp.add_parser(
-        "cleanup", help="end servers and engines Strata started whose owner is gone (each is checked by PID, "
-                        "start time and command line first; a running instance is never touched)")
-    runtime_cleanup.add_argument("--profile", help="only this profile's leftovers")
+        "cleanup", help=_tr("end servers and engines Strata started whose owner is gone (each is checked by PID, "
+                        "start time and command line first; a running instance is never touched)"))
+    runtime_cleanup.add_argument("--profile", help=_tr("only this profile's leftovers"))
     runtime_cleanup.add_argument("--output", choices=("human", "json"), default="human")
-    runtime_restart = runtime_sp.add_parser("restart", help="drain and rerun an owned saved profile")
+    runtime_restart = runtime_sp.add_parser("restart", help=_tr("drain and rerun an owned saved profile"))
     runtime_restart.add_argument("--profile", required=True)
-    runtime_restart.add_argument("--plan", action="store_true", help="compare current and saved launch without draining")
+    runtime_restart.add_argument("--plan", action="store_true", help=_tr("compare current and saved launch without draining"))
     runtime_restart.add_argument("--allow-source-switch", action="store_true",
-                                 help="permit a new source config file when the old file remains available for rollback")
+                                 help=_tr("permit a new source config file when the old file remains available for rollback"))
     runtime_restart.add_argument("--allow-source-migration", action="store_true",
-                                 help="permit edited run config bytes using a private rollback snapshot")
+                                 help=_tr("permit edited run config bytes using a private rollback snapshot"))
     runtime_restart.add_argument("--wait", type=float, default=1000)
     runtime_restart.add_argument("--startup-wait", type=float, default=300)
     runtime_restart.add_argument("--if-profile-revision", metavar="REVISION")
     runtime_restart.add_argument("--if-owner-id", metavar="OWNER_ID",
-                                 help="require the owner ID shown in --plan")
+                                 help=_tr("require the owner ID shown in --plan"))
     runtime_restart.add_argument("--if-instance-id", metavar="INSTANCE_ID",
-                                 help="require the instance ID shown in --plan")
+                                 help=_tr("require the instance ID shown in --plan"))
     runtime_restart.add_argument("--if-source-sha256", metavar="SHA256",
-                                 help="require the candidate source bytes shown in --plan")
+                                 help=_tr("require the candidate source bytes shown in --plan"))
     runtime_restart.add_argument("--output", choices=("human", "json"), default="human")
-    ops = sp.add_parser("ops", help="edit and run typed local operator recipes")
+    ops = sp.add_parser("ops", help=_tr("edit and run typed local operator recipes"))
     ops_sp = ops.add_subparsers(dest="ops_command", required=True)
     ops_items = []
     for action in ("init", "list", "create", "show", "edit", "set", "history", "rollback",
@@ -305,209 +306,209 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--to", required=True, metavar="REVISION")
         if action == "run":
             item.add_argument("--exclusive", action="store_true",
-                              help="assert exclusive device access for a calibration measurement")
+                              help=_tr("assert exclusive device access for a calibration measurement"))
             item.add_argument("--if-revision", metavar="REVISION",
-                              help="fail if the saved recipe changed since preview")
+                              help=_tr("fail if the saved recipe changed since preview"))
             item.add_argument("--if-profile-revision", metavar="REVISION",
-                              help="fail if the saved serving profile changed since preview")
+                              help=_tr("fail if the saved serving profile changed since preview"))
             item.add_argument("--if-owner-id", metavar="OWNER_ID",
-                              help="require the runtime owner shown in a restart recipe plan")
+                              help=_tr("require the runtime owner shown in a restart recipe plan"))
             item.add_argument("--if-instance-id", metavar="INSTANCE_ID",
-                              help="require the runtime instance shown in a restart recipe plan")
+                              help=_tr("require the runtime instance shown in a restart recipe plan"))
             item.add_argument("--if-source-sha256", metavar="SHA256",
-                              help="require the candidate run-config bytes shown in a restart recipe plan")
-    bench = sp.add_parser("bench", help="explicit serving benchmark with local JSON evidence")
+                              help=_tr("require the candidate run-config bytes shown in a restart recipe plan"))
+    bench = sp.add_parser("bench", help=_tr("explicit serving benchmark with local JSON evidence"))
     bench_sp = bench.add_subparsers(dest="bench_command", required=True)
-    bench_run = bench_sp.add_parser("run", help="the standard benchmark (docs/BENCHMARK_PROTOCOL.md), or a serving suite")
+    bench_run = bench_sp.add_parser("run", help=_tr("the standard benchmark (docs/BENCHMARK_PROTOCOL.md), or a serving suite"))
     bench_source = bench_run.add_mutually_exclusive_group(required=True)
-    bench_source.add_argument("--profile", help="saved serving profile or installed run config")
-    bench_source.add_argument("--url", help="server root; remote connections require HTTPS")
+    bench_source.add_argument("--profile", help=_tr("saved serving profile or installed run config"))
+    bench_source.add_argument("--url", help=_tr("server root; remote connections require HTTPS"))
     bench_run.add_argument("--suite", choices=("standard-v1", "serving-smoke", "parallel-mixed-v1", "parallel-overload-v1",
                                                "parallel-cancel-v1", "parallel-prefill-cancel-v1"),
                            default="standard-v1",
-                           help="standard-v1 (default) follows docs/BENCHMARK_PROTOCOL.md; the others are serving suites for your own comparisons")
+                           help=_tr("standard-v1 (default) follows docs/BENCHMARK_PROTOCOL.md; the others are serving suites for your own comparisons"))
     bench_run.add_argument("--concurrency", type=int, default=None,
-                           help="serving suites: simultaneous requests (1..16, or 1..64 for parallel-overload-v1; default 4)")
-    bench_run.add_argument("--repeat", type=int, default=None, help="serving suites: repeat measured phases (1..5; default 1)")
-    bench_run.add_argument("--condition", help="serving suites: operator label for this run, e.g. baseline or monitor-default")
+                           help=_tr("serving suites: simultaneous requests (1..16, or 1..64 for parallel-overload-v1; default 4)"))
+    bench_run.add_argument("--repeat", type=int, default=None, help=_tr("serving suites: repeat measured phases (1..5; default 1)"))
+    bench_run.add_argument("--condition", help=_tr("serving suites: operator label for this run, e.g. baseline or monitor-default"))
     bench_run.add_argument("--require-managed-match", action="store_true",
-                           help="serving suites: require the local owner host and current profile to match the serving instance")
+                           help=_tr("serving suites: require the local owner host and current profile to match the serving instance"))
     bench_run.add_argument("--request-timeout", type=float, default=None,
-                           help="serving suites: seconds per request (1..600; default 120). The standard suite fixes it at 1800")
+                           help=_tr("serving suites: seconds per request (1..600; default 120). The standard suite fixes it at 1800"))
     bench_run.add_argument("--out", metavar="NEW_DIRECTORY",
-                           help="new output directory (required for serving suites). Standard suite: a new folder "
-                                "<date>-standard-<gpu>-<run id> under ./bench/results or ./bench-results")
+                           help=_tr("new output directory (required for serving suites). Standard suite: a new folder "
+                                "<date>-standard-<gpu>-<run id> under ./bench/results or ./bench-results"))
     bench_run.add_argument("--credential-env", default="STRATA_API_KEY")
     bench_run.add_argument("--telemetry-credential-env", default=None)
     bench_run.add_argument("--output", choices=("human", "json"), default="human")
     standard = bench_run.add_argument_group("standard suite (docs/BENCHMARK_PROTOCOL.md)")
     standard.add_argument("--optional-concurrency", action="store_true",
-                          help="also run the optional stage: four short requests released together, three rounds")
+                          help=_tr("also run the optional stage: four short requests released together, three rounds"))
     standard.add_argument("--no-start", action="store_true",
-                          help="with --profile: never start the engine; use only a server that is already running")
+                          help=_tr("with --profile: never start the engine; use only a server that is already running"))
     standard.add_argument("--load-timeout", type=float, default=1800, metavar="SECONDS",
-                          help="with --profile: how long to wait for the engine to load the model (default 1800)")
+                          help=_tr("with --profile: how long to wait for the engine to load the model (default 1800)"))
     standard.add_argument("--track", choices=("default", "custom"), default="custom",
-                          help="default: an unmodified release's setup-generated settings; custom (the default here): anything else")
+                          help=_tr("default: an unmodified release's setup-generated settings; custom (the default here): anything else"))
     standard.add_argument("--track-notes", default=None, metavar="TEXT",
-                          help="the release and setup choices (default track) or the changes made (custom track)")
-    standard.add_argument("--model-revision", metavar="REV", help="immutable revision of the quantization repository")
-    standard.add_argument("--source-revision", metavar="REV", help="revision of the original Qwen/Qwen3.8-Flash-Next weights")
+                          help=_tr("the release and setup choices (default track) or the changes made (custom track)"))
+    standard.add_argument("--model-revision", metavar="REV", help=_tr("immutable revision of the quantization repository"))
+    standard.add_argument("--source-revision", metavar="REV", help=_tr("revision of the original Qwen/Qwen3.8-Flash-Next weights"))
     standard.add_argument("--tokenizer-revision", metavar="REV")
-    standard.add_argument("--quantization", metavar="NAME", help="when it cannot be read from the model file names")
-    standard.add_argument("--custom-pack", metavar="TEXT", help="describe a prepared pack or custom expert profile")
-    standard.add_argument("--background", action="append", metavar="TEXT", help="a program that ran during the benchmark (repeatable)")
-    standard.add_argument("--build-options", metavar="LIST", help="comma-separated build options of a source build")
+    standard.add_argument("--quantization", metavar="NAME", help=_tr("when it cannot be read from the model file names"))
+    standard.add_argument("--custom-pack", metavar="TEXT", help=_tr("describe a prepared pack or custom expert profile"))
+    standard.add_argument("--background", action="append", metavar="TEXT", help=_tr("a program that ran during the benchmark (repeatable)"))
+    standard.add_argument("--build-options", metavar="LIST", help=_tr("comma-separated build options of a source build"))
     standard.add_argument("--skip-model-hash", action="store_true",
-                          help="do not hash the model files (the run is then marked nonconforming)")
-    bench_cancel = bench_sp.add_parser("cancel", help="stop the exact active saved-profile benchmark")
-    bench_cancel.add_argument("--profile", required=True, help="saved serving profile")
-    bench_cancel.add_argument("--path", required=True, help="absolute run directory or results.json")
+                          help=_tr("do not hash the model files (the run is then marked nonconforming)"))
+    bench_cancel = bench_sp.add_parser("cancel", help=_tr("stop the exact active saved-profile benchmark"))
+    bench_cancel.add_argument("--profile", required=True, help=_tr("saved serving profile"))
+    bench_cancel.add_argument("--path", required=True, help=_tr("absolute run directory or results.json"))
     bench_cancel.add_argument("--output", choices=("human", "json"), default="human")
-    bench_report = bench_sp.add_parser("report", help="summarize an existing benchmark report")
+    bench_report = bench_sp.add_parser("report", help=_tr("summarize an existing benchmark report"))
     bench_report.add_argument("path")
     bench_report.add_argument("--output", choices=("human", "json", "markdown"), default="human")
-    bench_report.add_argument("--out", metavar="NEW_FILE", help="write Markdown to a new file")
-    bench_compare = bench_sp.add_parser("compare", help="compare two saved runs with workload checks")
+    bench_report.add_argument("--out", metavar="NEW_FILE", help=_tr("write Markdown to a new file"))
+    bench_compare = bench_sp.add_parser("compare", help=_tr("compare two saved runs with workload checks"))
     bench_compare.add_argument("baseline")
     bench_compare.add_argument("candidate")
     bench_compare.add_argument("--output", choices=("human", "json", "markdown"), default="human")
-    bench_compare.add_argument("--out", metavar="NEW_FILE", help="write Markdown to a new file")
+    bench_compare.add_argument("--out", metavar="NEW_FILE", help=_tr("write Markdown to a new file"))
     timeskip = sp.add_parser(
-        "timeskip", help="retain a good result, try a bounded improvement, check it and decide")
+        "timeskip", help=_tr("retain a good result, try a bounded improvement, check it and decide"))
     timeskip_sp = timeskip.add_subparsers(dest="timeskip_command", required=True)
 
-    ts_run = timeskip_sp.add_parser("run", help="checkpoint, attempt a revision, check it and decide")
+    ts_run = timeskip_sp.add_parser("run", help=_tr("checkpoint, attempt a revision, check it and decide"))
     ts_run.add_argument("--workspace", required=True,
-                        help="the directory holding the work (and, optionally, .strata/checks.json)")
-    ts_run.add_argument("--prompt", required=True, help="what the revision should achieve")
+                        help=_tr("the directory holding the work (and, optionally, .strata/checks.json)"))
+    ts_run.add_argument("--prompt", required=True, help=_tr("what the revision should achieve"))
     ts_run.add_argument("--attempts", type=int, default=2,
-                        help="bounded revision attempts (0 = checkpoint and check the baseline only); "
-                             "the specification's default is two")
+                        help=_tr("bounded revision attempts (0 = checkpoint and check the baseline only); "
+                             "the specification's default is two"))
     ts_run.add_argument("--revise-command", default=None,
-                        help="the command that performs ONE revision attempt. It runs with the "
+                        help=_tr("the command that performs ONE revision attempt. It runs with the "
                              "candidate directory as its working directory, receives the prompt in "
                              "STRATA_TIMESKIP_PROMPT and the attempt number in "
                              "STRATA_TIMESKIP_ATTEMPT, and must not touch the workspace. Without it "
                              "no revision is attempted, which yields an inconclusive run rather than "
-                             "a fabricated improvement.")
+                             "a fabricated improvement."))
     ts_run.add_argument("--state-dir", default=None,
-                        help="where runs are recorded (default: $STRATA_TIMESKIP_DIR or "
-                             "$XDG_STATE_HOME/strata/time-skip, %%LOCALAPPDATA%%\\Strata\\time-skip on Windows)")
+                        help=_tr("where runs are recorded (default: $STRATA_TIMESKIP_DIR or "
+                             "$XDG_STATE_HOME/strata/time-skip, %%LOCALAPPDATA%%\\Strata\\time-skip on Windows)"))
     ts_run.add_argument("--output", choices=("human", "json"), default="human")
 
-    ts_status = timeskip_sp.add_parser("status", help="read a run's durable state and evidence")
+    ts_status = timeskip_sp.add_parser("status", help=_tr("read a run's durable state and evidence"))
     ts_status.add_argument("run_id")
     ts_status.add_argument("--state-dir", default=None)
     ts_status.add_argument("--output", choices=("human", "json"), default="human")
 
-    ts_list = timeskip_sp.add_parser("list", help="list recorded runs")
+    ts_list = timeskip_sp.add_parser("list", help=_tr("list recorded runs"))
     ts_list.add_argument("--state-dir", default=None)
     ts_list.add_argument("--output", choices=("human", "json"), default="human")
 
     ts_apply = timeskip_sp.add_parser(
-        "apply", help="apply the retained result, refusing if the destination changed")
+        "apply", help=_tr("apply the retained result, refusing if the destination changed"))
     ts_apply.add_argument("run_id")
     ts_apply.add_argument("--workspace", default=None,
-                          help="destination (default: the workspace the run recorded)")
+                          help=_tr("destination (default: the workspace the run recorded)"))
     ts_apply.add_argument("--attempt", type=int, default=None,
-                          help="apply this revision attempt (chosen by the person after review) "
-                               "instead of the retained checkpoint")
+                          help=_tr("apply this revision attempt (chosen by the person after review) "
+                               "instead of the retained checkpoint"))
     ts_apply.add_argument("--dry-run", action="store_true",
-                          help="report what would change without writing anything")
+                          help=_tr("report what would change without writing anything"))
     ts_apply.add_argument("--restore", action="store_true",
-                          help="put the original back instead of applying the result")
+                          help=_tr("put the original back instead of applying the result"))
     ts_apply.add_argument("--state-dir", default=None)
     ts_apply.add_argument("--output", choices=("human", "json"), default="human")
 
-    tune = sp.add_parser("tune", help="bounded engine-configuration search with retained evidence")
+    tune = sp.add_parser("tune", help=_tr("bounded engine-configuration search with retained evidence"))
     tune_sp = tune.add_subparsers(dest="tune_command", required=True)
 
-    tune_plan = tune_sp.add_parser("plan", help="show exactly what a sweep would search, and why not")
-    tune_plan.add_argument("--engine", required=True, help="the engine binary to interrogate and measure")
+    tune_plan = tune_sp.add_parser("plan", help=_tr("show exactly what a sweep would search, and why not"))
+    tune_plan.add_argument("--engine", required=True, help=_tr("the engine binary to interrogate and measure"))
     tune_plan.add_argument("--backend", required=True, choices=list(BACKENDS),
-                          help="the backend family the engine package claims")
-    tune_plan.add_argument("--model", required=True, help="the model identifier the measurements belong to")
+                          help=_tr("the backend family the engine package claims"))
+    tune_plan.add_argument("--model", required=True, help=_tr("the model identifier the measurements belong to"))
     tune_plan.add_argument("--objective", choices=("generation", "prefill", "latency"),
                            default="generation")
-    tune_plan.add_argument("--trials", type=int, default=16, help="the bounded short sweep (default 16)")
+    tune_plan.add_argument("--trials", type=int, default=16, help=_tr("the bounded short sweep (default 16)"))
     tune_plan.add_argument("--time", dest="total_time", type=float, default=1800.0,
-                           help="displayed total-time bound in seconds")
+                           help=_tr("displayed total-time bound in seconds"))
     tune_plan.add_argument("--repeats", type=int, default=3,
-                           help="paired repeats per candidate (default 3, the specification's floor)")
+                           help=_tr("paired repeats per candidate (default 3, the specification's floor)"))
     tune_plan.add_argument("--hold", action="append", default=[],
-                           help="hold a dimension constant instead of searching it (repeatable)")
+                           help=_tr("hold a dimension constant instead of searching it (repeatable)"))
     tune_plan.add_argument("--output", choices=("human", "json"), default="human")
 
     tune_run = tune_sp.add_parser(
-        "run", help="run a bounded sweep: measure the baseline and candidates, then report")
-    tune_run.add_argument("--engine", required=True, help="the engine binary to measure")
+        "run", help=_tr("run a bounded sweep: measure the baseline and candidates, then report"))
+    tune_run.add_argument("--engine", required=True, help=_tr("the engine binary to measure"))
     tune_run.add_argument("--backend", required=True, choices=list(BACKENDS))
-    tune_run.add_argument("--model", required=True, help="the model the measurements belong to")
+    tune_run.add_argument("--model", required=True, help=_tr("the model the measurements belong to"))
     tune_run.add_argument("--objective", choices=("generation", "prefill", "latency"),
                           default="generation")
     tune_run.add_argument("--trials", type=int, default=16,
-                          help="bounded number of candidate configurations (default 16)")
+                          help=_tr("bounded number of candidate configurations (default 16)"))
     tune_run.add_argument("--time", dest="total_time", type=float, default=1800.0,
-                          help="displayed total-time bound in seconds")
+                          help=_tr("displayed total-time bound in seconds"))
     tune_run.add_argument("--repeats", type=int, default=3,
-                          help="paired repeats per candidate (default 3, the specification's floor)")
+                          help=_tr("paired repeats per candidate (default 3, the specification's floor)"))
     tune_run.add_argument("--prompt-tokens", type=int, default=512,
-                          help="the workload's prompt length; fixed for the whole sweep")
+                          help=_tr("the workload's prompt length; fixed for the whole sweep"))
     tune_run.add_argument("--max-new", type=int, default=128,
-                          help="the workload's output length; fixed for the whole sweep")
+                          help=_tr("the workload's output length; fixed for the whole sweep"))
     tune_run.add_argument("--mode", choices=("protocol", "api"), default="protocol",
-                          help="protocol measures the engine's own serve protocol (cheap, for every "
+                          help=_tr("protocol measures the engine's own serve protocol (cheap, for every "
                                "candidate); api drives the real HTTP API the agent uses (the "
-                               "confirmation, and the only mode that reflects a user's wait)")
+                               "confirmation, and the only mode that reflects a user's wait)"))
     tune_run.add_argument("--api-prompt", default="In one short sentence, what is a hash table?",
-                          help="the prompt the api mode sends")
+                          help=_tr("the prompt the api mode sends"))
     tune_run.add_argument("--api-expect", default=None,
-                          help="a regular expression the answer must match for the run to count as "
-                               "correct; without it correctness is not checked")
+                          help=_tr("a regular expression the answer must match for the run to count as "
+                               "correct; without it correctness is not checked"))
     tune_run.add_argument("--api-port", type=int, default=8123)
     tune_run.add_argument("--config", default=None,
-                          help="the run configuration the api mode starts the worker with")
+                          help=_tr("the run configuration the api mode starts the worker with"))
     tune_run.add_argument("--boot-timeout", type=float, default=600.0,
-                          help="how long one candidate may take to become ready")
+                          help=_tr("how long one candidate may take to become ready"))
     tune_run.add_argument("--request-timeout", type=float, default=600.0,
-                          help="how long one measured request may take")
+                          help=_tr("how long one measured request may take"))
     tune_run.add_argument("--model-path", default=None,
-                          help="the model's file, so the sweep's identity is a content digest rather "
+                          help=_tr("the model's file, so the sweep's identity is a content digest rather "
                                "than a name. Without it the record is incomparable to everything, "
-                               "which is safer than being falsely comparable.")
+                               "which is safer than being falsely comparable."))
     tune_run.add_argument("--context", type=int, default=None,
-                          help="the context the measurements were taken at")
+                          help=_tr("the context the measurements were taken at"))
     tune_run.add_argument("--full-digests", action="store_true",
-                          help="hash the model and engine completely instead of sampling; slower but "
-                               "the strongest identity")
+                          help=_tr("hash the model and engine completely instead of sampling; slower but "
+                               "the strongest identity"))
     tune_run.add_argument("--hold", action="append", default=[],
-                          help="hold a dimension constant instead of searching it (repeatable)")
+                          help=_tr("hold a dimension constant instead of searching it (repeatable)"))
     tune_run.add_argument("--state-dir", default=None)
     tune_run.add_argument("--output", choices=("human", "json"), default="human")
 
     tune_apply = tune_sp.add_parser(
-        "apply", help="apply a reviewed recommendation, after verifying the candidate runs")
-    tune_apply.add_argument("job_id", help="the completed sweep whose recommendation to apply")
+        "apply", help=_tr("apply a reviewed recommendation, after verifying the candidate runs"))
+    tune_apply.add_argument("job_id", help=_tr("the completed sweep whose recommendation to apply"))
     tune_apply.add_argument("--config", default=None,
-                            help="the run configuration to change (strata-<model>.json)")
+                            help=_tr("the run configuration to change (strata-<model>.json)"))
     tune_apply.add_argument("--model-path", default=None,
-                            help="the model file, to re-check the identity before writing")
+                            help=_tr("the model file, to re-check the identity before writing"))
     tune_apply.add_argument("--context", type=int, default=None)
     tune_apply.add_argument("--state-dir", default=None)
     tune_apply.add_argument("--output", choices=("human", "json"), default="human")
 
-    tune_rollback = tune_sp.add_parser("rollback", help="restore the configuration before an apply")
+    tune_rollback = tune_sp.add_parser("rollback", help=_tr("restore the configuration before an apply"))
     tune_rollback.add_argument("application_id")
     tune_rollback.add_argument("--state-dir", default=None)
     tune_rollback.add_argument("--output", choices=("human", "json"), default="human")
 
-    tune_status = tune_sp.add_parser("status", help="read a job's durable state and report")
+    tune_status = tune_sp.add_parser("status", help=_tr("read a job's durable state and report"))
     tune_status.add_argument("job_id")
     tune_status.add_argument("--state-dir", default=None)
     tune_status.add_argument("--output", choices=("human", "json"), default="human")
 
-    tune_list = tune_sp.add_parser("list", help="list recorded jobs")
+    tune_list = tune_sp.add_parser("list", help=_tr("list recorded jobs"))
     tune_list.add_argument("--state-dir", default=None)
     tune_list.add_argument("--output", choices=("human", "json"), default="human")
 
@@ -519,31 +520,31 @@ def parser() -> argparse.ArgumentParser:
     monitor_commands.add_monitor(sp)
     monitor_commands.add_logs(sp)
     monitor_commands.add_connections(sp)
-    code = sp.add_parser("code", help="coding client for the shared Desktop harness")
+    code = sp.add_parser("code", help=_tr("coding client for the shared Desktop harness"))
     code.add_argument("--workspace")
     code.add_argument("--resume")
-    code.add_argument("--quiet", action="store_true", help="suppress human informational output")
+    code.add_argument("--quiet", action="store_true", help=_tr("suppress human informational output"))
     code_sp = code.add_subparsers(dest="code_command")
-    code_run = code_sp.add_parser("run", help="scripted harness turn (requires the shared harness component)")
+    code_run = code_sp.add_parser("run", help=_tr("scripted harness turn (requires the shared harness component)"))
     code_run.add_argument("--prompt-file", required=True)
     code_run.add_argument("--policy", required=True)
     code_run.add_argument("--output", choices=("jsonl",), default="jsonl")
     code_run.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
-                          help="suppress human informational output")
-    code_sessions = code_sp.add_parser("sessions", help="shared harness sessions")
+                          help=_tr("suppress human informational output"))
+    code_sessions = code_sp.add_parser("sessions", help=_tr("shared harness sessions"))
     code_sessions.add_argument("action", choices=("list",))
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
-    complete = sp.add_parser("complete", help="print a bash, zsh or fish tab-completion script for the strata command")
+    complete = sp.add_parser("complete", help=_tr("print a bash, zsh or fish tab-completion script for the strata command"))
     complete.add_argument("--shell", choices=("bash", "zsh", "fish"), default="bash",
-                          help="which shell to print the script for (default bash)")
+                          help=_tr("which shell to print the script for (default bash)"))
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
                      components_verify, models_list, models_inspect, models_import, models_move, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
-        one_shot.add_argument("--json", action="store_true", help="alias for --output json")
+        one_shot.add_argument("--json", action="store_true", help=_tr("alias for --output json"))
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
-                              help="suppress human informational output")
+                              help=_tr("suppress human informational output"))
     return ap
 
 
@@ -2346,6 +2347,6 @@ def main(argv: list[str] | None = None) -> int:
         code = _run(a)
     if code and captured.getvalue():
         if captured.truncated:
-            sys.stderr.write("strata: earlier human output omitted in quiet mode\n")
+            sys.stderr.write(_tr("strata: earlier human output omitted in quiet mode") + "\n")
         sys.stderr.write(captured.getvalue())
     return code

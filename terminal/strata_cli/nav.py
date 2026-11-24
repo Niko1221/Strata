@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from strata_cli.i18n import tr as _tr
+
 NAMES = ("Overview", "Serving", "Requests", "Engine", "Hardware", "Logs", "Connect")
 SHORT = ("Over", "Serve", "Reqs", "Engine", "GPU", "Logs", "Conn")
 
@@ -23,8 +25,17 @@ def keys(connect: bool) -> str:
     return "1-7" if connect else "1-6"
 
 
+def _names() -> tuple[str, ...]:
+    return tuple(_tr(n) for n in NAMES)
+
+
+def _short() -> tuple[str, ...]:
+    return tuple(_tr(n) for n in SHORT)
+
+
 def title(index: int) -> str:
-    return NAMES[max(0, min(index, len(NAMES) - 1))]
+    names = _names()
+    return names[max(0, min(index, len(names) - 1))]
 
 
 @dataclass
@@ -46,11 +57,11 @@ def layout(current: int, width: int, connect: bool = False) -> Tabs:
     """The tabs for a line `width` columns wide: all names, else short names, else only the tabs around the selected one."""
     n = count(connect)
     current = max(0, min(current, n - 1))
-    for labels, sep in ((NAMES, "  "), (SHORT, " ")):
+    for labels, sep in ((_names(), "  "), (_short(), " ")):
         tabs = Tabs([(t, i == current) for i, t in enumerate(_items(labels, current, n))], sep)
         if tabs.width() <= width:
             return tabs
-    items = _items(SHORT, current, n)
+    items = _items(_short(), current, n)
     lo = hi = current
     while True:
         grew = False
