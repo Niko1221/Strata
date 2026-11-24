@@ -4783,6 +4783,60 @@ bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
     return resident_blob(index) != nullptr;
 }
 
+int64_t FileExpertSource::promote_cold_experts(const std::vector<float>& usage_snap,
+                                               const std::vector<int32_t>& host_res,
+                                               int max_promotes) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() ||
+        complement_offsets_.size() != (size_t) (n_layers_ * n_expert_) ||
+        usage_snap.size() != complement_offsets_.size() ||
+        host_res.size() != complement_offsets_.size() || max_promotes <= 0)
+        return 0;
+    struct Cand { float gain; int32_t layer, in, out; };
+    std::vector<Cand> cands;
+    std::vector<std::pair<float, int32_t>> cold, vict;
+    for (int64_t l = 0; l < n_layers_; ++l) {
+        const size_t lb = (size_t) l * (size_t) n_expert_;
+        const uint64_t bb = layer_blob_bytes_[(size_t) l];
+        cold.clear();
+        vict.clear();
+        for (int32_t e = 0; e < (int32_t) n_expert_; ++e) {
+            const size_t idx = lb + (size_t) e;
+            if (host_res[idx] >= 0) continue;   // currently in VRAM
+            if (complement_offsets_[idx] == kNoComplement) {
+                if (usage_snap[idx] >= 0.5f) cold.emplace_back(usage_snap[idx], e);
+            } else {
+                if (!complement_partial_ || complement_offsets_[idx] + bb <= complement_pin_limit_)
+                    vict.emplace_back(usage_snap[idx], e);
+            }
+        }
+        if (cold.empty() || vict.empty()) continue;
+        std::sort(cold.begin(), cold.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        const size_t nc = (std::min)(cold.size(), vict.size());
+        std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i < nc; ++i) {
+            if (cold[i].first <= vict[i].first + 0.25f) break;
+            cands.push_back({cold[i].first - vict[i].first, (int32_t) l, cold[i].second, vict[i].second});
+        }
+    }
+    if (cands.empty()) return 0;
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.gain > b.gain; });
+    if ((int) cands.size() > max_promotes) cands.resize((size_t) max_promotes);
+    int64_t promoted = 0;
+    for (const Cand& c : cands) {
+        const size_t lb = (size_t) c.layer * (size_t) n_expert_;
+        const size_t in_idx = lb + (size_t) c.in;
+        const size_t out_idx = lb + (size_t) c.out;
+        const uint64_t off = complement_offsets_[out_idx];
+        if (off == kNoComplement || complement_offsets_[in_idx] != kNoComplement) continue;
+        if (!copy_blob(c.layer, c.in, const_cast<uint8_t*>(complement_host_) + (size_t) off)) continue;
+        complement_offsets_[in_idx] = off;
+        complement_offsets_[out_idx] = kNoComplement;
+        ++promoted;
+    }
+    return promoted;
+}
+
 bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bounce) {
     err.clear();
     if (n <= xstage_cap_) return true;

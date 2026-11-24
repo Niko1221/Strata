@@ -2342,6 +2342,18 @@ int adapt_fetch() {
     return v;
 }
 
+/// Opt-in: allow STRATA_ADAPT_FETCH in partial resident RAM mode (--resident-experts --resident-budget-gib N).
+static bool adapt_fetch_resident() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_FETCH_RESIDENT"); return e != nullptr && e[0] != '\0' && e[0] != '0'; }();
+    return v;
+}
+
+/// Opt-in: promote hot cold-tier experts into the resident RAM complement between decode windows.
+static int ram_adapt_cold() {
+    static const int v = [] { const char* e = std::getenv("STRATA_RAM_ADAPT_COLD"); return e != nullptr && e[0] != '\0' ? std::atoi(e) : 0; }();
+    return v;
+}
+
 /// ExpertDispatch::evict_sync where the tier does not wait for its copies; STRATA_ADAPT_EVICT_SYNC=0 turns it off.
 bool adapt_evict_sync() {
     static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_EVICT_SYNC"); return e == nullptr || std::atoi(e) != 0; }();
@@ -8612,7 +8624,7 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
         // the GPU cache's fill and the RAM copy read unbuffered even so: through the mapping their pages sat in the
         // working set beside the copy (end_startup_unbuffered below, once the copy is built).  Windows, experts.bin
-        if (o.resident_cpu_experts && !src.unbuffered()) {
+        if (o.resident_cpu_experts && !src.unbuffered() && o.native_shard.empty()) {
             std::string why;
             if (src.begin_startup_unbuffered(why))
                 std::fprintf(stderr, "strata generate: the GPU cache's fill and the RAM copy read unbuffered (%s)\n",
@@ -14997,7 +15009,7 @@ int main(int argc, char** argv) {
                             : o.pcie_mode == "dma" || o.pcie_mode == "direct" ? "--pcie-mode dma / direct"
                             : drive.d.plan == nullptr ? "no GPU plan"
                             : drive.d.pcie_num <= 0 ? "no PCIe share"
-                            : src.complement_ready() ? "the resident RAM mode" : nullptr;
+                            : src.complement_ready() && !adapt_fetch_resident() ? "the resident RAM mode" : nullptr;
             if (off != nullptr) {
                 if (strata::core::adapt_fetch_is_default())   // the default of a card with 16 GiB or less, not the user's setting
                     std::fprintf(stderr, "strata serve: STRATA_ADAPT_FETCH=2 (the default for this card) is not used in this run (%s)\n", off);
@@ -15276,6 +15288,10 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&](const std::vector<float>& usage_snap) -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
+            if (ram_adapt_cold() > 0 && src.complement_ready()) {
+                const int max_p = ram_adapt_cold() == 1 ? 32 : ram_adapt_cold();
+                (void) src.promote_cold_experts(usage_snap, host_res, max_p);
+            }
             if (remote_opt && !remote_opt->adapt(usage_snap, host_res, pending, o.adapt_swaps, *srcp)) return false;
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
@@ -24499,7 +24515,7 @@ int main(int argc, char** argv) {
                             : o.pcie_mode == "dma" || o.pcie_mode == "direct" ? "--pcie-mode dma / direct"
                             : drive.d.plan == nullptr ? "no GPU plan"
                             : drive.d.pcie_num <= 0 ? "no PCIe share"
-                            : src.complement_ready() ? "the resident RAM mode" : nullptr;
+                            : src.complement_ready() && !adapt_fetch_resident() ? "the resident RAM mode" : nullptr;
             if (off != nullptr) {
                 if (strata::core::adapt_fetch_is_default())
                     std::fprintf(stderr, "strata generate: STRATA_ADAPT_FETCH=2 (the default for this card) is not used in this run (%s)\n", off);

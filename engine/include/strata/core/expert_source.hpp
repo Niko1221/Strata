@@ -830,6 +830,10 @@ public:
     // differ in block size keeps spares per size).
     /// Whether the compact copy holds `(layer, expert)`.
     bool has_resident(int64_t layer, int64_t expert) const;
+    /// Exstrata opt-in (STRATA_RAM_ADAPT_COLD=1): promote hot cold-tier experts into the resident RAM complement
+    /// by replacing the coldest never/rarely-used RAM-resident experts of the same layer.  Bit-identical, 0 extra RAM.
+    int64_t promote_cold_experts(const std::vector<float>& usage_snap, const std::vector<int32_t>& host_res,
+                                 int max_promotes = 32);
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
     /// `bounce`: how many of the last buffers are only staged through and never hold an exchange (STRATA_EXCHANGE_ROTATE
     /// keeps those in the largest block size alone).
