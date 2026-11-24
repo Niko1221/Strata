@@ -2000,6 +2000,7 @@ public:
             const idx::IdxTree* itd = capturing ? &d_step->idx_tp : nullptr;
             hipLaunchKernelGGL(idx::k_idx_pool_tree, dim3(T, 2), dim3(128), 0, st, ivg[il], (const float*)tw(p + ".intra_group_ape"), (const float*)tw(p + ".key_norm.weight"), tmp_pooled, p0,
                                tree->to_idx_tree(), (float)theta(il), c.rms_eps, p0d, itd);
+            if (vis && vis->needs_fix(p0)) vis->tree_pool_fix(st, tmp_pooled, p0, (float)theta(il), tree->to_mla_pos());
             return;
         }
         if (capturing) {
@@ -2011,7 +2012,7 @@ public:
             if (g_hi >= g_lo)
                 hipLaunchKernelGGL(idx::k_idx_pool, dim3(g_hi - g_lo + 1), dim3(128), 0, st, ivg[il], (const float*)tw(p + ".intra_group_ape"), (const float*)tw(p + ".key_norm.weight"), pooled[il], g_lo,
                                    (float)theta(il), c.rms_eps, (const int*)nullptr, 0);
-            if (vis && g_hi >= g_lo && vis->needs_fix(p0, T)) vis->pool_fix(st, pooled[il], g_lo, g_hi - g_lo + 1, (float)theta(il));  // HY4-VISION hook
+            if (vis && g_hi >= g_lo && vis->needs_fix(p0)) vis->pool_fix(st, pooled[il], g_lo, g_hi - g_lo + 1, (float)theta(il));  // HY4-VISION hook
         }
     }
 
@@ -2024,7 +2025,8 @@ public:
         if (tree && tree->M > 0) {
             const idx::IdxTree it = tree->to_idx_tree();
             const idx::IdxTree* itd = capturing ? &d_step->idx_tp : nullptr;
-            hipLaunchKernelGGL(idx::k_idx_q_rope_tree, dim3(T, 16), dim3(128), 0, st, iq_f, iq_h, p0, it, (float)theta(il), p0d, itd);
+            if (vis && vis->needs_fix(p0)) vis->iq_rope(st, iq_f, iq_h, T, p0, (float)theta(il), tree->to_mla_pos());
+            else hipLaunchKernelGGL(idx::k_idx_q_rope_tree, dim3(T, 16), dim3(128), 0, st, iq_f, iq_h, p0, it, (float)theta(il), p0d, itd);
             lin(p + ".head_weight_projection.weight", cur_h, hw_f, T);
             int G = (p0 + tree->max_depth() + 1) / 4;
             if (G < 1) G = 1;
@@ -2034,7 +2036,7 @@ public:
             hipLaunchKernelGGL(idx::k_idx_select_tree, dim3(T), dim3(256), 0, st, score, (int)ldS, p0, it, n_top, index_topk, keys, nkeys, p0d, itd);
             return;
         }
-        if (!capturing && vis && vis->needs_fix(p0, T)) vis->iq_rope(st, iq_f, iq_h, T, p0, (float)theta(il));  // HY4-VISION hook: 3D positions
+        if (!capturing && vis && vis->needs_fix(p0)) vis->iq_rope(st, iq_f, iq_h, T, p0, (float)theta(il));  // HY4-VISION hook: 3D positions
         else hipLaunchKernelGGL(idx::k_idx_q_rope, dim3(T, 16), dim3(128), 0, st, iq_f, iq_h, p0, (float)theta(il), p0d);
         lin(p + ".head_weight_projection.weight", cur_h, hw_f, T);  // [T][16]
         int G = (p0 + T) / 4;
@@ -2120,9 +2122,9 @@ public:
 #endif
           }
         }
-        if (!is_tree && !capturing && vis && vis->needs_fix(p0, T)) {  // HY4-VISION hook: rope of q and of the new keys with the picture-aware (t, h, w) positions
-            vis->fix_k(st, kv_a_out, cache, T, p0, swa ? ring : 0, (float)theta(il), kv_q8);
-            vis->fix_q(st, F2, qa_h, T, NH, p0, (float)theta(il));
+        if (!capturing && vis && vis->needs_fix(p0)) {  // HY4-VISION hook: use the same (t, h, w) positions in linear and tree verification
+            vis->fix_k(st, kv_a_out, cache, T, p0, swa ? ring : 0, (float)theta(il), kv_q8, tp);
+            vis->fix_q(st, F2, qa_h, T, NH, p0, (float)theta(il), tp);
         }
         bool use_list = false;
         if (!swa && index_on) {
@@ -2891,6 +2893,7 @@ public:
                     const std::string p = L(il) + ".self_attn.compressed_indexer";
                     hipLaunchKernelGGL(idx::k_idx_pool, dim3(g_hi - g_lo + 1), dim3(128), 0, st, ivg[il], (const float*)tw(p + ".intra_group_ape"), (const float*)tw(p + ".key_norm.weight"),
                                        pooled[il], g_lo, (float)theta(il), c.rms_eps, (const int*)nullptr, 0);
+                    if (vis && vis->needs_fix(p0)) vis->pool_fix(st, pooled[il], g_lo, g_hi - g_lo + 1, (float)theta(il));
                 }
             }
         }
@@ -3393,7 +3396,7 @@ public:
 #ifdef STRATA_HY4_DISTRIBUTED
         cg_remote_hyb = (remote_experts != nullptr && hyb);
 #endif
-        if (cuda_graph_on && !cg_remote_hyb && T <= 8 && !dump && !prof && !prof2 && !(!is_tree && vis && vis->needs_fix(p0, T)))
+        if (cuda_graph_on && !cg_remote_hyb && T <= 8 && !dump && !prof && !prof2 && !(vis && vis->needs_fix(p0)))
             return forward_chunk_graph(tok_all, p0, T, err, tree);
 #endif
         HCK(hipMemcpyAsync(d_ids, is_tree ? tree->tok : (tok_all + p0), (size_t)T * 4, hipMemcpyHostToDevice, st));

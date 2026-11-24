@@ -17,6 +17,7 @@
 #include "hy4_gpu_model.hip.h"
 #include "hy4_kernels.hip.h"
 #include "hy4_vision.h"
+#include "mla_attn.hip.h"
 
 namespace hy4 {
 namespace vit {
@@ -1042,54 +1043,69 @@ __device__ __forceinline__ void rope_pair_v(float x0, float x1, int pos, int i, 
     o1 = x0 * sn + x1 * cs;
 }
 
-// MLA query: qa[t][h][512 + 2i ..] = rope(q_b[t][h][192 + 2i ..], mrope position of token p0 + t)
-__global__ void k_fix_q(const float* __restrict__ q_b, __half* __restrict__ qa, int NH, int p0, float theta, RopeDev rd) {
+// Tree node slots are ordered by the verifier; their rotary positions follow branch depth.
+__device__ __forceinline__ int token_pos(int p0, int t, const TreePos& tp) {
+    return p0 + (tp.n ? (int)tp.depth[t] : t);
+}
+
+// Rotate the MLA query at the image-aware logical position of each row.
+__global__ void k_fix_q(const float* __restrict__ q_b, __half* __restrict__ qa, int NH, int p0, float theta, RopeDev rd, TreePos tp) {
     const int t = blockIdx.x / NH, h = blockIdx.x % NH, i = threadIdx.x;  // 32 threads
     const float* qp = q_b + ((size_t)t * NH + h) * 256 + 192 + 2 * i;
     float o0, o1;
-    rope_pair_v(qp[0], qp[1], rope_pos(rd, p0 + t, mrope_axis(i)), i, theta, o0, o1);
+    rope_pair_v(qp[0], qp[1], rope_pos(rd, token_pos(p0, t, tp), mrope_axis(i)), i, theta, o0, o1);
     *reinterpret_cast<__half2*>(qa + ((size_t)t * NH + h) * 576 + 512 + 2 * i) = __floats2half2_rn(o0, o1);
 }
 
-// MLA key: cache[slot][512 + 2i ..] = rope(kv_a[t][512 + 2i ..], mrope position of token p0 + t); slot = (p0 + t) % ring, or p0 + t without a ring
-__global__ void k_fix_k(const float* __restrict__ kv_a, __half* __restrict__ cache, int p0, int ring, float theta, RopeDev rd, bool kv_q8 = false) {
+// Rotate the MLA key at its logical position and write it back to its physical cache slot.
+__global__ void k_fix_k(const float* __restrict__ kv_a, __half* __restrict__ cache, int p0, int ring, float theta, RopeDev rd, bool kv_q8, TreePos tp) {
     const int t = blockIdx.x, i = threadIdx.x;  // 32 threads
-    const int pos = p0 + t;
-    const int slot = ring > 0 ? pos % ring : pos;
+    const int row = p0 + t;
+    const int slot = ring > 0 ? row % ring : row;
     float o0, o1;
-    rope_pair_v(kv_a[(size_t)t * 576 + 512 + 2 * i], kv_a[(size_t)t * 576 + 512 + 2 * i + 1], rope_pos(rd, pos, mrope_axis(i)), i, theta, o0, o1);
+    rope_pair_v(kv_a[(size_t)t * 576 + 512 + 2 * i], kv_a[(size_t)t * 576 + 512 + 2 * i + 1], rope_pos(rd, token_pos(p0, t, tp), mrope_axis(i)), i, theta, o0, o1);
     __half* dst = kv_q8 ? (cache + (size_t)slot * 328 + 264 + 2 * i)  // 328 halves = 656 B Q8 row, k_pe starts at byte 528 (half 264)
                         : (cache + (size_t)slot * 576 + 512 + 2 * i);
     *reinterpret_cast<__half2*>(dst) = __floats2half2_rn(o0, o1);
 }
 
-// indexer query: out[t][h][d] = iq[t][h][d], dims 64..127 roped at the mrope position of token p0 + t (instead of idx::k_idx_q_rope)
-__global__ void k_fix_iq(const float* __restrict__ iq, __half* __restrict__ out, int p0, float theta, RopeDev rd) {
+// Rotate the indexer query at its image-aware logical position.
+__global__ void k_fix_iq(const float* __restrict__ iq, __half* __restrict__ out, int p0, float theta, RopeDev rd, TreePos tp) {
     const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;  // 128 threads
     const float* q = iq + (size_t)t * 2048 + h * 128;
     float v = q[d];
     if (d >= 64) {
         const int i = (d - 64) >> 1;
         float o0, o1;
-        rope_pair_v(q[64 + 2 * i], q[64 + 2 * i + 1], rope_pos(rd, p0 + t, mrope_axis(i)), i, theta, o0, o1);
+        rope_pair_v(q[64 + 2 * i], q[64 + 2 * i + 1], rope_pos(rd, token_pos(p0, t, tp), mrope_axis(i)), i, theta, o0, o1);
         v = (d & 1) ? o1 : o0;
     }
     out[(size_t)t * 2048 + h * 128 + d] = __float2half(v);
 }
 
-// pooled indexer keys were roped at 4g (classic); rotate pair i of dims 64..127 by (mrope position of token 4g - 4g) * freq_i so they sit at the picture-aware position
+// A pooled key already carries RoPE at the group's first token. Rotate it by the image position difference.
+__device__ __forceinline__ void fix_pool_row(__half* row, int pos, float theta, const RopeDev& rd) {
+    const int i = threadIdx.x;
+    const int pn = rope_pos(rd, pos, mrope_axis(i));
+    if (pn == pos) return;
+    __half* p = row + 64 + 2 * i;
+    float o0, o1;
+    rope_pair_v(__half2float(p[0]), __half2float(p[1]), pn - pos, i, theta, o0, o1);
+    p[0] = __float2half(o0);
+    p[1] = __float2half(o1);
+}
+
 __global__ void k_fix_pool(__half* __restrict__ pooled, int g_lo, float theta, RopeDev rd) {
-    const int g = g_lo + blockIdx.x, i = threadIdx.x;  // 32 threads
-    const int pn = rope_pos(rd, 4 * g, mrope_axis(i));
-    if (pn == 4 * g) return;
-    const float freq = 1.0f / powf(theta, (float)(2 * i) / 64.0f);
-    const float ang = (float)(pn - 4 * g) * freq;
-    float sn, cs;
-    sincosf(ang, &sn, &cs);
-    __half* p = pooled + (size_t)g * 128 + 64 + 2 * i;
-    const float x0 = __half2float(p[0]), x1 = __half2float(p[1]);
-    p[0] = __float2half(x0 * cs - x1 * sn);
-    p[1] = __float2half(x0 * sn + x1 * cs);
+    const int g = g_lo + blockIdx.x;
+    fix_pool_row(pooled + (size_t)g * 128, 4 * g, theta, rd);
+}
+
+__global__ void k_fix_tree_pool(__half* __restrict__ pooled, int p0, float theta, RopeDev rd, TreePos tp) {
+    const int t = blockIdx.x, k = blockIdx.y;
+    const int g = p0 / 4 + k;
+    if (g >= token_pos(p0, t, tp) / 4) return;
+    // Match the two temporary groups per node in idx::k_idx_pool_tree.
+    fix_pool_row(pooled + (size_t)(2 * t + k) * 128, 4 * g, theta, rd);
 }
 
 }  // namespace vit
@@ -1182,23 +1198,26 @@ struct VisionCtx {
         hipLaunchKernelGGL(vit::k_scatter_rows, dim3(T), dim3(256), 0, st, x, (const float*)d_rows, (const int32_t*)d_map, T);
     }
     // hook 2: positions of the chunk are not index + 0 any more (a picture is in the context): redo the rope of q (qa rope part) and of the new keys with the 3D positions
-    void fix_q(hipStream_t st, const float* q_b, __half* qa, int M, int NH, int p0, float theta) {
-        hipLaunchKernelGGL(vit::k_fix_q, dim3(M * NH), dim3(32), 0, st, q_b, qa, NH, p0, theta, rd());
+    void fix_q(hipStream_t st, const float* q_b, __half* qa, int M, int NH, int p0, float theta, TreePos tp = {}) {
+        hipLaunchKernelGGL(vit::k_fix_q, dim3(M * NH), dim3(32), 0, st, q_b, qa, NH, p0, theta, rd(), tp);
     }
-    void fix_k(hipStream_t st, const float* kv_a, __half* cache, int M, int p0, int ring, float theta, bool kv_q8 = false) {
-        hipLaunchKernelGGL(vit::k_fix_k, dim3(M), dim3(32), 0, st, kv_a, cache, p0, ring, theta, rd(), kv_q8);
+    void fix_k(hipStream_t st, const float* kv_a, __half* cache, int M, int p0, int ring, float theta, bool kv_q8 = false, TreePos tp = {}) {
+        hipLaunchKernelGGL(vit::k_fix_k, dim3(M), dim3(32), 0, st, kv_a, cache, p0, ring, theta, rd(), kv_q8, tp);
     }
-    void iq_rope(hipStream_t st, const float* iq, __half* out, int T, int p0, float theta) {
-        hipLaunchKernelGGL(vit::k_fix_iq, dim3(T, 16), dim3(128), 0, st, iq, out, p0, theta, rd());
+    void iq_rope(hipStream_t st, const float* iq, __half* out, int T, int p0, float theta, TreePos tp = {}) {
+        hipLaunchKernelGGL(vit::k_fix_iq, dim3(T, 16), dim3(128), 0, st, iq, out, p0, theta, rd(), tp);
     }
     void pool_fix(hipStream_t st, __half* pooled, int g_lo, int n, float theta) { hipLaunchKernelGGL(vit::k_fix_pool, dim3(n), dim3(32), 0, st, pooled, g_lo, theta, rd()); }
+    void tree_pool_fix(hipStream_t st, __half* pooled, int p0, float theta, TreePos tp) {
+        hipLaunchKernelGGL(vit::k_fix_tree_pool, dim3(tp.n, 2), dim3(32), 0, st, pooled, p0, theta, rd(), tp);
+    }
     // Engram: the contribution is masked at image positions (HY_V4_FLASH_ENGRAM_DEAD: every column invalid)
     void mask_engram(uint8_t* valid /*[T][16]*/, int p0, int T) const {
         for (int t = 0; t < T; ++t)
             if (p0 + t < (int)mask.size() && mask[p0 + t]) memset(valid + (size_t)t * 16, 0, 16);
     }
-    // positions of the generated tokens follow index + delta (RopeDev.tail_from / delta); true when the 3D rope path is needed for this chunk
-    bool needs_fix(int p0, int T) const { return active() && (pos.delta != 0 || p0 < tab_n); }
+    // Generated tokens use index + delta. The first indexer pool can start up to three tokens before p0.
+    bool needs_fix(int p0) const { return active() && (pos.delta != 0 || (p0 / 4) * 4 < tab_n); }
 };
 
 }  // namespace hy4
