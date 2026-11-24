@@ -18040,6 +18040,64 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        struct ScoreFrontierCache {
+            struct Entry {
+                std::vector<int64_t> tokens;
+                int64_t layer = 0;
+                bool cvec = true;
+                std::vector<float> R;
+                uint64_t last_used = 0;
+            };
+            enum : size_t {
+                kMaxEntries = 16,
+                kMaxBytes = 256ull * 1024ull * 1024ull,
+            };
+            std::vector<Entry> entries;
+            size_t total_bytes = 0;
+            uint64_t tick = 0;
+
+            const Entry* find(const int64_t* toks, size_t n_toks, int64_t layer, bool cvec) {
+                for (Entry& e : entries) {
+                    if (e.layer == layer && e.cvec == cvec && e.tokens.size() == n_toks &&
+                        std::memcmp(e.tokens.data(), toks, n_toks * sizeof(int64_t)) == 0) {
+                        e.last_used = ++tick;
+                        return &e;
+                    }
+                }
+                return nullptr;
+            }
+
+            void put(const int64_t* toks, size_t n_toks, int64_t layer, bool cvec, std::vector<float>&& R) {
+                const size_t bytes = R.size() * sizeof(float);
+                if (bytes == 0 || bytes > kMaxBytes) return;
+                for (Entry& e : entries) {
+                    if (e.layer == layer && e.cvec == cvec && e.tokens.size() == n_toks &&
+                        std::memcmp(e.tokens.data(), toks, n_toks * sizeof(int64_t)) == 0) {
+                        total_bytes -= e.R.size() * sizeof(float);
+                        e.R = std::move(R);
+                        total_bytes += bytes;
+                        e.last_used = ++tick;
+                        return;
+                    }
+                }
+                while (!entries.empty() && (entries.size() >= kMaxEntries || total_bytes + bytes > kMaxBytes)) {
+                    size_t victim = 0;
+                    for (size_t i = 1; i < entries.size(); ++i) {
+                        if (entries[i].last_used < entries[victim].last_used) victim = i;
+                    }
+                    total_bytes -= entries[victim].R.size() * sizeof(float);
+                    entries.erase(entries.begin() + (ptrdiff_t) victim);
+                }
+                Entry e;
+                e.tokens.assign(toks, toks + n_toks);
+                e.layer = layer;
+                e.cvec = cvec;
+                e.R = std::move(R);
+                e.last_used = ++tick;
+                total_bytes += bytes;
+                entries.push_back(std::move(e));
+            }
+        } score_frontier_cache;
         for (;;) {
             line_drain_ms = 0.0;
             strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
@@ -18290,7 +18348,7 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
-            // Teacher-forced sequence scoring: SCORE [lora=0|1] [cvec=0|1] [from=K] <id0,id1,...,id_{N-1}>
+            // Teacher-forced sequence scoring: SCORE [lora=0|1] [cvec=0|1] [from=K] [frontier=auto|<L>] <id0,id1,...,id_{N-1}>
             // Reuses single-GPU Prefill::run + on_chunk + run_head with zero extra GPU allocations, and returns
             // exact per-token log-probabilities for positions [from, N - 2] (predicting tokens[pos + 1]).
             if (line == "SCORE" || line.rfind("SCORE ", 0) == 0) {
@@ -18315,6 +18373,8 @@ int main(int argc, char** argv) {
                 int req_lora = 1;
                 int req_cvec = 1;
                 int64_t req_from = 0;
+                bool req_frontier_auto = false;
+                int64_t req_frontier = 0;
                 const char* p = line.c_str() + 5;
                 bool parse_ok = true;
                 std::string parse_err;
@@ -18353,6 +18413,21 @@ int main(int argc, char** argv) {
                             break;
                         }
                         req_from = (int64_t) fv;
+                    } else if (key == "frontier") {
+                        if (val == "auto") {
+                            req_frontier_auto = true;
+                            req_frontier = 0;
+                        } else {
+                            char* fe = nullptr;
+                            const long long fv = std::strtoll(val.c_str(), &fe, 10);
+                            if (val.empty() || fe == nullptr || *fe != '\0' || fv < 0) {
+                                parse_ok = false;
+                                parse_err = "frontier must be 0, auto, or in [2, n_layers-1]";
+                                break;
+                            }
+                            req_frontier_auto = false;
+                            req_frontier = (int64_t) fv;
+                        }
                     } else {
                         parse_ok = false;
                         parse_err = "unknown option: " + key;
@@ -18397,6 +18472,36 @@ int main(int argc, char** argv) {
                 }
                 if (bad_id) { refuse("token id out of vocabulary range"); continue; }
 
+                const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+                const bool want_lora = strata::kernels::lora().loaded ? req_lora != 0 : true;
+                int64_t eff_frontier = 0;
+                if (req_frontier_auto) {
+                    int64_t first_adapted = g.n_layers;
+                    if (want_lora && strata::kernels::lora().loaded) {
+                        for (int64_t l = 0; l < g.n_layers; ++l) {
+                            if (strata::kernels::lora().covers(l)) { first_adapted = l; break; }
+                        }
+                    }
+                    if (first_adapted >= 2 && first_adapted < g.n_layers) eff_frontier = first_adapted;
+                } else if (req_frontier > 0) {
+                    if (req_frontier < 2 || req_frontier >= g.n_layers) {
+                        refuse("frontier must be 0, auto, or in [2, n_layers-1]");
+                        continue;
+                    }
+                    if (want_lora && strata::kernels::lora().loaded) {
+                        bool below = false;
+                        for (int64_t l = 0; l < req_frontier; ++l) {
+                            if (strata::kernels::lora().covers(l)) { below = true; break; }
+                        }
+                        if (below) {
+                            refuse("frontier layer " + std::to_string((long long) req_frontier) +
+                                   " has adapted layers below it");
+                            continue;
+                        }
+                    }
+                    eff_frontier = req_frontier;
+                }
+
                 strata::core::conversation_checkpoint_join(nullptr);
                 strata::core::conversation_park_join();
                 if (!ver.wait_commit(err)) {
@@ -18434,8 +18539,6 @@ int main(int argc, char** argv) {
                 live_ok = false;
                 conversations.take_reuse();
 
-                const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
-                const bool want_lora = strata::kernels::lora().loaded ? req_lora != 0 : true;
                 cvec_cached = want_cvec;
                 lora_cached = want_lora;
                 if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
@@ -18533,7 +18636,35 @@ int main(int argc, char** argv) {
 
                 strata::prefill::Prefill::set_pipe_request(-1.0);
                 strata::prefill::Prefill::set_share_blocked(false);
-                const bool run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                bool run_ok = false;
+                const bool use_frontier = eff_frontier > 0 && (N - 1) <= sp.chunk();
+                if (use_frontier) {
+                    const ScoreFrontierCache::Entry* hit =
+                        score_frontier_cache.find(s_ids.data(), (size_t) (N - 1), eff_frontier, want_cvec);
+                    if (hit != nullptr) {
+                        run_ok = sp.run_from_layer(s_ids.data(), N - 1, 0, eff_frontier, hit->R.data(), score_err);
+                    } else {
+                        const size_t cap_floats = (size_t) (N - 1) * row_floats;
+                        const size_t cap_bytes = cap_floats * sizeof(float);
+                        if (cap_bytes <= ScoreFrontierCache::kMaxBytes) {
+                            std::vector<float> cap(cap_floats);
+                            struct FrontierCapGuard {
+                                strata::prefill::Prefill& pf;
+                                ~FrontierCapGuard() { pf.clear_frontier_capture(); }
+                            } cap_guard{sp};
+                            sp.set_frontier_capture(eff_frontier, cap.data());
+                            run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                            if (run_ok) {
+                                score_frontier_cache.put(s_ids.data(), (size_t) (N - 1), eff_frontier, want_cvec,
+                                                         std::move(cap));
+                            }
+                        } else {
+                            run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                        }
+                    }
+                } else {
+                    run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                }
 
                 if (cudaPeekAtLastError() != cudaSuccess) {
                     std::fprintf(stderr, "strata serve: score GPU fault: %s\n", score_err.c_str());
