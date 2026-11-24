@@ -6373,8 +6373,12 @@ class Service:
                                 self.status.pop("tool", None)
         except QueueCancelled:
             finish = "cancel"
-            yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
-                           "reasoning_tokens": 0, "reasoning_recoveries": 0}
+            cancelled_done = {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
+                              "reasoning_tokens": 0, "reasoning_recoveries": 0}
+            if (sampling or {}).get("return_token_ids") is True:
+                cancelled_done["prompt_token_ids"] = list(ids)
+                cancelled_done["token_ids"] = []
+            yield "done", cancelled_done
             return
         except QueueWaitExpired:
             finish = "timeout"
@@ -6439,6 +6443,9 @@ class Service:
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
+        if (sampling or {}).get("return_token_ids") is True:
+            done["prompt_token_ids"] = list(ids)
+            done["token_ids"] = list(raw_ids)
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
             if finish == "length":
@@ -6632,9 +6639,18 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         opened = True
         return (chunk({"role": "assistant", "content": ""}),)
 
-    lp = LogprobEntries(svc, allowed_ids(req), cancel) if top_logprobs(req) is not None else None
+    want_ids = req.get("return_token_ids") is True
+    lp = LogprobEntries(svc, allowed_ids(req), cancel, include_stop=want_ids) if top_logprobs(req) is not None else None
+    raw_lps = []                                   # return_token_ids + logprobs: 1:1 raw entries for every generated id
+
+    def drain_raw_lp():
+        if want_ids and lp is not None:
+            raw_lps.extend(lp.take(svc.engine))
 
     def with_lp(c, key):
+        if want_ids:
+            drain_raw_lp()
+            return c
         got = lp.spell(svc.engine, c["choices"][0]["delta"][key]) if lp is not None else None
         if got:
             c["choices"][0]["logprobs"] = {key: got}
@@ -6667,17 +6683,21 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 yield from first()
                 yield with_lp(chunk({"content": ev.text}), "content")
             elif ev.kind == "tool_start":
+                drain_raw_lp()
                 streamed[ev.call.id] = calls
                 calls += 1
                 yield from first()
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name, "arguments": ""}}]})
             elif ev.kind == "tool_args":
+                drain_raw_lp()
                 yield from first()
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
             elif ev.kind == "tool_call" and ev.call.id in streamed:
+                drain_raw_lp()
                 finished.add(ev.call.id)
             elif ev.kind == "tool_call":
+                drain_raw_lp()
                 yield from first()
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
@@ -6685,6 +6705,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 calls += 1
         else:
             answered_done = True
+            drain_raw_lp()
             # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
             yield from first()                     # an empty answer still opens with the role
             whole = calls and streamed.keys() <= finished
@@ -6695,6 +6716,11 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "total_tokens": pt + x["completion_tokens"],
                              # the part of the prompt the conversation cache already held (OpenAI's field)
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
+            if want_ids:
+                last["prompt_token_ids"] = x.get("prompt_token_ids", list(ids))
+                last["choices"][0]["token_ids"] = x.get("token_ids", [])
+                if raw_lps:
+                    last["choices"][0]["logprobs"] = {"content": raw_lps}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
             if x.get("rejected_tool_calls"):
@@ -8061,6 +8087,9 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            rti = req.get("return_token_ids")
+            if rti is not None and not isinstance(rti, bool):
+                raise ValueError("return_token_ids must be a boolean")
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
