@@ -329,7 +329,20 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
-               "experimental_speed_projection")
+               "preserve_thinking", "preserve_reasoning", "experimental_speed_projection")
+
+
+def shared_preserve(shared: dict) -> bool | None:
+    """The preserve-reasoning default in the shared Chat settings, or None when they say nothing about it.
+
+    `preserve_reasoning` (llama.cpp's name) wins over `preserve_thinking` (Qwen's), the same order the fixed Qwen
+    templates use.  Read by `Service.with_shared`, which fills it into a request that does not name one itself."""
+    if not isinstance(shared, dict):
+        return None
+    for key in ("preserve_reasoning", "preserve_thinking"):
+        if key in shared:
+            return bool(shared[key])
+    return None
 
 
 def load_shared_settings(path, warn=print, *, hy4: bool = False) -> dict:
@@ -400,6 +413,12 @@ def clean_shared_defaults(d, hy4: bool = False) -> dict:
             if not number or value != int(value) or value < 0:
                 raise ValueError("reasoning_budget_tokens: a whole number of tokens (0: no budget)")
             value = int(value)
+        elif key in ("preserve_thinking", "preserve_reasoning"):
+            # Whether the chat template keeps the reasoning of the EARLIER turns in the prompt (the current turn's
+            # is always kept - that is the tool-call loop the model is in).  A default here, for clients that do
+            # not send the kwarg themselves; a request's own value wins (with_shared only fills a gap).
+            if not isinstance(value, bool):
+                raise ValueError(f"{key}: true or false")
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise ValueError("experimental_speed_projection: true or false")

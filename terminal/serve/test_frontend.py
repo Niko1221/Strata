@@ -349,3 +349,70 @@ class EmptyConversation(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_messages(openai_to_messages({})[0])
         require_messages(openai_to_messages({"messages": [{"role": "user", "content": "hi"}]})[0])
+
+
+class PreserveReasoningSwitch(unittest.TestCase):
+    """`chat_template_kwargs.preserve_reasoning` (llama.cpp's name) / `preserve_thinking` (Qwen's) reach the
+    template.  Before this, both were dropped and a client could not ask for the reasoning of the earlier turns to
+    be left out of the prompt - the template's default (preserve everything) was the only behaviour available."""
+
+    OLD = "STRATA_OLD_TURN_REASONING"
+    CURRENT = "STRATA_CURRENT_REASONING"
+
+    def setUp(self):
+        self.template = ChatTemplate(Path(__file__).with_name("chat_template.jinja"))
+        self.history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer", "reasoning_content": self.OLD},
+            {"role": "user", "content": "latest question"},
+        ]
+
+    def render(self, **kwargs):
+        req = {"model": "m", "messages": copy.deepcopy(self.history)}
+        if kwargs:
+            req["chat_template_kwargs"] = kwargs
+        messages, tools, kw = openai_to_messages(req)
+        return self.template.render(messages, tools=tools, **kw), kw
+
+    def test_both_spellings_are_accepted_and_mean_the_same(self):
+        for key in ("preserve_reasoning", "preserve_thinking"):
+            for value in (False, "false", 0, "0"):
+                with self.subTest(key=key, value=value):
+                    _, kw = self.render(**{key: value})
+                    self.assertIs(kw["preserve_thinking"], False)
+                    self.assertIs(kw["preserve_reasoning"], False)
+            for value in (True, "true", 1):
+                with self.subTest(key=key, value=value):
+                    _, kw = self.render(**{key: value})
+                    self.assertIs(kw["preserve_reasoning"], True)
+
+    def test_unset_keeps_the_template_default(self):
+        prompt, kw = self.render()
+        self.assertNotIn("preserve_thinking", kw)
+        self.assertIn(self.OLD, prompt)
+
+    def test_off_drops_the_reasoning_of_the_earlier_turns(self):
+        prompt, _ = self.render(preserve_reasoning=False)
+        self.assertNotIn(self.OLD, prompt)
+        self.assertIn("first answer", prompt)                     # the answer itself stays
+
+    def test_off_keeps_the_reasoning_of_the_turn_in_progress(self):
+        messages, tools, kw = openai_to_messages(
+            {"model": "m", "messages": copy.deepcopy(self.history),
+             "chat_template_kwargs": {"preserve_reasoning": False}})
+        messages += [
+            {"role": "assistant", "content": "", "reasoning_content": self.CURRENT,
+             "tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": {"path": "x"}}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool output"}]
+        prompt = self.template.render(messages, tools=tools, **kw)
+        self.assertIn(self.CURRENT, prompt)
+        self.assertNotIn(self.OLD, prompt)
+
+    def test_the_anthropic_dialect_takes_it_too(self):
+        messages, tools, kw = anthropic_to_messages(
+            {"model": "m", "max_tokens": 8, "system": "sys",
+             "messages": copy.deepcopy(self.history)[1:],
+             "chat_template_kwargs": {"preserve_reasoning": False}}, False)
+        self.assertIs(kw["preserve_reasoning"], False)
+        self.assertNotIn(self.OLD, self.template.render(messages, tools=tools, **kw))
