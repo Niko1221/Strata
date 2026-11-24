@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import re
 import socket
@@ -853,3 +854,79 @@ def arm_faulthandler(env: dict | None = None) -> bool:
         return True
     except Exception:                                  # noqa: BLE001 - arming a crash reporter never breaks a start
         return False
+
+
+def _split_lora_item(item: str) -> tuple[str, float | None]:
+    """Split a single `FILE[:SCALE]` token, leaving Windows drive letters and directory colons intact."""
+    colon = item.rfind(":")
+    if colon > 0 and "/" not in item[colon + 1:] and "\\" not in item[colon + 1:]:
+        try:
+            sc = float(item[colon + 1:])
+        except ValueError:
+            return item, None
+        if math.isfinite(sc):
+            return item[:colon], sc
+    return item, None
+
+
+def lora_spec_from_args(args) -> tuple[str, float]:
+    """Extract the initial `(path_or_spec, scale)` from engine CLI args (`--lora` / `--lora-scaled`)."""
+    entries: list[tuple[str, float]] = []
+    args_list = list(args or ())
+    i = 0
+    while i < len(args_list):
+        a = args_list[i]
+        if a == "--lora" and i + 1 < len(args_list):
+            entries.append((str(args_list[i + 1]), 1.0))
+            i += 2
+        elif isinstance(a, str) and a.startswith("--lora="):
+            entries.append((a.partition("=")[2], 1.0))
+            i += 1
+        elif a == "--lora-scaled" and i + 1 < len(args_list):
+            for part in str(args_list[i + 1]).split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                p, sc = _split_lora_item(part)
+                entries.append((p, 1.0 if sc is None else sc))
+            i += 2
+        elif isinstance(a, str) and a.startswith("--lora-scaled="):
+            for part in a.partition("=")[2].split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                p, sc = _split_lora_item(part)
+                entries.append((p, 1.0 if sc is None else sc))
+            i += 1
+        else:
+            i += 1
+    if not entries:
+        return "", 1.0
+    if len(entries) == 1:
+        return entries[0]
+    return ",".join(f"{p}:{s:g}" for p, s in entries), 1.0
+
+
+def format_lora_spec(path, scale=None) -> tuple[str, float, str]:
+    """Validate and format a LoRA reload request into `(display_path, scale_val, engine_spec)`."""
+    if not isinstance(path, str) or not path.strip() or any(c in path for c in "\r\n\0"):
+        raise ValueError("path: expected a non-empty LoRA adapter path or spec")
+    clean = path.strip()
+    scale_val: float | None = None
+    if scale is not None:
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)):
+            raise ValueError("scale: expected a finite number")
+        scale_val = float(scale)
+    if "," in clean:
+        if scale_val is not None and not math.isclose(scale_val, 1.0, rel_tol=1e-6, abs_tol=1e-9):
+            raise ValueError("scale cannot override a comma-separated multi-adapter spec; set :SCALE on each entry")
+        return clean, 1.0, clean
+    base, embedded = _split_lora_item(clean)
+    if not base:
+        raise ValueError("path: expected a non-empty LoRA adapter path")
+    if embedded is not None:
+        use_scale = embedded if scale_val is None else scale_val
+        return base, use_scale, f"{base}:{use_scale:g}"
+    if scale_val is None:
+        return clean, 1.0, clean
+    return clean, scale_val, f"{clean}:{scale_val:g}"

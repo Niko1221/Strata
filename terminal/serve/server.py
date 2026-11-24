@@ -278,6 +278,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     default_model_name,
     desktop_vram_note,
     explicit_no_key,
+    format_lora_spec,
     host_allowed,
     host_name,
     key_list,
@@ -285,6 +286,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     lift_reasoning_effort_arg,
     linux_desktop,
     load_shared_settings,
+    lora_spec_from_args,
     model_card_sampling,
     open_server_warning,
     origin_allowed,
@@ -780,6 +782,9 @@ class StrataEngine:
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
         self.last_err = None
+        self.lora_path, self.lora_scale = lora_spec_from_args(args)
+        self.lora_generation = 0
+        self.lora_digest = None
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -856,6 +861,11 @@ class StrataEngine:
                 self.can_stop = "stop" in f[2:]
                 self.can_hold = "hold" in f[2:]
                 self.can_hold_batch = "holdb" in f[2:]
+                try:
+                    if int(self.info.get("lora") or 0) > 0:
+                        self.lora_generation = 1
+                except (TypeError, ValueError):
+                    pass
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1251,6 +1261,57 @@ class StrataEngine:
                 return out
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
+
+    def lora_reload(self, spec: str, timeout: float = 120.0) -> dict:
+        with self._exclusive_control():
+            return self._lora_reload(spec, timeout)
+
+    def _lora_reload(self, spec: str, timeout: float = 120.0) -> dict:
+        """Hot-reload LoRA adapter weights in place (`LORA_RELOAD <spec>`).  -> {"generation", "digest", "ms", "dropped"}.
+        Raises ValueError on `ERR lora_reload: ...`, EngineDied if the engine exits, times out, or loses protocol step."""
+        if not isinstance(spec, str) or not spec.strip() or any(c in spec for c in "\r\n\0"):
+            raise ValueError("invalid LoRA adapter spec")
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        try:
+            self.proc.stdin.write(f"LORA_RELOAD {spec.strip()}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise EngineDied("the engine did not answer LORA_RELOAD")
+            try:
+                line = self.lines.get(timeout=min(0.5, left))
+            except queue.Empty:
+                continue
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            line = line.strip()
+            if line.startswith("ERR"):
+                msg = line[4:].strip()
+                if msg.startswith("lora_reload:"):
+                    msg = msg[len("lora_reload:"):].strip()
+                raise ValueError(msg or "the engine refused LORA_RELOAD")
+            if line.startswith("OK lora_reload "):
+                parts = line.split()
+                if len(parts) < 6 or not parts[5].startswith("dropped="):
+                    raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
+                try:
+                    gen = int(parts[2])
+                    digest = parts[3]
+                    elapsed_ms = float(parts[4])
+                    dropped = int(parts[5].split("=", 1)[1])
+                except ValueError:
+                    raise EngineDied(f"malformed LORA_RELOAD reply: {line[:200]!r}") from None
+                self.lora_generation = gen
+                self.lora_digest = digest
+                return {"generation": gen, "digest": digest, "ms": elapsed_ms, "dropped": dropped}
+            if line.startswith(("INFO ", "WARN ")):
+                continue
+            raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
 
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
@@ -4562,6 +4623,183 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
+    def _lora_layers(self) -> int:
+        raw = (getattr(self.engine, "info", None) or {}).get("lora", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _lora_hot_reload_supported(self) -> bool:
+        info = getattr(self.engine, "info", None) or {}
+        return bool(info.get("lora_reload")) and hasattr(self.engine, "lora_reload")
+
+    def _lora_enabled(self) -> bool:
+        return ({**self.sampling_defaults, **self.shared}).get("lora") is not False
+
+    def _set_lora_enabled(self, on: bool) -> None:
+        self.sampling_defaults["lora"] = bool(on)
+        if "lora" in self.shared:
+            self.shared["lora"] = bool(on)
+
+    def lora_adapters(self) -> list[dict]:
+        """Current LoRA adapter state for GET /lora-adapters ([] when unloaded or no adapter is loaded)."""
+        if not self.loaded():
+            return []
+        layers = self._lora_layers()
+        if layers <= 0:
+            return []
+        enabled = self._lora_enabled()
+        path = getattr(self.engine, "lora_path", "") or ""
+        loaded_scale = float(getattr(self.engine, "lora_scale", 1.0))
+        gen = int(getattr(self.engine, "lora_generation", 1) or 1)
+        return [{
+            "id": 0,
+            "path": path,
+            "scale": loaded_scale if enabled else 0.0,
+            "enabled": enabled,
+            "generation": gen,
+            "layers": layers,
+            "hot_reload": self._lora_hot_reload_supported(),
+        }]
+
+    def _reload_lora_locked(self, display_path: str, scale_val: float, engine_spec: str) -> dict:
+        """Hot-reload adapter weights via the engine's LORA_RELOAD command while idle."""
+        if not self.loaded():
+            raise ModelBusy("the model is not loaded; cannot hot-reload LoRA")
+        if self._lora_layers() <= 0:
+            raise ModelBusy("no LoRA adapter was loaded at startup")
+        if not self._lora_hot_reload_supported():
+            raise ModelBusy("this engine does not support runtime LoRA hot-reload")
+        if not self.fifo.acquire(blocking=False):
+            raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(blocking=False):
+            self.fifo.release()
+            raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+        if ctl is not None:
+            self.engine._ctl_held = True
+        try:
+            with self.status_lock:
+                if self.status.get("busy"):
+                    raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+                self.status.update(busy=True, phase="reloading LoRA", started=time.time(), first_token=None,
+                                   prompt_tokens=None, generated=None, max_tokens=None)
+            try:
+                res = self.engine.lora_reload(engine_spec)
+            except ValueError as e:
+                msg = str(e)
+                if "actively decoding" in msg.lower() or "busy" in msg.lower():
+                    raise ModelBusy(msg) from None
+                raise
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+            self.engine.lora_path = display_path
+            self.engine.lora_scale = scale_val
+            self.engine.lora_generation = int(res["generation"])
+            self.engine.lora_digest = res.get("digest")
+            self._set_lora_enabled(scale_val != 0.0)
+            return {
+                "id": 0,
+                "path": display_path,
+                "scale": scale_val,
+                "enabled": scale_val != 0.0,
+                "generation": int(res["generation"]),
+                "digest": res.get("digest"),
+                "ms": res.get("ms"),
+                "dropped": res.get("dropped", 0),
+                "layers": self._lora_layers(),
+                "hot_reload": True,
+            }
+        finally:
+            if ctl is not None:
+                self.engine._ctl_held = False
+                ctl.release()
+            self.fifo.release()
+
+    def update_lora_adapters(self, payload) -> tuple[int, dict | list]:
+        """POST /lora-adapters: accept either a hot-reload dict `{"path": ..., "scale": ...}` or a llama.cpp-compatible
+        list `[{"id": 0, "scale": ...}]`.  Returns `(http_status, json_body)`."""
+        def err(code: int, message: str, etype: str | None = None) -> tuple[int, dict]:
+            if etype is None:
+                etype = "conflict_error" if code == 409 else ("invalid_request_error" if code < 500 else "server_error")
+            return code, {"error": {"type": etype, "message": message}}
+
+        if isinstance(payload, dict):
+            try:
+                display_path, scale_val, engine_spec = format_lora_spec(payload.get("path"), payload.get("scale"))
+            except ValueError as e:
+                return err(400, str(e))
+            try:
+                return 200, self._reload_lora_locked(display_path, scale_val, engine_spec)
+            except ModelBusy as e:
+                return err(409, str(e), "model_busy")
+            except ValueError as e:
+                return err(400, str(e))
+            except EngineDied as e:
+                return err(503, str(e))
+
+        if isinstance(payload, list):
+            if not self.loaded() or self._lora_layers() <= 0:
+                if not payload:
+                    return 200, []
+                return err(409, "no LoRA adapter was loaded at startup")
+            if not payload:
+                self._set_lora_enabled(False)
+                return 200, self.lora_adapters()
+            chosen = None
+            for item in payload:
+                if not isinstance(item, dict):
+                    return err(400, "each adapter entry must be a JSON object")
+                aid = item.get("id")
+                if isinstance(aid, bool) or not isinstance(aid, int) or aid != 0:
+                    return err(400, f"unknown LoRA adapter id {aid!r}; this server supports adapter id 0")
+                has_path = "path" in item and item["path"] is not None
+                has_scale = "scale" in item and item["scale"] is not None
+                if not has_path and not has_scale:
+                    return err(400, "each adapter entry must specify scale or path")
+                if has_scale:
+                    sc = item["scale"]
+                    if isinstance(sc, bool) or not isinstance(sc, (int, float)) or not math.isfinite(float(sc)):
+                        return err(400, "scale: expected a finite number")
+                chosen = item
+            want_path = chosen.get("path")
+            want_scale = float(chosen["scale"]) if chosen.get("scale") is not None else 1.0
+            if want_path is not None:
+                try:
+                    display_path, scale_val, engine_spec = format_lora_spec(want_path, chosen.get("scale"))
+                    self._reload_lora_locked(display_path, scale_val, engine_spec)
+                except ModelBusy as e:
+                    return err(409, str(e), "model_busy")
+                except ValueError as e:
+                    return err(400, str(e))
+                except EngineDied as e:
+                    return err(503, str(e))
+                return 200, self.lora_adapters()
+            if want_scale == 0.0:
+                self._set_lora_enabled(False)
+                return 200, self.lora_adapters()
+            cur_path = getattr(self.engine, "lora_path", "") or ""
+            cur_scale = float(getattr(self.engine, "lora_scale", 1.0))
+            if (not math.isclose(want_scale, cur_scale, rel_tol=1e-6, abs_tol=1e-9) and
+                    cur_path and "," not in cur_path and self._lora_hot_reload_supported()):
+                try:
+                    display_path, scale_val, engine_spec = format_lora_spec(cur_path, want_scale)
+                    self._reload_lora_locked(display_path, scale_val, engine_spec)
+                except ModelBusy as e:
+                    return err(409, str(e), "model_busy")
+                except ValueError as e:
+                    return err(400, str(e))
+                except EngineDied as e:
+                    return err(503, str(e))
+            else:
+                self._set_lora_enabled(True)
+            return 200, self.lora_adapters()
+
+        return err(400, "send a JSON object or array")
+
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
         note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
@@ -6985,6 +7223,10 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
                 return
+            if path == "/lora-adapters":
+                if self._authorized():
+                    self._json(200, svc.lora_adapters())
+                return
             if path == "/config":                            # #564: the Settings view's keys of the run config
                 if self._authorized():
                     self._config_get()
@@ -7112,6 +7354,9 @@ def make_handler(svc: Service):
                 return
             if path == "/settings":
                 self._settings()
+                return
+            if path == "/lora-adapters":
+                self._lora_adapters_post()
                 return
             if path == "/config":
                 self._config_post()
@@ -7485,6 +7730,18 @@ def make_handler(svc: Service):
             print("[strata] other apps now use the Chat settings: " + ", ".join(f"{k}={v}" for k, v in shared.items())
                   if shared else "[strata] other apps use their own settings again", flush=True)
             self._json(200, {"shared": bool(shared), "defaults": shared})
+
+        def _lora_adapters_post(self):
+            body = self._body()
+            if not self._own_page("LoRA adapters can be changed"):
+                return
+            try:
+                req = json.loads(body or b"null")
+            except ValueError as e:
+                self._json(400, {"error": {"type": "invalid_request_error", "message": f"invalid JSON: {e}"}})
+                return
+            code, resp = svc.update_lora_adapters(req)
+            self._json(code, resp)
 
         def _sse(self):
             self._note(http_status=200)
