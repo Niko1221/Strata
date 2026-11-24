@@ -236,6 +236,7 @@
   "toast.httpAnswer": "El servidor respondió con HTTP {code}.",
   "toast.keyAbout": "Este servidor necesita una clave: añádela en Acerca de > Ajustes.",
   "toast.keyAbout2": "Falta la clave de API: añádela en Acerca de > Ajustes.",
+  "toast.keyFrom": "Es la clave con la que se inició el servidor: --api-key, STRATA_API_KEY, api_key de la configuración de ejecución o la clave sk-strata- que strata launch creó al compartir más allá de este equipo.",
   "toast.keyNeeded": "Este servidor necesita una clave de API: añádela en Acerca de > Ajustes.",
   "toast.requestFailed": "La solicitud falló",
   "tool.arguments": "Argumentos",
