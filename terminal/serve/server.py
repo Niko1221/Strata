@@ -3828,6 +3828,7 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         if announce:
             print("[strata] This engine does not support spreading prompt cache checkpoints, so it uses its usual checkpoint policy.", flush=True)
     args = conversation_cache_min_tokens_args(args, exe or cfg.get("exe"))
+    args = conversation_cache_budget_args(args, exe or cfg.get("exe"), announce)
     return draft_costs_args(cfg, learned_profile_args(cfg, args), exe or cfg.get("exe"))
 
 
@@ -3850,6 +3851,16 @@ def conversation_cache_min_tokens_args(args: list[str], exe: str | None = None) 
     if not exe or engine_has_text(exe, b"--conversation-cache-min-tokens") is not True:
         return args
     return [*args, "--conversation-cache-min-tokens", str(CONVERSATION_CACHE_MIN_TOKENS_DEFAULT)]
+
+
+def conversation_cache_budget_args(args: list[str], exe: str | None, announce: bool = True) -> list[str]:
+    """#7044: on a PC with a lot of RAM the conversation cache is sized from it, not capped at the engine's 8 GiB: the
+    engine's own `--conversation-cache-mib N` (an option it has had since #3493), only for an engine program that has it, only when the start sets none of the cache's options itself, and
+    only when N is above 8 GiB (strata_control/conversation_cache_size.py).  STRATA_NO_AUTO_CONVERSATION_CACHE=1 leaves it to the engine."""
+    if not exe or engine_has_text(exe, b"--conversation-cache-mib") is not True:
+        return args
+    from strata_control import conversation_cache_size
+    return conversation_cache_size.args_with_budget(args, say=(lambda text: print(f"[strata] {text}", flush=True)) if announce else None)
 
 
 DRAFT_COSTS_DEFAULT = draft_costs_default()    # "draft_costs": true / false in a config overrides it
