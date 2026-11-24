@@ -35,6 +35,9 @@
 #endif
 
 namespace strata::kernels::cpu {
+#if !defined(_WIN32)
+namespace { long linux_core_key(int cpu); }   // defined below (first sibling of the CPU's core)
+#endif
 
 namespace {
 // STRATA_POOL_UMWAIT=<TSC cycles> (experimental, x86 WAITPKG only): a parked worker waits with UMONITOR/UMWAIT on the
@@ -129,7 +132,8 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
         return v;
     };
     for (int cpu : allowed) {
-        const long pkg = read(cpu, "physical_package_id"), core = read(cpu, "core_id");
+        const long pkg = read(cpu, "physical_package_id"), sib = linux_core_key(cpu);
+        const long core = sib >= 0 ? sib : read(cpu, "core_id");
         out.push_back({cpu, pkg >= 0 && core >= 0 ? pkg * 1000000 + core : -1});
     }
 #else
@@ -137,6 +141,29 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
 #endif
     return out;
 }
+
+namespace {
+#if !defined(_WIN32)
+// A CPU's physical core on Linux: the lowest CPU number in its core_cpus_list (thread_siblings_list on older
+// kernels).  core_id alone is not unique on arm64 SoCs with clusters: on NVIDIA Thor every one of the 12 cores
+// reports core_id 0 (each in its own cluster_id), so (package, core_id) counted ONE physical core and the pool
+// started 1 worker.  The sibling list names the SMT siblings directly, on x86 and arm64 alike; -1 when sysfs lacks it
+// (macOS also takes the POSIX branch of detect_cpu_topology_impl below, and gets -1: core_id as before).
+long linux_core_key(int cpu) {
+    for (const char* what : {"core_cpus_list", "thread_siblings_list"}) {
+        char path[112];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
+        if (std::FILE* f = std::fopen(path, "r")) {
+            long first = -1;
+            const int got = std::fscanf(f, "%ld", &first);
+            std::fclose(f);
+            if (got == 1 && first >= 0) return first;
+        }
+    }
+    return -1;
+}
+#endif
+}  // namespace
 
 static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity);
 
@@ -512,7 +539,8 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         CoreLinux cl;
         cl.cpu = cpu;
         cl.pkg = topo_read(cpu, "physical_package_id");
-        cl.core = topo_read(cpu, "core_id");
+        cl.core = linux_core_key(cpu);                       // the core's first sibling, unique also on arm64 clusters
+        if (cl.core < 0) cl.core = topo_read(cpu, "core_id");
         cl.cap = cap_read(cpu);
         if (cl.cap > 0) {
             max_cap = (std::max)(max_cap, cl.cap);
