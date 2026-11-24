@@ -285,8 +285,8 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
 - With a page-locked copy the GPU also takes its share of the misses over PCIe (`--pcie-frac`). `--pcie-frac 0` (or
   `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens. `STRATA_RESIDENT_PIN=0` applies to `--resident-experts`,
   `--resident-budget-gib N` and the RAM copy the engine makes on its own when the expert arena does not fit.
-- Linux, opt-in: `STRATA_ARENA_MMAP=1` maps a native pack's expert arena read-only from `experts.bin` instead of reading
-  it into locked RAM (for example 2x 16 GB GPUs with 32 GB of RAM). Run it with `--pcie-frac 0`.
+- Linux and Windows, opt-in: `STRATA_ARENA_MMAP=1` maps a native pack's expert arena read-only from `experts.bin` instead
+  of reading it into locked RAM (for example 2x 16 GB GPUs with 32 GB of RAM). Run it with `--pcie-frac 0`.
 - Windows, opt-in: `STRATA_FILE_RELEASE=1` trims the file-backed pages of experts after their GPU uploads. It is a
   working-set hint, not an unmap, and it does not reduce committed memory or SSD reads
   ([measurements and limits](bench-results/2026-10-04-windows-mapped-release/README.md)).
