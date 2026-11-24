@@ -146,6 +146,26 @@ The MTP draft head previously kept its own 178 MiB copy of rows already present 
 
 A standard CUDA environment variable rather than an exstrata switch: CUDA kernels load on first use instead of at startup. Saves ~0.31 GiB of VRAM and ~1.3 GiB of RAM without changing output.
 
+### 5. Adaptive VRAM & RAM tiers in partial-RAM mode (`STRATA_ADAPT_FETCH_RESIDENT=1`, `STRATA_RAM_ADAPT_COLD=1`) & low-memory presets (`v0.2.20-ex.2`)
+
+For systems targeting **VRAM ≤ 12 GiB** and/or **RAM ≤ 32 GiB**, exstrata (`v0.2.20-ex.2`, based on Strata v0.2.20) adds two opt-in, bit-identical / distribution-preserving algorithms:
+
+- **`STRATA_ADAPT_FETCH_RESIDENT=1`:** In Strata's `--resident-experts --resident-budget-gib N` mode (where a subset of MoE experts stays pinned in RAM and the coldest tail reads from SSD), `STRATA_ADAPT_FETCH=2` is disabled by default. Enabling `STRATA_ADAPT_FETCH_RESIDENT=1` re-enables adaptive VRAM admission for RAM-resident experts only, avoiding file reads on hot swaps.
+- **`STRATA_RAM_ADAPT_COLD=1` (Dynamic RAM Tier Promotion):** Between decode windows (`adapt()`), promotes frequently routed cold-tier experts from the OS page cache into the fixed `--resident-budget-gib N` pinned RAM buffer by evicting never/rarely-used RAM-resident experts of the same layer. Uses **0 extra RAM**, preserves **bit-identical** weights, and cuts cold-tier file reads by up to **−47% to −78%** (boosting long-context decode by **+25.4%** in partial-RAM mode).
+- **Windows `--native` + `--resident-experts` fix:** Skips the unbuffered startup view-unmap path when reading native GGUF shards in place on Windows so partial-RAM mode runs cleanly on Strata v0.2.20.
+
+#### Preset Comparison (RTX 5070 Ti 16 GB, Qwen3.8-Flash-Next `IQ3_XXS`)
+
+| Preset | Key Options / Switches | VRAM | Effective RAM | Total vs. Strata | Decode (med / max) |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| **Strata baseline** | `--ple-io ram` (`IQ4_NL`) | 14.0 GiB | ~70.8 GiB | baseline | ~99 tok/s |
+| **`F3H` (Speed)** | `T58e` + `--ple-io ram` + `--mtp-hnorm stream` | 13.17 GiB | ~55.2 GiB | −19.4% | **105.6 tok/s** |
+| **`D16MH` (Fast-SSD)** | `F3H` + `--ple-io direct --ple-row-cache 16777216` | 13.17 GiB | ~38.8 GiB | **−33.3%** | **105.9 tok/s** |
+| **`V12` (VRAM ≤ 12 GiB)** | `D16MH` + `--expert-cache 3000` (`ExpertArena`, v0.2.20) | **11.92 GiB** | ~38.8 GiB | −34.8% | **95.8 / 99.7 tok/s** |
+| **`V12_R30` (VRAM ≤ 12 GiB & RAM ≤ 32 GiB)** | `V12` + `--resident-experts --resident-budget-gib 30` + `STRATA_ADAPT_FETCH_RESIDENT=1` (+ `STRATA_RAM_ADAPT_COLD=1`) | **11.92 GiB** | **~31.9 GiB** | **−47.7%** | **73.6 / 80.4 tok/s** |
+
+> **Versioning:** exstrata releases follow `v<upstream-strata>-ex.<N>` (e.g., `v0.2.20-ex.2` for Strata v0.2.20 + exstrata revision 2).
+
 ### Tools
 
 - `terminal/tools/ple_lowbit_emulate.py` — encodes the PLE tables above (and, without `--native`, writes a `Q8_0` copy for accuracy tests).
