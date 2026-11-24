@@ -136,6 +136,10 @@ public:
     /// then the block for `anchor` (the last committed token, at pos0 + n_new).  `drafts` / `probs` get kDrafts entries (the
     /// selector's pick and its probability).  The taps pointer must be the same device buffer on every call (graphs are captured on it).
     bool draft(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
+    /// draft() for a window of more than kRows committed rows (--lookup-max-t past kVerifyNarrowT: a prompt-lookup window of up to kVerifyLongT rows):
+    /// rows 0 .. n_new - 2 become context rows, then the round runs for the last row alone, which is copied to row 0 of `taps_dev` first (row 0 is
+    /// overwritten).  n_new <= kRows is draft() unchanged.  Afterwards the ring holds every committed row, as after a shorter window.
+    bool draft_rows(float* taps_dev, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
 
     /// draft() in two halves: draft_launch queues the round's graph and returns, draft_finish waits and reads the picks.  Several drafters (batch slots, each on its
     /// own stream) can launch first and finish after, so their graphs run at the same time.
