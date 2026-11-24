@@ -10539,7 +10539,17 @@ def inkling_pc(gpu, ram) -> tuple:
     return effective_vram_gb(g), float(ram), False, False, arch
 
 
-def inkling_expert_flags(placed) -> list:
+# A plan that fills the card and the RAM with every expert and leaves nothing for the SSD has its two caps equal to the plan.  The engine counts its experts a
+# little differently (each one's real bytes, and the 65-slot bounce ring the SSD-streaming mode takes out of the RAM cap), so a few percent of them do not fit
+# under caps with no room, the engine switches to GPU+SSD streaming and reads them from the SSD on every use: SQ-20 on an RX 7900 XT (20 GiB, 32K context) wrote
+# 12.53 + 2.08 GiB = exactly its 15.68 GB, the engine kept 47 experts on the SSD and decode / prefill fell 7% / 19% below 0.2.20, which (before the GiB fix #6792) wrote
+# caps 7.4% above its plan.  So the RAM cap of such a plan gets this much room: the larger of RAM_TIER_SLACK_GIB and RAM_TIER_SLACK_FRAC of the experts, bounded
+# by the free RAM the planner was given.  HIP only: that is where it was measured (boxia, RX 7900 XT); the other backends write the caps they always wrote.
+RAM_TIER_SLACK_GIB = 0.75
+RAM_TIER_SLACK_FRAC = 0.05
+
+
+def inkling_expert_flags(placed, ram_free_gib=None, backend=None) -> list:
     """--vram-experts-gb / --ram-experts-gb for a planner placement.  The planner counts GB (10^9 bytes); strata-inkling reads the two
     flags as GiB (2^30 bytes): written as they were, the engine's cap sat 7.4% above the plan (#6792)."""
     # Rounded UP to the 0.01 GiB the flag carries: an exact figure rounded down cuts the last expert off (UD-Q4_K_XL: 15.48 GB written as 14.42 GiB left
@@ -10550,7 +10560,15 @@ def inkling_expert_flags(placed) -> list:
     # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only": a plan with every expert on the card leaves it
     # out, so experts that do not fit after all (a bigger context, a --vram-experts-gb cap) go to RAM, not the SSD (#6752)
     if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
-        flags += ["--ram-experts-gb", f"{up(placed['ram_gb']):.2f}"]
+        ram_slack = 0.0
+        if backend == "hip" and placed["ram_gb"] > 0.05 and placed.get("ssd_gb", 0.0) <= 0.05 and not placed.get("full_vram"):
+            # card + RAM, no SSD tier, no room: give the RAM cap room (see RAM_TIER_SLACK_GIB), never more than the free RAM allows
+            total_gib = (placed["vram_gb"] + placed["ram_gb"]) / inkling_fit.GIB_TO_GB
+            ram_slack = max(RAM_TIER_SLACK_GIB, RAM_TIER_SLACK_FRAC * total_gib)
+            if ram_free_gib is not None:
+                room = float(ram_free_gib) - placed["ram_gb"] / inkling_fit.GIB_TO_GB - inkling_fit.FREE_RAM_MARGIN_GB / inkling_fit.GIB_TO_GB
+                ram_slack = max(0.0, min(ram_slack, room))
+        flags += ["--ram-experts-gb", f"{up(placed['ram_gb'], ram_slack):.2f}"]
     return flags
 
 
@@ -10922,7 +10940,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
-        args += inkling_expert_flags(placed)
+        args += inkling_expert_flags(placed, ram_free_gib=plan_extra.get("ram_free_gib"), backend=ink_backend)
         if placed.get("ssd_gb", 0.0) > 0.05:
             args += ["--ssd-experts"]
     cfg = {
