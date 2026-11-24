@@ -28,6 +28,7 @@ constexpr uint64_t kLowVram8GiB  = (8ull << 30) + (512ull << 20);   // 8.5 GiB (
 constexpr uint64_t kLowVram10GiB = (9ull << 30) + (512ull << 20);   // 9.5 GiB floor (covers 10/12 GB cards: 9.8-12.0 GiB)
 constexpr uint64_t kLowVram12GiB = (12ull << 30) + (512ull << 20);  // 12.5 GiB (covers 10/12 GB cards: 9.8-12.0 GiB)
 constexpr uint64_t kLowVram13GiB = 13ull << 30;                     // 13.0 GiB ceiling for low-VRAM fastpaths
+constexpr uint64_t kLowVram16GiB = 16ull << 30;                     // 16.0 GiB: the largest card the tiny-cache pinning was measured on
 constexpr uint64_t kWddm16GiB    = 15ull << 30;                     // 15.0 GiB floor (16 GB cards report ~15.9 GiB)
 
 constexpr int kDefaultReserveMib = 700;
@@ -102,9 +103,16 @@ inline int low_vram_adapt_swaps(int cur_swaps, bool swaps_given, int64_t residen
 }
 
 /// Number of top-ranked expert-profile.bin slots to pin against eviction on tiny caches (< 25% resident).
+/// `total_vram_bytes`: the card's memory.  The pinning was measured on 8-16 GiB consumer cards, where the
+/// cache holds a small share AND PCIe swaps are dear; a 24 GiB card with a large MoE also falls under 25%
+/// resident but has a large host-RAM copy, and pinning 25% of its slots there fights the mid-coverage
+/// adaptive rule (#4870) and cost 4.5% decode on an RTX 4090 with UD-Q4_K_XL (engine 0.1.66).  So it stays
+/// off above 16 GiB; 0 (unknown) keeps the old fraction-only rule.
 /// `pin_env` is STRATA_CACHE_PIN_FRAC (nullptr/empty = default 0.25; "0" = off; otherwise clamped 0.0..0.75).
-inline int64_t low_vram_pin_slots(int64_t resident_slots, int64_t total_experts, const char* pin_env) noexcept {
+inline int64_t low_vram_pin_slots(int64_t resident_slots, int64_t total_experts, uint64_t total_vram_bytes,
+                                  const char* pin_env) noexcept {
     if (resident_slots <= 0 || total_experts <= 0) return 0;
+    if (total_vram_bytes > kLowVram16GiB) return 0;
     double frac = 0.0;
     if (pin_env != nullptr && pin_env[0] != '\0') {
         frac = std::max(0.0, std::min(0.75, std::atof(pin_env)));
