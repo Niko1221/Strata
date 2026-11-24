@@ -100,6 +100,21 @@ inline void launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t s
     kernel<<<grid, block, smem, stream>>>(std::forward<Args>(args)...);
 }
 
+/// Dispatch PDL and ordinary kernel instantiations separately.
+template <typename... KArgs, typename... Args>
+inline void launch_pdl_pair(void (*pdl_kernel)(KArgs...), void (*plain_kernel)(KArgs...), dim3 grid,
+                            dim3 block, size_t smem, cudaStream_t stream, Args&&... args) {
+#if !defined(__HIPCC__)
+    if (pdl_scope() && pdl_launch_ok((const void*) pdl_kernel, stream)) {
+        launch_pdl(pdl_kernel, grid, block, smem, stream, std::forward<Args>(args)...);
+        return;
+    }
+#else
+    (void) pdl_kernel;
+#endif
+    plain_kernel<<<grid, block, smem, stream>>>(std::forward<Args>(args)...);
+}
+
 #endif  // __CUDACC__ || __HIPCC__
 
 }  // namespace strata::kernels

@@ -135,6 +135,15 @@ class Slots(unittest.TestCase):
             with e:
                 return e.code, json.loads(e.read())
 
+    def test_hy4_flash_refuses_session_files_without_touching_the_engine(self):
+        self.svc.model_arch = "hy4-flash"
+        self.addCleanup(setattr, self.svc, "model_arch", None)
+        for action in ("save", "restore"):
+            status, _ = self.post(f"/slots/0?action={action}", {"filename": "x.bin"})
+            self.assertEqual(status, 501)
+        self.assertEqual(self.engine.proc.sent, [])
+        self.assertFalse(self.engine.ended)
+
     def test_a_foreign_page_or_a_form_never_reaches_the_engine(self):
         for action in ("save", "restore"):
             for headers, code in (({"Content-Type": "application/json", "Origin": "http://evil.example.com"}, 403),

@@ -30,7 +30,7 @@ GGML_TYPES: dict[int, str] = {
     21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64",
     28: "F64", 29: "IQ1_M", 30: "BF16", 31: "Q4_0_4_4", 32: "Q4_0_4_8", 33: "Q4_0_8_8",
     34: "TQ1_0", 35: "TQ2_0", 36: "IQ4_NL_4_4", 37: "IQ4_NL_4_8", 38: "IQ4_NL_8_8",
-    39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0",
+    39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0", 43: "F8_E4M3",
     # Agention's llama.cpp fork (agentionai/llama.cpp): the APR trellis expert types (128-value blocks)
     143: "PTQ1_0", 144: "TQ2_T", 145: "TQK6", 146: "TQK7",
     # pair-trellis family added for Gyro-L (agentionai llama.cpp release/gyro-l)
@@ -47,7 +47,7 @@ GGUF_META = {
 # ggml block geometry for the encodings this model uses: (block elements, bytes per block)
 # This is what makes a per-tensor byte count checkable, and it is the contract the kernels share.
 BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
-    "F32": (1, 4), "F16": (1, 2), "BF16": (1, 2), "F64": (1, 8),
+    "F32": (1, 4), "F16": (1, 2), "BF16": (1, 2), "F64": (1, 8), "F8_E4M3": (1, 1),
     # one value per block: the ISTA-DAS DeepSeek-V4.1 first shard carries the Engram's hash parameters as integer tensors
     "I8": (1, 1), "I16": (1, 2), "I32": (1, 4), "I64": (1, 8),
     "Q4_0": (32, 18), "Q4_1": (32, 20), "Q5_0": (32, 22), "Q5_1": (32, 24),

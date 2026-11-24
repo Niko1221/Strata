@@ -144,6 +144,43 @@ class RouteChoice(unittest.TestCase):
         self.assertEqual(e.router.matched(other)[1 - k], len(other))
         self.assertEqual(e.inflight[k], 0)
 
+    def test_single_slot_replica_drains_before_handoff(self):
+        lock_states = []
+
+        class Child(FakeEngine):
+            def generate(self, *args):
+                try:
+                    yield 7
+                    yield 8
+                finally:
+                    lock_states.append(engine.run_locks[0].locked())
+                    self.last = {"generated": 1}
+
+        engine = ReplicaEngine([Child(0), Child(0)])
+        stream = engine.generate([1], 2, {}, threading.Event())
+        self.assertEqual(next(stream), 7)
+        stream.close()
+        self.assertEqual(lock_states, [True])
+        engine.engines[0].last = {"generated": 77}
+        self.assertEqual(engine.last, {"generated": 1})
+        self.assertEqual(engine.inflight, [0, 0])
+
+    def test_single_slot_replica_wait_can_expire_or_be_cancelled(self):
+        from serve.replicas import QueueCancelled, QueueWaitExpired
+        engine = ReplicaEngine([FakeEngine(0), FakeEngine(0)])
+        ids = [123] * BLOCK
+        cancel = threading.Event()
+        with engine.run_locks[0]:
+            cancel._strata_queue_deadline = time.monotonic() + 0.02
+            with self.assertRaises(QueueWaitExpired):
+                list(engine.generate(ids, 1, {}, cancel))
+            cancel.set()
+            with self.assertRaises(QueueCancelled):
+                list(engine.generate(ids, 1, {}, cancel))
+        self.assertEqual(engine.inflight, [0, 0])
+        self.assertEqual(engine.router.matched(ids), [0, 0])
+        self.assertEqual(list(engine.generate(ids, 1, {}, threading.Event())), [7])
+
     def test_batch_is_the_sum(self):
         self.assertEqual(ReplicaEngine([FakeEngine(4), FakeEngine(4)]).batch, 8)
         self.assertEqual(ReplicaEngine([FakeEngine(0), FakeEngine(0)]).batch, 2)

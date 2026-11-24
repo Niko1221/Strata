@@ -755,6 +755,8 @@ class WhatTheEngineSaid(unittest.TestCase):
                          "Drafting: MTP (DFlash2 is for Qwen3.8-Flash-Next only)")
         self.assertEqual(drafting.engine_info(["--mtp", "/m"]), {"drafting": "mtp", "drafting_note": ""})
         self.assertEqual(drafting.engine_info(["--spec", "4"]), {"drafting": "off", "drafting_note": ""})
+        self.assertEqual(drafting.engine_info(["--draft", "dfly", "--draft-max", "4"])["drafting"], "dfly")
+        self.assertEqual(drafting.engine_info(["--draft", "dfly", "--draft-max", "0"])["drafting"], "off")
 
     def test_summary_line(self):
         self.assertEqual(drafting.summary_line(drafting.Decision("auto", "mtp")), "Drafting: MTP")
@@ -788,7 +790,7 @@ class TerminalFlag(unittest.TestCase):
     def test_the_flag_is_listed_planned_copyable_and_saved_in_the_launch_config(self):
         code, out, _ = run_cli(["launch", "--help"])
         self.assertIn("--drafting", out)
-        self.assertIn("auto|mtp|dflash2|off", out)
+        self.assertIn("auto|mtp|dflash2|dfly|off", out)
         cfg = derive_config(self.BASE, S.LaunchSettings(drafting="dflash2"), bool_flags=frozenset())
         self.assertEqual(cfg["drafting"], "dflash2")
         self.assertNotIn("drafting", derive_config(self.BASE, S.LaunchSettings(), bool_flags=frozenset()), "Auto writes nothing: nobody chose")

@@ -292,6 +292,8 @@ def files_present(cfg: dict) -> list[str]:
             missing.append(tok)                               # (.strata: Hy4-Flash's build and its Engram shard)
     for flag in ("--pack", "--mtp"):
         args = [str(a) for a in cfg.get("args") or []]
+        if flag == "--mtp" and cfg.get("arch") == "hy4-flash":
+            continue  # hy4-flash takes a boolean flag; the next token is not a draft pack path.
         if flag == "--mtp" and flag in args and args.index(flag) + 1 < len(args) and args[args.index(flag) + 1].isdigit():
             continue                                      # Qwen3.6: a number is the draft depth, not a folder (#3298)
         if flag in args and args.index(flag) + 1 < len(args) and not Path(args[args.index(flag) + 1]).exists():
@@ -321,7 +323,7 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
             args.extend([flag, value])
 
     if s.context:
-        put("--max-context", str(int(s.context)))
+        put("--context" if cfg.get("arch") == "hy4-flash" else "--max-context", str(int(s.context)))
     if "--engram" in args or s.family == "inkling-2-mini" or str(cfg.get("arch") or "").lower() == "inkling2_loop":  # native .strata engines (strata-hy4, strata-inkling): context + Vision shard (--vision <file>)
         if s.vision == "off" and "--vision" in args:
             at = args.index("--vision")
@@ -337,9 +339,18 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
         cfg["args"] = args
         return cfg
     kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
-    if "--kv" in args or s.kv:
+    if cfg.get("arch") == "hy4-flash":                         # the engine reads its format from STRATA_HY4_FLASH_KV
+        if s.kv:
+            from strata_control.hy4_flash import KV_FORMATS
+            cfg.setdefault("env", {})["STRATA_HY4_FLASH_KV"] = KV_FORMATS.get(s.kv, s.kv)
+            cfg["kv"] = s.kv
+    elif "--kv" in args or s.kv:
         put("--kv", kv)
-    if s.vision == "off":
+    if cfg.get("arch") == "hy4-flash":
+        if s.vision == "off" and "--vision-shard" in args:
+            i = args.index("--vision-shard")
+            del args[i:i + 2]
+    elif s.vision == "off":
         args = [a for a in args if a != "--vision"]
         cfg.pop("vision", None)                              # the picture reader's own settings: the server adds --vision for them
     elif s.vision and "--vision" not in args:
@@ -709,7 +720,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     is_inkling = (cfg.get("arch") == "inkling2_loop" or cfg.get("exe") == "component:strata-inkling"
                   or exe_low.startswith("strata-inkling") or s.family == "inkling-2-mini")
     is_hy4 = (cfg.get("arch") == "hy4flash" or cfg.get("exe") == "component:strata-hy4"
-              or exe_low.startswith("strata-hy4") or s.family == "hy4-flash")
+              or exe_low.startswith("strata-hy4") or (s.family == "hy4-flash" and not S.is_hy4_gguf(s) and cfg.get("arch") != "hy4-flash"))
     is_native_strata = is_inkling or is_hy4
     drafting_off = _drafting.normalize(chosen if chosen is not None else cfg.get("drafting")) == "off"
     if is_inkling and isinstance(cfg.get("args"), list):
@@ -748,7 +759,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
         intel_spec.apply_for_launch(cfg)
     # #6469: match app/host's --prompt-cache-spread default on Flash-Next/Gyro engines so all entry points agree and CLI/TUI gets spread cache compaction.
-    if not is_native_strata and isinstance(cfg.get("args"), list):
+    if not is_native_strata and cfg.get("arch") != "hy4-flash" and isinstance(cfg.get("args"), list):
         if cfg.get("prompt_cache_spread") is False:
             cfg["args"] = [a for a in cfg["args"] if a != "--prompt-cache-spread"]
         elif "--prompt-cache-spread" not in cfg["args"]:
@@ -793,10 +804,11 @@ def write_private(path: Path, data: dict) -> None:
             pass
 
 
-def launch_dir() -> Path:
+def launch_dir(*, create: bool = True) -> Path:
     from strata_control import paths
     d = paths.state_base() / "launch"
-    d.mkdir(parents=True, exist_ok=True)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -810,7 +822,7 @@ def saved_launch_word(name: str) -> str | None:
     or None when there is none or it cannot be read. The TUI's Drafting step and Runner.keep_saved_word read it."""
     try:
         from strata_control import drafting
-        prev = read_config(launch_dir() / f"{name}.json")
+        prev = read_config(launch_dir(create=False) / f"{name}.json")
         word = prev.get("drafting") if isinstance(prev, dict) else None
         word = word.strip().lower() if isinstance(word, str) else None
         return word if word in drafting.MODES else None
@@ -1011,6 +1023,11 @@ class Runner:
 
     # ---- 1. the engine
     def ensure_engine(self) -> None:
+        if S.is_hy4_gguf(self.s):
+            from strata_control import hy4_flash
+            exe = hy4_flash.engine_path(self.s, self.catalog.src)
+            self.emit("engine", f"Using local hy4-flash engine: {exe}", 100)
+            return
         self.warn_wsl_amd()
         shape = self.model_shape()
         if shape:                                            # a Qwen4 model of its own shape: its engine is a separate component (strata_control/shape_engine.py)
@@ -1126,6 +1143,8 @@ class Runner:
     def model_shape(self) -> str | None:
         """The model shape whose own engine runs the chosen model (a feed model of a shape other than Flash-Next's: setup's FAMILIES entry has "shape"), or None."""
         from strata_control import hy4_family, inkling_family
+        if S.is_hy4_gguf(self.s):
+            return None
         if getattr(self.s, "family", None) == hy4_family.FAMILY:     # Tencent Hy4-Flash: its engine is the component strata-hy4 (shape "hy4", strata_control/shape_engine.py)
             return hy4_family.SHAPE
         if getattr(self.s, "family", None) == inkling_family.FAMILY: # Thinking Machines Inkling-2-Mini: its engine is strata-inkling (shape "inkling2")
@@ -1140,7 +1159,7 @@ class Runner:
     def is_hy4(self) -> bool:
         """The chosen model is Tencent Hy4-Flash: no drafter, no tuning, no slots, no split engine; its own engine program (serve/hy4_kind.py)."""
         from strata_control import hy4_family
-        return self.s.family == hy4_family.FAMILY
+        return self.s.family == hy4_family.FAMILY and not S.is_hy4_gguf(self.s)
 
     def is_inkling(self) -> bool:
         """The chosen model is Thinking Machines Inkling-2-Mini: native .strata v1.1 engine (strata-inkling) with built-in DSpark drafter, built-in Vision, and continuous batching (--parallel 1..64)."""
@@ -1249,6 +1268,8 @@ class Runner:
     def resolved_vision(self) -> str:
         """The picture setting of this launch: the chosen one, or (nothing chosen) the default for this model and engine (catalog.picture_default)."""
         s = self.s
+        if s.vision is None and S.is_hy4_gguf(s):
+            s.vision = "off"
         if s.vision is None:
             row = next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
             images = bool(row.images) if row is not None else False
@@ -1610,6 +1631,29 @@ class Runner:
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
         self.check_own_files()
+        if S.is_hy4_gguf(s):
+            from strata_control import hy4_flash
+            hy4_flash.defaults(s, cat.computer(), cat.src)
+            pack = hy4_flash.pack_path(s)
+            if hy4_flash.missing_pack(pack):
+                self.emit("model", f"Preparing hy4-flash pack in {pack} from local GGUF…", 0)
+                p = self._spawn([self.python, str(cat.src / "tools/iq_pack.py"),
+                                 "--gguf", str(hy4_flash.model_file(s.model_path)), "--out", str(pack)], cwd=str(cat.src))
+                lines = []
+                for line in self._read_lines(p):
+                    self.check_cancel()
+                    if line:
+                        lines.append(line.rstrip())
+                        lines[:] = lines[-30:]
+                        self.emit("model", line.rstrip(), None)
+                if p.wait():
+                    raise LaunchError("hy4-flash pack preparation failed: " + "\n".join(lines),
+                                      "Check the pack path and install the Python dependencies from requirements.txt.")
+            cfg = hy4_flash.config(s, cat.src)
+            path = cat.root / "strata-hy4-flash-q4_k_m.json"
+            write_private(path, cfg)
+            self.emit("model", "hy4-flash local model and pack are ready.", 100)
+            return path
         self.resolved_vision()
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
@@ -1885,6 +1929,18 @@ class Runner:
     def check_own_files(self) -> None:
         """The person's own model files, looked at once: a path that is not there or holds no model is said in plain words first, and the
         files are matched to the catalog model (resolve_own_files). Nothing else is done with a path that was already checked."""
+        if S.is_hy4_gguf(self.s) and not self.s.model_path:
+            path = self.catalog.installed_config("hy4-flash-q4_k_m")
+            if path:
+                cfg = read_config(path)
+                args = cfg.get("args", [])
+                if "--native" in args:
+                    self.s.model_path = args[args.index("--native") + 1]
+                    if not self.s.pack_path and "--pack" in args:
+                        self.s.pack_path = args[args.index("--pack") + 1]
+                    self.s.engine_path = self.s.engine_path or cfg.get("exe")
+            if not self.s.model_path:
+                raise LaunchError("hy4-flash uses local files; pass --model-path /path/to/Hy4-flash-Q4_K_M_MTP_Q8_0-00001-of-00002.gguf.", code=2)
         if self.s.model_path and not self._own_checked:
             self.resolve_own_files()
             self._own_checked = True
@@ -1901,15 +1957,33 @@ class Runner:
         from strata_control import retired
         if retired.folder_reason(models.absolute(s.model_path)):   # DeepSeek files: named, never used (strata_control/retired.py)
             raise LaunchError(retired.own_files(models.absolute(s.model_path)), "", 2)
+        path = Path(s.model_path).expanduser()
+        if path.is_file() and path.suffix.lower() == ".strata" and s.family in (None, "hy4-flash"):
+            from strata_control import hy4_fit
+            build = next((key for key, spec in hy4_fit.BUILDS.items() if spec["file"] == path.name), None)
+            if build:
+                if s.model and s.model != build:
+                    raise LaunchError(f"{path.name} is {build}, but --model selects {s.model}.", code=2)
+                s.family, s.model = "hy4-flash", build
+                return
         given = bool(s.family and s.model)
         try:
             plan = models.plan_import(models.absolute(s.model_path))
         except Exception as e:                               # noqa: BLE001
-            if given:
+            if given and not S.is_hy4_gguf(s):
                 return
             raise LaunchError(f"These model files cannot be used: {e}.", "Pick the folder with every shard of one model, or a .gguf file of it.", 5) from None
         if given:
             sel = plan.get("candidate_selection") or {}
+            if S.is_hy4_gguf(s):
+                if s.model != "Q4_K_M":
+                    raise LaunchError(f"--model {s.model} selects a native SQ build, but --model-path selects a GGUF.", code=2)
+                if plan.get("issues") or sel.get("family") != "hy4-flash":
+                    raise LaunchError("The supplied files are not a supported hy4-flash Q4_K_M GGUF: " +
+                                      ", ".join(plan.get("issues") or ["architecture mismatch"]), code=2)
+                from strata_control import hy4_flash
+                s.model_path = str(hy4_flash.model_file(s.model_path))
+                return
             if sel.get("family") and sel.get("model") and (sel["family"], sel["model"]) != (s.family, s.model):
                 # round 8, N8: --family swift was accepted for an IQ3_XXS file. The files are not refused (setup takes the named model's files
                 # out of the folder by name), but the person is told what the file header says.
@@ -1931,7 +2005,11 @@ class Runner:
             raise LaunchError(f"These files cannot be used as they are ({issues}).{more.rstrip()}",
                               "Choose the matching model in the list, or check that every shard is in the folder.", 5)
         s.family, s.model = fam, model
-        s.model_path = models.import_target(s.model_path, plan)
+        if S.is_hy4_gguf(s):
+            from strata_control import hy4_flash
+            s.model_path = str(hy4_flash.model_file(s.model_path))
+        else:
+            s.model_path = models.import_target(s.model_path, plan)
         self.emit("model", f"These files are {fam} {model}.", None)
 
     # ---- 3. config and profile
@@ -2133,6 +2211,9 @@ class Runner:
     def build_config(self, base_path: Path) -> Path:
         from strata_control import tune_knobs
         base = read_config(base_path)
+        if base.get("arch") == "hy4-flash":
+            from strata_control import hy4_flash
+            hy4_flash.defaults(self.s, self.catalog.computer(), self.catalog.src)
         try:
             previous = read_config(launch_dir() / f"{self.name}.json")
         except (OSError, ValueError):                        # no earlier launch of this name, or an unreadable file: nothing to keep from it
@@ -2149,6 +2230,8 @@ class Runner:
         if used:
             self.emit("config", f"Using your defaults from {user_defaults_path()}: " + ", ".join(f"{k}={v if isinstance(v, str) else json.dumps(v)}" for k, v in used.items()) +
                       " (a model's own settings and this launch's choices take priority).", None)
+        if base.get("arch") == "hy4-flash":
+            hy4_flash.apply_runtime_defaults(cfg, self.s, self.catalog.computer())
         self.say_remembered_cards(base)
         self.apply_four_card(cfg)
         self.apply_split_engine(cfg)
@@ -2296,7 +2379,7 @@ class Runner:
     # ---- 4. tuning
     def tune(self) -> None:
         s = self.s
-        if s.tune == "skip" or self.is_native_strata_family():   # Hy4-Flash and Inkling-2-Mini have no Qwen tuning knobs
+        if s.tune == "skip" or self.is_native_strata_family() or S.is_hy4_gguf(s):   # Hy4-Flash and Inkling-2-Mini have no Qwen tuning knobs
             return
         from strata_control import presets
         if not self.retune:
@@ -2832,6 +2915,15 @@ class Runner:
         from strata_control import discovery
         from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
         s = self.s
+        if S.is_hy4_gguf(s):
+            from strata_control import hy4_flash
+            exe = hy4_flash.engine_path(s, self.catalog.src)
+            pack = hy4_flash.pack_path(s)
+            missing = hy4_flash.missing_pack(pack)
+            return {"gb": 0, "parts": [], "engine_missing": False, "engine_usable": True,
+                    "own_files": True, "engine": str(exe), "pack": str(pack), "prepare_pack": bool(missing),
+                    "text": "Local hy4-flash files; no downloads. " +
+                            (f"Prepare pack in {pack}." if missing else f"Use prepared pack {pack}.")}
         st = self.model_state()
         parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts if p.gb >= 0.05]     # a part already on disk is not a download
         row = self.row()
@@ -2970,6 +3062,10 @@ class Runner:
         self.keep_saved_off()                                # the plan names the drafter the start will run
         self.keep_saved_word()
         self.check_own_files()
+        if S.is_hy4_gguf(s):
+            from strata_control import hy4_flash
+            hy4_flash.defaults(s, self.catalog.computer(), self.catalog.src)
+            hy4_flash.engine_path(s, self.catalog.src)
         warns = [n.line() for n in (*S.check_access(s),)]
         warns += self.preflight_words()
         row = self.row()
@@ -2987,6 +3083,17 @@ class Runner:
                  "own_files": bool(s.model_path), "folder": s.model_path}
         out = {"profile": self.profile, "settings": s.to_dict(with_key=False), "warnings": warns,
                "flags": S.flags_text(s), "steps": list(STAGES), "model": model, "download": download, "drafting": self.drafting_plan_line()}
+        if S.is_hy4_gguf(s):
+            from strata_control import tune_knobs
+            preview = {"arch": "hy4-flash", "backend": "cuda", "exe": s.engine_path,
+                       "env": hy4_flash.serving_environment(s.mtp == "on" or bool(s.dfly_model))}
+            _, overrides = S.as_argv_changes(s.extra, tune_knobs.BOOL_FLAGS)
+            preview["env"] = tune_knobs.apply_to_env(preview["env"], overrides)
+            hy4_flash.apply_runtime_defaults(preview, s, self.catalog.computer())
+            out["hy4_flash_runtime"] = {k: preview["env"].get(k, "0") for k in hy4_flash.RUNTIME_KEYS}
+            out["hy4_flash_prefill"] = {"chunk": preview["env"].get("STRATA_HY4_FLASH_PREFILL_CHUNK", "512"),
+                                  "borrow": preview["env"].get("STRATA_HY4_FLASH_PREFILL_BORROW") == "1",
+                                  "residual": preview["env"].get("STRATA_HY4_FLASH_PREFILL_LM_R", "host")}
         return out
 
     def feed_without_draft_layer(self, family: str | None = None) -> bool:
@@ -3082,7 +3189,7 @@ class Runner:
             return
         try:
             from strata_control import drafting
-            prev = read_config(launch_dir() / f"{self.name}.json")
+            prev = read_config(launch_dir(create=False) / f"{self.name}.json")
             if not isinstance(prev, dict) or drafting.normalize(prev.get("drafting")) != "off":
                 return
             path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
@@ -3118,6 +3225,12 @@ class Runner:
     def drafting_plan_line(self) -> str:
         """The drafting line of --plan: what drafts, or why not what was asked for. Nothing is changed or downloaded."""
         from strata_control import drafting
+        if S.is_hy4_gguf(self.s):
+            if self.s.dfly_model:
+                return f"Drafting: DFly ({self.s.draft_tokens} tokens per window)"
+            if self.s.mtp == "on":
+                return f"Drafting: MTP ({self.s.draft_tokens} tokens per window)"
+            return "Drafting: off"
         if self.is_hy4():
             return "Drafting: off" if str(self.s.drafting or "").strip().lower() == "off" else "Drafting: DFly2 (built into the model)"
         if self.is_inkling():

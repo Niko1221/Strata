@@ -549,6 +549,8 @@ class Catalog:
 
     def resolve(self, model: str, family: str | None = None) -> tuple[str, str]:
         """`iq3_xxs` or `IQ3_XXS` (and an optional family) -> (family, model); raises ValueError with the closest match."""
+        if family == "hy4-flash" and model.lower() == "q4_k_m":
+            return family, "Q4_K_M"
         models, families, _ctx, _src = self.tables()
         all_families = _merge_families(self, families)
         names = list(dict.fromkeys([*models, *self.strata.own_size_names()]))
@@ -635,6 +637,8 @@ class Catalog:
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
         """The context a model starts with: 128K on every card, or the largest size the model offers under it (strata_control/default_context.py,
         the one rule of the app, the Terminal and setup). A Mac keeps its unified-memory rule."""
+        if family == "hy4-flash":
+            return 4096
         from strata_control import default_context
         hw = hw or self.hardware()
         if hw.get("mac") and hw.get("ram_gb") and family not in ("hy4-flash", "inkling-2-mini"):

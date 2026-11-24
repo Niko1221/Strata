@@ -862,12 +862,15 @@ class Strata:
         missing += gaps
         script = self.root / f"run-{tag}.{'bat' if WIN else 'sh'}"
         vis = cfg.get("vision")
+        hy4_flash_shard = val("--vision-shard") if cfg.get("arch") == "hy4-flash" else None
+        if hy4_flash_shard and not Path(hy4_flash_shard).is_file():
+            missing.append(hy4_flash_shard)
         own_usage = (usage or self.disk_usage())["models"].get(tag) or {"gb": 0.0, "bytes": 0, "shared_bytes": 0}
         plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
-                else ("on" if val("--vision") else "off"),
+                else ("gpu" if hy4_flash_shard else "on" if val("--vision") else "off"),
                 "port": cfg.get("port", self.default_port()), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -100,6 +101,19 @@ def words_for(tokens: int) -> str:
     return f"about {int(round(words / mag) * mag):,} words"
 
 
+def is_hy4_gguf(s) -> bool:
+    if s.family != "hy4-flash":
+        return False
+    if s.model_path:
+        path = Path(s.model_path).expanduser()
+        if path.is_dir():
+            if s.model and s.model != "Q4_K_M":
+                return False
+            return any(f for f in path.glob("*.gguf") if not f.name.lower().startswith("mmproj"))
+        return path.suffix.lower() == ".gguf"
+    return s.model == "Q4_K_M"
+
+
 @dataclass
 class LaunchSettings:
     """Every choice of `strata launch`. `None` means "the recommendation for this computer"."""
@@ -108,6 +122,12 @@ class LaunchSettings:
     family: str | None = None                  # catalog family id (qwen, swift, coder, unsloth, gyro, nvfp4...)
     model: str | None = None                   # catalog size (IQ3_XXS ...)
     model_path: str | None = None              # "Use model files I already have": a .gguf file or a folder
+    engine_path: str | None = None             # hy4-flash source build, kept in saved launch presets
+    pack_path: str | None = None
+    expert_vram: float | None = None           # hy4-flash resident expert budget, GiB
+    resident_experts: bool = False             # split hy4-flash trunk experts across GPU and RAM
+    dfly_model: str | None = None             # external hy4-flash draft GGUF
+    draft_tokens: int | None = None            # hy4-flash speculative tokens per verify window (1..7)
     data_dir: str | None = None                # where model files are stored (None: the Strata default)
     gpus: list[int] | None = None              # None = the engine's choice (all usable cards)
     gpu_roles: dict[str, str] | None = None    # {"1": "main", "0": "helper", "2": "off"}: a role for every card; None = the recommendation
@@ -153,6 +173,18 @@ class LaunchSettings:
             clean["extra"] = {str(k): str(v) for k, v in clean["extra"].items()}
         else:
             clean.pop("extra", None)
+        if clean.get("family") == "hy4next":
+            clean["family"] = "hy4-flash"
+            overrides = clean.get("extra", {})
+            for key in list(overrides):
+                for old, new in (("STRATA_HY4_", "STRATA_HY4_FLASH_"), ("HY4_", "HY4_FLASH_")):
+                    if key.startswith(old) and not key.startswith(new):
+                        overrides.setdefault(new + key[len(old):], overrides.pop(key))
+                        break
+        # Older hy4-flash presets named a prefetch size. It cannot determine whether
+        # the caller wants a full host copy or exclusive ownership of each expert.
+        if clean.get("family") == "hy4-flash" and (data or {}).get("expert_host") is not None and "resident_experts" not in clean:
+            clean.setdefault("extra", {}).setdefault("--expert-host", str(data["expert_host"]))
         return cls(**clean)
 
     def copy(self, **changes: Any) -> "LaunchSettings":
@@ -266,6 +298,10 @@ def check_parallel(s: LaunchSettings, *, vram_gb: float | None, fitted: int | No
 
 def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None) -> list[Notice]:
     out: list[Notice] = []
+    if is_hy4_gguf(s):
+        if s.context and s.context > 8192:
+            out.append(Notice("warn", "hy4-flash launch has been validated at 4K and 8K context; larger contexts need more GPU memory.", ""))
+        return out
     if s.context is not None and s.context > 262144:
         out.append(Notice("warn", f"{context_label(s.context)} is more than the model was trained on (256K).",
                           "Setup adds rope scaling for it (experimental); answers may get less reliable."))
@@ -348,6 +384,12 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
         if s.data_dir:
             parts.append(f'--data-dir "{s.data_dir}"')
+        for key in ("engine_path", "pack_path", "expert_vram", "draft_tokens", "dfly_model"):
+            value = getattr(s, key)
+            if value is not None:
+                parts.append(f'--{key.replace("_", "-")} "{value}"')
+        if s.resident_experts:
+            parts.append("--resident-experts")
         if s.context:
             parts.append(f"--context {context_label(s.context).lower()}")
         if s.kv:

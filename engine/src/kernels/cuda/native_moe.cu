@@ -21,6 +21,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/pdl.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/geometry.hpp"
 #include <cuda_runtime.h>
@@ -38,10 +39,20 @@ std::atomic<bool> enabled{false};
 // GATED (S26 STRATA_LFUSE): `shared` is the shared expert's unscaled output and sg its raw gate logit per token;
 // the row is scaled here as shared_expert_multi did (native_scalar_sigmoid_multi_kernel's expression, then one
 // rounded multiply = scale_rows_kernel's `out *= g`), then added as before
-template<bool ZADD = false, bool GATED = false>
-__global__ void combine(const float* __restrict__ parts, const float* __restrict__ weights,
-                        const float* __restrict__ shared, float* __restrict__ output,
-                        int64_t n_embd, int k, const float* __restrict__ sg = nullptr) {
+template<bool ZADD = false, bool GATED = false, bool Pdl = false>
+__global__ void combine(const float* parts_, const float* weights_,
+                        const float* shared_, float* output_,
+                        int64_t n_embd, int k, const float* sg_ = nullptr) {
+    // Every input is an activation an expert matvec just wrote, so none may be loaded before the wait.
+    const float* STRATA_PDL_RESTRICT parts = parts_;
+    const float* STRATA_PDL_RESTRICT weights = weights_;
+    const float* STRATA_PDL_RESTRICT shared = shared_;
+    float* STRATA_PDL_RESTRICT output = output_;
+    const float* STRATA_PDL_RESTRICT sg = sg_;
+    if constexpr (Pdl) {   // PDL (pdl.hpp); the plain instantiation keeps its codegen
+        pdl_trigger();
+        pdl_wait();
+    }
     // blockIdx.y = the token of a multi-token launch (0 for the single one)
     const int64_t tk = blockIdx.y;
     parts += tk * k * n_embd; weights += tk * k; if (shared) shared += tk * n_embd; output += tk * n_embd;
@@ -54,7 +65,9 @@ __global__ void combine(const float* __restrict__ parts, const float* __restrict
     for (int expert = 1; expert < k; ++expert) {
         float p = parts[int64_t(expert) * n_embd + col];
         if (ZADD) p = 0.0f + p;
-        sum += p * weights[expert];
+        // c50 fuses at most 15 experts and takes the 16th as a separate multiply and add. Spelling both out
+        // keeps the compiler from contracting them into an FMA, which rounds once instead of twice.
+        sum = __fadd_rn(sum, __fmul_rn(p, weights[expert]));
     }
     if constexpr (GATED) {
         // contraction off in this block only: the product is rounded on its own (scale_rows' store), then added
@@ -157,12 +170,15 @@ bool overlap(const void* a, size_t an, const void* b, size_t bn) {
     return ap < bp + bn && bp < ap + an;
 }
 }
+/// Allow up to 16 selected experts per token.
+constexpr int64_t kMaxK = 16;
+
 void native_moe_combine_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 bool native_moe_combine_enabled() { return enabled.load(std::memory_order_relaxed); }
 void native_moe_combine(const float* parts, const float* weights, const float* shared,
                         float* output, int64_t n_embd, int64_t k, void* stream) {
-    if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > 15)
-        throw std::invalid_argument("native MoE combine requires a stream, positive width and 1..15 experts");
+    if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > kMaxK)
+        throw std::invalid_argument("native MoE combine requires a stream, positive width and 1..16 experts");
     const size_t row_bytes = size_t(n_embd) * sizeof(float);
     const size_t part_bytes = row_bytes * size_t(k), weight_bytes = size_t(k) * sizeof(float);
     if (!valid_span(parts, part_bytes) || !valid_span(weights, weight_bytes) || !valid_span(output, row_bytes)
@@ -202,7 +218,7 @@ void native_moe_combine_multi_hits_added(const float* parts, const float* hits, 
 }
 void native_moe_combine_multi(const float* parts, const float* weights, const float* shared, float* output,
                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
-    if (!stream || n_embd <= 0 || k < 1 || k > 15 || n_tok < 1)
+    if (!stream || n_embd <= 0 || k < 1 || k > kMaxK || n_tok < 1)
         throw std::invalid_argument("native MoE combine (multi) requires a stream, width, 1..15 experts, tokens");
     if (k == KU && shared != nullptr && (n_embd & 3) == 0 &&
         (((uintptr_t) parts | (uintptr_t) shared | (uintptr_t) output) & 15u) == 0) {
@@ -211,8 +227,10 @@ void native_moe_combine_multi(const float* parts, const float* weights, const fl
             reinterpret_cast<const float4*>(parts), weights, reinterpret_cast<const float4*>(shared),
             reinterpret_cast<float4*>(output), n4);
     } else {
-        combine<<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
-            parts, weights, shared, output, n_embd, int(k));
+        launch_pdl_pair(combine<false, false, true>, combine<false, false, false>,
+                        dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0,
+                        static_cast<cudaStream_t>(stream), parts, weights, shared, output, n_embd, int(k),
+                        (const float*) nullptr);
     }
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
@@ -220,7 +238,7 @@ void native_moe_combine_multi(const float* parts, const float* weights, const fl
 void native_moe_combine_multi_hits_gated(const float* hits, const float* weights, const float* shared,
                                          const float* shared_gate, float* output, int64_t n_embd, int64_t k, int n_tok,
                                          void* stream) {
-    if (!stream || n_embd <= 0 || k < 1 || k > 15 || n_tok < 1 || !shared || !shared_gate)
+    if (!stream || n_embd <= 0 || k < 1 || k > kMaxK || n_tok < 1 || !shared || !shared_gate)
         throw std::invalid_argument("native MoE combine (hits, gated) requires a stream, width, 1..15 experts, tokens");
     combine<true, true><<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
         hits, weights, shared, output, n_embd, int(k), shared_gate);
@@ -229,7 +247,7 @@ void native_moe_combine_multi_hits_gated(const float* hits, const float* weights
 }
 void native_moe_combine_multi_hits(const float* hits, const float* weights, const float* shared, float* output,
                                    int64_t n_embd, int64_t k, int n_tok, void* stream) {
-    if (!stream || n_embd <= 0 || k < 1 || k > 15 || n_tok < 1)
+    if (!stream || n_embd <= 0 || k < 1 || k > kMaxK || n_tok < 1)
         throw std::invalid_argument("native MoE combine (hits) requires a stream, width, 1..15 experts, tokens");
     combine<true><<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
         hits, weights, shared, output, n_embd, int(k));

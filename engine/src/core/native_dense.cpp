@@ -186,7 +186,15 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
         return include_ple_key && (tensor.type == 42 || tensor.type == 18 || tensor.type == 23 || tensor.type == 8);
     static const char* suffixes[] = {".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight",
         ".attn_q.weight", ".attn_k.weight", ".attn_v.weight", ".attn_output.weight",
-        ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight"};
+        ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight",
+        // Include the split MLA query and KV projection weights.
+        ".attn_q_a.weight", ".attn_q_b.weight", ".attn_kv_a_mqa.weight",
+        ".ffn_gate.weight", ".ffn_up.weight", ".ffn_down.weight",
+        ".ffn_routed_down.weight", ".ffn_routed_up.weight",
+        ".hc_attn_fn.weight", ".hc_ffn_fn.weight",
+        ".indexer.attn_q_b.weight", ".indexer.attn_k.weight", ".indexer.proj.weight",
+        ".indexer_compressor_gate.weight", ".indexer_compressor_value.weight",
+        ".engram_kv.weight", ".nextn.eh_proj.weight"};
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
@@ -371,7 +379,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             const auto* tensors = gguf.get("split.tensors.count");
             if (gguf.get("general.architecture") && (!number || number->u == 0)) {
                 // splitter may copy general.architecture into every shard (Huihui abliterated re-split)
-                err = strata::check_engine_architecture(gguf);
+                // Validate that the file can be read before selecting the execution backend.
+                err = strata::check_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
                 if (count && number && tensors && number->u == 0 && count->u > 1) {

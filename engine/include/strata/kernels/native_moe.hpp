@@ -7,7 +7,7 @@ namespace strata::kernels {
 void native_moe_combine_set_enabled(bool enabled);
 bool native_moe_combine_enabled();
 
-// Pinned CUDA weighted-reduction contract for one token, k in [1, 15].
+// Weighted reduction for up to 16 experts selected by one token.
 // The backend fuses k=2..15; k=1 is its ordinary multiply/contiguous/add path.
 // parts: k contiguous F32 rows of n_embd; weights: k F32 values. The first
 // product rounds to F32, following products accumulate with FMA in expert order,

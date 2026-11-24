@@ -182,15 +182,24 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
           "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh", "maximum": "xhigh"}
 
 
+EFFORT_HY4_FLASH = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
+              "no_think": None,
+              "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max",
+              "maximum": "max"}
+_OFF_KWARGS = {"enable_thinking": False}
 _EFFORT_QWEN = dict(EFFORT)
 _FAMILY: str | None = None
 
 
 def use_family(family: str | None) -> None:
     """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): Qwen, Hy4-Flash, or Inkling-2-Mini."""
-    global _FAMILY
+    global _FAMILY, _OFF_KWARGS
     _FAMILY = family
+    _OFF_KWARGS = {"reasoning_effort": "no_think"} if family == "hy4-flash" else {"enable_thinking": False}
     EFFORT.clear()
+    if family == "hy4-flash":
+        EFFORT.update(EFFORT_HY4_FLASH)
+        return
     if family == "hy4":
         from serve import hy4_dialect
         EFFORT.update(hy4_dialect.EFFORT)
@@ -207,7 +216,7 @@ def effort_kwargs(value) -> dict:
     if value is None or value == "":
         return {}
     if value is False:
-        return {"reasoning_effort": "none"} if _FAMILY == "inkling2" else {"enable_thinking": False}
+        return {"reasoning_effort": "none"} if _FAMILY == "inkling2" else dict(_OFF_KWARGS)
     if _FAMILY == "hy4":
         from serve import hy4_dialect
         mode = hy4_dialect.normalize_effort(value)
@@ -219,7 +228,7 @@ def effort_kwargs(value) -> dict:
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
     level = EFFORT[key]
-    return {"enable_thinking": False} if level is None else {"reasoning_effort": level}
+    return dict(_OFF_KWARGS) if level is None else {"reasoning_effort": level}
 
 
 def budget_effort(tokens) -> dict:
@@ -230,6 +239,11 @@ def budget_effort(tokens) -> dict:
         return {}
     level = EFFORT.get("low", "low") if n < 2048 else EFFORT.get("medium", "medium") if n < 8192 else EFFORT["high"]
     return {"reasoning_effort": level}
+
+
+def thinking_enabled(kwargs: dict) -> bool:
+    """The parser's initial state must match the model's rendered generation prefix."""
+    return kwargs.get("enable_thinking") is not False and kwargs.get("reasoning_effort") != "no_think"
 
 
 def _has_image(content) -> bool:
@@ -710,9 +724,11 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         raise ValueError("chat_template_kwargs must be an object")
     for k, v in ctk.items():
         if k == "enable_thinking" and not v:
-            kwargs = {"enable_thinking": False}
+            kwargs = dict(_OFF_KWARGS)
         elif k in ("reasoning_effort", "thinking_mode") and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
+    if (req.get("chat_template_kwargs") or {}).get("enable_thinking") is False:
+        kwargs = dict(_OFF_KWARGS)
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
@@ -911,7 +927,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0 and req.get("reasoning_budget_tokens") is None:
         req["reasoning_budget_tokens"] = bt
     if isinstance(thinking, dict) and thinking.get("type") == "disabled":
-        kwargs["enable_thinking"] = False
+        kwargs.update(_OFF_KWARGS)
     elif effort:
         kwargs.update(effort_kwargs(effort))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
@@ -923,7 +939,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # and allow a few dozen tokens, which the model otherwise spent thinking and answered with no text at all.
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
-        kwargs["enable_thinking"] = False
+        kwargs.update(_OFF_KWARGS)
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 

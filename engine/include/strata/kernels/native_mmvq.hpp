@@ -1,8 +1,25 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>   // native_mmvq_grouped's w_index; a CUDA TU gets it anyway, a plain C++ one does not
 
 namespace strata::kernels {
+
+// hy4-flash small-window expert gate/up: equal physical slot indices share weight
+// loads across up to eight entries, retaining the T1 Q4_K reduction order.
+bool native_mmvq_window_pair(int type, const void* gate, std::size_t gate_stride,
+    const void* up, std::size_t up_stride, const void* x, std::size_t x_stride,
+    float* ygate, float* yup, int ni, int no, int entries, const int32_t* indices,
+    int tokens, void* stream);
+
+// Experimental hy4-flash 1536-wide window kernels: stripe token/expert entries over
+// a bounded grid. Same per-entry arithmetic as compact misses; no allocations.
+bool native_mmvq_window_striped_pair(int type,const void* gate,std::size_t gs,
+    const void* up,std::size_t us,const void* x,std::size_t xs,float* yg,float* yu,
+    int ni,int no,int entries,void* stream,const int32_t* ids,int stripes);
+bool native_mmvq_window_striped(int type,const void* w,std::size_t ws,
+    const void* x,std::size_t xs,float* y,int ni,int no,int entries,void* stream,
+    const int32_t* ids,int stripes);
 
 // Native GGUF Q2_0, Q4_0, Q5_0, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL
 // and IQ4_XS / CUDA Q8_1 adapters, pinned to llama.cpp
@@ -30,6 +47,17 @@ std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 // single-column call. Set before
 // graph capture; captured graphs keep the kernels they captured.
 void native_mmvq_set_multi_exact(bool exact);
+
+/// Select the llama.cpp c50 Q6_K dot-product reduction used by hy4-flash.
+void native_mmvq_set_q6_c50(bool on);
+
+/// Rows per block for small-K Q4_K matvecs. Accepts 1, 2, 4 or 8. Zero restores the default.
+/// This changes block scheduling while preserving each row's summation order.
+void native_mmvq_set_rows(int rows);
+
+/// Fuse RMS normalization and Q8_1 quantization using the standalone kernels' reduction order.
+bool native_rms_norm_quantize_q8_1(const float* x, const float* w, float* out, void* x_q8_1, int rows,
+                                   int cols, float eps, void* stream);
 bool native_mmvq_multi_exact();
 // B6 (lab, opt-in STRATA_B6_MMVQ_ROWS=1): the exact multi-column layout with the activation blocks of every column
 // loaded once per weight block and reused across the block's rows (bitwise the same sums as the default exact
@@ -44,8 +72,18 @@ int native_mmvq_b6_rows();
 void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols,
                           void* stream);
 
+/// Quantize any supported number of columns. MAX_NCOLS applies to the consuming matvec.
+void native_quantize_q8_1_wide(const float* x, void* x_q8_1, int n_in, int ncols, void* stream);
+
+/// Size Q8_1 storage for all columns without the matvec's MAX_NCOLS limit.
+std::size_t native_q8_1_bytes_wide(int n_in, int ncols);
+
 void native_swiglu_quantize_q8_1(const float* gate, const float* up, void* x_q8_1,
                                  int n_in, int ncols, void* stream);
+
+/// The same, with hy4-flash's clamp: the gate bounded above only, the up at both ends, SwiGLU after.
+void native_swiglu_clamp_quantize_q8_1(const float* gate, const float* up, void* x_q8_1, int n_in,
+                                       int ncols, float limit, void* stream);
 
 void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream);
@@ -151,6 +189,44 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 // capability query returns false.
 bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
+
+/// Run one single-column matrix-vector product per group with explicit group strides.
+bool native_mmvq_grouped_supported(int ggml_type, int ncols);
+/// w_index selects each group's weight matrix on device using w_stride_bytes.
+void native_mmvq_grouped_context(int ggml_type, const void* weights, std::size_t w_stride_bytes,
+                                 const void* x_q8_1, std::size_t x_stride_bytes, float* y, int n_in,
+                                 int n_out, int n_group, void* stream, const int32_t* w_index,
+                                 int context_n_tok);
+
+/// Compute gate and up in one launch from the same activation.
+bool native_mmvq_grouped_pair(int ggml_type, const void* w1, std::size_t w1_stride_bytes, const void* w2,
+                              std::size_t w2_stride_bytes, const void* x_q8_1, std::size_t x_stride_bytes,
+                              float* y1, float* y2, int n_in, int n_out, int n_group, void* stream,
+                              const int32_t* w_index, int context_n_tok);
+
+/// Process all token/expert pairs in one launch using their per-group activations.
+bool native_mmvq_grouped_pair_wide(int ggml_type, const void* w1, std::size_t w1_stride_bytes,
+                                   const void* w2, std::size_t w2_stride_bytes,
+                                   const void* x_q8_1, std::size_t x_stride_bytes,
+                                   float* y1, float* y2, int n_in, int n_out, int n_group,
+                                   int groups_per_token, void* stream, const int32_t* w_index,
+                                   int context_n_tok);
+
+/// Adjacent sorted picks can share a weight load across verification rows.
+bool native_mmvq_window(int type, const void* weights, std::size_t w_stride, const void* x,
+                         std::size_t x_stride, float* y, int n_in, int n_out, int n_group,
+                         void* stream, const int32_t* sorted_ids, const void* weights2 = nullptr,
+                         std::size_t w_stride2 = 0, float* y2 = nullptr);
+
+/// The same thing for a caller with one token.
+void native_mmvq_grouped(int ggml_type, const void* weights, std::size_t w_stride_bytes, const void* x_q8_1,
+                         std::size_t x_stride_bytes, float* y, int n_in, int n_out, int n_group,
+                         void* stream, const int32_t* w_index = nullptr);
+
+/// Reuse each group's matrix across its activation columns.
+bool native_mmvq_grouped_multi(int ggml_type, const void* weights, std::size_t w_stride_bytes,
+                               const void* x_q8_1, std::size_t x_stride_bytes, float* y, int n_in,
+                               int n_out, int n_group, int ncols, void* stream, const int32_t* w_index);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
 /// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,
@@ -182,5 +258,17 @@ void native_mmvq_il_tune(int rows);
 // Tests and benchmarks: the P1 / P2 kernel variant for every native_mmvq_il call (0: today's kernel, 2-6 as
 // STRATA_MMVQ_IL_PF; -1: the environment).
 void native_mmvq_il_pf(int pf);
+
+// Private GPU-only async MoE helpers: inactive ranks leave output untouched.
+void native_swiglu_clamp_quantize_q8_1_masked(const float* gate,const float* up,void* q8,
+ int n_in,int ncols,float limit,const int32_t* mask,void* stream);
+// Exact compact Q4 GU pair; returns false for unsupported geometry/type. Ordinary launch.
+bool native_mmvq_grouped_compact_pair(int type,const void* gate,std::size_t gs,
+ const void* up,std::size_t us,const void* activations,std::size_t xs,float* yg,float* yu,
+ int ni,int no,int ng,void* stream,const int32_t* ids,int context_n_tok);
+
+void native_mmvq_grouped_compact_miss(int type,const void* weights,std::size_t ws,
+ const void* activations,std::size_t xs,float* y,int ni,int no,int ng,void* stream,
+ const int32_t* ids,int context_n_tok);
 
 } // namespace strata::kernels

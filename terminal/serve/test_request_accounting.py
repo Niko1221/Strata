@@ -82,6 +82,32 @@ class RequestAccounting(unittest.TestCase):
             return [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
         return json.loads(raw)
 
+    def test_hy4_flash_raw_text_preserves_prompt_and_counts_decode_steps(self):
+        self.svc.model_arch = "hy4-flash"
+        self.engine.info = {"hy4_flash_raw_completion": 1}
+        self.engine.model_path = "fixture.gguf"
+        prompt = "  example\n"
+
+        def generate(ids, count, sampling, cancel):
+            self.assertEqual(ids, self.svc.tok.encode(prompt))
+            self.assertEqual(sampling["_hy4_flash_raw"], (False, True))
+            for _ in range(count):
+                yield self.svc.tok.encode("x")[0]
+            self.engine.last = dict(prompt_tokens=len(ids), generated=count, reused=0, finish="length",
+                                    prompt_ms=50, decode_ms=100, drafts_offered=3, drafts_accepted=2)
+
+        self.engine.generate = generate
+        for count in (1, 4, 4):
+            code, raw = self.request("/completion", dict(prompt=prompt, n_predict=count, cache_prompt=False,
+                                                         ignore_eos=True, temperature=0, seed=42))
+            self.assertEqual(code, 200, raw)
+            result = json.loads(raw)
+            self.assertEqual(result["content"], "x" * count)
+            timings = result["timings"]
+            self.assertEqual((timings["cache_n"], timings["prompt_n"], timings["predicted_n"]), (0, len(prompt), count))
+            self.assertEqual(timings["predicted_per_second"], 10 * (count - 1))
+            self.assertEqual(timings["draft_n_accepted"], 2)
+
     def assert_original_input(self, usage):
         original = len(self.engine.prompts[0])
         self.assertEqual(self.engine.attempts, 2)

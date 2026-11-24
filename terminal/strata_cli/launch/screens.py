@@ -1150,7 +1150,7 @@ class PicturesScreen(Base):
         return next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
 
     def is_hy4(self) -> bool:
-        return self.ctx.settings.family == "hy4-flash"
+        return self.ctx.settings.family == "hy4-flash" and not S.is_hy4_gguf(self.ctx.settings)
 
     def is_inkling(self) -> bool:
         return self.ctx.settings.family == "inkling-2-mini"
@@ -1161,6 +1161,10 @@ class PicturesScreen(Base):
     def reader(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision; built into strata-hy4 / strata-inkling), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches it)."""
+        if S.is_hy4_gguf(self.ctx.settings):
+            from strata_control import hy4_flash
+            exe = hy4_flash.find_engine(self.ctx.settings, self.ctx.catalog.src)
+            return "present" if exe and "vision" in hy4_flash.runtime_capabilities(str(exe)) else "missing"
         if self.is_native_strata():
             return "present"
         return self.ctx.catalog.reader_state()
@@ -1177,11 +1181,14 @@ class PicturesScreen(Base):
             items.append(Item(["Yes, read pictures" + ("  (this engine has no picture reader)" if self.reader() == "missing" else "")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
-        sel = 1 if s.vision not in ("off", "no") and self.supported and not self.not_on_card and self.reader() != "missing" else 0       # pictures are on unless someone said off
+        sel = 1 if (s.vision is not None or not S.is_hy4_gguf(s)) and s.vision not in ("off", "no") and self.supported and not self.not_on_card and self.reader() != "missing" else 0       # pictures are on unless someone said off
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 
     def explain(self) -> Text:
+        if S.is_hy4_gguf(self.ctx.settings):
+            return Text("hy4-flash reads pictures with an optional CUDA encoder. Put the hy4-flash mmproj GGUF beside the language model. "
+                        "Turning pictures on sets aside 2 GiB of GPU memory.", style=MUTE)
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
         if self.is_hy4():

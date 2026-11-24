@@ -131,6 +131,12 @@ def verify(ready: dict, source_bytes: bytes, *, expected_host: str,
     if not loaded and not force_load:
         return {"api_identity_verified": True, "launch_attested": True, "generation_ready": False,
                 "readiness_state": "unloaded", "model_state": "unloaded", "api_url": api_url}
+    # Cold-request hy4-flash benchmarks still attest the instance, model and loaded
+    # state. The first measured request must be its first generation.
+    if (loaded and not force_load and cfg.get("arch") == "hy4-flash"
+            and (cfg.get("env") or {}).get("STRATA_HY4_FLASH_STARTUP_PROBE") == "0"):
+        return {"api_identity_verified": True, "launch_attested": True, "generation_ready": False,
+                "readiness_state": "loaded", "model_state": "ready", "api_url": api_url}
     probe = {"model": ready.get("model_id"), "messages": [{"role": "user", "content": "hi"}],
              "max_tokens": 1, "temperature": 0, "stream": False}
     while True:

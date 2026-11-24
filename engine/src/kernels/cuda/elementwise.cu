@@ -1,6 +1,8 @@
+#include <dlfcn.h>
 // src/kernels/cuda/elementwise.cu - P2.S5's glue kernels.  See the header for why each exists.
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/pdl.hpp"
 
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -10,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace strata::kernels {
 namespace {
@@ -454,6 +457,161 @@ void doorbell_ring(uint32_t* d_seq, void* stream) {
     sync_if_needed(stream, "doorbell_ring");
 }
 
+/// Parallelize a row over the full block when decode has few independent rows.
+template <int kThreads>
+__global__ void __launch_bounds__(kThreads) rms_norm_block_kernel(const float* __restrict__ x,
+                                                                  const float* __restrict__ w,
+                                                                  float* __restrict__ out, int64_t cols,
+                                                                  float eps) {
+    const int64_t row = blockIdx.x;
+    const float* xr = x + row * cols;
+    float* orow = out + row * cols;
+    float acc = 0.0f;
+    for (int64_t c = threadIdx.x; c < cols; c += kThreads) {
+        const float v = xr[c];
+        acc += v * v;
+    }
+#pragma unroll
+    for (int m = 16; m; m >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, m, 32);
+    __shared__ float partial[kThreads / 32 > 0 ? kThreads / 32 : 1];
+    if ((threadIdx.x & 31) == 0) partial[threadIdx.x / 32] = acc;
+    __syncthreads();
+    // Pad inactive lanes with zeros so the whole warp participates in reduction.
+    if (threadIdx.x < 32) {
+        float v = threadIdx.x < kThreads / 32 ? partial[threadIdx.x] : 0.0f;
+#pragma unroll
+        for (int m = 16; m; m >>= 1) v += __shfl_xor_sync(0xffffffffu, v, m, 32);
+        if (threadIdx.x == 0) partial[0] = rsqrtf(v / (float) cols + eps);
+    }
+    __syncthreads();
+    const float inv = partial[0];
+    // Normalize before multiplying by the weight to match the reference rounding order.
+    for (int64_t c = threadIdx.x; c < cols; c += kThreads)
+        orow[c] = w != nullptr ? (xr[c] * inv) * w[c] : xr[c] * inv;
+}
+
+/// Match GGML CUDA's RMS reduction layout to preserve its rounding order.
+template <int kThreads>
+__device__ __forceinline__ float rms_c50_block_sum(float v, float* shared) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o, 32);
+    if constexpr (kThreads > 32) {
+        const int warp_id = (int) threadIdx.x / 32, lane_id = (int) threadIdx.x % 32;
+        if (lane_id == 0) shared[warp_id] = v;
+        __syncthreads();
+        v = 0.0f;
+        if (lane_id < kThreads / 32) v = shared[lane_id];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o, 32);
+    }
+    return v;
+}
+
+template <int kThreads, int kVpt>
+__global__ void __launch_bounds__(kThreads) rms_norm_c50_vec_kernel(const float* __restrict__ x,
+                                                                    const float* __restrict__ w,
+                                                                    float* __restrict__ out, int ncols,
+                                                                    float eps) {
+    // Wait for input readiness before reading and signal the next PDL kernel.
+    pdl_trigger();
+    pdl_wait();
+    const int ncols4 = ncols / 4;
+    const float4* x4 = (const float4*) (x + (long long) blockIdx.x * ncols);
+    float4* dst4 = (float4*) (out + (long long) blockIdx.x * ncols);
+    const float4* w4 = (const float4*) w;
+    const int tid = (int) threadIdx.x;
+    __shared__ float s_sum[32];
+    float4 xs[kVpt];
+    float tmp = 0.0f;
+#pragma unroll
+    for (int k = 0; k < kVpt; ++k) {
+        const int i = tid + k * kThreads;
+        if (i < ncols4) {
+            xs[k] = x4[i];
+            tmp += xs[k].x * xs[k].x + xs[k].y * xs[k].y + xs[k].z * xs[k].z + xs[k].w * xs[k].w;
+        }
+    }
+    tmp = rms_c50_block_sum<kThreads>(tmp, s_sum);
+    const float scale = rsqrtf(__fdividef(tmp, (float) ncols) + eps);
+#pragma unroll
+    for (int k = 0; k < kVpt; ++k) {
+        const int i = tid + k * kThreads;
+        if (i < ncols4) {
+            float4 r = make_float4(scale * xs[k].x, scale * xs[k].y, scale * xs[k].z, scale * xs[k].w);
+            if (w != nullptr) {
+                const float4 m = w4[i];
+                r.x *= m.x;
+                r.y *= m.y;
+                r.z *= m.z;
+                r.w *= m.w;
+            }
+            dst4[i] = r;
+        }
+    }
+}
+
+/// The width is not a multiple of four, or a buffer is not 16-byte aligned: c50's scalar branch.
+template <int kThreads>
+__global__ void __launch_bounds__(kThreads) rms_norm_c50_scalar_kernel(const float* __restrict__ x,
+                                                                       const float* __restrict__ w,
+                                                                       float* __restrict__ out, int ncols,
+                                                                       float eps) {
+    pdl_trigger();   // PDL (pdl.hpp); see the vectorised kernel above
+    pdl_wait();
+    const float* xc = x + (long long) blockIdx.x * ncols;
+    float* dstc = out + (long long) blockIdx.x * ncols;
+    const int tid = (int) threadIdx.x;
+    __shared__ float s_sum[32];
+    float tmp = 0.0f;
+    for (int col = tid; col < ncols; col += kThreads) {
+        const float xi = xc[col];
+        tmp += xi * xi;
+    }
+    tmp = rms_c50_block_sum<kThreads>(tmp, s_sum);
+    const float scale = rsqrtf(__fdividef(tmp, (float) ncols) + eps);
+    for (int col = tid; col < ncols; col += kThreads)
+        dstc[col] = w != nullptr ? scale * xc[col] * w[col] : scale * xc[col];
+}
+
+void rms_norm_block(const float* x, const float* w, float* out, int64_t rows, int64_t cols, float eps,
+                    void* stream) {
+    if (rows <= 0 || cols <= 0) return;
+    const auto s = (cudaStream_t) stream;
+    // Compare against GGML normalization when the diagnostic library is enabled.
+    static const char* diag = std::getenv("STRATA_DIAG_NORM_LIBRARY");
+    if (diag != nullptr) {
+        using Fn = void (*)(float*, const float*, long long, long long, float, void*);
+        static void* h = dlopen(diag, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+        if (h == nullptr) throw std::runtime_error(std::string("diag norm: ") + dlerror());
+        static Fn fn = reinterpret_cast<Fn>(dlsym(h, "hy4_flash_diag_norm"));
+        if (fn == nullptr) throw std::runtime_error("diag norm: no hy4_flash_diag_norm");
+        if (out != x) cudaMemcpyAsync(out, x, (std::size_t) rows * cols * 4, cudaMemcpyDeviceToDevice, s);
+        fn(out, w, rows, cols, eps, stream);
+        return;
+    }
+    const unsigned grid = (unsigned) rows;
+    const bool vec = cols % 4 == 0 && ((std::uintptr_t) x & 15) == 0 && ((std::uintptr_t) out & 15) == 0 &&
+                     (w == nullptr || ((std::uintptr_t) w & 15) == 0);
+    const int nc = (int) cols;
+    using kernels::launch_pdl;
+    if (vec) {
+        const int64_t n4 = cols / 4;
+        if (n4 <= 32) launch_pdl(rms_norm_c50_vec_kernel<32, 1>, grid, 32, 0, s, x, w, out, nc, eps);
+        else if (n4 <= 128) launch_pdl(rms_norm_c50_vec_kernel<128, 1>, grid, 128, 0, s, x, w, out, nc, eps);
+        else if (n4 <= 256) launch_pdl(rms_norm_c50_vec_kernel<256, 1>, grid, 256, 0, s, x, w, out, nc, eps);
+        else if (n4 <= 512) launch_pdl(rms_norm_c50_vec_kernel<512, 1>, grid, 512, 0, s, x, w, out, nc, eps);
+        else if (n4 <= 1024) launch_pdl(rms_norm_c50_vec_kernel<1024, 1>, grid, 1024, 0, s, x, w, out, nc, eps);
+        else if (n4 <= 4096) launch_pdl(rms_norm_c50_vec_kernel<1024, 4>, grid, 1024, 0, s, x, w, out, nc, eps);
+        else launch_pdl(rms_norm_c50_scalar_kernel<1024>, grid, 1024, 0, s, x, w, out, nc, eps);
+    } else if (cols < 1024) {
+        launch_pdl(rms_norm_c50_scalar_kernel<256>, grid, 256, 0, s, x, w, out, nc, eps);
+    } else {
+        launch_pdl(rms_norm_c50_scalar_kernel<1024>, grid, 1024, 0, s, x, w, out, nc, eps);
+    }
+    check_launch("rms_norm_block");
+    sync_if_needed(stream, "rms_norm_block");
+}
+
 void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, float eps, void* stream) {
     if (rows <= 0 || cols <= 0) return;
     // 4 warps per block, so a row count that is not a multiple of 4 wastes at most 3 warps rather than
@@ -463,6 +621,10 @@ void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, flo
     rms_norm_weighted_kernel<<<grid, warps_per_block * 32, 0, (cudaStream_t) stream>>>(x, w, rows, cols, eps);
     check_launch("rms_norm_weighted");
     sync_if_needed(stream, "rms_norm_weighted");
+}
+
+void rms_norm_weighted_wide(float* x, const float* w, int64_t rows, int64_t cols, float eps, void* stream) {
+    rms_norm_block(x, w, x, rows, cols, eps, stream);   // in place, weighted
 }
 
 }  // namespace strata::kernels
