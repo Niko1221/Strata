@@ -439,6 +439,76 @@ private:
     bool eof_ = false;
 };
 
+struct ImageSpan {
+    int start = 0;
+    int len = 0;
+    uint64_t hash = 0;
+};
+
+// FNV-1a over a picture's normalized pixels and its grid: the same picture gives the same embeddings.
+inline uint64_t image_content_hash(const ImageRec& rc) {
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&](const void* p, size_t n) {
+        const unsigned char* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+    };
+    mix(&rc.grid_h, sizeof(rc.grid_h));
+    mix(&rc.grid_w, sizeof(rc.grid_w));
+    mix(rc.pixel_values.data(), rc.pixel_values.size() * sizeof(float));
+    return h;
+}
+
+// How much of `cached` (with its pictures `cached_spans`) the new prompt `ids` (pictures `spans`) can reuse: the
+// common token prefix, cut back to the start of the first picture that is not the same picture at the same place.
+inline int image_aware_match(const std::vector<int32_t>& cached, const std::vector<ImageSpan>& cached_spans,
+                             const std::vector<int32_t>& ids, const std::vector<ImageSpan>& spans) {
+    const int n = static_cast<int>(std::min(cached.size(), ids.size()));
+    int m = 0;
+    while (m < n && cached[m] == ids[m]) ++m;
+    for (const auto& sp : spans) {
+        if (sp.start >= m) break;
+        bool same = false;
+        for (const auto& cs : cached_spans)
+            if (cs.start == sp.start && cs.len == sp.len && cs.hash == sp.hash) { same = true; break; }
+        if (!same) { m = sp.start; break; }
+    }
+    return m;
+}
+
+// Embeddings of pictures already read, by content hash (an agent re-sends every earlier screenshot on every turn).
+// Least recently used first out, bounded by STRATA_INKLING_IMAGE_CACHE_MB (default 512; 0 turns it off).
+class ImageEmbedCache {
+public:
+    ImageEmbedCache() {
+        const char* e = std::getenv("STRATA_INKLING_IMAGE_CACHE_MB");
+        const long mb = e ? std::atol(e) : 512;
+        cap_ = mb > 0 ? static_cast<size_t>(mb) * 1024 * 1024 : 0;
+    }
+    const std::vector<float>* get(uint64_t h) {
+        auto it = map_.find(h);
+        if (it == map_.end()) return nullptr;
+        it->second.tick = ++tick_;
+        return &it->second.emb;
+    }
+    void put(uint64_t h, const std::vector<float>& emb) {
+        const size_t bytes = emb.size() * sizeof(float);
+        if (cap_ == 0 || bytes > cap_ || map_.count(h)) return;
+        while (used_ + bytes > cap_ && !map_.empty()) {
+            auto old = map_.begin();
+            for (auto it = map_.begin(); it != map_.end(); ++it) if (it->second.tick < old->second.tick) old = it;
+            used_ -= old->second.emb.size() * sizeof(float);
+            map_.erase(old);
+        }
+        map_[h] = Entry{emb, ++tick_};
+        used_ += bytes;
+    }
+private:
+    struct Entry { std::vector<float> emb; uint64_t tick = 0; };
+    std::unordered_map<uint64_t, Entry> map_;
+    size_t cap_ = 0, used_ = 0;
+    uint64_t tick_ = 0;
+};
+
 struct ActiveReq {
     bool active = false;
     bool is_solo = false;       // GEN vs BGEN / GENERATE
@@ -460,6 +530,10 @@ struct ActiveReq {
     std::vector<int32_t> gen_ids;
     std::vector<int32_t> cached_prefix;       // tokens currently resident in slot KV
     std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix saved before generation (#6627)
+    // Pictures in the prompt: every picture's placeholders are the same token id, so the ids alone cannot tell two
+    // pictures apart.  These spans (start, length, content hash) say which picture sits where, for the prefix match.
+    std::vector<ImageSpan> img_spans;         // spans of the prompt last prefilled in this slot (cached_prefix)
+    std::vector<ImageSpan> ckpt_img_spans;    // spans of prompt_ckpt_prefix
     int reused_tokens = 0;                    // prefix tokens reused for this request
     std::vector<int32_t> shared_prefix;
     int pin = 0;
@@ -532,6 +606,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     bool images_ok = false;
     VisionShardInfo vprobe;
     CpuVisionEncoder cpu_vit;
+    ImageEmbedCache img_cache;
     if (!cfg.vision_path.empty()) {
         std::string verr;
         if (vision_probe(cfg.vision_path, vprobe, verr)) images_ok = true;
@@ -624,6 +699,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.gen_ids.clear();
         rq.img_embeds.clear();
         rq.prompt_img_idx.clear();
+        std::vector<ImageSpan> spans;   // this prompt's pictures
 
         if (!pg.images.empty()) {
             if (!images_ok) {
@@ -641,16 +717,38 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 rq.active = false;
                 return false;
             }
-            // Encode images (try GPU backend first, fallback to CPU ViT)
+            // Each picture's span in the expanded prompt (its placeholders are consecutive, in picture order)
+            std::vector<uint64_t> hashes(recs.size());
+            for (size_t k = 0; k < recs.size(); ++k) hashes[k] = image_content_hash(recs[k]);
+            {
+                int base = 0;   // embedding rows of the pictures before picture k
+                size_t k = 0;
+                for (int p = 0; p < static_cast<int>(rq.prompt_img_idx.size()) && k < recs.size(); ++p) {
+                    if (rq.prompt_img_idx[p] == base) {
+                        spans.push_back(ImageSpan{p, recs[k].num_lm_tokens(), hashes[k]});
+                        base += recs[k].num_lm_tokens();
+                        ++k;
+                    }
+                }
+            }
+            // Encode images (a picture read before comes from the cache; else GPU backend first, fallback to CPU ViT)
             for (size_t k = 0; k < recs.size(); ++k) {
                 std::vector<float> emb;
                 std::string verr;
-                if (!backend.encode_image(recs[k], emb, verr)) {
-                    if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
-                    if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
+                const char* from = "cache";
+                if (const auto* hit = img_cache.get(hashes[k])) {
+                    emb = *hit;
+                } else {
+                    from = "gpu";
+                    if (!backend.encode_image(recs[k], emb, verr)) {
+                        from = "cpu";
+                        if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
+                        if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
+                    }
+                    img_cache.put(hashes[k], emb);
                 }
                 rq.img_embeds.insert(rq.img_embeds.end(), emb.begin(), emb.end());
-                proto("IMG %zu %d %d %d", k, recs[k].grid_h, recs[k].grid_w, recs[k].num_lm_tokens());
+                proto("IMG %zu %d %d %d %s", k, recs[k].grid_h, recs[k].grid_w, recs[k].num_lm_tokens(), from);
             }
         } else {
             rq.prompt_ids = pg.ids;
@@ -672,20 +770,17 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         // Because prompt_ckpt_prefix is saved at prompt_len - 1 before generation, BOTH multi-turn follow-ups
         // (even if hidden thinking or stop tokens differed) AND exact repeats reuse the full prior prompt!
         int reuse = 0;
-        if (pg.images.empty()) {
+        {
+            // Pictures take part through their spans (image_aware_match): the same picture at the same place reuses.
             int full_match = 0;
             if (!rq.cached_prefix.empty() && static_cast<int>(rq.cached_prefix.size()) < rq.prompt_len) {
-                const int clen = static_cast<int>(rq.cached_prefix.size());
-                int m = 0;
-                while (m < clen && rq.cached_prefix[m] == rq.prompt_ids[m]) ++m;
-                if (m == clen) full_match = clen;
+                const int m = image_aware_match(rq.cached_prefix, rq.img_spans, rq.prompt_ids, spans);
+                if (m == static_cast<int>(rq.cached_prefix.size())) full_match = m;
             }
             int ckpt_match = 0;
             if (!rq.prompt_ckpt_prefix.empty() && static_cast<int>(rq.prompt_ckpt_prefix.size()) < rq.prompt_len) {
-                const int plen = static_cast<int>(rq.prompt_ckpt_prefix.size());
-                int m = 0;
-                while (m < plen && rq.prompt_ckpt_prefix[m] == rq.prompt_ids[m]) ++m;
-                if (m == plen) ckpt_match = plen;
+                const int m = image_aware_match(rq.prompt_ckpt_prefix, rq.ckpt_img_spans, rq.prompt_ids, spans);
+                if (m == static_cast<int>(rq.prompt_ckpt_prefix.size())) ckpt_match = m;
             }
             int shared_match = 0;
             if (pg.pin > 0 && static_cast<int>(rq.shared_prefix.size()) == pg.pin &&
@@ -724,9 +819,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.pin = pg.images.empty() ? pg.pin : 0;
         rq.shared_pending = rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
         rq.reused_tokens = reuse;
+        rq.img_spans = spans;           // what the slot will hold once this prompt is read
         // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
         // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
-        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        rq.ckpt_pending = (!pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
@@ -1120,6 +1216,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
                         rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
+                        rq.ckpt_img_spans = rq.img_spans;
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {
