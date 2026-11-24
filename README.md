@@ -11,7 +11,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Status: experimental">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
-  <a href="https://github.com/Niko1221/Strata/commit/3142b66b9"><img src="https://img.shields.io/badge/based%20on-Strata%203142b66-555" alt="Based on Strata 3142b66"></a>
+  <a href="https://github.com/Niko1221/Strata/releases/tag/v0.2.20"><img src="https://img.shields.io/badge/based%20on-Strata%20v0.2.20-555" alt="Based on Strata v0.2.20"></a>
+  <img src="https://img.shields.io/badge/release-v0.2.20--ex.2-blue" alt="Release v0.2.20-ex.2">
 </p>
 
 **exstrata** keeps Strata's inference engine and reduces the memory footprint of large MoE models—so far cutting combined VRAM + RAM by **14.1%** on Qwen3.8-Flash-Next with no loss in task accuracy. Every change is opt-in: with nothing enabled, exstrata runs identically to Strata.
@@ -26,17 +27,19 @@ Measured against Strata using the same executable and model, differing only in t
 
 ### Memory
 
-| Metric | Strata | exstrata | Change |
+| Metric | Strata | exstrata | exstrata (low RAM) |
 | --- | ---: | ---: | ---: |
-| VRAM (peak minus idle baseline) | 14,173 MiB | 13,487 MiB | −4.8% |
-| RAM (working-set peak) | 71,526 MiB | 60,103 MiB | −16.0% |
-| **VRAM + RAM** | **85,699 MiB** | **73,590 MiB** | **−14.1%** |
+| VRAM (peak minus idle baseline) | 14,173 MiB | 13,487 MiB (−4.8%) | **12,203 MiB (−13.9%)** |
+| RAM (working-set / effective peak) | 71,526 MiB | 60,103 MiB (−16.0%) | **~32,665 MiB (−54.3%)** |
+| **VRAM + RAM** | **85,699 MiB** | **73,590 MiB (−14.1%)** | **~44,868 MiB (−47.6%)** |
+| Decode speed (median, RTX 5070 Ti) | ~99 tok/s | 105.6 tok/s (`F3H`) | 73.6 tok/s (max 80.4) |
 
 **Where the savings come from** (measured on one machine):
 
-- **n-gram table (`T58e`):** ~−9.8 GiB RAM (57 bytes/row instead of 90; decoded bit-for-bit as encoded).
-- **Fixed VRAM (`STRATA_DENSE_ARENA=1` + `STRATA_MTP_HEAD_INDEX=1`):** −0.37 GiB VRAM.
-- **Lazy CUDA module loading (`CUDA_MODULE_LOADING=LAZY`):** −0.31 GiB VRAM and ~−1.3 GiB RAM (a standard CUDA setting).
+- **n-gram table (`T58e`, `ex.1`):** ~−9.8 GiB RAM (57 bytes/row instead of 90; decoded bit-for-bit as encoded).
+- **Fixed VRAM (`STRATA_DENSE_ARENA=1` + `STRATA_MTP_HEAD_INDEX=1`, `ex.1`):** −0.37 GiB VRAM.
+- **Lazy CUDA module loading (`CUDA_MODULE_LOADING=LAZY`, `ex.1`):** −0.31 GiB VRAM and ~−1.3 GiB RAM (a standard CUDA setting).
+- **Low-RAM mode (`ex.2`):** `--ple-io direct --ple-row-cache 1048576` + `--expert-cache 3000` + `--resident-experts --resident-budget-gib 30` + `STRATA_ADAPT_FETCH_RESIDENT=1` (+ `STRATA_RAM_ADAPT_COLD=1`) keeps VRAM ≤ 12 GiB (11.92 GiB) and effective RAM ≤ 32 GiB (~31.9 GiB). A fast-SSD intermediate preset (`D16MH`, `--ple-io direct --ple-row-cache 16777216` without `--resident-experts`) cuts ~16.4 GiB more RAM (total −33.3%) at 105.9 tok/s; VRAM-only ≤ 12 GiB (`--expert-cache 3000` with `ExpertArena`) runs at 95.8 tok/s (max 99.7 tok/s).
 
 ### Accuracy and speed
 
@@ -72,16 +75,17 @@ The difference is within the noise of a 914-item test (95% CI: −0.44 to +1.97 
 
 ## What exstrata changes
 
-Four opt-in changes reduce memory on Qwen3.8-Flash-Next. Three are bit-for-bit identical in output; only the compressed n-gram table changes output slightly (verified above).
+Five opt-in changes reduce memory and recover decode speed on Qwen3.8-Flash-Next. Four are bit-for-bit identical in output; only the compressed n-gram table (`T58e`) changes output slightly (verified above).
 
-| Change | Switch | Memory saved | Output |
-| --- | --- | --- | --- |
-| [1. Smaller n-gram table](#1-smaller-n-gram-table---ple-gguf) | `--ple-gguf` (`T58e`) | ~9.8 GiB RAM | Slight diff (checked) |
-| [2. Dense weights arena](#2-single-allocation-for-dense-weights-strata_dense_arena1) | `STRATA_DENSE_ARENA=1` | 186 MiB VRAM | Bit-identical |
-| [3. Shared draft head](#3-draft-head-without-a-copy-strata_mtp_head_index1) | `STRATA_MTP_HEAD_INDEX=1` | 178 MiB VRAM | Bit-identical |
-| [4. Lazy CUDA loading](#4-lazy-cuda-module-loading-cuda_module_loadinglazy) | `CUDA_MODULE_LOADING=LAZY` | ~0.31 GiB VRAM, ~1.3 GiB RAM | Bit-identical |
+| Change | Release | Switch | Memory / Speed effect | Output |
+| --- | :---: | --- | --- | --- |
+| [1. Smaller n-gram table](#1-smaller-n-gram-table---ple-gguf-ex1) | `ex.1` | `--ple-gguf` (`T58e`) | ~9.8 GiB RAM saved | Slight diff (checked) |
+| [2. Dense weights arena](#2-single-allocation-for-dense-weights-strata_dense_arena1-ex1) | `ex.1` | `STRATA_DENSE_ARENA=1` | 186 MiB VRAM saved | Bit-identical |
+| [3. Shared draft head](#3-draft-head-without-a-copy-strata_mtp_head_index1-ex1) | `ex.1` | `STRATA_MTP_HEAD_INDEX=1` | 178 MiB VRAM saved | Bit-identical |
+| [4. Lazy CUDA loading](#4-lazy-cuda-module-loading-cuda_module_loadinglazy-ex1) | `ex.1` | `CUDA_MODULE_LOADING=LAZY` | ~0.31 GiB VRAM, ~1.3 GiB RAM | Bit-identical |
+| [5. Adaptive VRAM & RAM tiers in partial-RAM mode](#5-adaptive-vram--ram-tiers-in-partial-ram-mode-ex2) | `ex.2` | `STRATA_ADAPT_FETCH_RESIDENT=1`, `STRATA_RAM_ADAPT_COLD=1` | +17–25% decode in ≤ 32 GiB RAM mode (0 extra RAM) | Bit-identical |
 
-### 1. Smaller n-gram table (`--ple-gguf`)
+### 1. Smaller n-gram table (`--ple-gguf`, `ex.1`)
 
 Every token reads rows from a large per-layer n-gram (PLE) table: 320,001,536 rows of 160 values. Strata stores it as `IQ4_NL` (90 bytes/row, 26.8 GiB in RAM). exstrata stores the same table in 57 bytes/row (17.0 GiB) using a 3-bit trellis format called `T58e`:
 
@@ -134,35 +138,25 @@ The KL numbers carry about ±0.03 of noise between nearly identical tables, so t
 
 </details>
 
-### 2. Single allocation for dense weights (`STRATA_DENSE_ARENA=1`)
+### 2. Single allocation for dense weights (`STRATA_DENSE_ARENA=1`, `ex.1`)
 
 Native dense weights (projection matrices) were previously allocated one matrix at a time. Enabling this switch places them in a single VRAM allocation, saving 186 MiB. Both the bytes and model output are unchanged; the engine aborts at startup if copies do not land where the sizing pass expected.
 
-### 3. Draft head without a copy (`STRATA_MTP_HEAD_INDEX=1`)
+### 3. Draft head without a copy (`STRATA_MTP_HEAD_INDEX=1`, `ex.1`)
 
 The MTP draft head previously kept its own 178 MiB copy of rows already present in the main output head. Enabling this switch reads those rows directly from the main head by row index. Model output is unchanged.
 
-### 4. Lazy CUDA module loading (`CUDA_MODULE_LOADING=LAZY`)
+### 4. Lazy CUDA module loading (`CUDA_MODULE_LOADING=LAZY`, `ex.1`)
 
 A standard CUDA environment variable rather than an exstrata switch: CUDA kernels load on first use instead of at startup. Saves ~0.31 GiB of VRAM and ~1.3 GiB of RAM without changing output.
 
-### 5. Adaptive VRAM & RAM tiers in partial-RAM mode (`STRATA_ADAPT_FETCH_RESIDENT=1`, `STRATA_RAM_ADAPT_COLD=1`) & low-memory presets (`v0.2.20-ex.2`)
+### 5. Adaptive VRAM & RAM tiers in partial-RAM mode (`ex.2`)
 
-For systems targeting **VRAM ≤ 12 GiB** and/or **RAM ≤ 32 GiB**, exstrata (`v0.2.20-ex.2`, based on Strata v0.2.20) adds two opt-in, bit-identical / distribution-preserving algorithms:
+For systems targeting **VRAM ≤ 12 GiB** and/or **RAM ≤ 32 GiB**, `v0.2.20-ex.2` (based on Strata v0.2.20) adds two opt-in, bit-identical algorithms:
 
 - **`STRATA_ADAPT_FETCH_RESIDENT=1`:** In Strata's `--resident-experts --resident-budget-gib N` mode (where a subset of MoE experts stays pinned in RAM and the coldest tail reads from SSD), `STRATA_ADAPT_FETCH=2` is disabled by default. Enabling `STRATA_ADAPT_FETCH_RESIDENT=1` re-enables adaptive VRAM admission for RAM-resident experts only, avoiding file reads on hot swaps.
-- **`STRATA_RAM_ADAPT_COLD=1` (Dynamic RAM Tier Promotion):** Between decode windows (`adapt()`), promotes frequently routed cold-tier experts from the OS page cache into the fixed `--resident-budget-gib N` pinned RAM buffer by evicting never/rarely-used RAM-resident experts of the same layer. Uses **0 extra RAM**, preserves **bit-identical** weights, and cuts cold-tier file reads by up to **−47% to −78%** (boosting long-context decode by **+25.4%** in partial-RAM mode).
+- **`STRATA_RAM_ADAPT_COLD=1` (Dynamic RAM Tier Promotion):** Between decode windows (`adapt()`), promotes frequently routed cold-tier experts from the OS page cache into the fixed `--resident-budget-gib N` pinned RAM buffer by evicting never/rarely-used RAM-resident experts of the same layer. Uses **0 extra RAM**, preserves **bit-identical** weights, and cuts cold-tier file reads by **−47% to −78%** (boosting long-context decode by **+25.4%** in partial-RAM mode).
 - **Windows `--native` + `--resident-experts` fix:** Skips the unbuffered startup view-unmap path when reading native GGUF shards in place on Windows so partial-RAM mode runs cleanly on Strata v0.2.20.
-
-#### Preset Comparison (RTX 5070 Ti 16 GB, Qwen3.8-Flash-Next `IQ3_XXS`)
-
-| Preset | Key Options / Switches | VRAM | Effective RAM | Total vs. Strata | Decode (med / max) |
-| :--- | :--- | ---: | ---: | ---: | ---: |
-| **Strata baseline** | `--ple-io ram` (`IQ4_NL`) | 14.0 GiB | ~70.8 GiB | baseline | ~99 tok/s |
-| **`F3H` (Speed)** | `T58e` + `--ple-io ram` + `--mtp-hnorm stream` | 13.17 GiB | ~55.2 GiB | −19.4% | **105.6 tok/s** |
-| **`D16MH` (Fast-SSD)** | `F3H` + `--ple-io direct --ple-row-cache 16777216` | 13.17 GiB | ~38.8 GiB | **−33.3%** | **105.9 tok/s** |
-| **`V12` (VRAM ≤ 12 GiB)** | `D16MH` + `--expert-cache 3000` (`ExpertArena`, v0.2.20) | **11.92 GiB** | ~38.8 GiB | −34.8% | **95.8 / 99.7 tok/s** |
-| **`V12_R30` (VRAM ≤ 12 GiB & RAM ≤ 32 GiB)** | `V12` + `--resident-experts --resident-budget-gib 30` + `STRATA_ADAPT_FETCH_RESIDENT=1` (+ `STRATA_RAM_ADAPT_COLD=1`) | **11.92 GiB** | **~31.9 GiB** | **−47.7%** | **73.6 / 80.4 tok/s** |
 
 > **Versioning:** exstrata releases follow `v<upstream-strata>-ex.<N>` (e.g., `v0.2.20-ex.2` for Strata v0.2.20 + exstrata revision 2).
 
