@@ -1,5 +1,7 @@
 # Contributing to Strata
 
+**العربية:** [دليل المساهمة الكامل بالعربية](../docs/lang/CONTRIBUTING.ar.md) (ترجمة وتفصيل لهذه القواعد).
+
 **AI assistance is welcome. The contributor is responsible for understanding the change and supplying real evidence.**
 
 These rules apply to issues, pull requests, benchmark reports, and the agents helping prepare them.
