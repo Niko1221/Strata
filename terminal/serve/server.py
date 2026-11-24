@@ -77,6 +77,7 @@ from serve.server_parts.base import (  # noqa: F401  (moved unchanged, file spli
     NO_ANSWER_STOP,
     INKLING_BUDGET_BY_EFFORT,
     ANSWER_ROOM_MIN_CAP,
+    SHORT_ANSWER_ROOM_MIN_CAP,
     COALESCE_BURST_MS,
     COALESCE_MIN_REQS,
     COALESCE_PREFILL,
@@ -4181,6 +4182,7 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.strict_model: bool = os.environ.get("STRATA_STRICT_MODEL", "").strip().lower() in ("1", "true", "yes", "on")
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
+        self.short_answer_room = False                # opt-in: the same protection for short output caps below ANSWER_ROOM_MIN_CAP
         try:                                          # Inkling: one default thinking budget for every level (STRATA_INKLING_THINKING_BUDGET, tokens, 0 = none); None: by level
             env_budget = os.environ.get("STRATA_INKLING_THINKING_BUDGET", "").strip()
             self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
@@ -5896,6 +5898,14 @@ class Service:
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
             # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
+            if max_new <= 32768 and thinking:
+                print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
+                      "(\"answer_room\": false in the config turns this off)", flush=True)
+        if (think_budget and not budget and self.answer_room and self.short_answer_room
+                and not self.inkling and max_new and SHORT_ANSWER_ROOM_MIN_CAP <= max_new < ANSWER_ROOM_MIN_CAP):
+            # A short max_tokens can be spent entirely on thinking, leaving no visible answer. Opt-in
+            # short_answer_room caps thinking at half of max_tokens; an explicit positive budget still wins.
+            budget = max_new // 2
             if max_new <= 32768 and thinking:
                 print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                       "(\"answer_room\": false in the config turns this off)", flush=True)
@@ -9516,6 +9526,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    svc.short_answer_room = cfg.get("short_answer_room") is True
     if cfg.get("inkling_thinking_budget") is not None:     # Inkling-2-Mini's default thinking budget (tokens, 0 = none); else STRATA_INKLING_THINKING_BUDGET
         v = cfg["inkling_thinking_budget"]
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
