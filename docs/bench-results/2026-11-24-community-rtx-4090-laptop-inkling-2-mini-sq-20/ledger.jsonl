@@ -1,0 +1,3 @@
+{"name": "sq-20-128k-ctl", "time": "2026-11-24T16:08:39", "ttft_short_ms": 632.8, "c1_decode": 52.59, "c1_all": [52.59], "ok": false, "error": "<HTTPError 400: 'Bad Request'>", "mem_peak_gib": 0.0, "flags": ["REQ_FAIL"]}
+{"name": "sq-20-128k-ctl-a", "time": "2026-11-24T16:30:51", "ttft_short_ms": 633.7, "c1_decode": 51.64, "c1_all": [51.64], "long": {"prompt_tokens": 117169, "ttft_s": 239.5, "prefill": 489.2, "decode": 3.37, "retrieval": "3/3"}, "ok": true, "mem_peak_gib": 0.0, "flags": []}
+{"name": "sq-20-128k-chunk1024", "time": "2026-11-24T16:36:33", "ttft_short_ms": 638.0, "c1_decode": 54.24, "c1_all": [54.24], "long": {"prompt_tokens": 117169, "ttft_s": 251.7, "prefill": 465.4, "decode": 3.16, "retrieval": "3/3"}, "ok": true, "mem_peak_gib": 0.0, "flags": []}

@@ -1,0 +1,35 @@
+{
+  "name": "IQ3_XXS 128K Hermes NV16",
+  "copied_from": "IQ3_XXS 128K Hermes",
+  "profile": "launch-iq3_xxs-128k-hermes-nv16",
+  "model": "IQ3_XXS",
+  "served_id": "qwen3.8-flash-next-iq3_xxs",
+  "family": "qwen",
+  "context": 131072,
+  "kv": "int8",
+  "drafting": "dflash2",
+  "tune": "skip",
+  "port": 8080,
+  "listen": "127.0.0.1",
+  "change_from_parent": {
+    "STRATA_NV_CHUNK": "16"
+  },
+  "engine_args": {
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--pool-workers": "15",
+    "--prompt-cache-spread": true,
+    "--max-context": "131072",
+    "--conversation-cache-mib": "3072",
+    "--vram-reserve-mib": "704",
+    "--draft": "dflash2",
+    "--draft-fallback": "none",
+    "--spec": "6",
+    "--draft-conf": "0.7",
+    "--conversation-cache-min-tokens": "1024"
+  },
+  "engine_reports": "prompt chunk auto: 16384 tokens",
+  "parent_unchanged": true
+}

@@ -20,6 +20,19 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-24: RTX 4090 Laptop 16 GiB, Qwen3.8-Flash-Next IQ3_XXS](bench-results/2026-11-24-community-rtx-4090-laptop-qwen38-flash-next-iq3-xxs/README.md):
+  Strata 0.1.67 CUDA 13, context 131072, KV int8, DFlash2. Client-derived rates, one model.
+  Baseline short decode median 79.79 tok/s over six runs. A 121530-token prefill moved from
+  about 2120 tok/s at chunk 8192 to 2801 tok/s with `STRATA_NV_CHUNK=16`. Not a standard-protocol run.
+- [2026-11-24: RTX 4090 Laptop 16 GiB, Inkling-2-Mini SQ-10](bench-results/2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-10/README.md):
+  `strata-inkling` 0.1.67, context 131072, chunk 512. One sample: short decode 122.60 tok/s,
+  117169-token prefill 1335.5 tok/s, long decode 9.58 tok/s, retrieval 3/3. `--chunk 2048` was not kept.
+- [2026-11-24: RTX 4090 Laptop 16 GiB, Inkling-2-Mini SQ-15](bench-results/2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-15/README.md):
+  same engine and context. Short decode 98.72 tok/s, 117169-token prefill 837.4 tok/s, long decode 3.17 tok/s,
+  retrieval 3/3. `--chunk 1024` was not kept. A 144469-token prompt was rejected.
+- [2026-11-24: RTX 4090 Laptop 16 GiB, Inkling-2-Mini SQ-20](bench-results/2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-20/README.md):
+  same engine and context, with `--ram-experts-gb 5.45`. Short decode 51.64 tok/s, 117169-token prefill 489.2 tok/s,
+  long decode 3.37 tok/s, retrieval 3/3. `--chunk 1024` was slower and was not kept.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](bench-results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
