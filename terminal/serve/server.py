@@ -1313,6 +1313,91 @@ class StrataEngine:
                 continue
             raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
 
+    def score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
+              cvec: bool | None = None, timeout: float = 300.0) -> dict:
+        with self._exclusive_control():
+            return self._score(token_ids, from_pos=from_pos, lora=lora, cvec=cvec, timeout=timeout)
+
+    def _score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
+               cvec: bool | None = None, timeout: float = 300.0) -> dict:
+        """Teacher-forced log-probabilities via `SCORE [lora=0|1] [cvec=0|1] [from=K] id0,id1,...`.
+        -> {"count", "from", "mean_nll", "sum_logprob", "ms", "logprobs"}.
+        Raises ValueError on invalid inputs or `ERR score: ...`, EngineDied on disconnect, timeout, or malformed reply."""
+        if not isinstance(token_ids, (list, tuple)) or len(token_ids) < 2:
+            raise ValueError("tokens: expected a list of at least 2 integer token IDs")
+        ids: list[int] = []
+        for t in token_ids:
+            if isinstance(t, bool) or not isinstance(t, int) or t < 0:
+                raise ValueError("tokens: every token ID must be a non-negative integer")
+            ids.append(t)
+        if isinstance(from_pos, bool) or not isinstance(from_pos, int) or from_pos < 0 or from_pos > len(ids) - 2:
+            raise ValueError(f"from: expected an integer in [0, {len(ids) - 2}]")
+        if lora is not None and not isinstance(lora, bool):
+            raise ValueError("lora: expected a boolean or null")
+        if cvec is not None and not isinstance(cvec, bool):
+            raise ValueError("cvec: expected a boolean or null")
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        parts = ["SCORE"]
+        if lora is not None:
+            parts.append(f"lora={1 if lora else 0}")
+        if cvec is not None:
+            parts.append(f"cvec={1 if cvec else 0}")
+        if from_pos > 0:
+            parts.append(f"from={from_pos}")
+        parts.append(",".join(str(t) for t in ids))
+        cmd = " ".join(parts) + "\n"
+        try:
+            self.proc.stdin.write(cmd)
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        expected_count = len(ids) - 1 - from_pos
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise EngineDied("the engine did not answer SCORE")
+            try:
+                line = self.lines.get(timeout=min(0.5, left))
+            except queue.Empty:
+                continue
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            line = line.strip()
+            if line.startswith("ERR"):
+                msg = line[4:].strip()
+                if msg.startswith("score:"):
+                    msg = msg[len("score:"):].strip()
+                raise ValueError(msg or "the engine refused SCORE")
+            if line.startswith("SC "):
+                toks = line.split()
+                if len(toks) < 6:
+                    raise EngineDied(f"unexpected SCORE reply: {line[:200]!r}")
+                try:
+                    count = int(toks[1])
+                    fr = int(toks[2])
+                    mean_nll = float(toks[3])
+                    elapsed_ms = float(toks[4])
+                    logprobs = [float(x) for x in toks[5:]]
+                except ValueError:
+                    raise EngineDied(f"malformed SCORE reply: {line[:200]!r}") from None
+                if (count != len(logprobs) or count != expected_count or fr != from_pos or
+                        not math.isfinite(mean_nll) or not math.isfinite(elapsed_ms) or
+                        not all(math.isfinite(lp) for lp in logprobs)):
+                    raise EngineDied(f"inconsistent SCORE reply: {line[:200]!r}")
+                return {
+                    "count": count,
+                    "from": fr,
+                    "mean_nll": mean_nll,
+                    "sum_logprob": sum(logprobs),
+                    "ms": elapsed_ms,
+                    "logprobs": logprobs,
+                }
+            if line.startswith(("INFO ", "WARN ")):
+                continue
+            raise EngineDied(f"unexpected SCORE reply: {line[:200]!r}")
+
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
         (sFNX) and Hy4-Flash (`strata-hy4`) refuse the key (GEN: unknown/unsupported key pen_from): it is not sent."""
@@ -4800,6 +4885,113 @@ class Service:
 
         return err(400, "send a JSON object or array")
 
+    def _score_supported(self) -> bool:
+        info = getattr(self.engine, "info", None) or {}
+        return bool(info.get("score")) and hasattr(self.engine, "score")
+
+    def score(self, req: dict) -> dict:
+        """POST /v1/score: teacher-forced per-token log-probabilities over either raw token IDs
+        (`{"tokens": [...], "from": 0}`) or a text pair (`{"prompt": "...", "completion": "..."}`)."""
+        if not isinstance(req, dict):
+            raise ValueError("send a JSON object")
+        lora = req.get("lora")
+        if lora is not None and not isinstance(lora, bool):
+            raise ValueError("lora: expected a boolean or null")
+        cvec = req.get("cvec")
+        if cvec is not None and not isinstance(cvec, bool):
+            raise ValueError("cvec: expected a boolean or null")
+
+        has_tokens = "tokens" in req and req["tokens"] is not None
+        has_text = ("prompt" in req and req["prompt"] is not None) or (
+            "completion" in req and req["completion"] is not None
+        )
+        if has_tokens and has_text:
+            raise ValueError("provide either tokens or prompt+completion, not both")
+        if not has_tokens and not has_text:
+            raise ValueError("provide either tokens or prompt+completion")
+
+        tokens: list[int] | None = None
+        from_pos = 0
+        prompt_text: str | None = None
+        comp_text: str | None = None
+        if has_tokens:
+            raw_tokens = req["tokens"]
+            if not isinstance(raw_tokens, list) or len(raw_tokens) < 2:
+                raise ValueError("tokens: expected a list of at least 2 integer token IDs")
+            tokens = []
+            for t in raw_tokens:
+                if isinstance(t, bool) or not isinstance(t, int) or t < 0:
+                    raise ValueError("tokens: every token ID must be a non-negative integer")
+                tokens.append(t)
+            raw_from = req.get("from", 0)
+            if raw_from is None:
+                raw_from = 0
+            if isinstance(raw_from, bool) or not isinstance(raw_from, int) or raw_from < 0 or raw_from > len(tokens) - 2:
+                raise ValueError(f"from: expected an integer in [0, {len(tokens) - 2}]")
+            from_pos = raw_from
+        else:
+            if req.get("from") is not None:
+                raise ValueError("from cannot be specified together with prompt+completion")
+            prompt_text = req.get("prompt")
+            comp_text = req.get("completion")
+            if not isinstance(prompt_text, str) or not isinstance(comp_text, str):
+                raise ValueError("prompt and completion must both be strings")
+
+        if not self.loaded():
+            raise ModelBusy("the model is not loaded; cannot score")
+        if not self._score_supported():
+            raise ModelBusy("this engine does not support SCORE")
+
+        if tokens is None:
+            prompt_ids = list(self.tok.encode(prompt_text))
+            comp_ids = list(self.tok.encode(comp_text))
+            if len(prompt_ids) < 1:
+                raise ValueError("prompt encoded to 0 tokens")
+            if len(comp_ids) < 1:
+                raise ValueError("completion encoded to 0 tokens")
+            tokens = prompt_ids + comp_ids
+            from_pos = len(prompt_ids) - 1
+
+        if not self.fifo.acquire(blocking=False):
+            raise ModelBusy("a request is currently running; retry score when idle")
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(blocking=False):
+            self.fifo.release()
+            raise ModelBusy("a request is currently running; retry score when idle")
+        if ctl is not None:
+            self.engine._ctl_held = True
+        try:
+            with self.status_lock:
+                if self.status.get("busy"):
+                    raise ModelBusy("a request is currently running; retry score when idle")
+                self.status.update(busy=True, phase="scoring", started=time.time(), first_token=None,
+                                   prompt_tokens=len(tokens), generated=None, max_tokens=None)
+            try:
+                res = self.engine.score(tokens, from_pos=from_pos, lora=lora, cvec=cvec)
+            except ValueError as e:
+                msg = str(e)
+                if "actively decoding" in msg.lower() or "busy" in msg.lower():
+                    raise ModelBusy(msg) from None
+                raise
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+            return {
+                "count": int(res["count"]),
+                "from": int(res["from"]),
+                "sum_logprob": float(res["sum_logprob"]),
+                "mean_nll": float(res["mean_nll"]),
+                "ms": float(res["ms"]),
+                "logprobs": list(res["logprobs"]),
+                "tokens": tokens,
+            }
+        finally:
+            if ctl is not None:
+                self.engine._ctl_held = False
+                ctl.release()
+            self.fifo.release()
+
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
         note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
@@ -7475,6 +7667,8 @@ def make_handler(svc: Service):
                     self._count_tokens(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
+                elif path == "/v1/score":
+                    self._json(200, svc.score(req))
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except EngineNonFinite as e:                    # #879, twice: not the request's fault
