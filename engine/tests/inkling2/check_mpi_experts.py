@@ -27,7 +27,7 @@ def measure(executable, model, mpi, draft, timeout):
         def send(line):
             proc.stdin.write((line + "\n").encode())
             proc.stdin.flush()
-        def until(prefix):
+        def until(prefix, max_frames=8):
             lines = []
             last = ""
             while True:
@@ -57,7 +57,7 @@ def measure(executable, model, mpi, draft, timeout):
                     return [*lines, words]
                 if (prefix == "READY" and words[0] == "INFO") or (prefix == "DONE" and words[0] == "T"):
                     lines.append(words)
-                    if len(lines) > 8:
+                    if len(lines) > max_frames:
                         raise ValueError("too many native result frames")
         try:
             startup = until("READY")
@@ -75,6 +75,30 @@ def measure(executable, model, mpi, draft, timeout):
                 runs.append({"tokens":tokens,"reused":int(rows[-1][-1])})
             if runs[0]["reused"] or runs[1]["reused"] <= 0 or runs[2]["reused"]:
                 raise AssertionError("unexpected prefix reuse: " + str(runs))
+
+            # Put four distinct prompts on the pipe together to exercise multi-row expert transfers.
+            batch = {}
+            requests = []
+            for i in range(4):
+                tag = f"r{i}"
+                batch[tag] = []
+                ids = [1001 + i, 98 + i, 314 + i, 711 + i] * 32
+                requests.append(f"GENERATE {tag} 8 temperature=0 " + ",".join(map(str, ids)))
+            send("\n".join(requests))
+            completed = set()
+            for _ in requests:
+                rows = until("DONE", max_frames=32)
+                for row in rows[:-1]:
+                    if row[1] in completed:
+                        raise AssertionError("token after DONE: " + str(row))
+                    batch[row[1]].append(int(row[2]))
+                _, tag, count, length, *rest = rows[-1]
+                if tag in completed or not 0 < len(batch[tag]) == int(count) <= 8:
+                    raise AssertionError("invalid tagged completion: " + str(rows[-1]))
+                if int(length) != 128 or int(rest[-1]) != 0:
+                    raise AssertionError("unexpected tagged prompt or cache reuse: " + str(rows[-1]))
+                completed.add(tag)
+            runs.extend({"request":tag, "tokens":tokens, "reused":0} for tag, tokens in batch.items())
             send("QUIT")
             # Cover both immediate EOF and QUIT while the client's pipe stays open.
             if draft == "off":

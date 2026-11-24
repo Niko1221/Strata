@@ -28,13 +28,16 @@ public:
         : mpi_(mpi), network_(mpi, std::chrono::seconds(90)), capacity_(rows) {
         INK_CK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
         INK_CK(cudaEventCreateWithFlags(&inputs_, cudaEventDisableTiming));
-        if (mpi_.rank() == 0)
+        if (mpi_.rank() == 0) {
+            INK_CK(cudaEventCreateWithFlags(&received_, cudaEventDisableTiming));
             INK_CK(cudaMalloc(&result_, slot_values(rows) * sizeof(float)));
+        }
     }
 
     ~InkRemoteExperts() {
         network_.abort();
         cudaFree(result_);
+        if (received_) cudaEventDestroy(received_);
         cudaEventDestroy(inputs_);
         cudaStreamDestroy(stream_);
     }
@@ -52,16 +55,24 @@ public:
 
     template <typename Workspace>
     void collect(int rows, Workspace& ws, cudaStream_t compute) try {
-        network_.synchronize(stream_);
+        // The next submit waits for compute to consume result_. Keep periodic bounded NCCL error checks.
+        if (++visits_since_sync_ == 8) {
+            network_.synchronize(stream_);
+            visits_since_sync_ = 0;
+        } else {
+            INK_CK(cudaEventRecord(received_, stream_));
+            INK_CK(cudaStreamWaitEvent(compute, received_, 0));
+        }
         const dim3 grid((kInkHidden + 255) / 256, rows * kInkTopK);
         k_ink_collect_remote_rows<<<grid, 256, 0, compute>>>(ws.y_pair, result_, ws.topk_idx);
         INK_CK(cudaGetLastError());
     } catch (const std::exception& e) { abort(e); }
 
-    void stop() {
+    void stop() try {
+        if (visits_since_sync_) network_.synchronize(stream_);
         Message msg{};
         mpi_.broadcast_control(msg);
-    }
+    } catch (const std::exception& e) { abort(e); }
 
     template <typename Workspace, typename Model>
     void serve_peer(Model& model) try {
@@ -96,9 +107,10 @@ private:
     }
     template <typename Workspace>
     void transfer(float* input, Workspace& ws, int rows) {
-        network_.broadcast_bytes(input, size_t(rows) * kInkHidden * sizeof(float), stream_);
-        network_.broadcast_bytes(ws.topk_idx, size_t(rows) * kInkTopK * sizeof(int32_t), stream_);
-        network_.broadcast_bytes(ws.topk_w, size_t(rows) * kInkTopK * sizeof(float), stream_);
+        const size_t slots = size_t(rows) * kInkTopK;
+        network_.broadcast_bytes({{input, size_t(rows) * kInkHidden * sizeof(float)},
+                                  {ws.topk_idx, slots * sizeof(int32_t)},
+                                  {ws.topk_w, slots * sizeof(float)}}, stream_);
     }
     [[noreturn]] void abort(const std::exception& e) {
         network_.abort();
@@ -110,6 +122,8 @@ private:
     int capacity_;
     cudaStream_t stream_ = nullptr;
     cudaEvent_t inputs_ = nullptr;
+    cudaEvent_t received_ = nullptr;
+    unsigned visits_since_sync_ = 0;
     float* result_ = nullptr;
 };
 

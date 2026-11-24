@@ -953,7 +953,7 @@ int run_mpi_experts(int& argc, char**& argv, const std::string& path, const Back
             if (!mf.rd.is_open()) mpi.fail("--mpi-experts needs a native .strata pack");
             const int rows = std::max(64, std::max(opts.chunk, opts.parallel));
             if (rows > 65535 / kInkTopK) mpi.fail("chunk exceeds expert slot grid capacity");
-            std::string identity = "inkling-mpi-experts-v1/" + std::to_string(rows) + "/";
+            std::string identity = "inkling-mpi-experts-v2/" + std::to_string(rows) + "/";
             constexpr char hex[] = "0123456789abcdef";
             for (const auto& section : mf.rd.header().sections) {
                 for (uint8_t b : section.sha256) { identity += hex[b >> 4]; identity += hex[b & 15]; }

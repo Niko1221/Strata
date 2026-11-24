@@ -225,10 +225,12 @@ The peer returns weighted expert rows. Rank 0 puts each row in its original
 top-k position before the native reduction. The rank-local weight allocations
 exclude the other rank's expert bodies. KV lives on the coordinator, so use
 the `READY` capacity and exercise the intended input lengths and concurrency.
-This initial transport uses eager expert dispatch. CUDA graph replay of the
-full 48-visit target requires coordinated capture and launch on both hosts.
+The two-host path uses eager expert dispatch. Both ranks broadcast activations
+and routing data in one NCCL group. On the coordinator a CUDA event orders
+each received result before its reduction, with a bounded host check every
+eight visits. The worker checks each send. Use matching engine builds on both hosts.
 
-To compare the default one-device path and the opt-in two-host path, use an
+To check sequential cache reuse and four concurrent requests on one and two hosts, use an
 MPI launcher wrapper that forwards arguments to the executable without
 adding model options. Both binaries must use the same source revision and
 CUDA build settings. Run the hardware check under a wall-time limit.
