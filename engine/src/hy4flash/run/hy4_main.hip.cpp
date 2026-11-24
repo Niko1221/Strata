@@ -27,7 +27,7 @@ __global__ void k_hy4_arch_probe(int* p) {
 #endif
 
 #ifndef HY4_VERSION
-#define HY4_VERSION "0.1.66"  // the engine numbering of the 0.2.20 release (engines: 0.1.66; app and Terminal: 0.2.20)
+#define HY4_VERSION "0.1.67"  // the engine numbering of the 0.2.21 release (engines: 0.1.67; app and Terminal: 0.2.21)
 #endif
 
 // `strata-hy4 --export-tokenizer FILE.strata DIR`: Section 0's tokenizer_json and chat_template to DIR/tokenizer.hf.json and DIR/chat_template.jinja (Python builds serve's tokenizer
