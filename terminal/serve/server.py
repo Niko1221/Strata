@@ -6909,7 +6909,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         except ClientGone:                                      # #1999: the client left while a picture was prepared
             done = {**done, "finish": "cancel"}
             break
-    yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
+    # the last round's prompt; Service.run's own count wins when it set one (a picture is one pad token in `ids` and
+    # ~1,300 positions in the engine, and cached_tokens is the engine's count)
+    yield "done", {**done, "completion_tokens": total, "prompt_tokens": done.get("prompt_tokens", len(ids))}
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
