@@ -1431,26 +1431,6 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: the mixer branch's stream / events could not be created";
         return false;
     }
-    if (peer_autonomous_) {
-        bool all_gpu_resident = true;
-        int64_t missing_count = 0;
-        for (int64_t l = lb_; l < le_; ++l) {
-            for (int64_t e = 0; e < g.n_expert; ++e) {
-                const bool on_gpu0 = (hits.h_res != nullptr && hits.h_res[l * g.n_expert + e] >= 0);
-                const bool on_peer = (peer_ != nullptr && peer_->has(l, e));
-                if (!on_gpu0 && !on_peer) {
-                    all_gpu_resident = false;
-                    ++missing_count;
-                }
-            }
-        }
-        if (!all_gpu_resident) {
-            peer_autonomous_ = false;
-            if (peer_ != nullptr) peer_->set_autonomous(false);
-            std::fprintf(stderr, "strata peer: autonomous mode disabled: %lld experts are not resident on either GPU (host fallback required)\n",
-                         (long long) missing_count);
-        }
-    }
     // E-6: a layer whose routed experts are all resident is planned on the device (STRATA_VERIFY_DEVICE_PLAN=1 or
     // STRATA_VERIFY_DEVICE_HITS=1: bitwise exact, off by default unless arch defaults opt in).  STRATA_VERIFY_DEVICE_HITS=1
     // also plans every layer's resident hit groups on-device when --pcie-frac 0 (set_no_pcie_share), avoiding host flag spins.
@@ -3276,25 +3256,6 @@ std::string Verifier::profile_report() {
 // (the host table is the one the device copy was uploaded from; a loan, a VRAM shrink or a swap in flight has
 // marked some -1).  Not: the doorbell graph, which asks the pool for what the device does not hold.
 void Verifier::refresh_ar() {
-    if (peer_autonomous_ && h_res_ != nullptr && g_ != nullptr) {
-        bool all_gpu_resident = true;
-        for (int64_t l = lb_; l < (le_ < 0 ? g_->n_layers : le_); ++l) {
-            for (int64_t e = 0; e < g_->n_expert; ++e) {
-                const bool on_gpu0 = h_res_[l * g_->n_expert + e] >= 0;
-                const bool on_peer = (peer_ != nullptr && peer_->has(l, e));
-                if (!on_gpu0 && !on_peer) {
-                    all_gpu_resident = false;
-                    break;
-                }
-            }
-            if (!all_gpu_resident) break;
-        }
-        if (!all_gpu_resident) {
-            peer_autonomous_ = false;
-            if (peer_ != nullptr) peer_->set_autonomous(false);
-            std::fprintf(stderr, "strata peer: autonomous mode disabled dynamically: experts missing from both GPUs (host fallback required)\n");
-        }
-    }
     if (!all_resident_ || h_res_ == nullptr || g_ == nullptr) return;
     const int64_t ne = g_->n_expert;
     const int32_t* r = h_res_ + lb_ * ne;
