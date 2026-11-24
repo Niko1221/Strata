@@ -9621,7 +9621,10 @@ int main(int argc, char** argv) {
             if ((int64_t) free_b >= want - slack) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
-            int64_t give = want - (int64_t) free_b + (64ll << 20);
+            // skip the 64 MiB margin on the first WDDM discrete short read: the check above has no tolerance there,
+            // so the margin turned a shortfall of under 1 MiB into 64 MiB fewer experts; a later short read gets it
+            const int64_t margin = attempt == failed ? slack : (64ll << 20);
+            int64_t give = want - (int64_t) free_b + margin;
             if (free_b < ((size_t) 16 << 20))
                 give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
             const int64_t keep_bytes = xcache.bytes() - give;
