@@ -1884,6 +1884,8 @@ struct InkCudaRunner {
     int kv_dev_ctx = 0;           // Global KV positions resident in VRAM
     int kv_host_ctx = 0;          // Global KV positions offloaded to mapped pinned host RAM
     int kv_offload_mode = 0;      // 0 = auto, 1 = on (100% host global KV), -1 = off (VRAM-only)
+    // --vram-reserve-mib: VRAM the global KV must leave free on the primary GPU, at init and when it grows. Set before init().
+    size_t user_reserve_bytes = 0;
     int max_batch = 512;
     int swa_ring = 1024 + 512;
     int tree_cap = 16;
@@ -2265,8 +2267,12 @@ struct InkCudaRunner {
             // the workspaces the runner still allocates after the K/V (strata/core/ink_kv_reserve.hpp: v0.2.20's values)
             const size_t ws_reserve = strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark)
                                     + (wddm_fl / 2);
-            const size_t avail_glob = (vfree > swa_kv_bytes + sconv_bytes + ws_reserve)
-                ? (vfree - swa_kv_bytes - sconv_bytes - ws_reserve) : 0u;
+            const size_t keep_free = swa_kv_bytes + sconv_bytes + ws_reserve + user_reserve_bytes;
+            const size_t avail_glob = (vfree > keep_free) ? (vfree - keep_free) : 0u;
+            if (user_reserve_bytes > 0) {
+                std::fprintf(stderr, "[InkCUDA] --vram-reserve-mib: global KV leaves %.0f MiB free (%.2f GiB free VRAM before KV)\n",
+                             (double)user_reserve_bytes / 1048576.0, (double)vfree / (1024.0 * 1024.0 * 1024.0));
+            }
             const size_t per_pos_glob = (size_t)std::max(1, n_glob_g0) * max_slots * per_visit_pos
                                       + (m.man.has_dspark ? (size_t)4096u : 0u);
             const int vram_fit_ctx = (n_glob_g0 > 0)
@@ -2597,7 +2603,8 @@ struct InkCudaRunner {
             size_t vf = 0, vt = 0;
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
-            const size_t floor_b = 256ull << 20;
+            // 256 MiB floor, plus the --vram-reserve-mib room on the primary GPU
+            const size_t floor_b = (256ull << 20) + ((dev == m.primary_gpu) ? user_reserve_bytes : 0ull);
             // #6770: the visits grow one at a time (new buffer, copy, free the old one), so the card needs the net growth
             // plus one held old visit, not the whole new K/V next to the old one (that refused growth at about half the context).
             if (!strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, new_cap, per_pos)) {
