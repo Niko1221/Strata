@@ -4,6 +4,8 @@
 //   3. switched off: y BITWISE unchanged, eager and replayed from a graph captured while on (the flag is read on
 //      the device); switched on again, the same graph adds the adapter again.
 //   4. a layer without an adapter is untouched; a captured call of more than kLoraCaptureTokens tokens throws.
+//   5. in-place lora_update through an already-captured graph (same rank, smaller zero-padded rank, grow back, and
+//      error rejections leaving GPU weights intact).
 
 #include "strata/kernels/lora.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -99,26 +101,27 @@ int main() {
     up(dx16, x16);
 
     // reference y0 + B (A x) in double, from the fp32 or the fp16-rounded x
-    auto reference = [&](int64_t n, bool f16) {
+    auto reference_for = [&](const k::LoraLayerHost& lh, int64_t n, bool f16) {
         std::vector<double> want((size_t) (n * NOUT));
-        std::vector<double> hv((size_t) R);
+        std::vector<double> hv((size_t) lh.rank);
         for (int64_t t = 0; t < n; ++t) {
-            for (int64_t r = 0; r < R; ++r) {
+            for (int64_t r = 0; r < lh.rank; ++r) {
                 double acc = 0.0;
                 for (int64_t i = 0; i < NIN; ++i) {
                     const float xv = f16 ? strata::kernels::f32_from_f16(x16[(size_t) (t * LDX + i)]) : x[(size_t) (t * LDX + i)];
-                    acc += (double) h.a[(size_t) (r * NIN + i)] * xv;
+                    acc += (double) lh.a[(size_t) (r * NIN + i)] * xv;
                 }
                 hv[(size_t) r] = acc;
             }
             for (int64_t o = 0; o < NOUT; ++o) {
                 double acc = y0[(size_t) (t * LDY + o)];
-                for (int64_t r = 0; r < R; ++r) acc += (double) h.b[(size_t) (o * R + r)] * hv[(size_t) r];
+                for (int64_t r = 0; r < lh.rank; ++r) acc += (double) lh.b[(size_t) (o * lh.rank + r)] * hv[(size_t) r];
                 want[(size_t) (t * NOUT + o)] = acc;
             }
         }
         return want;
     };
+    auto reference = [&](int64_t n, bool f16) { return reference_for(h, n, f16); };
 
     std::printf("1-2. y += B (A x) against double precision\n");
     for (const int64_t n : {1, 3, 8, 300}) {
@@ -228,6 +231,85 @@ int main() {
     if (g2) cudaGraphDestroy(g2);
     cudaGetLastError();
     check(threw, "captured call above kLoraCaptureTokens throws");
+
+    std::printf("5. in-place lora_update through a captured graph\n");
+    {
+        auto make_layers = [&](int64_t rank) {
+            std::vector<k::LoraLayerHost> ls((size_t) L);
+            k::LoraLayerHost lh;
+            lh.rank = rank; lh.n_in = NIN; lh.n_out = NOUT;
+            lh.a.resize((size_t) (rank * NIN));
+            lh.b.resize((size_t) (NOUT * rank));
+            for (float& v : lh.a) v = nd(rng) * 0.03f;
+            for (float& v : lh.b) v = nd(rng) * 0.06f * kScale;
+            ls[(size_t) kLayer] = lh;
+            ls[5] = lh;
+            return ls;
+        };
+
+        // 5a. Full rank R through the ALREADY-CAPTURED graph `exec` (no re-capture)
+        std::vector<k::LoraLayerHost> layers2 = make_layers(R);
+        std::string uerr;
+        check(k::lora_update(layers2, uerr), "lora_update: full rank succeeds");
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch after full-rank update");
+        ck(cudaStreamSynchronize(s), "sync after full-rank update");
+        const double e_full = rel_err(down(dy, y0.size()), reference_for(layers2[(size_t) kLayer], 8, false), 8, NOUT, LDY);
+        char what[128];
+        std::snprintf(what, sizeof what, "captured graph after full-rank update: rel err %.2e (< 1e-4)", e_full);
+        check(e_full < 1e-4, what);
+
+        // Also check eager tiled path (300 tokens) sees the updated weights
+        up(dy, y0);
+        k::lora_apply(kLayer, dx, LDX, 300, dy, LDY, nullptr);
+        ck(cudaDeviceSynchronize(), "apply 300 after full-rank update");
+        const double e_tiled = rel_err(down(dy, y0.size()), reference_for(layers2[(size_t) kLayer], 300, false), 300, NOUT, LDY);
+        std::snprintf(what, sizeof what, "eager tiled 300 after full-rank update: rel err %.2e (< 1e-4)", e_tiled);
+        check(e_tiled < 1e-4, what);
+
+        // 5b. Smaller rank R / 2 (zero-padded in place) through the EXACT SAME `exec` graph
+        std::vector<k::LoraLayerHost> layers_half = make_layers(R / 2);
+        uerr.clear();
+        check(k::lora_update(layers_half, uerr), "lora_update: half rank (R/2) succeeds");
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch after half-rank update");
+        ck(cudaStreamSynchronize(s), "sync after half-rank update");
+        const double e_half = rel_err(down(dy, y0.size()), reference_for(layers_half[(size_t) kLayer], 8, false), 8, NOUT, LDY);
+        std::snprintf(what, sizeof what, "captured graph after half-rank update: rel err %.2e (< 1e-4)", e_half);
+        check(e_half < 1e-4, what);
+
+        // 5c. Error rejections must leave existing GPU weights (`layers_half`) intact
+        std::vector<k::LoraLayerHost> bad_rank = make_layers(R + 1);
+        uerr.clear();
+        check(!k::lora_update(bad_rank, uerr) && !uerr.empty(), "lora_update: rejects rank > allocated rank");
+
+        std::vector<k::LoraLayerHost> bad_layer = make_layers(R / 2);
+        bad_layer[(size_t) kOff] = bad_layer[(size_t) kLayer];
+        uerr.clear();
+        check(!k::lora_update(bad_layer, uerr) && !uerr.empty(), "lora_update: rejects activating unadapted layer kOff");
+
+        std::vector<k::LoraLayerHost> bad_count = make_layers(R / 2);
+        bad_count.pop_back();
+        uerr.clear();
+        check(!k::lora_update(bad_count, uerr) && !uerr.empty(), "lora_update: rejects layer count mismatch");
+
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch after rejected updates");
+        ck(cudaStreamSynchronize(s), "sync after rejected updates");
+        const double e_intact = rel_err(down(dy, y0.size()), reference_for(layers_half[(size_t) kLayer], 8, false), 8, NOUT, LDY);
+        std::snprintf(what, sizeof what, "rejected updates leave GPU weights intact: rel err %.2e (< 1e-4)", e_intact);
+        check(e_intact < 1e-4, what);
+
+        // 5d. Grow back from R / 2 to full allocated rank R through the same captured graph
+        uerr.clear();
+        check(k::lora_update(layers2, uerr), "lora_update: grows back from R/2 to full rank R");
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch after grow-back update");
+        ck(cudaStreamSynchronize(s), "sync after grow-back update");
+        const double e_back = rel_err(down(dy, y0.size()), reference_for(layers2[(size_t) kLayer], 8, false), 8, NOUT, LDY);
+        std::snprintf(what, sizeof what, "captured graph after grow-back to R: rel err %.2e (< 1e-4)", e_back);
+        check(e_back < 1e-4, what);
+    }
 
     cudaGraphExecDestroy(exec);
     cudaGraphDestroy(graph);

@@ -869,5 +869,49 @@ int main() {
             check(refused > 0 && evicted_any > 0 && pool.shrinks > 0, "the workload refused, evicted and trimmed the pool at least once");
         }
     }
+    {
+        // drop_lora(): removes every e.lora == true entry (including pinned), keeps e.lora == false, updates bytes_, clears reuse_
+        SavedConversation base1 = image({1, 2, 3});
+        base1.lora = false;
+        SavedConversation adapted1 = image({4, 5, 6});
+        adapted1.lora = true;
+        SavedConversation adapted_pin = image({7, 8, 9});
+        adapted_pin.lora = true;
+        ConversationCheckpoint pin_cp;
+        pin_cp.ids = {7, 8};
+        pin_cp.pinned = true;
+        adapted_pin.checkpoints.push_back(std::move(pin_cp));
+        SavedConversation base2 = image({10, 11, 12});
+        base2.lora = false;
+
+        const size_t base_bytes = base1.bytes() + base2.bytes();
+        ConversationCache cache(base_bytes + adapted1.bytes() + adapted_pin.bytes() + 4096, 8);
+        check(cache.put(std::move(base1)), "put base1");
+        check(cache.put(std::move(adapted1)), "put adapted1");
+        check(cache.put(std::move(adapted_pin)), "put adapted_pin");
+        check(cache.put(std::move(base2)), "put base2");
+
+        ConversationKv kv;
+        kv.k.resize(256);
+        std::vector<ConversationKv> kvs;
+        kvs.push_back(std::move(kv));
+        cache.retain(std::move(kvs), 8, {}, {4, 5, 6});
+        check(cache.retained_bytes() > 0 && cache.size() == 4, "setup before drop_lora");
+
+        const size_t dropped = cache.drop_lora();
+        check(dropped == 2, "drop_lora removes both lora entries including pinned");
+        check(cache.size() == 2 && cache.bytes() == base_bytes && cache.retained_bytes() == 0,
+              "drop_lora keeps base entries with exact byte accounting and clears retained K/V");
+        check(cache.best(std::vector<int32_t>{1, 2, 3, 99}, {}, true, false).tokens == 3,
+              "base1 still matches after drop_lora");
+        check(cache.best(std::vector<int32_t>{10, 11, 12, 99}, {}, true, false).tokens == 3,
+              "base2 still matches after drop_lora");
+        check(cache.best(std::vector<int32_t>{4, 5, 6, 99}, {}, true, true).tokens == 0,
+              "adapted1 gone after drop_lora");
+        check(cache.best(std::vector<int32_t>{7, 8, 9, 99}, {}, true, true).tokens == 0,
+              "pinned adapted entry gone after drop_lora");
+        check(cache.drop_lora() == 0 && cache.size() == 2 && cache.bytes() == base_bytes,
+              "second drop_lora is a no-op");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

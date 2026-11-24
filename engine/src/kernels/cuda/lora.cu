@@ -377,6 +377,76 @@ bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err) {
     return true;
 }
 
+bool lora_update(const std::vector<LoraLayerHost>& layers, std::string& err) {
+    if (!g_lora.loaded) { err = "lora_update: no adapter is loaded"; return false; }
+    if (layers.size() != g_host.size()) {
+        err = "lora_update: layer count mismatch (" + std::to_string(layers.size()) + " vs " +
+              std::to_string(g_host.size()) + ")";
+        return false;
+    }
+    std::vector<LayerHost> staged(g_host.size());
+    for (size_t i = 0; i < layers.size(); ++i) {
+        const LayerHost& cur = g_host[i];
+        const LoraLayerHost& src = layers[i];
+        if (cur.rank == 0) {
+            if (src.rank != 0) {
+                err = "lora_update: layer " + std::to_string(i) +
+                      " was not adapted at load time (cannot activate without re-capturing graphs)";
+                return false;
+            }
+            continue;
+        }
+        if (src.rank < 0 || src.rank > cur.rank) {
+            err = "lora_update: layer " + std::to_string(i) + " rank " + std::to_string(src.rank) +
+                  " exceeds allocated rank " + std::to_string(cur.rank);
+            return false;
+        }
+        if (src.rank > 0 &&
+            (src.n_in != cur.n_in || src.n_out != cur.n_out ||
+             src.a.size() != (size_t) (src.rank * src.n_in) ||
+             src.b.size() != (size_t) (src.n_out * src.rank))) {
+            err = "lora_update: bad tables or dimensions for layer " + std::to_string(i);
+            return false;
+        }
+        LayerHost& dst = staged[i];
+        dst.rank = cur.rank;
+        dst.n_in = cur.n_in;
+        dst.n_out = cur.n_out;
+        dst.a.assign((size_t) (cur.rank * cur.n_in), 0.0f);
+        dst.bt.assign((size_t) (cur.rank * cur.n_out), 0.0f);
+        if (src.rank > 0) {
+            std::copy(src.a.begin(), src.a.end(), dst.a.begin());
+            for (int64_t o = 0; o < cur.n_out; ++o)
+                for (int64_t r = 0; r < src.rank; ++r)
+                    dst.bt[(size_t) (r * cur.n_out + o)] = src.b[(size_t) (o * src.rank + r)];
+        }
+    }
+    int prev = 0;
+    cudaGetDevice(&prev);
+    bool ok = true;
+    for (int d = 0; ok && d < kDevices; ++d) {
+        if (!g_dev[d].ready()) continue;
+        if (cudaSetDevice(d) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) { ok = false; break; }
+        for (size_t i = 0; ok && i < staged.size(); ++i) {
+            if (staged[i].rank == 0) continue;
+            const LayerDev& dev = g_dev[d].layers[i];
+            ok = cudaMemcpy(dev.a, staged[i].a.data(), staged[i].a.size() * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess &&
+                 cudaMemcpy(dev.bt, staged[i].bt.data(), staged[i].bt.size() * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess;
+        }
+    }
+    cudaSetDevice(prev);
+    if (!ok) {
+        err = "lora_update: device copy failed";
+        return false;
+    }
+    for (size_t i = 0; i < g_host.size(); ++i) {
+        if (staged[i].rank == 0) continue;
+        g_host[i].a = std::move(staged[i].a);
+        g_host[i].bt = std::move(staged[i].bt);
+    }
+    return true;
+}
+
 bool lora_replicate(std::string& err) { return !g_lora.loaded || upload_here(err); }
 
 void lora_set_enabled(bool on) {

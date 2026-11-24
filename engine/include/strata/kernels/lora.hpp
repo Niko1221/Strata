@@ -51,6 +51,12 @@ const Lora& lora();
 /// before any graph is captured (the graphs hold the tables' addresses).
 bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err);
 
+/// Replace the loaded adapter's weights in place across every device that holds them, without reallocating device
+/// memory or re-capturing graphs.  Layers that were unadapted at upload must stay rank 0; adapted layers may keep
+/// their rank or shrink (0 <= rank <= allocated rank, zero-padded to the allocated rank).  Validates every layer
+/// before touching any device memory.
+bool lora_update(const std::vector<LoraLayerHost>& layers, std::string& err);
+
 /// A layer split: put the loaded adapter's tables on the CURRENT device too (lora_apply uses the tables of the
 /// device it runs on).  No-op without an adapter or when this device has them already.
 bool lora_replicate(std::string& err);

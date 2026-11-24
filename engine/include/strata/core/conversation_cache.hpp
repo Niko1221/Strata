@@ -485,6 +485,23 @@ public:
         return n;
     }
 
+    // Drop every parked entry computed under a LoRA adapter (e.lora == true, including pinned entries) and clear
+    // retained K/V, leaving base-model entries (e.lora == false) intact.  Returns how many were dropped.
+    size_t drop_lora() {
+        size_t dropped = 0;
+        for (size_t i = 0; i < entries_.size();) {
+            if (entries_[i].lora) {
+                bytes_ -= entries_[i].bytes();
+                erase(i);
+                ++dropped;
+                continue;
+            }
+            ++i;
+        }
+        reuse_ = {};
+        return dropped;
+    }
+
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
 

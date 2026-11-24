@@ -2851,14 +2851,69 @@ static bool pcie_auto_split_ok() {
 #endif
 }
 
-// --lora / --lora-scaled: llama.cpp's `llama_adapter_lora_init` for the projections the engine adapts (every
-// file's `blk.<l>.{ssm_out,attn_output}.weight.lora_{a,b}`, B times scale * alpha / rank, several files' ranks
-// stacked), into the tables `lora_upload` takes.  A tensor the engine does not adapt is an error: running part of
-// an adapter would give neither model.  `summary` is what INFO reports; `digest` identifies the uploaded tables.
-bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, std::string& summary, uint64_t& digest,
-                        std::string& err) {
+// Parse FILE[:SCALE][,FILE[:SCALE]...] into (path, scale) pairs.
+// When `require_scale` is true (`--lora-scaled`), every item must end with `:SCALE`; when false (`LORA_RELOAD`),
+// `:SCALE` is optional and defaults to 1.0f.  Colons that precede a path separator (Windows drive letters like
+// `C:\...` or Unix directories with `:`) are treated as part of the path.
+bool parse_lora_spec(const std::string& spec, std::vector<std::pair<std::string, float>>& out, std::string& err,
+                     bool require_scale = false) {
+    out.clear();
+    if (spec.empty()) {
+        err = "empty LoRA adapter spec";
+        return false;
+    }
+    size_t start = 0;
+    while (start <= spec.size()) {
+        const size_t comma = spec.find(',', start);
+        const std::string item = comma == std::string::npos ? spec.substr(start) : spec.substr(start, comma - start);
+        if (item.empty()) {
+            err = "empty entry in LoRA adapter spec '" + spec + "'";
+            out.clear();
+            return false;
+        }
+        const size_t colon = item.rfind(':');
+        const bool has_sep_after_colon = colon != std::string::npos &&
+            (item.find('/', colon + 1) != std::string::npos || item.find('\\', colon + 1) != std::string::npos);
+        const bool has_scale_suffix = colon != std::string::npos && !has_sep_after_colon;
+        if (require_scale && (!has_scale_suffix || colon == 0)) {
+            err = "expected FILE:SCALE, got '" + item + "'";
+            out.clear();
+            return false;
+        }
+        if (has_scale_suffix) {
+            if (colon == 0) {
+                err = "expected FILE[:SCALE], got '" + item + "'";
+                out.clear();
+                return false;
+            }
+            char* end = nullptr;
+            const float sc = std::strtof(item.c_str() + colon + 1, &end);
+            if (end == item.c_str() + colon + 1 || *end != '\0' || !std::isfinite(sc)) {
+                err = std::string(require_scale ? "expected FILE:SCALE, got '" : "expected FILE[:SCALE], got '") +
+                      item + "'";
+                out.clear();
+                return false;
+            }
+            out.push_back({item.substr(0, colon), sc});
+        } else {
+            out.push_back({item, 1.0f});
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return !out.empty();
+}
+
+// --lora / --lora-scaled / LORA_RELOAD: llama.cpp's `llama_adapter_lora_init` for the projections the engine adapts
+// (every file's `blk.<l>.{ssm_out,attn_output}.weight.lora_{a,b}`, B times scale * alpha / rank, several files' ranks
+// stacked), into host tables without touching GPU memory.  A tensor the engine does not adapt is an error: running part
+// of an adapter would give neither model.  `summary` is what INFO reports; `digest` identifies the parsed tables.
+bool parse_lora_adapters(const std::vector<std::pair<std::string, float>>& files, const strata::core::ModelGeometry& g,
+                         std::vector<strata::kernels::LoraLayerHost>& layers, std::string& summary, uint64_t& digest,
+                         std::string& err) {
+    if (files.empty()) { err = "no LoRA adapter files specified"; return false; }
     const int64_t L = g.n_layers, N = g.n_embd;
-    std::vector<strata::kernels::LoraLayerHost> layers((size_t) L);
+    layers.assign((size_t) L, strata::kernels::LoraLayerHost{});
     auto f32_of = [&](const strata::GgufFile& f, const strata::TensorInfo& t, std::vector<float>& out) -> bool {
         const uint8_t* p = f.tensor_data(t);
         out.resize((size_t) t.elements());
@@ -2876,7 +2931,7 @@ bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, 
         }
         return true;
     };
-    for (const auto& [path, scale] : o.lora_files) {
+    for (const auto& [path, scale] : files) {
         try {
             strata::GgufFile f(path);
             const strata::MetaValue* type = f.get("general.type");
@@ -2965,11 +3020,18 @@ bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, 
         digest = b.digest();
         if (digest == 0) digest = 1;   // 0 means "none loaded"
     }
+    summary = std::to_string(covered);
+    return true;
+}
+
+bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, std::string& summary, uint64_t& digest,
+                        std::string& err) {
+    std::vector<strata::kernels::LoraLayerHost> layers;
+    if (!parse_lora_adapters(o.lora_files, g, layers, summary, digest, err)) return false;
     const uint64_t bytes = strata::kernels::lora_device_bytes(layers);
     if (!strata::kernels::lora_upload(layers, err)) return false;
-    summary = std::to_string(covered);
-    std::fprintf(stderr, "strata generate: LoRA: %zu file%s, %d layers adapted, %.1f MiB per device\n",
-                 o.lora_files.size(), o.lora_files.size() == 1 ? "" : "s", covered, (double) bytes / (1024.0 * 1024.0));
+    std::fprintf(stderr, "strata generate: LoRA: %zu file%s, %s layers adapted, %.1f MiB per device\n",
+                 o.lora_files.size(), o.lora_files.size() == 1 ? "" : "s", summary.c_str(), (double) bytes / (1024.0 * 1024.0));
     return true;
 }
 
@@ -4217,19 +4279,13 @@ int main(int argc, char** argv) {
         }
         else if (a == "--lora") o.lora_files.push_back({next("--lora"), 1.0f});
         else if (a == "--lora-scaled") {
-            // FILE:SCALE, comma-separated; the LAST colon splits (as --control-vector-scaled)
-            std::stringstream list(next("--lora-scaled"));
-            std::string item;
-            while (std::getline(list, item, ',')) {
-                const size_t colon = item.rfind(':');
-                char* end = nullptr;
-                const float sc = colon == std::string::npos ? 0.0f : std::strtof(item.c_str() + colon + 1, &end);
-                if (colon == std::string::npos || colon == 0 || end == item.c_str() + colon + 1 || *end != '\0') {
-                    std::fprintf(stderr, "--lora-scaled: expected FILE:SCALE, got '%s'\n", item.c_str());
-                    return 2;
-                }
-                o.lora_files.push_back({item.substr(0, colon), sc});
+            std::vector<std::pair<std::string, float>> parsed;
+            std::string perr;
+            if (!parse_lora_spec(next("--lora-scaled"), parsed, perr, /*require_scale=*/true)) {
+                std::fprintf(stderr, "--lora-scaled: %s\n", perr.c_str());
+                return 2;
             }
+            for (auto& p : parsed) o.lora_files.push_back(std::move(p));
         }
         else if (a == "--control-vector-layer-range") {
             o.cvec_first = std::atoi(next("--control-vector-layer-range"));
@@ -6076,6 +6132,7 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    uint64_t lora_generation = strata::kernels::lora().loaded ? 1 : 0;
     if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
@@ -15687,7 +15744,7 @@ int main(int argc, char** argv) {
             // (#5012: experts = every routed (layer, expert) pair, so the Monitor shows "slots / experts" as a share)
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld experts=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
-                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s lora=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s lora=%s lora_reload=%d arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
@@ -15699,6 +15756,7 @@ int main(int argc, char** argv) {
                         (long long) slots_primary, (long long) mib_primary,
                         o.spec, o.mtp_max_t,
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(), lora_summary.c_str(),
+                        strata::kernels::lora().loaded ? 1 : 0,
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
@@ -17897,6 +17955,95 @@ int main(int argc, char** argv) {
             stop_req.store(false);   // a STOP that arrived between requests is stale
             g_prompt_stop_req.store(false);   // the prompt read's cancel flag resets with it (#962/#3675)
             err.clear();
+            // Hot-reload LoRA adapter weights in place without re-capturing graphs: LORA_RELOAD <spec>
+            // (<spec> is FILE[:SCALE][,FILE[:SCALE]...]).  Evicts stale LoRA-computed live state, parked RAM entries,
+            // idle batch slots, and SSD spill entries so no cached KV/GDN state is reused across adapter generations.
+            if (line == "LORA_RELOAD" || line.rfind("LORA_RELOAD ", 0) == 0) {
+                const auto t0 = Clock::now();
+                auto ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+                auto refuse = [&](const std::string& why) {
+                    std::string one = why;
+                    for (char& c : one) if (c == '\n' || c == '\r') c = ' ';
+                    std::fprintf(stderr, "strata serve: lora_reload refused: %s\n", one.c_str());
+                    std::printf("ERR lora_reload: %s\n", one.c_str());
+                    std::fflush(stdout);
+                    err.clear();
+                };
+                if (!strata::kernels::lora().loaded) {
+                    refuse("no LoRA adapter was loaded at startup");
+                    continue;
+                }
+                if (batch_on() || (piped && pipe_inflight())) {
+                    refuse("cannot reload LoRA while batch slots are actively decoding");
+                    continue;
+                }
+                const std::string spec = line.size() > 12 ? line.substr(12) : std::string();
+                std::vector<std::pair<std::string, float>> files;
+                std::string rerr;
+                if (!parse_lora_spec(spec, files, rerr, /*require_scale=*/false)) {
+                    refuse(rerr);
+                    continue;
+                }
+                std::vector<strata::kernels::LoraLayerHost> new_layers;
+                std::string new_summary;
+                uint64_t new_digest = 0;
+                if (!parse_lora_adapters(files, g, new_layers, new_summary, new_digest, rerr)) {
+                    refuse(rerr);
+                    continue;
+                }
+                strata::core::conversation_checkpoint_join(nullptr);
+                strata::core::conversation_park_join();
+                if (!ver.wait_commit(err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
+                if (!strata::kernels::lora_update(new_layers, rerr)) {
+                    refuse(rerr);
+                    continue;
+                }
+                ++lora_generation;
+                lora_digest = new_digest;
+                lora_summary = new_summary;
+                config_fp.reset();
+                spill_id.reset();
+                if (lora_cached) {
+                    live.clear();
+                    live_imgs.clear();
+                    if (ckpt_pool.on())
+                        for (ConvCheckpoint& c : checks) ckpt_pool.give(std::move(c));
+                    checks.clear();
+                    tail_ckpt_len = -1;
+                    live_ok = false;
+                    conversations.take_reuse();
+                }
+                size_t dropped_slots = 0;
+                for (BSlot& sl : bs) {
+                    if (!sl.active && sl.cached && sl.lora) {
+                        sl.cached = false;
+                        sl.partial = false;
+                        sl.ids.clear();
+                        if (ckpt_pool.on())
+                            for (ConvCheckpoint& c : sl.checks) ckpt_pool.give(std::move(c));
+                        sl.checks.clear();
+                        ++dropped_slots;
+                    }
+                }
+                const size_t dropped_ram = conversations.drop_lora();
+                const size_t dropped_spill = spill.enabled() ? spill_clear() : 0;
+                const size_t dropped_total = dropped_ram + dropped_spill;
+                const double elapsed_ms = ms();
+                std::fprintf(stderr, "strata serve: lora_reload gen=%llu digest=%016llx layers=%s in %.1f ms "
+                                     "(dropped ram=%zu spill=%zu slots=%zu live=%d)\n",
+                             (unsigned long long) lora_generation, (unsigned long long) lora_digest,
+                             lora_summary.c_str(), elapsed_ms, dropped_ram, dropped_spill, dropped_slots,
+                             lora_cached ? 1 : 0);
+                std::printf("OK lora_reload %llu %016llx %.1f dropped=%zu\n",
+                            (unsigned long long) lora_generation, (unsigned long long) lora_digest,
+                            elapsed_ms, dropped_total);
+                std::fflush(stdout);
+                continue;
+            }
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
             // RESTORED <tokens> <bytes> <ms>; SERR <invalid|storage|memory|io> <published 0|1> <reason> for a refusal
