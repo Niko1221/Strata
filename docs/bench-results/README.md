@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 152 folders and 3 loose files, 2268 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 153 folders and 3 loose files, 2269 files in all.
 
 
 ## 2026-09
@@ -165,6 +165,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | --- | --- | ---: |
 | [2026-11-07-community-rtx-4060-ti-plus-rtx-3090-ud-q5-k-xl](2026-11-07-community-rtx-4060-ti-plus-rtx-3090-ud-q5-k-xl/) | Community benchmark on NVIDIA GeForce RTX 4060 Ti + NVIDIA GeForce RTX 3090 | 3 |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
+| [2026-11-18-dual-v100-sxm2-256k-mmq](2026-11-18-dual-v100-sxm2-256k-mmq/) | Dual NVIDIA Tesla V100-SXM2-16GB (NV6 NVLink) — v0.2.15 -DSTRATA_MMQ=ON + STRATA_MMQ_TIER_SORT + NVLink P2P Evaluation (64Ki & 256Ki) | 1 |
 | [2026-11-20-q36-kv-precision](2026-11-20-q36-kv-precision/) | q36 --kv fp32/fp16/fp8/fp4 — memory width for the K/V cache | 1 |
 | [2026-11-20-standard-rtx-3090-7c2c22d0](2026-11-20-standard-rtx-3090-7c2c22d0/) | Strata standard benchmark: NVIDIA GeForce RTX 3090 | 7 |
 | [2026-11-22-community-rtx-4090-qwen3-8-flash-next-unsloth-ud-iq3-xxs](2026-11-22-community-rtx-4090-qwen3-8-flash-next-unsloth-ud-iq3-xxs/) | Community benchmark on NVIDIA GeForce RTX 4090 | 3 |

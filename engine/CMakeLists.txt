@@ -623,6 +623,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(mmq_resident_sort_test PRIVATE include)
   add_test(NAME mmq_resident_sort_test COMMAND mmq_resident_sort_test)
 
+  # PR #6023: peer-stream ring slot safety and span splitting across deferred groups (header-only, no GPU)
+  add_executable(peer_stream_ring_test tests/prefill/peer_stream_ring_test.cpp)
+  target_include_directories(peer_stream_ring_test PRIVATE include)
+  add_test(NAME peer_stream_ring_test COMMAND peer_stream_ring_test)
+
   # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
   # keeps the selection (header-only, no GPU)
   add_executable(qsa_two_pass_test tests/prefill/qsa_two_pass_test.cpp)

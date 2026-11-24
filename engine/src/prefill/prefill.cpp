@@ -35,6 +35,7 @@
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
 #endif
 #include "mmq_resident_sort.hpp"
+#include "peer_stream_ring.hpp"
 #include "wmma_gemm.h"
 #include "strata/core/kv_host_dma.hpp"
 #include "strata/core/mtp.hpp"
@@ -4655,12 +4656,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 ++P.p_issued;
             }
         };
-        auto p_release_to = [&](int64_t l, int32_t e_stop, cudaStream_t ps) {
+        auto p_release_to = [&](int64_t l, int32_t e_stop, cudaStream_t ps, bool issue_more = true) {
             PeerPrefill& P = *m.pp;
             while (P.pk < P.pseq_start[(size_t) l + 1] && P.pseq[P.pk].e < e_stop) {
                 cudaEventRecord(P.pused[P.pk % (size_t) P.RP], ps);
                 ++P.pk;
-                p_issue_until(P.pk + (size_t) P.RP);
+                if (issue_more) p_issue_until(P.pk + (size_t) P.RP);
             }
         };
         struct StreamEntry { int32_t l, e; const uint8_t* blob; int job; };
@@ -6669,17 +6670,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                             if (P.compact) {
                                 // groups of up to MMQ_GROUP experts and at most G rows, each computed from its own rows
-                                P.groups.clear();
-                                {
-                                    size_t g0 = 0;
-                                    int64_t gr = 0;
-                                    for (size_t j = 0; j < n; ++j) {
-                                        const int64_t c = m.cnt[(size_t) order_peer[j]];
-                                        if (j > g0 && (j - g0 == (size_t) MMQ_GROUP || gr + c > P.G)) { P.groups.push_back({g0, j}); g0 = j; gr = 0; }
-                                        gr += c;
-                                    }
-                                    if (n > g0) P.groups.push_back({g0, n});
-                                }
+                                const bool has_pseq = ps_on && (size_t) l + 1 < P.pseq_start.size();
+                                const size_t ps0 = has_pseq ? P.pseq_start[(size_t) l] : 0;
+                                const size_t ps1 = has_pseq ? P.pseq_start[(size_t) l + 1] : 0;
+                                detail::build_peer_ring_groups(
+                                    order_peer, m.cnt, on_peer, (size_t) MMQ_GROUP, P.G,
+                                    ps_on, ps0, ps1, P.RP,
+                                    [&](size_t idx) { return P.pseq[idx].e; }, P.groups);
                                 const size_t ng = P.groups.size();
                                 P.bounds_host.resize(n + 1 + ng * (MMQ_GROUP + 1));
                                 for (size_t j = 0; j < n; ++j) P.bounds_host[j] = m.off[(size_t) order_peer[j]] - (int32_t) peer_at;
@@ -6753,7 +6750,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         const uint8_t* bd = nullptr;
                                         int psl = -1;
                                         if (on_peer[(size_t) e] == 2) {   // from the peer's ring
-                                            p_release_to(l, e, ps);
+                                            // Do not issue past held ring slots (pgg_slots) before the group kernel records
+                                            // their P.pused events, or P.s_cp wraps around and overwrites active blobs.
+                                            p_release_to(l, e, ps, detail::peer_ring_issue_allowed(peer_i8 || pgg_now, pgg_nslots));
                                             if (P.pk >= P.pseq_start[(size_t) l + 1] || P.pseq[P.pk].e != e) {
                                                 err = "prefill: a peer-streamed expert is not next in the peer's ring";
                                                 cudaSetDevice(prevd);
