@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -159,6 +160,15 @@ class Http(unittest.TestCase):
         for el in ("cfg-card", "cfg-form", "cfg-save", "cfg-msg"):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("config", {method: "POST", headers: headers(true)', js)
+
+    def test_the_page_carries_the_same_help_text(self):
+        """serve/web/app.js repeats every help text as a plain literal (cfg.help.<key>) so the catalogs can translate
+        it; if one drifts from runconfig's, the page would show two texts for one key."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import web_i18n
+        found = web_i18n.js_strings((ROOT / "serve" / "web" / "app.js").read_text(encoding="utf-8"), "app.js")
+        for key, _, help_ in runconfig.EDITABLE:
+            self.assertEqual(found.get(f"cfg.help.{key}"), help_, key)
 
 
 if __name__ == "__main__":

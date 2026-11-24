@@ -641,6 +641,29 @@ function renderMcp() {
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
 // server lists them, checks every value and keeps every other key of the file as it is.
+// The help text of each key, in the page's language: the same English text the server sends (serve/runconfig.py,
+// kept equal by serve/test_runconfig.py), so a catalog can translate it.  The server's own help stays in the
+// tooltip, next to the config key it names; a key a future server adds without a translation shows it as before.
+function cfgHelp() {
+  return {
+    "sampling.temperature": tr("cfg.help.sampling.temperature", "Default temperature for requests that send none (0 = greedy; without it the model card's: 1.0 thinking, 0.7 not)"),
+    "sampling.top_p": tr("cfg.help.sampling.top_p", "Default top_p for requests that send none"),
+    "sampling.top_k": tr("cfg.help.sampling.top_k", "Default top_k for requests that send none (1-64)"),
+    "sampling.min_p": tr("cfg.help.sampling.min_p", "Default min_p for requests that send none"),
+    "reasoning_budget_tokens": tr("cfg.help.reasoning_budget_tokens", "Cap the thinking of every request at this many tokens (0 or empty: no cap)"),
+    "fit_max_tokens": tr("cfg.help.fit_max_tokens", "Shorten a max_tokens that does not fit the context (on by default); off: answer 400 like llama.cpp"),
+    "anthropic_thinking": tr("cfg.help.anthropic_thinking", "Anthropic requests that do not ask for thinking: think as the model does (model) or not (on_request)"),
+    "effort_position": tr("cfg.help.effort_position", "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
+    "aliases": tr("cfg.help.aliases", "Other model names the server lists and answers to (comma-separated)"),
+    "idle_unload_s": tr("cfg.help.idle_unload_s", "Unload the model after this many seconds without requests (0 or empty: never)"),
+    "mtp": tr("cfg.help.mtp", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); empty or on: as installed"),
+    "lazy_load": tr("cfg.help.lazy_load", "Start without loading the model; the first request loads it (text only)"),
+    "engine_silence_s": tr("cfg.help.engine_silence_s", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)"),
+    "api_monitor": tr("cfg.help.api_monitor", "Keep the last 100 requests' prompts and answers in memory for /api-monitor"),
+    "open_browser": tr("cfg.help.open_browser", "Open the chat page in the browser when the model is ready"),
+    "vram_reserve_mib": tr("cfg.help.vram_reserve_mib", "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+  };
+}
 let cfgKeys = [];
 async function loadConfig() {
   let r;
@@ -648,21 +671,22 @@ async function loadConfig() {
   if (!r.ok) { $("cfg-card").hidden = true; return; }       // no run config, an older server, or no key yet
   const c = await r.json();
   cfgKeys = c.keys || [];
+  const help = cfgHelp(), def = tr("cfg.default", "default");
   $("cfg-file").textContent = c.file || "";
   $("cfg-form").innerHTML = cfgKeys.map((k, i) => {
     const id = `cfg-${i}`, v = k.value;
     let input;
     if (k.kind === "bool" || k.kind === "enum") {
-      const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
+      const opts = k.kind === "bool" ? [["true", tr("cfg.on", "on")], ["false", tr("cfg.off", "off")]] : k.choices.map((x) => [x, x]);
       const cur = v == null ? "" : String(v);
-      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>${esc(def)}</option>` +
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
       input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
-        `value="${esc(text)}" placeholder="default" autocomplete="off">`;
+        `value="${esc(text)}" placeholder="${esc(def)}" autocomplete="off">`;
     }
-    return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
+    return `<label for="${id}" title="${esc(k.help)}">${esc(help[k.key] || k.help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
 }
@@ -680,17 +704,17 @@ $("cfg-save").addEventListener("click", async () => {
     const old = Array.isArray(k.value) ? k.value.join(", ") : k.value;
     if (JSON.stringify(v) !== JSON.stringify(old ?? null)) set[k.key] = v;
   });
-  if (!Object.keys(set).length) { $("cfg-msg").textContent = "Nothing changed."; return; }
+  if (!Object.keys(set).length) { $("cfg-msg").textContent = tr("cfg.nothingChanged", "Nothing changed."); return; }
   try {
     const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+      ? tr("cfg.saved", "Saved ({k}); the earlier file is {f}.bak. Start the model again to use it.", {k: b.changed.join(", "), f: b.file}) : tr("cfg.nothingChanged", "Nothing changed.");
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";
-    toast("error", "Not saved", String(e.message || e), 6000);
+    toast("error", tr("cfg.notSaved", "Not saved"), String(e.message || e), 6000);
   }
 });
 
@@ -1558,6 +1582,7 @@ function showLanguage() {
   renderChat();
   setBusy(!!busy);
   if (lastMetrics) render(lastMetrics);
+  if (!$("cfg-card").hidden) loadConfig();                  // the About page is open: redraw its model settings in the new language
 }
 $("lang").onchange = async () => {
   store.set("lang", $("lang").value);
