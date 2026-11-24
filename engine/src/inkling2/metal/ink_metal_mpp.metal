@@ -930,7 +930,7 @@ kernel void ink_mpp_relpos_gqa_pf(
             const int kpos = k0 + int(kr);
             uint4 kv = uint4(0u);
             if (kpos < k_max) {
-                const int kidx = A.is_swa ? (kpos & 1023) : kpos;
+                const int kidx = A.is_swa ? (kpos % A.kv_stride) : kpos;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + kc;
                 kv = *((device const uint4*)(k_cache + off));
             }
@@ -1015,7 +1015,7 @@ kernel void ink_mpp_relpos_gqa_pf(
             const int kpos = k0 + int(vr);
             uint4 vv = uint4(0u);
             if (kpos < k_max) {
-                const int kidx = A.is_swa ? (kpos & 1023) : kpos;
+                const int kidx = A.is_swa ? (kpos % A.kv_stride) : kpos;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + vc;
                 vv = *((device const uint4*)(v_cache + off));
             }

@@ -276,12 +276,36 @@ public:
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         if (batch.n_tokens <= 0) return true;
-        // Auto-slice oversized multi-slot prefill batches (e.g. --bench --parallel 64 --prompt-len 64 -> M=4096)
-        if (batch.n_tokens > runner_.max_batch) {
+        // Auto-slice oversized batches or batches whose per-slot span would wrap the SWA KV ring
+        // and overwrite live keys still needed by earlier queries in the same chunk.
+        int slice_cap = runner_.max_batch;
+        if (runner_.swa_span_cap > 0 && batch.n_tokens > runner_.swa_span_cap) {
+            std::unordered_map<int, std::pair<int, int>> slot_span;
+            for (int i = 0; i < batch.n_tokens; ++i) {
+                const int s = batch.slot_ids[i];
+                const int p = batch.pos[i];
+                auto it = slot_span.find(s);
+                if (it == slot_span.end()) {
+                    slot_span.emplace(s, std::make_pair(p, p));
+                } else {
+                    it->second.first = std::min(it->second.first, p);
+                    it->second.second = std::max(it->second.second, p);
+                }
+            }
+            for (const auto& kv : slot_span) {
+                const int lo = kv.second.first;
+                const int hi = kv.second.second;
+                if (hi >= runner_.swa_ring && (hi - lo + 1) > runner_.swa_span_cap) {
+                    slice_cap = std::min(slice_cap, runner_.swa_span_cap);
+                    break;
+                }
+            }
+        }
+        if (batch.n_tokens > slice_cap) {
             const int V = mod_.man.c.vocab_unpadded;
             int out_row = 0;
-            for (int off = 0; off < batch.n_tokens; off += runner_.max_batch) {
-                const int take = std::min(runner_.max_batch, batch.n_tokens - off);
+            for (int off = 0; off < batch.n_tokens; off += slice_cap) {
+                const int take = std::min(slice_cap, batch.n_tokens - off);
                 StepBatch sub;
                 sub.capture_taps = batch.capture_taps;
                 sub.img_embeds = batch.img_embeds;

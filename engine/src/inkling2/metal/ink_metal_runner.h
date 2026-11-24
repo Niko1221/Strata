@@ -156,14 +156,16 @@ struct InkMetalRunner {
     int max_slots = 1;
     int max_ctx = 8192;
     int max_batch = 512;  // max tokens per forward_batch chunk
+    int swa_ring = 1024;  // SWA KV ring stride (>= swa_win + max_batch, 64-aligned, capped at max_ctx)
+    int swa_span_cap = 0; // max safe per-slot token span once pos >= swa_ring (0 = no cap)
     bool use_dspark = true;
 
     // KV Cache & ShortConv State Pools (allocated for max_slots)
-    // 40 SWA visits -> ring [max_slots, 1024, 8, 128] FP16 per SWA visit
+    // 40 SWA visits -> ring [max_slots, swa_ring, 8, 128] FP16 per SWA visit
     // 8 Global visits -> linear [max_slots, max_ctx, 8, 128] FP16 per Global visit
     std::vector<mtl::Buffer> kv_k;        // [48]
     std::vector<mtl::Buffer> kv_v;        // [48]
-    std::vector<int> visit_kv_stride;     // [48]: 1024 for SWA, max_ctx for global
+    std::vector<int> visit_kv_stride;     // [48]: swa_ring for SWA, max_ctx for global
 
     // ShortConv 3-lag history pools per visit: [48]
     std::vector<mtl::Buffer> sc_hist_k;    // [max_slots, 3, 1024]
@@ -383,13 +385,25 @@ struct InkMetalRunner {
 
         // Allocate KV caches & ShortConv state pools (WorkingSet-aware auto-ctx sizing for 16/24/32 GB Mac M1/M2/M3/M4!)
         const auto& c = mod->man.c;
+        auto compute_swa_ring = [&](int ctx, int batch) {
+            const int win = c.swa_win;
+            int ring = win + std::max(batch, 64);
+            if (const char* ev = std::getenv("STRATA_INK_SWA_RING")) {
+                const int v = std::atoi(ev);
+                if (v >= win) ring = v;
+            }
+            ring = ((ring + 63) / 64) * 64;
+            if (ring > ctx) ring = ctx;
+            return std::max(ring, std::min(win, ctx));
+        };
+        swa_ring = compute_swa_ring(max_ctx, max_batch);
         {
             const uint64_t ws_lim = cx->recommended_working_set();
             const uint64_t cur_alloc = cx->allocated();
             if (ws_lim > (4ull << 30)) {
                 const uint64_t os_headroom = (ws_lim <= (14ull << 30)) ? (1024ull << 20) : (1536ull << 20);
                 // SWA KV (40 visits) + ShortConv + workspaces + compact DSpark SWA layers (0 & 2)
-                const size_t swa_kv_b = 40ul * (size_t)max_slots * (size_t)c.swa_win * c.n_kv * c.head_dim * 4ul;
+                const size_t swa_kv_b = 40ul * (size_t)max_slots * (size_t)swa_ring * c.n_kv * c.head_dim * 4ul;
                 const size_t sc_b = (size_t)c.n_visits * (size_t)max_slots * 3ul * (2ul * c.n_kv * c.head_dim + 2ul * c.hidden) * 4ul;
                 const size_t ws_b = 512ull << 20;
                 const uint64_t fixed_need = cur_alloc + swa_kv_b + sc_b + ws_b + os_headroom;
@@ -412,6 +426,10 @@ struct InkMetalRunner {
                 }
             }
         }
+        swa_ring = compute_swa_ring(max_ctx, max_batch);
+        swa_span_cap = (swa_ring > c.swa_win && swa_ring < max_ctx) ? (swa_ring - c.swa_win) : 0;
+        fprintf(stderr, "[ink_metal] SWA KV ring=%d (win=%d, chunk=%d, span_cap=%d)\n",
+                swa_ring, c.swa_win, max_batch, swa_span_cap);
         kv_k.resize(c.n_visits);
         kv_v.resize(c.n_visits);
         visit_kv_stride.resize(c.n_visits);
@@ -429,7 +447,7 @@ struct InkMetalRunner {
         size_t kv_bytes_tot = 0, sc_bytes_tot = 0;
         for (int v = 0; v < c.n_visits; ++v) {
             const int ip = c.phys_for_visit(v);
-            const int stride = c.is_swa[ip] ? c.swa_win : max_ctx;
+            const int stride = c.is_swa[ip] ? swa_ring : max_ctx;
             visit_kv_stride[v] = stride;
             const size_t kvb = (size_t)max_slots * stride * c.n_kv * c.head_dim * sizeof(uint16_t);
             kv_k[v] = cx->alloc(kvb);
