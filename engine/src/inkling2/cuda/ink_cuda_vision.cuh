@@ -1,8 +1,9 @@
 // engine/src/inkling2/cuda/ink_cuda_vision.cuh - Inkling-2-Mini Vision ViT on CUDA (InkBackend::encode_image)
 //
 // The same 23-layer ViT + 2x2 merge projector as CpuVisionEncoder (ink_vision.h), on the GPU.  Without it the CUDA
-// engine fell back to the CPU reference for every picture (tens of seconds each, single-threaded).
+// engine reads every picture with the CPU reference (tens of seconds for a screenshot).
 //
+// Opt-in: the CUDA backend uses it only with STRATA_INKLING_VISION_GPU=1, since its weights stay in VRAM.
 // Loaded on the first picture from the weights CpuVisionEncoder reads.  By default every layer runs in FP32 (cuBLAS
 // SGEMM): the embeddings match the CPU reference (cosine 1.000000, max |diff| 1e-4 on a 1280x800 screenshot, 640 tokens,
 // about 60-100 ms on an RTX 5090 against about 37 s on the CPU).  The weight matrices are stored in BF16 on the GPU (the

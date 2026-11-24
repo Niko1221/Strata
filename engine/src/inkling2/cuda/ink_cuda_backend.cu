@@ -134,6 +134,8 @@ public:
         // Resolve primary + optional multi-GPU list (up to 4 GPUs!) from opts.gpu_ids / opts.gpu_index / opts.gpus
         gpu_id_ = (opts.gpu_index >= 0 && opts.gpu_index < n_dev) ? opts.gpu_index : 0;
         vision_path_ = opts.vision_path;
+        // The GPU picture reader is opt-in: it keeps its weights in VRAM the user may have meant for the language model.
+        if (const char* e = std::getenv("STRATA_INKLING_VISION_GPU")) vit_enabled_ = *e && std::strcmp(e, "0") != 0;
         std::vector<int> all_gpus;
         if (!opts.gpu_ids.empty()) {
             for (int g : opts.gpu_ids) {
@@ -1140,8 +1142,17 @@ public:
         return n_emit;
     }
 
-    // Pictures on the GPU (ink_cuda_vision.cuh); false (and the CPU reference) if the shard or VRAM is missing.
+    // Pictures on the GPU (ink_cuda_vision.cuh) when STRATA_INKLING_VISION_GPU=1; false (and the CPU reference) when it
+    // is off, or the shard or VRAM is missing.
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
+        if (!vit_enabled_) {
+            if (!vit_noted_off_ && !vision_path_.empty()) {
+                vit_noted_off_ = true;
+                fprintf(stderr, "[inkling2-vision] pictures are read on the CPU; STRATA_INKLING_VISION_GPU=1 reads them on "
+                                "the GPU (about 0.7 GB of VRAM)\n");
+            }
+            return false;
+        }
         if (vision_path_.empty() || vit_failed_) return false;
         std::string verr;
         if (!vit_.loaded()) {
@@ -1251,6 +1262,8 @@ private:
     cuvit::CudaVit vit_;
     bool vit_failed_ = false;
     bool vit_logged_first_ = false;
+    bool vit_enabled_ = false;      // STRATA_INKLING_VISION_GPU=1
+    bool vit_noted_off_ = false;
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
