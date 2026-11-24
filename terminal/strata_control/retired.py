@@ -20,8 +20,12 @@ FAMILY = "deepseek41"
 ENGINE_NAMES = ("strata-dsv41", "strata-dsv41.exe")
 #: the model sizes setup and `strata launch` offered under --family deepseek41 (lower case); "UD-IQ1_M" and "UD-IQ1_S" are not here: they are also
 #: Unsloth Qwen names
-MODEL_NAMES = frozenset({"ist-das-2.00bpw", "ist-das-2.25bpw", "ist-das-1.75bpw", "ista-das-coder", "ud-q8_k_xl",
+MODEL_NAMES = frozenset({"ist-das-2.00bpw", "ist-das-2.25bpw", "ist-das-1.75bpw", "ista-das-coder",
                          "deepseek-v4.1-flash", "deepseek41", "deepseek"})
+#: names DeepSeek was offered under that other families ship today (UD-Q8_K_XL is also an Unsloth Inkling-2-Mini and Qwen quant): a name alone is
+#: not an identity for these. `is_name` counts one only when no family is named, or the family named is DeepSeek, so a saved Inkling preset whose model
+#: is "UD-Q8_K_XL" starts instead of being refused as DeepSeek.
+AMBIGUOUS = frozenset({"ud-q8_k_xl"})
 #: the config file stem setup wrote (strata-deepseek-v4.1-flash-<size>.json) and the model_name in it
 TAG = "deepseek-v4.1-flash"
 #: the published file names of the DeepSeek sets (unsloth, ISTA-DAS, the Engram table, the DSpark drafter)
@@ -57,11 +61,16 @@ WHY = {"arch": "arch deepseek41", "engine": "engine strata-dsv41", "tokenizer": 
 
 
 # ----------------------------------------------------------------------------------------------------------- recognising
-def is_name(word: Any) -> bool:
-    """A model, size or family name typed or saved for DeepSeek (`--model IST-DAS-2.00bpw`, `--family deepseek41`, a saved choice)."""
+def is_name(word: Any, family: Any = None) -> bool:
+    """A model, size or family name typed or saved for DeepSeek (`--model IST-DAS-2.00bpw`, `--family deepseek41`, a saved choice).
+
+    `family` is the family the request already names, when it names one: an AMBIGUOUS name (UD-Q8_K_XL, which Inkling-2-Mini and Qwen also ship)
+    is DeepSeek only when nothing names a family, or that family is DeepSeek."""
     if not isinstance(word, str) or not word.strip():
         return False
     w = word.strip().lower()
+    if w in AMBIGUOUS:
+        return not family or is_name(family)
     return w in MODEL_NAMES or w.startswith(TAG) or w.startswith("deepseek-v4")
 
 
