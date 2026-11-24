@@ -40,6 +40,9 @@ struct BackendOpts {
     bool spec_adapt = false;     // --draft-adapt: per request, drafting goes off for 40 steps when its measured gain falls below 0.93 (all backends, see ink_serve.h)
     std::string dspark_path;     // optional external mtp.safetensors or dspark-*.gguf
     std::string vision_path;
+    // --vision-device auto|gpu|cpu: where pictures are encoded. auto: the backend's own default; gpu: its GPU encoder
+    // (CPU fallback); cpu: the CPU encoder only, so the GPU keeps its memory for the language model.
+    std::string vision_device = "auto";
 };
 
 struct BackendStats {
