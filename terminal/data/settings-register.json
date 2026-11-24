@@ -46088,6 +46088,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_SPLIT_LEND_RESERVE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/expert_source.cpp",
+     "line": 4122,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": null,
+   "last_commit": "",
+   "last_date": "",
+   "status": "rollback",
+   "owner": "core",
+   "note": "=0 fills the expert complement before the #6583 split-lend reservation, as before that change. For a layer split whose --resident-budget-gib leaves little host RAM, where the reservation costs decode without buying prefill.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_SPLIT_LINK_ABS",
    "backends": [
     "cuda-hip"

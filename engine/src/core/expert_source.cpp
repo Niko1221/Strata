@@ -4109,8 +4109,19 @@ bool FileExpertSource::pin_cache_complement(
         // regions BEFORE filling the coldest tail of the complement.  Borrowed slots hold GPU-resident hot experts
         // that are evicted and re-read on every prompt chunk; letting the coldest complement experts crowd them out
         // turns every chunk into hundreds of uncached SSD blob reads.
+        // The reservation above protects the prompt path, but it shrinks the complement and the RAM budget is
+        // fixed, so where the arena already consumes most of host RAM it costs decode without buying prefill.
+        // Measured on 2 GPUs (sm_89 + sm_86), --layer-split 36, --resident-budget-gib 47 of 64 GiB,
+        // UD-Q4_K_XL, 10 generations per arm discarding 4 as warm-up:
+        //     reservation on : decode 82.6 tok/s, prefill 2024 / 2441 / 2935 tok/s at 18K / 36K / 72K
+        //     reservation off: decode 90.1 tok/s, prefill 1931 / 2421 / 2971
+        // i.e. +9% decode, prefill flat (72K marginally faster), and decode far steadier (88.6-92.0
+        // against 76.5-87.4).  Default unchanged; =0 restores the pre-#6583 order of filling the
+        // complement first.
+        bool lend_reserve = true;
+        if (const char* lr = std::getenv("STRATA_SPLIT_LEND_RESERVE"); lr != nullptr && lr[0] != '\0') lend_reserve = lr[0] != '0';
         uint64_t stage_lend_reserve = 0;
-        if (!stage_lend_regions_.empty()) {
+        if (lend_reserve && !stage_lend_regions_.empty()) {
             std::vector<uint8_t> seen(offsets.size(), 0);
             for (const auto& region : stage_lend_regions_) {
                 for (const auto& pair : region) {
