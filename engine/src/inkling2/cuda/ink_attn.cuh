@@ -113,6 +113,32 @@ __device__ __forceinline__ void ink_kv_load4(
     }
 }
 
+// The value a KV read returns after ink_kv_store_128 stored `val` (same per-head scale, rounding and dequantize as the
+// readers above). A DSpark tree verify attends to its own tokens through these, so it sees what the M = 1 decode reads
+// back from the cache ( with --kv fp8 the verify used the unquantized K/V and picked different tokens).
+// All 128 threads of the head must call it (block-wide max, like the store).
+__device__ __forceinline__ float ink_kv_roundtrip_128(int kv_fmt, int tid, float val, bool is_k, float sh[4]) {
+    if (kv_fmt == 0) return __half2float(__float2half_rn(fminf(fmaxf(val, -65504.0f), 65504.0f)));
+    float mv = warp_max(fabsf(val));
+    if ((tid & 31) == 0) sh[tid >> 5] = mv;
+    __syncthreads();
+    const float am = fmaxf(fmaxf(sh[0], sh[1]), fmaxf(sh[2], sh[3]));
+    __syncthreads();   // sh is reused by the caller's next block reduction
+    if (kv_fmt == 1) {
+        const float sc = am > 0.0f ? (am * (1.0f / 448.0f)) : 1.0f;
+        const __nv_fp8_e4m3 qv(fminf(fmaxf(val / sc, -448.0f), 448.0f));
+        return (float)qv * sc;
+    } else if (kv_fmt == 2 || is_k) {
+        const float sc = am > 0.0f ? (am * (1.0f / 127.0f)) : 1.0f;
+        const float inv = am > 0.0f ? (127.0f / am) : 0.0f;
+        return (float)(int8_t)max(-127, min(127, __float2int_rn(val * inv))) * sc;
+    } else {
+        const float sc = am > 0.0f ? (am * (1.0f / 7.0f)) : 1.0f;
+        const float inv = am > 0.0f ? (7.0f / am) : 0.0f;
+        return (float)max(-7, min(7, __float2int_rn(val * inv))) * sc;
+    }
+}
+
 // Unified 128-thread per-head KV store (all 4 formats + transparent Host KV Offload + FP16 overflow clamp!)
 __device__ __forceinline__ void ink_kv_store_128(
     const InkKvVisitDesc& kv, int sl, int p_idx, int kh, int tid, float val, bool is_k, float sh[4]) {
@@ -263,13 +289,13 @@ __global__ void __launch_bounds__(128) k_ink_post_qkv_fused(
             hist[2 * kInkKVDim + c] = cur;
         }
         const float4 sw = reinterpret_cast<const float4*>(swp)[c];
-        float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+        float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
         const float sc_conv = dyn ? (1.0f / 3.0f) : 0.44721359549995793f;
         if (dyn) {
             const float4 dt = reinterpret_cast<const float4*>(dyn + ((size_t)m * kInkKVHeads + kh) * 4)[0];
-            acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+            acc = __fadd_rn(acc, ink_sconv4_dyn(h0, h1, h2, cur, dt));
         }
-        float val = (cur + acc) * sc_conv;
+        float val = __fmul_rn(__fadd_rn(cur, acc), sc_conv);
 
         // K: L2 clip; V: parameterless RMSNorm
         float ss = block_sum(val * val, sh);
@@ -280,8 +306,9 @@ __global__ void __launch_bounds__(128) k_ink_post_qkv_fused(
         }
 
         if (mode == 2) {
-            // Round to FP16 when KV cache is FP16 so tree_k/tree_v are 100% bitwise identical to committed KV reads!
-            const float kv_val = (kv.kv_fmt != 0) ? val : __half2float(__float2half_rn(fminf(fmaxf(val, -65504.0f), 65504.0f)));
+            // Round tree_k/tree_v exactly as the cache stores them (FP16, FP8, K8V8, K8V4) so they match committed KV reads
+            // (before: only FP16 was rounded, and an FP8 cache verified on unquantized K/V).
+            const float kv_val = ink_kv_roundtrip_128(kv.kv_fmt, tid, val, is_k, sh);
             (is_k ? k_out : v_out)[(size_t)m * kInkKVDim + c] = kv_val;
             (is_k ? stage_k : stage_v)[(size_t)m * kInkKVDim + c] = val;
         } else {

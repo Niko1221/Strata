@@ -754,8 +754,8 @@ __global__ void __launch_bounds__(256) k_ink_moe_reduce8_sconv_m1(
     const float h0 = history[0 * kInkHidden + c];
     const float h1 = history[1 * kInkHidden + c];
     const float h2 = history[2 * kInkHidden + c];
-    const float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-    cur_io[c] += (cur + acc) * 0.44721359549995793f;
+    const float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
+    cur_io[c] = __fmaf_rn(__fadd_rn(cur, acc), 0.44721359549995793f, cur_io[c]);
     history[0 * kInkHidden + c] = h1;
     history[1 * kInkHidden + c] = h2;
     history[2 * kInkHidden + c] = cur;
@@ -781,8 +781,8 @@ __global__ void __launch_bounds__(256) k_ink_moe_reduce8_sconv_batched(
     const float h0 = hist[0 * kInkHidden + c];
     const float h1 = hist[1 * kInkHidden + c];
     const float h2 = hist[2 * kInkHidden + c];
-    const float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-    cur_io[(size_t)b * kInkHidden + c] += (cur + acc) * 0.44721359549995793f;
+    const float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
+    { const size_t io = (size_t)b * kInkHidden + c; cur_io[io] = __fmaf_rn(__fadd_rn(cur, acc), 0.44721359549995793f, cur_io[io]); }
     hist[0 * kInkHidden + c] = h1;
     hist[1 * kInkHidden + c] = h2;
     hist[2 * kInkHidden + c] = cur;
@@ -822,8 +822,8 @@ __global__ void __launch_bounds__(128) k_ink_moe_reduce8_sconv_tree(
         const float h1 = fetch((int)lag_idx[m * 3 + 1]);
         const float h0 = fetch((int)lag_idx[m * 3 + 2]);
         const float cur = s_x[m][tid];
-        const float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-        cur_io[(size_t)m * kInkHidden + c] += (cur + acc) * 0.44721359549995793f;
+        const float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
+        { const size_t io = (size_t)m * kInkHidden + c; cur_io[io] = __fmaf_rn(__fadd_rn(cur, acc), 0.44721359549995793f, cur_io[io]); }
     }
 }
 
@@ -946,14 +946,14 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_seq_par(
 
     for (int m = m0; m < m_end; ++m) {
         const float cur = x[(size_t)m * C + c];
-        float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+        float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
         if (dyn_taps) {
             const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
-            acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+            acc = __fadd_rn(acc, ink_sconv4_dyn(h0, h1, h2, cur, dt));
         }
-        const float res = (cur + acc) * scale;
+        const float sum_ca = __fadd_rn(cur, acc);
         const size_t oi = (size_t)m * C + c;
-        out[oi] = add_to_out ? (out[oi] + res) : res;
+        out[oi] = add_to_out ? __fmaf_rn(sum_ca, scale, out[oi]) : __fmul_rn(sum_ca, scale);
         h0 = h1; h1 = h2; h2 = cur;
     }
 }
@@ -994,14 +994,14 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_seq(
 
     for (int m = 0; m < M; ++m) {
         const float cur = x[(size_t)m * C + c];
-        float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+        float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
         if (dyn_taps) {
             const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
-            acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+            acc = __fadd_rn(acc, ink_sconv4_dyn(h0, h1, h2, cur, dt));
         }
-        const float res = (cur + acc) * scale;
+        const float sum_ca = __fadd_rn(cur, acc);
         const size_t oi = (size_t)m * C + c;
-        out[oi] = add_to_out ? (out[oi] + res) : res;
+        out[oi] = add_to_out ? __fmaf_rn(sum_ca, scale, out[oi]) : __fmul_rn(sum_ca, scale);
         h0 = h1;
         h1 = h2;
         h2 = cur;
@@ -1037,15 +1037,15 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_batched(
     const float h1 = hist[1 * C + c];
     const float h2 = hist[2 * C + c];
     const float cur = x[(size_t)b * C + c];
-    float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+    float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
     if (dyn_taps) {
         const int hd = c / (C / n_heads);
         const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)b * n_heads + hd) * 4)[0];
-        acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+        acc = __fadd_rn(acc, ink_sconv4_dyn(h0, h1, h2, cur, dt));
     }
-    const float res = (cur + acc) * scale;
+    const float sum_ca = __fadd_rn(cur, acc);
     const size_t oi = (size_t)b * C + c;
-    out[oi] = add_to_out ? (out[oi] + res) : res;
+    out[oi] = add_to_out ? __fmaf_rn(sum_ca, scale, out[oi]) : __fmul_rn(sum_ca, scale);
     hist[0 * C + c] = h1;
     hist[1 * C + c] = h2;
     hist[2 * C + c] = cur;
@@ -1079,15 +1079,15 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_tree(
     if (stage_v) stage_v[(size_t)m * kInkSconvCh + ch_off + c] = cur;
     const float4 sw = reinterpret_cast<const float4*>(static_w)[c];
     const float scale = dyn_taps ? (1.0f / 3.0f) : 0.44721359549995793f;
-    float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+    float acc = ink_sconv4_dot(h0, h1, h2, cur, sw);
     if (dyn_taps) {
         const int hd = c / (C / n_heads);
         const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
-        acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+        acc = __fadd_rn(acc, ink_sconv4_dyn(h0, h1, h2, cur, dt));
     }
-    const float res = (cur + acc) * scale;
+    const float sum_ca = __fadd_rn(cur, acc);
     const size_t oi = (size_t)m * C + c;
-    out[oi] = add_to_out ? (out[oi] + res) : res;
+    out[oi] = add_to_out ? __fmaf_rn(sum_ca, scale, out[oi]) : __fmul_rn(sum_ca, scale);
 }
 
 // ============================================================================
@@ -1375,7 +1375,9 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
     const uint4* wr = valid ? reinterpret_cast<const uint4*>(reinterpret_cast<const uint16_t*>(Wp) + (size_t)lrow * K) : nullptr;
     float acc[MAX_M] = {};
 
-    constexpr int KT = (MAX_M == 1) ? 2304 : ((MAX_M <= 8) ? 576 : 256);
+    // KT a multiple of 128 for every MAX_M: each of the 16 lanes then takes the same k8 (k8 % 16 == lg, ascending) as at
+    // MAX_M = 1, so a token's sum does not depend on how many tokens share the call (576 split the lanes 5/4 per tile).
+    constexpr int KT = (MAX_M == 1) ? 2304 : ((MAX_M <= 8) ? 512 : 256);
     __shared__ alignas(16) float s_x[MAX_M][KT];
     for (int k0 = 0; k0 < K; k0 += KT) {
         const int kl = min(KT, K - k0);

@@ -263,6 +263,23 @@ __device__ __forceinline__ uint32_t f32x2_to_bf16x2(float a, float b) {
 #endif
 }
 
+// ShortConv4 sums with the rounding spelled out: the same expression in the M = 1, batched and DSpark tree
+// kernels was contracted into FMAs differently by nvcc, so a tree verify and the decode parted by 1 ulp.
+// The order is the one nvcc gave the M = 1 kernel for `h0*sw.x + h1*sw.y + h2*sw.z + cur*sw.w` (PTX of v0.2.20:
+// mul of the second product, then fma of the first, third and fourth), so the decode keeps its 0.2.20 numbers.
+__device__ __forceinline__ float ink_sconv4_dot(float h0, float h1, float h2, float cur, float4 sw) {
+    float a = __fmul_rn(h1, sw.y);
+    a = __fmaf_rn(h0, sw.x, a);
+    a = __fmaf_rn(h2, sw.z, a);
+    return __fmaf_rn(cur, sw.w, a);
+}
+__device__ __forceinline__ float ink_sconv4_dyn(float h0, float h1, float h2, float cur, float4 dt) {
+    float a = __fmul_rn(h2, dt.y);
+    a = __fmaf_rn(cur, dt.x, a);
+    a = __fmaf_rn(h1, dt.z, a);
+    return __fmaf_rn(h0, dt.w, a);
+}
+
 __device__ __forceinline__ float f16_to_f32(uint16_t bits) {
     return __half2float(__ushort_as_half(bits));
 }

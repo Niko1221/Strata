@@ -1753,6 +1753,33 @@ __device__ __forceinline__ void sk_gu_fused_4lane(
     }
 }
 
+// One token's paired S_K down rows. Kept out of line so the M = 1 path and the per-token loop of the multi-token path
+// (DSpark tree verify) run the same machine code: written twice, nvcc contracted `y += eff * (d * isum - HALF * s)`
+// differently in the two copies and the verify parted from the decode by 1 ulp.
+template <int FMT>
+__device__ __noinline__ void sk_dn_paired2_one(const uint8_t* pr, const InkQ8_1_G64* h0, int g, float& o0, float& o1) {
+    constexpr int SB = ink_sb_bytes(FMT);
+    constexpr float HALF = ink_sk_half(FMT);
+    constexpr bool HAS_HALF = (FMT != FMT_S8_K && FMT != FMT_S1_5);
+    float y0 = 0.0f, y1 = 0.0f;
+#pragma unroll 1
+    for (int s = 0; s < 9; ++s) {
+        const uint8_t* blk = pr + s * SB;
+        const float eff = f16_to_f32(ld16_u(blk)) * ((float)blk[2 + g] * (1.0f / 255.0f));
+        const int sub_g = s * 4 + g;
+        const bool is_r1 = (sub_g >= 18);
+        const InkQ8_1_G64& xb = h0[is_r1 ? (sub_g - 18) : sub_g];
+        uint32_t w[16];
+        sk_unpack64_g_to_u32<FMT>(blk + 6, g, w);
+        const int32_t isum = dp64_i8_smem(w, xb);
+        const float term = HAS_HALF ? (eff * (xb.d * (float)isum - HALF * xb.s)) : (eff * xb.d * (float)isum);
+        if (is_r1) y1 += term; else y0 += term;
+    }
+    y0 += __shfl_xor_sync(0xFFFFFFFFu, y0, 2); y0 += __shfl_xor_sync(0xFFFFFFFFu, y0, 1);
+    y1 += __shfl_xor_sync(0xFFFFFFFFu, y1, 2); y1 += __shfl_xor_sync(0xFFFFFFFFu, y1, 1);
+    o0 = y0; o1 = y1;
+}
+
 template <int FMT, int MAX_M>
 __device__ __forceinline__ void sk_dn_paired2_4lane(
     const uint8_t* pr,
@@ -1763,24 +1790,12 @@ __device__ __forceinline__ void sk_dn_paired2_4lane(
     constexpr float HALF = ink_sk_half(FMT);
     constexpr bool HAS_HALF = (FMT != FMT_S8_K && FMT != FMT_S1_5);
     if (n_e == 1) {
-        float y0 = 0.0f, y1 = 0.0f;
-        const InkQ8_1_G64* h0 = hp[0];
+        sk_dn_paired2_one<FMT>(pr, hp[0], g, a0[0], a1[0]);
+    } else if (MAX_M <= 16) {
+        // every token through the same out-of-line routine as M = 1 (bit-identical per token, )
 #pragma unroll 1
-        for (int s = 0; s < 9; ++s) {
-            const uint8_t* blk = pr + s * SB;
-            const float eff = f16_to_f32(ld16_u(blk)) * ((float)blk[2 + g] * (1.0f / 255.0f));
-            const int sub_g = s * 4 + g;
-            const bool is_r1 = (sub_g >= 18);
-            const InkQ8_1_G64& xb = h0[is_r1 ? (sub_g - 18) : sub_g];
-            uint32_t w[16];
-            sk_unpack64_g_to_u32<FMT>(blk + 6, g, w);
-            const int32_t isum = dp64_i8_smem(w, xb);
-            const float term = HAS_HALF ? (eff * (xb.d * (float)isum - HALF * xb.s)) : (eff * xb.d * (float)isum);
-            if (is_r1) y1 += term; else y0 += term;
-        }
-        y0 += __shfl_xor_sync(0xFFFFFFFFu, y0, 2); y0 += __shfl_xor_sync(0xFFFFFFFFu, y0, 1);
-        y1 += __shfl_xor_sync(0xFFFFFFFFu, y1, 2); y1 += __shfl_xor_sync(0xFFFFFFFFu, y1, 1);
-        a0[0] = y0; a1[0] = y1;
+        for (int m = 0; m < n_e; ++m) sk_dn_paired2_one<FMT>(pr, hp[m], g, a0[m], a1[m]);
+        return;
     } else {
 #pragma unroll 1
         for (int s = 0; s < 9; ++s) {

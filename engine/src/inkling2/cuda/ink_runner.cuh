@@ -2099,7 +2099,9 @@ struct InkCudaRunner {
         d_ctrl_gate   = dalloc<float>(3ull * MB * kInkGateRank);
         d_ctrl_gain   = dalloc<float>(MB * kInkHidden);
         d_ctrl_forget = dalloc<float>(MB * kInkHidden);
-        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnSplits);
+        // M-invariant mode splits every small-M attention like M = 1 (up to kInkAttnMaxSplits per token)
+        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits,
+                                               (size_t)std::max(tree_cap, 16) * (m_invariant() ? kInkAttnMaxSplits : kInkAttnSplits));
         d_attn_pm     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_pl     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_po     = dalloc<float>(sp_cap * kInkHeads * kInkHeadDim);
@@ -2629,7 +2631,7 @@ struct InkCudaRunner {
         const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
         const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
         const bool is_fp16 = cur_attn_fp16 && (names[0].find(".attn.") != std::string::npos);
-        const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+        const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80 || m_invariant()) ? 16 : 7);
         bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16));
         InkMultiProj mp{};
         mp.count = count;
@@ -2677,6 +2679,13 @@ struct InkCudaRunner {
         for (int i = 0; i < count; ++i) linear(names[i], X, Ys[i], M, 0, i > 0, exact_fp32_x);
     }
 
+    // STRATA_INK_M_INVARIANT=1: keep every small-M (<= 16) projection on the kernels whose per-token sum does not depend
+    // on M, so a DSpark tree verify computes each token as the M = 1 decode does.
+    static bool m_invariant() {
+        static const bool on = [] { const char* e = std::getenv("STRATA_INK_M_INVARIANT"); return e && std::strcmp(e, "0") != 0; }();
+        return on;
+    }
+
     void linear(const std::string& tname, const float* X, float* Y, int M, int N_override = 0, bool reuse_x_bf16 = false, bool exact_fp32_x = false) {
         const auto& ti = m.tinfo(tname);
         const int N = N_override > 0 ? N_override : (int)ti.rows();
@@ -2687,7 +2696,7 @@ struct InkCudaRunner {
 
         if (ti.fmt == FMT_BF16) {
             const bool is_fp16 = cur_attn_fp16 && (tname.find(".attn.") != std::string::npos);
-            const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+            const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80 || m_invariant()) ? 16 : 7);
             if (M <= bf16_gemv_max) {
                 InkMultiProj mp{};
                 mp.W[0] = W; mp.Y[0] = Y; mp.N[0] = N; mp.cumN[0] = 0; mp.cumN[1] = N; mp.count = 1;
@@ -2850,7 +2859,10 @@ struct InkCudaRunner {
         const std::string p = "model.llm.layers." + std::to_string(ip);
         const bool is_swa = m.man.c.is_swa[ip] != 0;
         const bool has_msg = (bank_stp != nullptr);
-        const bool exact_x = (mode == 2);
+        // A DSpark tree verify (mode 2) normally runs the projections and the experts on exact FP32 activations, while the
+        // M = 1 decode quantizes them: the verify then picks some tokens the decode would not. STRATA_INK_M_INVARIANT=1
+        // verifies on the decode's arithmetic instead, so DSpark keeps the --draft off answer.
+        const bool exact_x = (mode == 2) && !m_invariant();
         const size_t n_hid = (size_t)M * kInkHidden;
 
         // 1. Attention-Residual Depth Mix (+ Fused Looped Pre-Attn Msg + CatRMS -> eliminates 48+72 launches!)
@@ -3017,7 +3029,8 @@ struct InkCudaRunner {
             dim3 gr(kInkHeads, M);
             k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
             if (M <= 16 || mode == 2) {
-                const int n_sp = (M == 1) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
+                // the split count changes how each token's attention sum is grouped; M-invariant mode keeps the M = 1 one
+                const int n_sp = (M == 1 || m_invariant()) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
                 k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks,
@@ -3122,7 +3135,7 @@ struct InkCudaRunner {
         prof_mark_end(3); prof_mark_start();
 
         // 8. Output projection wo + FUSED post-attn ShortConv + residual add / block boundary!
-        linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, (mode == 2));
+        linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, exact_x);
         prof_mark_end(4); prof_mark_start();
         if (ip % m.man.c.block_size == 0) {
             INK_CK(cudaMemcpyAsync(d_blocks[n_blocks], d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
@@ -3160,7 +3173,7 @@ struct InkCudaRunner {
                 st, cublas,
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
-                d_moe_in, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2));
+                d_moe_in, M, *cur_moe_ws, m.man.c.route_scale, exact_x);
             const size_t x_bytes   = (size_t)M * kInkHidden * sizeof(float);
             const size_t idx_bytes = (size_t)M * kInkTopK * sizeof(int32_t);
             const size_t w_bytes   = (size_t)M * kInkTopK * sizeof(float);
@@ -3172,7 +3185,7 @@ struct InkCudaRunner {
                 INK_CK(cudaMemcpyPeerAsync(peer_ws.topk_idx, m.peer_gpu, moe_ws.topk_idx, m.primary_gpu, idx_bytes, peer_st));
                 INK_CK(cudaMemcpyPeerAsync(peer_ws.topk_w, m.peer_gpu, moe_ws.topk_w, m.primary_gpu, w_bytes, peer_st));
                 launch_ink_moe_dispatch_only(peer_st, m.d_sec4_peer, m.d_experts_peer[ip], m.moe_info_peer[ip],
-                                             d_peer_x, M, peer_ws, (mode == 2), false);
+                                             d_peer_x, M, peer_ws, exact_x, false);
                 k_ink_moe_reduce8_tier0<<<dim3((kInkHidden + 255) / 256, M), 256, 0, peer_st>>>(
                     m.d_experts_peer[ip], peer_ws.topk_idx, peer_ws.y_pair, d_peer_y, M);
                 INK_CK(cudaMemcpyPeerAsync(d_peer_y_rx, m.primary_gpu, d_peer_y, m.peer_gpu, x_bytes, peer_st));
@@ -3189,7 +3202,7 @@ struct InkCudaRunner {
                 INK_CK(cudaMemcpyAsync(peer_ws.topk_idx, h_ep_idx, idx_bytes, cudaMemcpyHostToDevice, peer_st));
                 INK_CK(cudaMemcpyAsync(peer_ws.topk_w, h_ep_w, w_bytes, cudaMemcpyHostToDevice, peer_st));
                 launch_ink_moe_dispatch_only(peer_st, m.d_sec4_peer, m.d_experts_peer[ip], m.moe_info_peer[ip],
-                                             d_peer_x, M, peer_ws, (mode == 2), false);
+                                             d_peer_x, M, peer_ws, exact_x, false);
                 k_ink_moe_reduce8_tier0<<<dim3((kInkHidden + 255) / 256, M), 256, 0, peer_st>>>(
                     m.d_experts_peer[ip], peer_ws.topk_idx, peer_ws.y_pair, d_peer_y, M);
                 INK_CK(cudaMemcpyAsync(h_ep_y, d_peer_y, x_bytes, cudaMemcpyDeviceToHost, peer_st));
@@ -3197,7 +3210,7 @@ struct InkCudaRunner {
                 INK_CK(cudaSetDevice(m.primary_gpu));
             }
             launch_ink_moe_dispatch_only(st, m.d_sec4, m.d_experts[ip], m.moe_info[ip],
-                                         d_moe_in, M, moe_ws, (mode == 2), false);
+                                         d_moe_in, M, moe_ws, exact_x, false);
             k_ink_moe_reduce8_tier0<<<dim3((kInkHidden + 255) / 256, M), 256, 0, st>>>(
                 m.d_experts[ip], moe_ws.topk_idx, moe_ws.y_pair, d_moe_raw, M);
             INK_CK(cudaStreamWaitEvent(st, ev_peer_done, 0));
@@ -3213,7 +3226,7 @@ struct InkCudaRunner {
                 st, cublas, m.d_sec4, m.d_experts[ip], m.moe_info[ip], ip, m.hybrid,
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
-                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2));
+                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, exact_x);
             prof_mark_end(5); prof_mark_start();
             run_sconv_uniform(d_moe_raw, m.d_sconv_mlp[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim + kInkHidden, 0, true);
         } else {
@@ -3222,7 +3235,7 @@ struct InkCudaRunner {
                 st, cublas, m.sec4_stage(cur_stage), m.d_experts[ip], m.moe_info[ip],
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
-                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
+                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, exact_x, !fuse_moe_sconv);
             prof_mark_end(5); prof_mark_start();
             if (fuse_moe_sconv) {
                 constexpr int mlp_ch_off = 2 * kInkKVDim + kInkHidden;
