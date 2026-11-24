@@ -1,4 +1,4 @@
-﻿# Intel Arc on Linux
+# Intel Arc on Linux
 
 Strata runs on Intel Arc cards on Linux through its own engine ported to SYCL (Intel oneAPI). This page is for people with
 an Arc A-series (Alchemist) or B-series (Battlemage) card. It covers the released Terminal route, what you need, how to
@@ -530,12 +530,29 @@ A770 bound by the PLE table it moved the expert-cache hit rate from 60% to 80% w
 
 Three things to expect on this card.
 
-- **The RAM arena is faster, but the server cannot use it yet.** Without `--stream-experts` the engine keeps the
-  experts in RAM and the CPU computes the ones the cache lacks, so nothing is read over PCIe: the engine's own
-  generate path measured 27.5 tok/s decode on a 4-token prompt and 20.9 on a 200-token one, with `PCIe experts 0.00`
-  per layer. On the `--serve` path it dies with `0xC0000005` on the first prompt. The arena is not the cause - the
-  pinned mirror with `STRATA_VERIFY_NO_HOST=0` crashes at the same instruction - so what fails is the host-served
-  expert compute that only `NO_HOST=0` reaches. Until that is fixed, use the mirror (`--stream-experts`, `NO_HOST=1`).
+- **Host-served experts (`STRATA_VERIFY_NO_HOST=0`) need segmented windows, not the doorbell.**
+  The mode waits at every layer for a plan the CPU publishes into host-mapped memory, and on this driver a kernel
+  inside a captured command graph never observes host-memory writes: a plain kernel sees a host store in 218 ms, the
+  same kernel launched from a `command_graph` runs a 200,000,000-read bound (211 s) and never sees it. Arming the
+  flags to `0xFFFFFFFF` before every window does not clear the wait either, so it is the read, not the value.
+  `STRATA_VERIFY_STEPPED=1` records a window as segments and serves the CPU experts between them, with no kernel
+  spinning: that is the mode to use. It could not run until 0.1.66 because the shared-expert join submitted a
+  barrier on another queue's event while a segment was being recorded (`Event dependency from handler::depends_on
+  does not correspond to a node within the graph`, then `0xC0000409`); the fix is in `verify.cpp` and is a PR
+  candidate. Measured, Arc A770 16 GB, 16K INT8, 512 tokens, `--mtp`: arena with `NO_HOST=0` +
+  `STRATA_VERIFY_STEPPED=1` + `STRATA_ARENA_COPY_REGISTER=0` + `STRATA_VERIFY_SPLIT=0` and `--spec 2` decodes at
+  **22.0 tok/s** (two runs: 22.01, 21.82) with `pcie experts 0.00` per layer, against **11.72** for the pinned
+  mirror with `NO_HOST=1`. Fewer, larger segments is most of it: `STRATA_VERIFY_SPLIT=0` took `--spec 4` from
+  14.36 to 18.57, and `--spec 2` took it to 22.0 (`--spec 6`: 17.80, `--spec 3`: 16.21; `--spec 1` is refused
+  because a native pack needs `T >= 2`). At those settings only ~4 experts per layer are CPU-served and the pool costs 14-16 ms/round, so the dominant
+  term is "wait for rings" (56-58 ms/round): the engine is GPU-bound, which is why context size barely matters -
+  8K decodes at 22.77, 16K at 22.0-22.55, and **64K at 21.42** (k8v4 KV, 512 tokens). `--pcie-frac` has no effect on
+  the arena: the share is computed (90/256) but `pcie experts` stays 0.00 because the PCIe share is staged from the
+  mirror and the arena has none.
+- **The arena needs `STRATA_ARENA_COPY_REGISTER=0` on a 16 GB card.** The arena is imported wholesale for device
+  copies, which a 16 GB card cannot hold: cache fill dies with `UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY` whatever the
+  cache size. With the import off it loads and runs (prompt streaming goes through the stager at ~6 GB/s instead of
+  the imported arena's 15-23).
 - **The configuration depends on the free VRAM at the start.** On a 16 GB card a busy desktop can leave too little for
   the cache, and the engine then refuses with `N experts are neither in VRAM nor mirrored` - lower `--max-context` or
   raise `STRATA_MIRROR_MIB`.
@@ -575,4 +592,45 @@ earlier versions.
 
 
 
+
+
+
+**0.1.65 (0.2.19, 2026-11-22).** Merged upstream 0.2.19; the tree moves to `app/`, `engine/`, `terminal/`,
+`tools/`, and `data/` becomes `terminal/data/` (expert profiles, draft vocabularies, the settings register).
+
+One Windows SYCL build break, fixed in the merge: the new `strata_quant` (`engine/src/quant/x86`) resolves
+`std::ldexp(float, int)` to `ldexpf`, which the `-fsycl` link cannot import - `LNK2019: unresolved external
+symbol __imp_ldexpf` in `g_ue4m3_table`'s dynamic initializer, so `strata.exe` and `quant_bench.exe` both failed.
+The same program links with `icx` alone and fails with `icx -fsycl`. The table is now built from double `ldexp`
+and narrowed; a 256/256 comparison finds no differing bit pattern. Build: 0 errors, `strata.exe` 49.7 MB.
+The SYCL server also needed `sampling_keys(sampling, **kw)`: the merge added `hy4`/`inkling` sampling options, and
+every request returned HTTP 400 until the logprobs wrapper passed them through.
+
+Decode on an Arc A770 16 GB, driver 32.0.101.9150, 16K context, INT8 KV, pinned mirror, `NO_HOST=1`, one cold
+start per arm, a 65-token chat prompt, 256 tokens:
+
+| Arm | Decode |
+| --- | ---: |
+| `--spec 4`, no `--mtp` | 5.41 tok/s |
+| **`--spec 4` + `--mtp`** | **14.07 / 13.93** (two runs) |
+| `--spec 6` + `--mtp` | 13.47 tok/s |
+| `--spec 8` + `--mtp` | 11.14 tok/s |
+
+MTP is worth 2.6x here and deeper drafting loses: acceptance is good at depth 3 and the extra verify work is not
+paid back. `UR_L0_CMD_BUFFER_USE_IMMEDIATE_APPEND_PATH=1` fast-fails (`0xC0000409`) during window capture on
+this card in **both** 0.1.60.1 and 0.1.65, so its +3% elsewhere is not available here. The host-served handoff and
+the arena are covered in the Arc A770 section above: `NO_HOST=0` no longer faults, it stops on the wait guard.
+
+
+
+**The CPU side is settled (2026-11-23).** The expert pool defaults to one worker per physical core, and that is
+the right choice: on this i5-12600K, `--pool-affinity auto` (P-cores then their SMT siblings) decodes at 19.73
+tok/s and `--pool-affinity p-cores` at 19.51, against **22.0** for the default, with the pool rising from 14 to
+20-21 ms/round. SMT contention costs ~10% here, the same conclusion llama.cpp reached.
+
+A real 128K serving session on the tuned arena (58 requests, 71,727 tokens, no errors) ran at a median of **18.75
+tok/s**, mean 18.31, max 25.70. Prompts reached **62,892 tokens** (the server shortened `max_tokens` to fit the
+131,072 context) and one generation produced **21,111 tokens** at 13.50 tok/s. Expert-cache hits rose from 31.9% at
+the start to 70.6% at the end (mean 65.6%), and the per-quarter medians were 16.20 / 19.50 / 19.30 / 18.50 tok/s -
+it warms up and then holds, with no drift over a two-hour session.
 
