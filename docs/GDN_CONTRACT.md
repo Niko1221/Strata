@@ -61,7 +61,8 @@ the 6144 columns and leave the pad columns untouched (the harness fills them wit
 
 ## Dispatch on CUDA (production, no probe)
 
-1. `STRATA_GDN_TC=1` and `T >= 128`: `gdn_rec_tc` (tensor-core scan; sm_80+, >= 48 SMs, ~122 KB smem per block). Not mentioned in the
+1. `STRATA_GDN_TC=1` and `T >= 128`: `gdn_rec_tc` (tensor-core scan; sm_80+, >= 48 SMs, ~122 KB smem per block;
+   `=2` also on sm_75 with the one-buffer plan, 62,480 B). Not mentioned in the
    2026-10-26 research pack: it landed with PR #3779. FP16 operands, FP32 accumulation: mixed-precision tier.
 2. `STRATA_GDN_CHUNKED=1` (`=2` skips the SM-count test) and `T >= 128`: `gdn_rec_chunked` (FP32, C = 32, scan grid `HK x S/16 = 128`
    blocks of 384 threads, 93.7 KB smem; sm_80+).
