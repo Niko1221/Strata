@@ -963,6 +963,19 @@ struct InkHybridEngine {
     std::vector<InkHostExpertMeta> host_meta;  // [24 * 128]
     uint8_t* h_sec4_pinned   = nullptr;
     uint8_t* h_sec4_pageable = nullptr;
+    uint8_t* h_hot_pinned = nullptr;
+    struct HotPinnedSlot {
+        size_t offset;
+        uint32_t bytes;
+        int key;
+        uint64_t last_used = 0;
+        unsigned staging_mask = 0;
+    };
+    std::vector<HotPinnedSlot> hot_slots;
+    std::vector<int> hot_slot_for_key;
+    std::vector<uint32_t> hot_frequency;
+    std::vector<int> hot_slots_in_use[2];
+    uint64_t hot_tick = 0;
     size_t   h_sec4_bytes    = 0;
     bool     sec4_is_pinned  = false;
     uint8_t* h_pf_bounce[2]  = {};
@@ -994,6 +1007,47 @@ struct InkHybridEngine {
     int32_t pf_eids[32] = {};
     int32_t prev_cpu_eids[24][32] = {};
     int prev_cpu_n[24] = {};
+
+    // The staging reuse event guarantees that DMA has finished reading these slots.
+    void release_hot_dma(int buf) {
+        const unsigned mask = 1u << buf;
+        for (int id : hot_slots_in_use[buf]) hot_slots[id].staging_mask &= ~mask;
+        hot_slots_in_use[buf].clear();
+    }
+
+    const uint8_t* hot_dma_source(int key, const uint8_t* body, uint32_t bytes, int buf) {
+        if ((++hot_tick & 0xffffu) == 0) {
+            for (auto& count : hot_frequency) count >>= 1;
+        }
+        const uint32_t frequency = ++hot_frequency[key];
+        int id = hot_slot_for_key[key];
+        if (id < 0) {
+            if (frequency < 2) return nullptr;
+            for (int i = 0; i < (int)hot_slots.size(); ++i) {
+                const auto& slot = hot_slots[i];
+                const uint32_t count = hot_frequency[slot.key];
+                if (slot.bytes != bytes || slot.staging_mask || count >= frequency) continue;
+                if (id < 0 || count < hot_frequency[hot_slots[id].key] ||
+                    (count == hot_frequency[hot_slots[id].key] && slot.last_used < hot_slots[id].last_used)) {
+                    id = i;
+                }
+            }
+            if (id < 0) return nullptr;
+            auto& slot = hot_slots[id];
+            std::memcpy(h_hot_pinned + slot.offset, body, bytes);
+            hot_slot_for_key[slot.key] = -1;
+            hot_slot_for_key[key] = id;
+            slot.key = key;
+        }
+        auto& slot = hot_slots[id];
+        slot.last_used = hot_tick;
+        const unsigned mask = 1u << buf;
+        if (!(slot.staging_mask & mask)) {
+            slot.staging_mask |= mask;
+            hot_slots_in_use[buf].push_back(id);
+        }
+        return h_hot_pinned + slot.offset;
+    }
 
     // Allocate host expert arena safely (pinned if small & within 45% MemAvailable, else pageable + pinned bounce ring!)
     uint8_t* alloc_host_arena(size_t bytes) {
@@ -1502,6 +1556,16 @@ struct InkHybridEngine {
             workers.clear();
             active = false;
         }
+        if (h_hot_pinned) {
+            if (pf_dma_st) cudaStreamSynchronize(pf_dma_st);
+            cudaFreeHost(h_hot_pinned);
+            h_hot_pinned = nullptr;
+            hot_slots.clear();
+            hot_slot_for_key.clear();
+            hot_frequency.clear();
+            for (auto& slots : hot_slots_in_use) slots.clear();
+            hot_tick = 0;
+        }
         auto fr = [](auto*& p) { if (p) { cudaFree(p); p = nullptr; } };
         fr(d_seq); fr(d_cur_seq); fr(d_use_cnt); fr(d_want_keys); fr(d_n_want);
         fr(d_promo_pool); fr(d_pf_stage[0]); fr(d_pf_stage[1]);
@@ -1734,12 +1798,16 @@ inline void launch_ink_moe_hybrid(
             if (hyb.pf_buf_busy[buf]) {
                 INK_CK(cudaEventSynchronize(hyb.pf_ev_done[buf]));
                 hyb.pf_buf_busy[buf] = false;
+                if (hyb.h_hot_pinned) hyb.release_hot_dma(buf);
             }
             unpin_buf_slots(buf);
             const auto& ch = chunks[ci];
             InkExpertDev* h_exp = hyb.h_pf_exp_pin[buf];
             for (int e = 0; e < kInkExperts; ++e) { h_exp[e] = {}; h_exp[e].tier = 2; }
             const bool use_bounce = (!hyb.sec4_is_pinned && !hyb.ssd_only && hyb.h_pf_bounce[buf] != nullptr);
+            const bool use_hot_cache = use_bounce && hyb.h_hot_pinned;
+            size_t packed_bytes = 0;
+            size_t hot_tail = ch.total_bytes;
             // Pre-issue NVMe demand reads for all cold_ssd experts in this chunk in parallel!
             std::vector<const uint8_t*> ptrs(ch.eids.size(), nullptr);
             std::vector<int> cslots(ch.eids.size(), -1);
@@ -1755,7 +1823,8 @@ inline void launch_ink_moe_hybrid(
             }
             for (size_t i = 0; i < ch.eids.size(); ++i) {
                 const int e = ch.eids[i];
-                const auto& hm = hyb.host_meta[ip * kInkExperts + e];
+                const int key = ip * kInkExperts + e;
+                const auto& hm = hyb.host_meta[key];
                 bool ok_io = true;
                 if (cslots[i] >= 0 && hyb.cold_store) {
                     ok_io = hyb.cold_store->wait_gate_up(cslots[i]) && hyb.cold_store->wait_down(cslots[i]);
@@ -1765,19 +1834,34 @@ inline void launch_ink_moe_hybrid(
                                  ip * kInkExperts + e, (const void*)ptrs[i], (int)ok_io, cslots[i]);
                     continue;
                 }
-                h_exp[e].body_off = ch.offs[i];
+                const uint8_t* pinned = nullptr;
+                size_t offset = ch.offs[i];
+                if (use_hot_cache) {
+                    pinned = hyb.hot_dma_source(key, ptrs[i], hm.body_bytes, buf);
+                    const size_t padded = ((size_t)hm.body_bytes + 255) & ~size_t{255};
+                    // Pack pageable weights at the front for one DMA. Cached weights use the tail.
+                    if (pinned) {
+                        hot_tail -= padded;
+                        offset = hot_tail;
+                    } else {
+                        offset = packed_bytes;
+                        packed_bytes += padded;
+                    }
+                }
+                h_exp[e].body_off = offset;
                 h_exp[e].dn_off   = hm.dn_off;
                 h_exp[e].gu_code  = hm.gu_code;
                 h_exp[e].dn_code  = hm.dn_code;
                 h_exp[e].tier     = 0;
-                if (use_bounce) {
-                    std::memcpy(hyb.h_pf_bounce[buf] + ch.offs[i], ptrs[i], hm.body_bytes);
+                if (use_bounce && !pinned) {
+                    std::memcpy(hyb.h_pf_bounce[buf] + offset, ptrs[i], hm.body_bytes);
                 } else {
-                    INK_CK(cudaMemcpyAsync(hyb.d_pf_stage[buf] + ch.offs[i], ptrs[i], hm.body_bytes, cudaMemcpyHostToDevice, hyb.pf_dma_st));
+                    INK_CK(cudaMemcpyAsync(hyb.d_pf_stage[buf] + offset, pinned ? pinned : ptrs[i], hm.body_bytes, cudaMemcpyHostToDevice, hyb.pf_dma_st));
                 }
             }
-            if (use_bounce && ch.total_bytes > 0) {
-                INK_CK(cudaMemcpyAsync(hyb.d_pf_stage[buf], hyb.h_pf_bounce[buf], ch.total_bytes, cudaMemcpyHostToDevice, hyb.pf_dma_st));
+            const size_t bounce_bytes = use_hot_cache ? packed_bytes : ch.total_bytes;
+            if (use_bounce && bounce_bytes > 0) {
+                INK_CK(cudaMemcpyAsync(hyb.d_pf_stage[buf], hyb.h_pf_bounce[buf], bounce_bytes, cudaMemcpyHostToDevice, hyb.pf_dma_st));
             }
             INK_CK(cudaMemcpyAsync(hyb.d_pf_exp_tmp[buf], h_exp, (size_t)kInkExperts * sizeof(InkExpertDev), cudaMemcpyHostToDevice, hyb.pf_dma_st));
             INK_CK(cudaEventRecord(hyb.pf_ev_dma[buf], hyb.pf_dma_st));

@@ -471,6 +471,37 @@ struct InkCudaModel {
                 if (host_used > 0) {
                     h_arena_base = hybrid.alloc_host_arena(host_used);
                     if (!h_arena_base) { err = "cannot allocate host expert arena"; return false; }
+                    const char* setting = std::getenv("STRATA_INK_DYNAMIC_PINNED_MIB");
+                    const long mib = setting ? std::strtol(setting, nullptr, 10) : 0;
+                    if (mib > 0 && n_ssd_experts == 0 && !hybrid.sec4_is_pinned) {
+                        const size_t budget = (size_t)std::min(mib, 1024L) << 20;
+                        size_t used = 0;
+                        std::vector<InkHybridEngine::HotPinnedSlot> slots;
+                        for (uint16_t di : order) {
+                            if (!in_ram[di]) continue;
+                            const auto& e = dir[di];
+                            const size_t padded = ((size_t)e.body_bytes + 63) & ~size_t{63};
+                            if (padded > budget - used) continue;
+                            const int key = di / man.c.n_experts * man.c.n_experts + e.expert_id;
+                            slots.push_back({used, e.body_bytes, key});
+                            used += padded;
+                        }
+                        if (used && cudaHostAlloc(&hybrid.h_hot_pinned, used, cudaHostAllocDefault) == cudaSuccess) {
+                            hybrid.hot_slots = std::move(slots);
+                            hybrid.hot_slot_for_key.assign(n_total, -1);
+                            hybrid.hot_frequency.assign(n_total, 0);
+                            for (auto& in_use : hybrid.hot_slots_in_use) in_use.reserve(hybrid.hot_slots.size());
+                            for (size_t i = 0; i < hybrid.hot_slots.size(); ++i) {
+                                hybrid.hot_slot_for_key[hybrid.hot_slots[i].key] = (int)i;
+                            }
+                            std::fprintf(stderr, "[InkCUDA] adaptive pinned RAM: %zu experts (%.1f MiB)\n",
+                                         hybrid.hot_slots.size(), (double)used / 1048576.0);
+                        } else if (used) {
+                            (void)cudaGetLastError();
+                            hybrid.h_hot_pinned = nullptr;
+                            std::fprintf(stderr, "[InkCUDA] adaptive pinned cache allocation failed; using normal host staging\n");
+                        }
+                    }
                 }
                 hybrid.host_meta.assign((size_t)man.c.n_phys * man.c.n_experts, {});
                 hybrid.orig_host_off.assign((size_t)man.c.n_phys * man.c.n_experts, 0);
@@ -531,6 +562,12 @@ struct InkCudaModel {
                     if (!rd.read_at(hdr.sections[4].file_offset + e.body_offset, tmp_body.data(), e.body_bytes, err)) return false;
                     uint8_t* hdst = h_arena_base + h_cur;
                     std::memcpy(hdst, tmp_body.data(), e.body_bytes);
+                    if (hybrid.h_hot_pinned) {
+                        const int slot = hybrid.hot_slot_for_key[key];
+                        if (slot >= 0) {
+                            std::memcpy(hybrid.h_hot_pinned + hybrid.hot_slots[slot].offset, hdst, e.body_bytes);
+                        }
+                    }
                     hybrid.host_meta[key].body       = hdst;
                     hybrid.host_meta[key].body_bytes = e.body_bytes;
                     hybrid.host_meta[key].dn_off     = e.dn_offset;

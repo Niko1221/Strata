@@ -299,6 +299,13 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
   the RAM copy. Same tokens, fewer host copies, about 1.4 GiB more page-locked RAM. See
   [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).
 
+### Inkling CUDA expert staging
+
+For a native Inkling pack with pageable RAM experts and no SSD-tier experts, set
+`STRATA_INK_DYNAMIC_PINNED_MIB=N` to give frequently streamed experts up to 1024 MiB of extra page-locked host memory.
+A more frequently requested expert can replace an idle cache slot of the same size. Cached weights bypass the host
+staging copy. The cache is off by default and the normal staging path remains available if allocation fails.
+
 ### Linux file tier
 
 When experts are read from GGUF files in place, Linux runs three things by default. Off switches are in brackets.
