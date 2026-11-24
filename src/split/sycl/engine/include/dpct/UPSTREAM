@@ -1,0 +1,7 @@
+SYCLomatic 20260928, dpct 21.0.0.
+Clang revision 1bf0129453c284110ac35fe59e3f9a38c1e3d110.
+Private compatibility changes: one context per GPU platform, anonymous memcpy kernel name,
+explicit opt-in queue profiling, and removal of an unused shared queue assignment
+during per-device constant allocation. Graph recording's queue map is mutex-protected
+for simultaneous capture on the two card threads.
+The license is in LICENSE.TXT.

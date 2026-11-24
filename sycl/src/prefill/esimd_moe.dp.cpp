@@ -58,6 +58,9 @@ void quantize_rows(const uint16_t*, const Layout&, int, int8_t*, float*, void*) 
 bool gate_up(int, const uint8_t* const*, size_t, int, const Layout&, int, const int8_t*, const float*, float*, void*) { return false; }
 void swiglu_quantize(const float*, const Layout&, int, int8_t*, float*, void*) {}
 bool down(int, const uint8_t* const*, size_t, int, const Layout&, int, const int8_t*, const float*, float*, void*) { return false; }
+bool device_chain(int, int, const uint8_t* const*, const uint8_t* const*, size_t, int, int,
+                  int, int, const int*, int*, const uint16_t*, float*, float*,
+                  const Workspace&, void*, const DeviceInput*) { return false; }
 }  // namespace strata::prefill::i8
 #else
 namespace strata::prefill::i8 {
@@ -170,11 +173,23 @@ struct GArgs {
     int ldy;
     uint32_t lim;                     // byte offset of the last dword of the matrix the clamped reads (ld32c) stay inside
     int dbg;                          // bring-up switches (STRATA_I8_DBG): 1 skip the decode, 2 skip the activation loads, 4 skip the stores, 8 skip the K loop
+    const int* device_meta;
+    const int* device_work;
+    const uint8_t* const* device_blob;
 };
 
 // The expert a work item belongs to, with constant-index reads of the kernel argument arrays.
 struct Pick { int e, row0, cnt, tile0, rb0; const uint8_t* blob; };
+template<bool Device = false>
 SYCL_ESIMD_FUNCTION inline Pick pick_expert(const GArgs& a, int rbg) {
+    if constexpr (Device) {
+        const simd<int, 4> m = block_load<int, 4>(a.device_work + rbg * 8);
+        const int e = block_load<int, 1>(a.device_work + rbg * 8 + 4)[0];
+        const uint64_t address = block_load<uint64_t, 1>(
+            reinterpret_cast<const uint64_t*>(a.device_blob) + e)[0];
+        return Pick{e, int(m[0]), int(m[3]), int(m[1]), int(m[2]),
+                    reinterpret_cast<const uint8_t*>(address)};
+    }
     Pick p{0, a.row0[0], a.row0[1] - a.row0[0], a.tile0[0], a.rb0[0], a.blob[0]};
 #pragma unroll
     for (int i = 1; i < kMaxGroup; ++i)
@@ -470,20 +485,46 @@ struct WgLayout {
         if (s_part == 0) slm_block_store<float, 32>(base_ + L::ASZ + s_tile * 128, stg_dx, kAl16);                             \
     }
 
-template <int F, int MT, int G> struct TagGuW;
-template <int F, int MT, int G> struct TagDnW;
+template <int F, int MT, int G, bool Device> struct TagGuW;
+template <int F, int MT, int G, bool TAIL, bool Device> struct TagDnW;
 
-template <int F, int MT, int G>
+// A split FF320 slice ends with two K32 blocks, not a complete staging chunk.
+#define LOAD_DN_CHUNK(CC)                                                                                                      \
+    if constexpr (TAIL) {                                                                                                     \
+        if ((CC) * 4 + 4 > a.nkb) {                                                                                           \
+            if (s_tile < nvalid) {                                                                                            \
+                stg = 0; stg_dx = 0.f;                                                                                        \
+                _Pragma("unroll")                                                                                             \
+                for (int k = 0; k < L::PART / 256; ++k) {                                                                      \
+                    const int kb_ = (CC) * 4 + s_part * (L::PART / 256) + k;                                                   \
+                    if (kb_ < a.nkb)                                                                                         \
+                        stg.template select<64, 1>(64 * k) = block_load<int, 64>(                                              \
+                            Xi + ((size_t) (tbase + s_tile) * a.nkb + kb_) * 64, kAl16);                                      \
+                }                                                                                                            \
+                if (s_part == 0) {                                                                                           \
+                    _Pragma("unroll")                                                                                         \
+                    for (int k = 0; k < 4; ++k)                                                                               \
+                        if ((CC) * 4 + k < a.nkb)                                                                             \
+                            stg_dx.template select<8, 1>(8 * k) = block_load<float, 8>(                                       \
+                                a.dx + ((size_t) (tbase + s_tile) * a.nkb + (CC) * 4 + k) * 8, kAl16);                         \
+                }                                                                                                            \
+            }                                                                                                                \
+        } else { LOAD_CHUNK(CC); }                                                                                            \
+    } else { LOAD_CHUNK(CC); }
+
+template <int F, int MT, int G, bool Device = false>
 void launch_gu_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
     using L = WgLayout<F, MT>;
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     constexpr int NS = (F == T_IQ2S) ? 2 : 1;
     strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
-        h.parallel_for<TagGuW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
+        h.parallel_for<TagGuW<F, MT, G, Device>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
                                          [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
             slm_init<L::TOTAL>();
             const int rbg = (int) it.get_group(0), lt = (int) it.get_local_id(1), nt = (int) it.get_global_id(1);
-            const Pick pk = pick_expert(a, rbg);
+            if constexpr (Device)
+                if (rbg >= block_load<int, 1>(a.device_meta + a.n * 4 + 2)[0]) return;
+            const Pick pk = pick_expert<Device>(a, rbg);
             const int cnt = pk.cnt;
             const int ntl = (cnt + 7) >> 3;
             const int tl0 = (rbg - pk.rb0) * MT;
@@ -642,16 +683,18 @@ void launch_gu_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
     });
 }
 
-template <int F, int MT, int G>
+template <int F, int MT, int G, bool TAIL = false, bool Device = false>
 void launch_dn_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
     using L = WgLayout<F, MT>;
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
-        h.parallel_for<TagDnW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
+        h.parallel_for<TagDnW<F, MT, G, TAIL, Device>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
                                          [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
             slm_init<L::TOTAL>();
             const int rbg = (int) it.get_group(0), lt = (int) it.get_local_id(1), nt = (int) it.get_global_id(1);
-            const Pick pk = pick_expert(a, rbg);
+            if constexpr (Device)
+                if (rbg >= block_load<int, 1>(a.device_meta + a.n * 4 + 2)[0]) return;
+            const Pick pk = pick_expert<Device>(a, rbg);
             const int cnt = pk.cnt;
             const int ntl = (cnt + 7) >> 3;
             const int tl0 = (rbg - pk.rb0) * MT;
@@ -670,15 +713,18 @@ void launch_dn_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
             simd<uint32_t, 16> lane(0, 1);
             simd<uint32_t, 16> ro = (lane + (uint32_t) (16 * nt)) * (uint32_t) a.rowb + a.sec_off;
             simd<float, 128 * MT> acc = 0.f;
-            const int nchunks = (a.dbg & 8) ? 0 : (a.nkb >> 2);
-            if (nchunks > 0) { LOAD_CHUNK(0); STORE_CHUNK(0); }
+            const int nchunks = (a.dbg & 8) ? 0 : ((a.nkb + (TAIL ? 3 : 0)) >> 2);
+            if (nchunks > 0) { LOAD_DN_CHUNK(0); STORE_CHUNK(0); }
             barrier();
             for (int c = 0; c < nchunks; ++c) {
                 const int stage_off = L::TB + (c & 1) * L::STAGE;
-                if (c + 1 < nchunks) { LOAD_CHUNK(c + 1); }
+                if (c + 1 < nchunks) { LOAD_DN_CHUNK(c + 1); }
 #pragma unroll 1
                 for (int ib4 = 0; ib4 < 4; ++ib4) {
                     const int kb = c * 4 + ib4;
+                    if constexpr (TAIL) {
+                        if (kb >= a.nkb) break;
+                    }
                     simd<float, 16> sw0 = 1.f;
                     simd<uint32_t, 128> fr0 = 0x01010101u;
                     if (!(a.dbg & 1)) {
@@ -1035,9 +1081,14 @@ bool down(int d_type, const uint8_t* const* blob, size_t down_off, int n_embd, c
     const int rb = fill_args_mt(a, lo, mt);
     return dispatch_mt(mt, [&](auto mtc) {
         constexpr int MT = decltype(mtc)::value;
-        if (wg_for() && a.nkb % 4 == 0 && a.ntiles % WGT == 0) {
-            if (d_type == T_IQ4NL) launch_dn_wg<T_IQ4NL, MT, 256>(q, a, rb);
-            else launch_dn_wg<T_Q2_0, MT, 256>(q, a, rb);
+        if (wg_for() && a.ntiles % WGT == 0) {
+            if (a.nkb % 4 == 0) {
+                if (d_type == T_IQ4NL) launch_dn_wg<T_IQ4NL, MT, 256>(q, a, rb);
+                else launch_dn_wg<T_Q2_0, MT, 256>(q, a, rb);
+            } else {
+                if (d_type == T_IQ4NL) launch_dn_wg<T_IQ4NL, MT, 256, true>(q, a, rb);
+                else launch_dn_wg<T_Q2_0, MT, 256, true>(q, a, rb);
+            }
         } else         if (grf_for(MT) == 128) {
             if (d_type == T_IQ4NL) launch_dn<T_IQ4NL, MT, 128>(q, a, rb);
             else launch_dn<T_Q2_0, MT, 128>(q, a, rb);
@@ -1046,6 +1097,190 @@ bool down(int d_type, const uint8_t* const* blob, size_t down_off, int n_embd, c
             else launch_dn<T_Q2_0, MT, 256>(q, a, rb);
         }
     });
+}
+
+namespace {
+template<bool Swiglu> class DeviceQuantTag;
+class DeviceGatherQuantTag;
+
+void gather_quantized_device(sycl::queue& q, const DeviceInput& input,
+                             const int* meta, int n, int tile_bound, int K,
+                             int8_t* output, float* scales) {
+    const int nkb = K / 32;
+    const auto* source_rows = input.source_rows;
+    const auto* xq = reinterpret_cast<const uint32_t*>(input.xq);
+    const auto* dx = input.dx;
+    auto* out = reinterpret_cast<uint32_t*>(output);
+    const int* tiles = meta + (n + 1) * 4;
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
+        h.parallel_for<DeviceGatherQuantTag>(
+            sycl::range<2>(tile_bound, nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
+                const int tile = int(id[0]), kb = int(id[1]);
+                if (tile >= block_load<int, 1>(meta + n * 4 + 1)[0]) return;
+                const simd<int, 4> m = block_load<int, 4>(tiles + tile * 4);
+                simd<float, 8> ds = 0.f;
+#pragma unroll
+                for (int r = 0; r < 8; ++r) {
+                    const int row = (tile - m[1]) * 8 + r;
+                    simd<uint32_t, 8> qd = 0u;
+                    if (row < m[2]) {
+                        const int source = block_load<int, 1>(source_rows + m[0] + row)[0];
+                        const size_t at = ((size_t)(source / 8) * nkb + kb) * 8 + source % 8;
+                        qd = block_load<uint32_t, 8>(xq + at * 8);
+                        ds[r] = block_load<float, 1>(dx + at)[0];
+                    }
+                    block_store<uint32_t, 8>(
+                        out + ((size_t)tile * nkb + kb) * 64 + r * 8, qd);
+                }
+                block_store<float, 8>(scales + ((size_t)tile * nkb + kb) * 8, ds);
+            });
+    });
+}
+
+template<bool Swiglu>
+void quantize_device(sycl::queue& q, const void* input, const int* meta, int n,
+                     int tile_bound, int K, int8_t* output, float* scales) {
+    const int nkb = K / 32;
+    auto* out = reinterpret_cast<uint32_t*>(output);
+    const int* tiles = meta + (n + 1) * 4;
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
+        h.parallel_for<DeviceQuantTag<Swiglu>>(
+            sycl::range<2>(tile_bound, nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
+                const int tile = int(id[0]), kb = int(id[1]);
+                if (tile >= block_load<int, 1>(meta + n * 4 + 1)[0]) return;
+                const simd<int, 4> m = block_load<int, 4>(tiles + tile * 4);
+                const int row0 = m[0], tile0 = m[1], count = m[2];
+                simd<float, 8> ds = 0.f;
+#pragma unroll
+                for (int r = 0; r < 8; ++r) {
+                    const int row = (tile - tile0) * 8 + r;
+                    simd<uint32_t, 8> qd = 0u;
+                    if (row < count) {
+                        simd<float, 32> x;
+                        if constexpr (Swiglu) {
+                            simd<float, 64> v = block_load<float, 64>(
+                                static_cast<const float*>(input) +
+                                (size_t)(row0 + row) * 2 * K + kb * 64);
+                            const simd<float, 32> g = v.template select<32, 2>(0);
+                            const simd<float, 32> u = v.template select<32, 2>(1);
+                            x = g * u / (1.f + exp(-g));
+                        } else {
+                            x = block_load<half, 32>(static_cast<const half*>(input) +
+                                (size_t)(row0 + row) * K + kb * 32);
+                        }
+                        const float amax = hmax<float>(abs(x));
+                        ds[r] = amax / 127.f;
+                        const float inv = amax > 0.f ? 127.f / amax : 0.f;
+                        simd<float, 32> y = x * inv;
+                        simd<float, 32> adj = 0.5f;
+                        adj.merge(simd<float, 32>(-0.5f), y < 0.f);
+                        const simd<int, 32> qi = convert<int>(y + adj);
+                        simd<int8_t, 32> q8 = convert<int8_t>(qi);
+                        qd = q8.template bit_cast_view<uint32_t>();
+                    }
+                    block_store<uint32_t, 8>(
+                        out + ((size_t)tile * nkb + kb) * 64 + r * 8, qd);
+                }
+                block_store<float, 8>(scales + ((size_t)tile * nkb + kb) * 8, ds);
+            });
+    });
+}
+}
+
+bool device_chain(int gu_type, int d_type, const uint8_t* const* gates,
+                  const uint8_t* const* downs, size_t up_off, int n, int rows,
+                  int K, int n_ff, const int* counts, int* metadata,
+                  const uint16_t* X, float* GU, float* Dm,
+                  const Workspace& ws, void* stream, const DeviceInput* input) {
+    if ((gu_type != T_IQ3S && gu_type != T_IQ3XXS) ||
+        (d_type != T_IQ4NL && d_type != T_Q2_0) || n < 1 || rows < 0 ||
+        K % 256 || K % (16 * WGT) || n_ff % block_vals_of(d_type) ||
+        (2 * n_ff / 16) % WGT || (up_off & 3) || !wg_for())
+        return false;
+    if (rows == 0) return true;
+    Layout estimate{};
+    estimate.n = 1;
+    estimate.tile0[1] = rows >= 1024 ? 5 : 1;
+    const int mt = mt_for(estimate);
+    if (mt != 2 && mt != 4 && mt != 8) return false;
+    sycl::queue& q = *strata::q_of(stream);
+    const uint32_t* tab = tables(q);
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->single_task([=] {
+        int row = 0, tile = 0, rb = 0;
+        for (int e = 0; e < n; ++e) {
+            const int count = counts[e];
+            metadata[e * 4] = row;
+            metadata[e * 4 + 1] = tile;
+            metadata[e * 4 + 2] = rb;
+            metadata[e * 4 + 3] = count;
+            row += count;
+            tile += (count + 7) / 8;
+            rb += (count + 8 * mt - 1) / (8 * mt);
+        }
+        metadata[n * 4] = row;
+        metadata[n * 4 + 1] = tile;
+        metadata[n * 4 + 2] = rb;
+        metadata[n * 4 + 3] = 0;
+    });
+    const int tile_bound = (rows + 7) / 8 + n - 1;
+    const int rb_bound = (rows + 8 * mt - 1) / (8 * mt) + n - 1;
+    int* tiles = metadata + (n + 1) * 4;
+    int* blocks = tiles + tile_bound * 4;
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->parallel_for(
+        sycl::range<1>(n), [=](sycl::id<1> id) {
+            const int e = id[0], row = metadata[e * 4], tile = metadata[e * 4 + 1];
+            const int rb = metadata[e * 4 + 2], count = metadata[e * 4 + 3];
+            for (int t = 0; t < (count + 7) / 8; ++t) {
+                tiles[(tile + t) * 4] = row;
+                tiles[(tile + t) * 4 + 1] = tile;
+                tiles[(tile + t) * 4 + 2] = count;
+                tiles[(tile + t) * 4 + 3] = 0;
+            }
+            for (int r = 0; r < (count + 8 * mt - 1) / (8 * mt); ++r) {
+                blocks[(rb + r) * 8] = row;
+                blocks[(rb + r) * 8 + 1] = tile;
+                blocks[(rb + r) * 8 + 2] = rb;
+                blocks[(rb + r) * 8 + 3] = count;
+                blocks[(rb + r) * 8 + 4] = e;
+            }
+        });
+    if (input)
+        gather_quantized_device(q, *input, metadata, n, tile_bound, K, ws.xq, ws.dx);
+    else
+        quantize_device<false>(q, X, metadata, n, tile_bound, K, ws.xq, ws.dx);
+    GArgs a{};
+    a.device_meta = metadata;
+    a.device_work = blocks;
+    a.device_blob = gates;
+    a.sec_off = uint32_t(up_off);
+    a.n = n;
+    a.Xq = ws.xq; a.dx = ws.dx; a.Y = GU;
+    a.tab = tab;
+    a.ntiles = 2 * n_ff / 16;
+    a.nkb = K / 32;
+    a.rowb = K / 256 * block_bytes_of(gu_type);
+    a.ldy = 2 * n_ff;
+    a.dbg = dbg_flags();
+    dispatch_mt(mt, [&](auto mtc) {
+        constexpr int MT = decltype(mtc)::value;
+        if (gu_type == T_IQ3S) launch_gu_wg<T_IQ3S, MT, 256, true>(q, a, rb_bound);
+        else launch_gu_wg<T_IQ3XXS, MT, 256, true>(q, a, rb_bound);
+    });
+    quantize_device<true>(q, GU, metadata, n, tile_bound, n_ff, ws.hq, ws.dh);
+    a.device_blob = downs;
+    a.sec_off = 0;
+    a.Xq = ws.hq; a.dx = ws.dh; a.Y = Dm;
+    a.ntiles = K / 16;
+    a.nkb = n_ff / 32;
+    a.rowb = n_ff / block_vals_of(d_type) * block_bytes_of(d_type);
+    a.lim = uint32_t((size_t)K * a.rowb) - 4u;
+    a.ldy = K;
+    dispatch_mt(mt, [&](auto mtc) {
+        constexpr int MT = decltype(mtc)::value;
+        if (d_type == T_IQ4NL) launch_dn_wg<T_IQ4NL, MT, 256, true, true>(q, a, rb_bound);
+        else launch_dn_wg<T_Q2_0, MT, 256, true, true>(q, a, rb_bound);
+    });
+    return true;
 }
 
 }  // namespace strata::prefill::i8

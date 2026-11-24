@@ -79,4 +79,20 @@ void swiglu_quantize(const float* GU, const Layout& lo, int n_ff, int8_t* Hq, fl
 bool down(int d_type, const uint8_t* const* blob, size_t down_off, int n_embd, const Layout& lo, int n_ff, const int8_t* Hq,
           const float* dh, float* Dm, void* stream);
 
+// Device metadata is [n + 1][4]: row start, padded tile start, row-block start, count.
+// Counts must be nonnegative and sum to rows; inputs and pointer tables must be ready on the in-order stream.
+// The caller supplies device pointer tables and scratch for rows + 7*n padded rows.
+// Metadata storage: 4*(n+1) + 4*(ceil(rows/8)+n-1) + 8*(ceil(rows/16)+n-1) ints.
+// Optional input already quantized as one expert: source_rows maps routed rows to source token rows.
+struct DeviceInput {
+    const int* source_rows;
+    const int8_t* xq;
+    const float* dx;
+};
+bool device_chain(int gu_type, int d_type, const uint8_t* const* gates,
+                  const uint8_t* const* downs, size_t up_off, int n, int rows,
+                  int K, int n_ff, const int* counts, int* metadata,
+                  const uint16_t* X, float* GU, float* Dm,
+                  const Workspace& ws, void* stream, const DeviceInput* input = nullptr);
+
 }  // namespace strata::prefill::i8

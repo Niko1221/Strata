@@ -1,0 +1,4 @@
+GGML headers: llama.cpp 9b53689d289a04b7c858ea3354b4e343eddf6f22.
+These are private, migrated headers for the experimental SYCL split.
+They do not replace Strata's default GGML dependency, pinned at 3cf03257f219afbe7334045ff7c6a06ac68c627d.
+The GGML license is in LICENSE.
