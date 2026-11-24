@@ -245,6 +245,23 @@ static void k_pfr_add_gather(const sycl::half2 *__restrict__ in,
     if (dst.sysfence) __threadfence_system();
 #endif
 }
+// FNX_PF_RING_Q8: receive int8 activations + per-row f16 scale, dequantize, add x, write f16 to out
+static void k_pfr_q8_add(const int8_t* q8, const sycl::half* sc,
+                          const sycl::float2* x, int n2,
+                          sycl::half2* out, unsigned* err) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    for (int e = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+                 item_ct1.get_local_id(2);
+         e < n2; e += (size_t)item_ct1.get_group_range(2) * item_ct1.get_local_range(2)) {
+        const int row = e / (N / 2), col2 = e % (N / 2);
+        const float scale = float(sc[row]);
+        const float v0 = float(q8[(size_t)row * N + col2 * 2]) * scale + x[e].x();
+        const float v1 = float(q8[(size_t)row * N + col2 * 2 + 1]) * scale + x[e].y();
+        if (!(sycl::fabs(v0) <= RING_MAX && sycl::fabs(v1) <= RING_MAX))
+            dpct::atomic_fetch_or<sycl::access::address_space::generic_space>(err, 2u);
+        out[e] = sycl::float2(v0, v1).convert<sycl::half, sycl::rounding_mode::rte>();
+    }
+}
 #if FNX_HIP
 // FNX_PF_PEER, small chunks (rows <= p.a2a_rows): the sum in ONE cross-card latency instead of the ring's NCARD hops of copy + flag + wait. Every card stores its f32 addends of the
 // chunk into slot [its number] of every other card's mailbox (device memory of the receiver, fine-grained), the last block to finish its stores raises the flag [its number] on
@@ -385,7 +402,10 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
                         unsigned seq, unsigned *err, dpct::queue_ptr s,
                         bool own_out = false,
                         sycl_port::EventMailbox* events = nullptr,
-                        sycl_port::HostTrace* trace = nullptr) try {
+                        sycl_port::HostTrace* trace = nullptr,
+                        int8_t* q8_dev = nullptr,
+                        sycl::half* q8_sc_dev = nullptr,
+                        bool p3 = false) try {
     sycl_port::HostScope scope(trace, own_out ? "ring.own" : "ring.full");
     if (r.plan.empty() || r.plan.front().part != g) throw std::runtime_error("prefill: the ring's plan is not card " + std::to_string(g) + "'s");
     const int set = (int) (seq & 1u), fin_part = (g + 1) % NCARD;   // the part this card finishes (pf_ring_plan)
@@ -485,14 +505,57 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
             if ((o.k == PfRingOp::SIGNAL || o.k == PfRingOp::WAIT) && o.step >= NCARD - 1) continue;
             if (o.k == PfRingOp::GADD) {   // the finishing add into this card's rows alone
                 if (rows(o.part) > 0) {
-                    if (r.dma) {
+                    if (p3 && q8_dev) {
+                        // P2+P3: dequant INT8+scale from peer_in
+                        const size_t q8_bytes = (size_t)rows(o.part) * N;
+                        const int8_t* q8p = (const int8_t*)r.peer_in[o.hop][set];
+                        const sycl::half* scp = (const sycl::half*)((const uint8_t*)r.peer_in[o.hop][set] + q8_bytes);
+                        {
+                        const auto q8n2 = rows(o.part) * N / 2;
+                        const auto outp = (sycl::half2*)(own_ag + (size_t)r0(o.part) * N);
+                        const auto xp = (const sycl::float2*)(x + (size_t)r0(o.part) * N);
+                        s->submit([&](sycl::handler &cgh) {
+                            cgh.parallel_for(
+                                sycl::nd_range<3>(sycl::range<3>(1,1,grid_for((size_t)q8n2))*sycl::range<3>(1,1,256), sycl::range<3>(1,1,256)),
+                                [=](sycl::nd_item<3> item_ct1) { k_pfr_q8_add(q8p, scp, xp, q8n2, outp, err); });
+                        });
+                        }
+                    } else if (p3) {
+                        // P3 only: FP16 from peer_in device buffer
+                        add(r.peer_in[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
+                    } else if (q8_dev) {
+                        const size_t q8_bytes = (size_t)rows(o.part) * N;
+                        ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_dev, r.in[o.hop][set], q8_bytes)), "ring recv q8");
+                        ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_sc_dev,
+                            (const uint8_t*)r.in[o.hop][set] + q8_bytes,
+                            (size_t)rows(o.part) * sizeof(sycl::half))), "ring recv q8 sc");
+                        dma_fence();
+                        {
+                        const auto q8n2 = rows(o.part) * N / 2;
+                        const auto q8p = q8_dev;
+                        const sycl::half* scp = q8_sc_dev;
+                        const auto xp = (const sycl::float2*)(x + (size_t)r0(o.part) * N);
+                        const auto outp = (sycl::half2*)(own_ag + (size_t)r0(o.part) * N);
+                        s->submit([&](sycl::handler &cgh) {
+                            cgh.parallel_for(
+                                sycl::nd_range<3>(
+                                    sycl::range<3>(1, 1, grid_for((size_t)q8n2)) * sycl::range<3>(1, 1, 256),
+                                    sycl::range<3>(1, 1, 256)),
+                                [=](sycl::nd_item<3> item_ct1) {
+                                    k_pfr_q8_add(q8p, scp, xp, q8n2, outp, err);
+                                });
+                        });
+                        }
+                    } else if (r.dma) {
                         ckc(DPCT_CHECK_ERROR(s->memcpy(
                                 r.din[o.hop][set], r.in[o.hop][set],
                                 (size_t)rows(o.part) * N * sizeof(sycl::half))),
                             "ring in");
                         dma_fence();
+                        add(r.din[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
+                    } else {
+                        add(r.in[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
                     }
-                    add(r.dma ? r.din[o.hop][set] : r.in[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
                 }
                 continue;
             }
@@ -529,6 +592,33 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
         }
         switch (o.k) {
             case PfRingOp::PACK:
+                if (q8_dev && p3 && rows(o.part) > 0) {
+                    // P2+P3 fused: f32->INT8 directly (skip f16 PACK intermediate, saves one kernel)
+                    const int q8nr = rows(o.part);
+                    const float* q8_xf = x + (size_t)r0(o.part) * N;
+                    const auto q8_dst = q8_dev;
+                    sycl::half* q8_sc2 = q8_sc_dev;
+                    s->submit([&](sycl::handler &cgh) {
+                        cgh.parallel_for(
+                            sycl::nd_range<3>(sycl::range<3>(1, 1, (size_t)q8nr * 32), sycl::range<3>(1, 1, 32)),
+                            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                                const int row = item_ct1.get_group(2);
+                                if (row >= q8nr) return;
+                                const int lid = item_ct1.get_local_id(2);
+                                const float* rp = q8_xf + (size_t)row * N;
+                                int8_t* rq = q8_dst + (size_t)row * N;
+                                float amax = 0.f;
+                                for (int i = lid; i < N; i += 32)
+                                    amax = sycl::fmax(amax, sycl::fabs(rp[i]));
+                                amax = sycl::reduce_over_group(item_ct1.get_sub_group(), amax, sycl::maximum<float>());
+                                if (lid == 0) q8_sc2[row] = sycl::half(amax / 127.f);
+                                const float inv = amax > 0.f ? 127.f / amax : 0.f;
+                                for (int i = lid; i < N; i += 32)
+                                    rq[i] = int8_t(sycl::clamp(sycl::round(rp[i] * inv), -127.f, 127.f));
+                            });
+                    });
+                    break;
+                }
                 if (rows(o.part) > 0)
             {
                 dpct::has_capability_or_fail(s->get_device(),
@@ -552,8 +642,85 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
                         });
                 });
             }
+                // FNX_PF_RING_Q8: after packing f32->f16 to r.send, compress to int8+scale for smaller DMA
+                if (q8_dev && rows(o.part) > 0) {
+                    const int q8nr = rows(o.part);
+                    const sycl::half* q8_src = r.send;
+                    const auto q8_dst = q8_dev;
+                    sycl::half* q8_sc = q8_sc_dev;
+                    s->submit([&](sycl::handler &cgh) {
+                        cgh.parallel_for(
+                            sycl::nd_range<3>(
+                                sycl::range<3>(1, 1, (size_t)q8nr * 32),
+                                sycl::range<3>(1, 1, 32)),
+                            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                                const int row = item_ct1.get_group(2);
+                                if (row >= q8nr) return;
+                                const int lid = item_ct1.get_local_id(2);
+                                const sycl::half* rp = q8_src + (size_t)row * N;
+                                int8_t* rq = q8_dst + (size_t)row * N;
+                                float amax = 0.f;
+                                for (int i = lid; i < N; i += 32)
+                                    amax = sycl::fmax(amax, sycl::fabs(float(rp[i])));
+                                amax = sycl::reduce_over_group(item_ct1.get_sub_group(), amax, sycl::maximum<float>());
+                                if (lid == 0) q8_sc[row] = sycl::half(amax / 127.f);
+                                const float inv = amax > 0.f ? 127.f / amax : 0.f;
+                                for (int i = lid; i < N; i += 32)
+                                    rq[i] = int8_t(sycl::clamp(sycl::round(float(rp[i]) * inv), -127.f, 127.f));
+                            });
+                    });
+                }
                 break;
             case PfRingOp::ADD:
+                if (p3 && q8_dev && rows(o.part) > 0) {
+                    // P2+P3: dequant INT8+scale from peer_in device buffer
+                    const size_t q8_bytes = (size_t)rows(o.part) * N;
+                    const int8_t* q8p = (const int8_t*)r.peer_in[o.hop][set];
+                    const sycl::half* scp = (const sycl::half*)((const uint8_t*)r.peer_in[o.hop][set] + q8_bytes);
+                    {
+                    const auto q8n2 = rows(o.part) * N / 2;
+                    const auto outp = (sycl::half2*)(o.fin ? own_ag + (size_t)r0(o.part)*N : r.send);
+                    const auto xp = (const sycl::float2*)(x + (size_t)r0(o.part) * N);
+                    s->submit([&](sycl::handler &cgh) {
+                        cgh.parallel_for(
+                            sycl::nd_range<3>(sycl::range<3>(1,1,grid_for((size_t)q8n2))*sycl::range<3>(1,1,256), sycl::range<3>(1,1,256)),
+                            [=](sycl::nd_item<3> item_ct1) { k_pfr_q8_add(q8p, scp, xp, q8n2, outp, err); });
+                    });
+                    }
+                    break;
+                }
+                if (p3 && rows(o.part) > 0) {
+                    // P3 only: FP16 data in peer_in device buffer
+                    add(r.peer_in[o.hop][set], o.part,
+                        o.fin ? own_ag + (size_t)r0(o.part)*N : r.send);
+                    break;
+                }
+                if (q8_dev && rows(o.part) > 0) {
+                    // Q8: DMA int8+scale from host slot to device buffers, dequantize and add
+                    const size_t q8_bytes = (size_t)rows(o.part) * N;
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_dev, r.in[o.hop][set], q8_bytes)), "ring recv q8");
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_sc_dev,
+                        (const uint8_t*)r.in[o.hop][set] + q8_bytes,
+                        (size_t)rows(o.part) * sizeof(sycl::half))), "ring recv q8 sc");
+                    dma_fence();
+                    {
+                    const auto q8n2 = rows(o.part) * N / 2;
+                    const auto q8p = q8_dev;
+                    const sycl::half* scp = q8_sc_dev;
+                    const auto xp = (const sycl::float2*)(x + (size_t)r0(o.part) * N);
+                    const auto outp = (sycl::half2*)(o.fin ? own_ag + (size_t)r0(o.part)*N : r.send);
+                    s->submit([&](sycl::handler &cgh) {
+                        cgh.parallel_for(
+                            sycl::nd_range<3>(
+                                sycl::range<3>(1, 1, grid_for((size_t)q8n2)) * sycl::range<3>(1, 1, 256),
+                                sycl::range<3>(1, 1, 256)),
+                            [=](sycl::nd_item<3> item_ct1) {
+                                k_pfr_q8_add(q8p, scp, xp, q8n2, outp, err);
+                            });
+                    });
+                    }
+                    break;
+                }
                 // the slot that arrived in host memory goes to device memory on the copy engine (asynchronous, beside the next chunk's
                 // compute), and the add reads it there: a kernel reading host memory stalls its SMs at PCIe speed (FNX_PF_DMA=0: it reads the host slot)
                 if (rows(o.part) > 0 && r.dma) {
@@ -589,7 +756,29 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
                 }
                 add(r.dma ? r.din[o.hop][set] : r.in[o.hop][set], o.part, o.fin ? own_ag + (size_t) r0(o.part) * N : r.send);
                 break;
-            case PfRingOp::SEND: copy(r.nin[o.hop][set], r.send, rows(o.part)); break;
+            case PfRingOp::SEND:
+                if (p3 && q8_dev && rows(o.part) > 0) {
+                    // P2+P3: send INT8+scale via P2P DMA to peer's device memory (~10x benefit)
+                    const size_t q8_bytes = (size_t)rows(o.part) * N;
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(r.peer_nin[o.hop][set], q8_dev, q8_bytes)), "ring p3+q8 send");
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(
+                        (uint8_t*)r.peer_nin[o.hop][set] + q8_bytes, q8_sc_dev,
+                        (size_t)rows(o.part) * sizeof(sycl::half))), "ring p3+q8 send sc");
+                } else if (p3 && rows(o.part) > 0) {
+                    // P3 only: FP16 P2P DMA to peer's device memory
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(r.peer_nin[o.hop][set], r.send,
+                        (size_t)rows(o.part) * N * sizeof(sycl::half))), "ring p3 send");
+                } else if (q8_dev && rows(o.part) > 0) {
+                    // Q8: send int8 activations + scales (half size DMA)
+                    const size_t q8_bytes = (size_t)rows(o.part) * N;
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(r.nin[o.hop][set], q8_dev, q8_bytes)), "ring send q8");
+                    ckc(DPCT_CHECK_ERROR(cs->memcpy(
+                        (uint8_t*)r.nin[o.hop][set] + q8_bytes, q8_sc_dev,
+                        (size_t)rows(o.part) * sizeof(sycl::half))), "ring send q8 sc");
+                } else {
+                    copy(r.nin[o.hop][set], r.send, rows(o.part));
+                }
+                break;
             case PfRingOp::PASS:
                 if (rows(o.part) > 0) {
                     const size_t off = (size_t) r0(o.part) * N;
@@ -624,9 +813,44 @@ inline void pf_ring_run(const Ring &r, int dev, int g, float *x, int C,
                 break;
             case PfRingOp::GADD:
                 if (rows(o.part) > 0) {
+                    if (q8_dev) {
+                        // Q8: DMA int8+scale, then decompress into din for k_pfr_add_gather
+                        const size_t q8_bytes = (size_t)rows(o.part) * N;
+                        ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_dev, r.in[o.hop][set], q8_bytes)), "ring recv q8");
+                        ckc(DPCT_CHECK_ERROR(cs->memcpy(q8_sc_dev,
+                            (const uint8_t*)r.in[o.hop][set] + q8_bytes,
+                            (size_t)rows(o.part) * sizeof(sycl::half))), "ring recv q8 sc");
+                        dma_fence();
+                        // decompress int8+scale -> din (f16) for use with k_pfr_add_gather
+                        {
+                        const auto q8n2 = rows(o.part) * N / 2;
+                        const auto q8p = q8_dev;
+                        const sycl::half* scp = q8_sc_dev;
+                        const auto outp = (sycl::half2*)r.din[o.hop][set];
+                        s->submit([&](sycl::handler &cgh) {
+                            cgh.parallel_for(
+                                sycl::nd_range<3>(
+                                    sycl::range<3>(1, 1, grid_for((size_t)q8n2)) * sycl::range<3>(1, 1, 256),
+                                    sycl::range<3>(1, 1, 256)),
+                                [=](sycl::nd_item<3> item_ct1) {
+                                    // decompress: out = f16(int8 * scale), no x add
+                                    for (int e = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+                                                 item_ct1.get_local_id(2);
+                                         e < q8n2; e += (size_t)item_ct1.get_group_range(2) * item_ct1.get_local_range(2)) {
+                                        const int row = e / (N / 2), col2 = e % (N / 2);
+                                        const float scale = float(scp[row]);
+                                        const float v0 = float(q8p[(size_t)row * N + col2 * 2]) * scale;
+                                        const float v1 = float(q8p[(size_t)row * N + col2 * 2 + 1]) * scale;
+                                        outp[e] = sycl::float2(v0, v1).convert<sycl::half, sycl::rounding_mode::rte>();
+                                    }
+                                });
+                        });
+                        }
+                        // fall through with r.dma=true using r.din (now contains decompressed f16)
+                    }
                     // the received slot to device memory by DMA (as ADD), the sum stored into this card's device rows and every other card's
                     // host rows (stores to host memory are posted, they do not stall the SMs as loads do)
-                    if (r.dma) {
+                    if (r.dma && !q8_dev) {
                         
                         ckc(DPCT_CHECK_ERROR(s->memcpy(
                                 r.din[o.hop][set], r.in[o.hop][set],

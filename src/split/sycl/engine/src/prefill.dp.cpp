@@ -402,6 +402,8 @@ struct Engine::PfRing {
         *dag[2]; // this card's own copies in device memory (the add and the
                  // output read these)
     sycl::half *nin[NCARD - 1][2], *nag[2];
+    sycl::half *peer_in[NCARD - 1][2];   // device: P2P receive buffer (written by peer)
+    sycl::half *peer_nin[NCARD - 1][2];  // next card's peer_in (for P2P SEND)
     unsigned *flags, *nflags;
     sycl::half *pag[NCARD][2]; // every card's gathered rows and flags (the
                                // direct gather writes to all of them)
@@ -452,6 +454,10 @@ struct Engine::Pf {
     // the chunk sums on the copy engines (FNX_PF_RING_SM=1: the SM ring instead): f16 rows in parts of the chunk,
     // two sets by the sum's parity; flags [2 sets][PF_RING_STEPS], set by the previous card's stream (seq: the sum's number)
     bool ring_sm = false;
+    bool ring_q8 = false;        // FNX_PF_RING_Q8: quantize ring data to int8 (halves DMA size)
+    bool ring_p3 = false;        // FNX_PF_RING_P3: GPU Peer P2P ring (device-to-device DMA)
+    int8_t* q8_dev = nullptr;    // device: int8 ring buffer [pf_c_ * N]
+    sycl::half* q8_sc_dev = nullptr; // device: ring scale buffer [pf_c_]
     PfRing ring_ce;                   // the chunk sums on the copy engines
     // FNX_PF_RCCL=1 (AMD): the chunk sums through RCCL in place on ring_ce.dag[set] (rc_api: RcclApi*, rc_comm: this card's communicator). RCCL launches a group's collectives
     // at ncclGroupEnd, so what must follow a sum on its stream (the f32 conversion, the `done` event) waits in post until the prompt loop's per-card pass is closed
@@ -492,6 +498,9 @@ struct Engine::Pf {
     // piece as their flags arrive, so the merge reads device memory (reading the mapped host buffer from the merge kernel stalls its SMs at PCIe speed)
     bool attn_dma = false;
     bool attn_copy_events = false;
+    bool attn_p3 = false;              // FNX_PF_ATTN_P3: P2P for attention exchange
+    float* arecv_p2p[2] = {};          // device: P2P attention receive buffer
+    float* parecv_p2p[2][NCARD] = {};  // next card's arecv_p2p pointer
     sycl_port::HostTrace wait_trace;
     float* arecv_dev[2] = {};
     dpct::queue_ptr st3 = &dpct::get_in_order_queue();
@@ -517,6 +526,7 @@ struct Engine::Pf {
     // FNX_PF_OVERLAP (default on): each chunk's sums go round the ring on ring_st while the next chunk of the pass computes;
     // ev_go: a half's output ready for its sum, ev_ra / ev_rf: its attention / FFN sum done
     bool overlap = false;
+    bool pre_enqueue = false;  // FNX_PF_PRE_ENQUEUE: pre-enqueue all FFN computes before rings
     dpct::queue_ptr ring_st = &dpct::get_in_order_queue();
     dpct::event_ptr ev_go[Engine::PF_PASS], ev_ra[Engine::PF_PASS],
         ev_rf[Engine::PF_PASS];
@@ -726,11 +736,14 @@ void pf_sgemm(Engine::Pf& p, const float* W, int rows, int cols, const float* x,
         ? "dense f32 N=" + std::to_string(rows) + " K=" + std::to_string(cols)
         : std::string());
     const float one = 1.0f, zero = 0.0f;
-    ckb(DPCT_CHECK_ERROR(oneapi::mkl::blas::column_major::gemm(
+    sycl::event event;
+    ckb(DPCT_CHECK_ERROR(event = oneapi::mkl::blas::column_major::gemm(
             (p.blas)->get_queue(), oneapi::mkl::transpose::trans,
             oneapi::mkl::transpose::nontrans, rows, C, cols, one, W, cols, x,
-            cols, zero, out, ldo)),
-        "sgemm");
+            cols, zero, out, ldo)), "sgemm");
+    if (strata::kprof::native_library_events())
+        strata::kprof::note_named(&p.blas->get_queue(), event, "oneMKL.sgemm M=" +
+            std::to_string(rows) + " N=" + std::to_string(C) + " K=" + std::to_string(cols));
 }
 #if !FNX_HIP && !FNX_SYCL
 // the Lt problem for n rows of the down GEMM (cached): out[t][r] = W[r] . X[t], W f16 [LR][D], X f16 [n][D], out f32 [n][LR]
@@ -1372,7 +1385,9 @@ void pf_ring(Engine::Pf &p, int g, float *x, int C, const RingMoe *m,
         return;
     }
 #endif
-    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s, own_out, p.events.get(), &p.wait_trace);
+    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s, own_out, p.events.get(), &p.wait_trace,
+               p.ring_q8 ? p.q8_dev : nullptr, p.ring_q8 ? p.q8_sc_dev : nullptr,
+               p.ring_p3);
     
     ckc(0, "ring");
 }
@@ -1389,7 +1404,16 @@ std::optional<sycl::event> pf_attn_send(Engine::Pf &p, int set, int g, int C, in
     for (int d = 1; d < NCARD; ++d) {
         const int k = (g + d) % NCARD, slot = (g - k + NCARD) % NCARD - 1;
         
-        if (p.attn_copy_events && nr > 0) {
+        if (p.attn_p3 && nr > 0) {
+            // P4: P2P DMA directly to peer's device receive buffer
+            sent = s->submit([&](sycl::handler& h) {
+                if (ready) h.depends_on(*ready);
+                if (landing_ready) h.depends_on(*landing_ready);
+                h.memcpy(p.parecv_p2p[set][k] + slot * blk + off,
+                         p.apart[set] + k * blk + off,
+                         attn_prompt_block_floats(nr) * sizeof(float));
+            });
+        } else if (p.attn_copy_events && nr > 0) {
             sent = s->submit([&](sycl::handler& h) {
                 if (ready) h.depends_on(*ready);
                 if (landing_ready) h.depends_on(*landing_ready);
@@ -1458,7 +1482,7 @@ void pf_attn_start(Engine::Pf &p, CardBuf &b, uint16_t *kc, uint16_t *vc, int g,
     
     if (last_send) *p.ev_j[set] = *last_send;
     else ckc(DPCT_CHECK_ERROR(dpct::sync_barrier(p.ev_j[set], b.st2)), "attn event");
-    if (p.attn_dma) {
+    if (!p.attn_p3 && p.attn_dma) {
         const size_t blk = attn_prompt_block_floats(C);
         ckc(DPCT_CHECK_ERROR(
                 sycl_port::stream_barrier(p.st3, {*p.ev_m[set]})),
@@ -1509,6 +1533,19 @@ void pf_attn_start(Engine::Pf &p, CardBuf &b, uint16_t *kc, uint16_t *vc, int g,
 // chunk's (the merge reads its gates)
 void pf_attn_finish(Engine::Pf &p, int g, int C, int set, dpct::queue_ptr s) {
     sycl_port::HostScope scope(&p.wait_trace, "attention.merge");
+    if (p.attn_p3) {
+        // P4: data in arecv_p2p (device), wait for peer's EventMailbox signals
+        for (int slot = 0; slot < NCARD - 1; ++slot)
+            for (int i = 0; i < p.att_pieces; ++i)
+                if (p.events)
+                    p.events->wait(s, p.aflags[set] + slot * ATT_PIECES_MAX + i, p.att_seq[set], &p.wait_trace);
+        ckc(DPCT_CHECK_ERROR(sycl_port::stream_barrier(s, {*p.ev_j[set]})), "attn p2p join");
+        attn_prompt_merge(p.apart[set] + (size_t) g * attn_prompt_block_floats(C), p.arecv_p2p[set], p.qg, p.att, C, g, s);
+        ckc(DPCT_CHECK_ERROR(dpct::sync_barrier(p.ev_m[set], s)), "attn p2p merge event");
+        if (p.attn_copy_events)
+            p.events->publish(&p.att_consumed[set], p.att_seq[set], *p.ev_m[set]);
+        return;
+    }
     if (p.attn_dma) {
         ckc(DPCT_CHECK_ERROR(sycl_port::stream_barrier(s, {*p.ev_r[set]})),
             "attn recv join");
@@ -1735,6 +1772,12 @@ void Engine::prefill_alloc() {
         p->ple_emb = palloc<float>((size_t) pf_c_ * N);
         p->ctl = palloc<int>((size_t) (1 + (pf_c_ / MAXT)) * 2);
         p->ring_sm = env_int("FNX_PF_RING_SM", 0) != 0;   // strata-split: the chunk sums go through host memory on the copy engines; FNX_PF_RING_SM=1 is the GPU-thread ring (slower, kept as the fallback path)
+        p->ring_q8 = !p->ring_sm && env_int("FNX_PF_RING_Q8", 0) != 0;  // quantize ring data to int8 (halves DMA size)
+        if (p->ring_q8) {
+            p->q8_dev = palloc<int8_t>((size_t)pf_c_ * N);
+            p->q8_sc_dev = palloc<sycl::half>((size_t)pf_c_);
+        }
+        p->ring_p3 = !p->ring_sm && env_int("FNX_PF_RING_P3", 0) != 0;  // GPU Peer P2P ring
         p->ring = b.ring;
         if (p->ring_sm) {   // ~140 MB a card at 1,024 rows a chunk
             p->ring.f32 = false;   // HOSTRING: the prompt path's sums are fp16 on every count; FNX_RING_F32 is the decode ring's
@@ -1762,6 +1805,9 @@ void Engine::prefill_alloc() {
                 for (int h = 0; h < NCARD - 1; ++h)
                     r.din[h][k] = palloc<sycl::half>(share);
                 r.dag[k] = palloc<sycl::half>((size_t)pf_c_ * N);
+                if (p->ring_p3)
+                    for (int h = 0; h < NCARD - 1; ++h)
+                        r.peer_in[h][k] = palloc<sycl::half>(share);  // device: P2P recv
             }
 #if FNX_HIP
             if (pf_peer_) r.flags = ppalloc<unsigned>(2 * PF_RING_STEPS);
@@ -1831,6 +1877,11 @@ void Engine::prefill_alloc() {
             throw std::runtime_error("Attention copy events are test-only");
 #endif
         }
+        p->attn_p3 = p->attn_dma && p->attn_copy_events && env_int("FNX_PF_ATTN_P3", 0) != 0;
+        if (p->attn_p3) {
+            for (int s2 = 0; s2 < 2; ++s2)
+                p->arecv_p2p[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
+        }
         if (p->attn_dma) {
             for (int s2 = 0; s2 < 2; ++s2) {
                 p->arecv_dev[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
@@ -1865,6 +1916,7 @@ void Engine::prefill_alloc() {
                 p->injak[k] = palloc<float>((size_t) pf_c_ * HC);
             }
             p->overlap = !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0;
+            p->pre_enqueue = p->overlap && env_int("FNX_PF_PRE_ENQUEUE", 0) != 0;
             if (p->overlap) {
                 
                 ckc(DPCT_CHECK_ERROR(
@@ -2022,6 +2074,8 @@ void Engine::prefill_alloc() {
             for (int s = 0; s < 2; ++s) {
                 pf_[c]->parecv[s][k] = pf_[k]->arecv[s];
                 pf_[c]->paflags[s][k] = pf_[k]->aflags[s];
+                if (pf_[c]->attn_p3)
+                    pf_[c]->parecv_p2p[s][k] = pf_[k]->arecv_p2p[s];  // P2P: peer's device recv buffer
                 pf_[c]->peer_att_consumed[s][k] = &pf_[k]->att_consumed[s];
             }
             pf_[c]->pdev[k] = pf_[k]->dev;
@@ -2036,6 +2090,9 @@ void Engine::prefill_alloc() {
         for (int k = 0; k < 2; ++k) {
             for (int h = 0; h < NCARD - 1; ++h) r.nin[h][k] = n.ring_ce.in[h][k];
             r.nag[k] = n.ring_ce.ag[k];
+            if (p.ring_p3)
+                for (int h = 0; h < NCARD - 1; ++h)
+                    r.peer_nin[h][k] = n.ring_ce.peer_in[h][k];  // next card's P2P recv device buffer
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
@@ -2552,9 +2609,9 @@ void Engine::prefill_pass(const std::vector<PfChunk> &chunks, bool staging,
     // chunk's FFN half, so there is a next chunk to compute meanwhile
     auto ring_async = [&](int c, CardBuf &b, Pf &p, float *x, const RingMoe *m,
                           int j, dpct::event_ptr done, int rows,
-                          bool own = false) {
+                          bool own = false, bool ev_prerecorded = false) {
         sycl_port::HostScope scope(&p.wait_trace, "ring.async");
-            if (m)strata::kprof::kp(b.st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
+            if (m && !ev_prerecorded)strata::kprof::kp(b.st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 auto m_part_ct1 = m->part;
                 auto m_topw_ct2 = m->topw;
                 auto m_logits_ct3 = m->logits;
@@ -2570,7 +2627,7 @@ void Engine::prefill_pass(const std::vector<PfChunk> &chunks, bool staging,
                     });
             });
         
-        ckc(DPCT_CHECK_ERROR(dpct::sync_barrier(p.ev_go[j], b.st)), "ring go");
+        if (!ev_prerecorded) ckc(DPCT_CHECK_ERROR(dpct::sync_barrier(p.ev_go[j], b.st)), "ring go");
         ckc(DPCT_CHECK_ERROR(
                 sycl_port::stream_barrier(p.ring_st, {*p.ev_go[j]})),
             "ring go");
@@ -3038,8 +3095,39 @@ void Engine::prefill_pass(const std::vector<PfChunk> &chunks, bool staging,
                 m.topw = p.topw;
                 m.logits = p.logits;
                 if (p.ring_sm) ring_sum(p.ring, p.bo_f, C, (const unsigned*) (p.ctl + 1), 2 * l + 1, b.st, m);
-                else if (p.overlap) ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C, hs && l >= PLE_LAYER);
+                else if (p.overlap) {
+                    if (p.pre_enqueue) {
+                        // FNX_PF_PRE_ENQUEUE: addend + ev_go, ring deferred to pass 2
+                        strata::kprof::kp(b.st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
+                            auto m_part_ct1 = m.part;
+                            auto m_topw_ct2 = m.topw;
+                            auto m_logits_ct3 = m.logits;
+                            auto rows_ct = C;
+                            auto x_ct = p.bo_f;
+                            cgh.parallel_for(
+                                sycl::nd_range<3>(
+                                    sycl::range<3>(1, 1, grid_for((size_t)C * N)) *
+                                        sycl::range<3>(1, 1, 256),
+                                    sycl::range<3>(1, 1, 256)),
+                                [=](sycl::nd_item<3> item_ct1) {
+                                    k_pfr_addend(x_ct, m_part_ct1, m_topw_ct2, m_logits_ct3, rows_ct);
+                                });
+                        });
+                        ckc(DPCT_CHECK_ERROR(dpct::sync_barrier(p.ev_go[j], b.st)), "ring go");
+                    } else {
+                        ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C, hs && l >= PLE_LAYER);
+                    }
+                }
                 else pf_ring(p, c, p.bo_f, C, &m, b.ring.err, b.st);
+            });
+        }
+        // FNX_PF_PRE_ENQUEUE pass 2: ring for all chunks (all FFN computes enqueued in pass 1)
+        if (pf_[0]->pre_enqueue) {
+            host_phase = ring;
+            each([&](int c, CardBuf& b, const CardW&, Pf& p) {
+                if (!p.ring_sm && p.overlap && p.pre_enqueue)
+                    for (int j2 = 0; j2 < nk; ++j2)
+                        ring_async(c, b, p, p.bofk[j2], nullptr, j2, p.ev_rf[j2], C, hs && l >= PLE_LAYER, /*ev_prerecorded=*/true);
             });
         }
         host_phase = progress;
@@ -3179,7 +3267,8 @@ void Engine::prefill_pass(const std::vector<PfChunk> &chunks, bool staging,
                              double(end - start) / 1e3);
             }
         }
-    if (strata::kprof::enabled() || host_trace || env_flag("FNX_PF_MOE_FALLBACK_TRACE"))
+    if (strata::kprof::enabled() || host_trace || env_flag("FNX_PF_MOE_FALLBACK_TRACE") ||
+        env_flag("FNX_PF_MOE_COUNTS_CAPTURE"))
         for (int c = 0; c < NCARD; ++c)
             if (pf_[c]->native_moe) pf_[c]->native_moe->report_profile(c);
     static const bool timing = env_flag("FNX_PF_TIMING");
