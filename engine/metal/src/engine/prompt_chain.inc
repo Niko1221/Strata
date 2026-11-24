@@ -584,7 +584,7 @@ bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
                     const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
     static const int C = [] {
         const char* e = std::getenv("STRATA_METAL_PROMPT_CHUNK");
-        return std::max(64, std::min(8192, e ? std::atoi(e) : 2048));
+        return std::clamp(e ? std::atoi(e) : (g_resident_prompt_auto ? 1024 : 2048), 64, 8192);
     }();
     if (!pc_setup((int) std::min<int64_t>(C, std::max<int64_t>(n, 64)))) { err = "metal prompt: setup failed"; return false; }
     const double t0 = now_ms();

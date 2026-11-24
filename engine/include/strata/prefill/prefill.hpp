@@ -89,6 +89,9 @@ public:
     /// (loan_rules.hpp: a lent layout is sized for its segment's own short last chunk, not for floor - 1); -1: floor - 1.
     bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err, int64_t tail = -1);
     int64_t chunk() const;
+#if defined(STRATA_GPU_METAL)
+    int64_t select_metal_auto_chunk(int64_t ceiling);
+#endif
     /// The tail the layout in place was carved with (-1: the default, floor - 1), and the MMQ tokens a chunk below the
     /// floor may bring into it (a layout that is not fused takes any chunk it has: INT64_MAX).
     int64_t layout_tail() const;

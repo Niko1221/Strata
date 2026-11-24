@@ -107,6 +107,7 @@ static bool gdn_fused_inputs(const std::string& device) {
 
 namespace {
 
+bool g_resident_prompt_auto = false;
 int g_slot_cap = 0;   // --batch N: the window keeps N + 1 sequences' running states side by side (set_batch_slots)
 
 // Q4-KQ: the kernel sources define STRATA_KQ_DOWN to instantiate the K-quant / IQ4_XS / IQ3_S down experts (moe.metal, moe_mm.metal).
@@ -3702,6 +3703,20 @@ namespace {
 Window* g_window = nullptr;
 }
 void window_register(void* w) { g_window = (Window*) w; }
+
+int64_t resident_prompt_auto_chunk(int64_t ceiling, int64_t fallback) {
+    const char* mode = std::getenv("STRATA_METAL_PROMPT");
+    if (g_window == nullptr || g_window->streaming() || (mode && std::string(mode) == "window"))
+        return fallback;
+    // Keep the effective 1024-row buffers, but give the resident hostpipe four chunks per call.
+    g_resident_prompt_auto = true;
+    const char* override_rows = std::getenv("STRATA_METAL_PROMPT_CHUNK");
+    const int rows = std::clamp(override_rows ? std::atoi(override_rows) : 1024, 64, 8192);
+    const int64_t chunk = std::min<int64_t>(4 * rows, ceiling);
+    std::fprintf(stderr, "strata metal: --prefill auto: %lld-token calls of %d-row resident prompt chunks\n",
+                 (long long) chunk, rows);
+    return chunk;
+}
 // the engine loads the drafter before the decode window exists: the path is kept and the window loads it at its init
 std::string g_mtp_path;
 int g_mtp_max_t = 0;

@@ -12300,6 +12300,9 @@ int main(int argc, char** argv) {
         return false;
     };
     if (o.serve) {
+#if defined(STRATA_GPU_METAL)
+        bool metal_auto_fallback = false;
+#endif
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
             std::fprintf(stderr, "strata serve: needs --spec T and --prefill CHUNK (and a fillable "
@@ -12796,6 +12799,9 @@ int main(int argc, char** argv) {
                 borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             } else if (o.prefill_auto) {
                 o.prefill_chunk = 1024;   // nothing lendable: small buffers of its own
+#if defined(STRATA_GPU_METAL)
+                metal_auto_fallback = true;
+#endif
             } else if (pf_parts.size() > 1) {
                 // An explicit chunk no stage can lend in full.  main falls back to the prompt path's own buffers
                 // here and so do we, rather than refusing to start - but say what every stage has, because a split
@@ -12811,6 +12817,9 @@ int main(int argc, char** argv) {
             }
         } else if (o.prefill_auto && d_res == nullptr) {
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
+#if defined(STRATA_GPU_METAL)
+            metal_auto_fallback = true;
+#endif
         }
         // pf_parts is empty when there is no VRAM expert tier (no --expert-profile, or no VRAM left for it): the alias has
         // nothing to borrow then, and the verifier below stops the start with its own "--expert-profile" error.  It read
@@ -13140,6 +13149,11 @@ int main(int argc, char** argv) {
             return 1;
         }
         uma_refuse_chunk_if_full(o.prefill_chunk, borrow != nullptr, xcache.gib());
+#if defined(STRATA_GPU_METAL)
+        // Prefill::init has now loaded the Metal window and determined whether it streams.
+        if (metal_auto_fallback && !o.prefill_head_alias)
+            o.prefill_chunk = sp.select_metal_auto_chunk(auto_ceiling);
+#endif
         // The peer's streaming and a split's helpers live INSIDE the layout (`set_peer` / `set_stage_helper` build
         // them in the path's own Impl), so a path that is laid out again - the prompt room, below - has to be armed
         // again.  Both calls start by dropping what they built before, and both leave `err` clear on a decline.
