@@ -6,6 +6,7 @@
 #include "mtl_rt.h"
 #include "ref_quant.h"
 #include "engine/geo.h"
+#include "engine/hc_q8_planes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,10 +29,12 @@ struct Err {
 
 int main(int argc, char** argv) {
     bool bench = false;
+    bool planes = false;
     std::vector<int> ntoks = {1, 3, 8};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--bench") bench = true;
+        else if (a == "--hc-planes") planes = true;
         else if (a == "--ntok") ntoks = {std::atoi(argv[++i])};
     }
     mtl::Context cx;
@@ -39,12 +42,18 @@ int main(int argc, char** argv) {
     std::printf("device %s\n", cx.device_name().c_str());
     const int SETS = bench ? 48 : 1;
     const bool q8 = std::getenv("GR_Q8") != nullptr;   // the Q8_0 form of the HC matrices (gr_down_q8_*, gr_up_q8)
+    if (planes && (!q8 || std::getenv("GR_DOWN"))) {
+        std::fprintf(stderr, "--hc-planes requires GR_Q8=1 and the default 8_8 tile\n");
+        return 2;
+    }
     const int wty = q8 ? ref::Q8_0 : ref::BF16;
     // GR_INJ_F32: the inject rows as F32 (the Unsloth files), read by gr_down_q8f_* (GR_Q8) or gr_down_bf16f_*
     const bool injf = std::getenv("GR_INJ_F32") != nullptr;
     const size_t wd_bytes = (size_t)LR * NIN * 2, wi_bytes = (size_t)HC * NIN * 4, wu_bytes = (size_t)NIN * LR * 2;
     const size_t set_bytes = wd_bytes + wi_bytes + wu_bytes + NIN * 4;
     mtl::Buffer W = cx.alloc(set_bytes * SETS);
+    const size_t plane_bytes = (size_t)LR * NIN / 32 * 34;
+    mtl::Buffer Wp = planes ? cx.alloc(plane_bytes * SETS) : mtl::Buffer{};
     ref::Rng rng(3);
     for (int s = 0; s < SETS; ++s) {
         uint8_t* b = W.as<uint8_t>() + s * set_bytes;
@@ -60,6 +69,7 @@ int main(int argc, char** argv) {
             for (int m = 0; m < 3; ++m) {
                 std::vector<float> f(ns[m]);
                 ref::dequant(ref::BF16, b + offs[m], f.data(), ns[m]);
+                if (planes && m == 0) strata_metal::quantize_hc_q8_planes(f.data(), ns[m], Wp.as<uint8_t>() + s * plane_bytes);
                 if (m == 1 && injf) std::memcpy(b + offs[m], f.data(), 4 * ns[m]);
                 else ref::quantize_q8_0(f.data(), ns[m], b + offs[m]);
             }
@@ -88,10 +98,13 @@ int main(int argc, char** argv) {
         mtl::Pipeline pn = cx.pipeline(lib, "gr_norm"),
                       pd = cx.pipeline(lib, std::string(q8 ? (injf ? "gr_down_q8f_" : "gr_down_q8_") : (injf ? "gr_down_bf16f_" : "gr_down_")) + grd, mtl::Constants().i(1, nt)),
                       pu = cx.pipeline(lib, q8 ? "gr_up_q8" : "gr_up", mtl::Constants().i(1, nt));
+        mtl::Pipeline packed;
+        if (planes) packed = cx.pipeline(lib, injf ? "gr_down_planes_q8f_8_8" : "gr_down_planes_q8_8_8",
+                                         mtl::Constants().i(1, nt));
         for (int apply = 0; apply < 2; ++apply) {
             GrArgs a{N, HC, LR, (uint32_t)nt, (uint32_t)apply, 1e-6f};
             std::memcpy(R.ptr, R0.ptr, R.bytes);
-            auto enc = [&](int set, std::vector<mtl::Dispatch>& ds, int which) {
+            auto enc = [&](int set, std::vector<mtl::Dispatch>& ds, int which, bool packed_down = false) {
                 const size_t o = (size_t)set * set_bytes;
                 mtl::Dispatch d;
                 if (which & 1) {
@@ -105,8 +118,9 @@ int main(int argc, char** argv) {
                 }
                 if (which & 2) {
                     mtl::Dispatch e;
-                    e.p = &pd;
-                    e.args = {mtl::Arg::B(W, o), mtl::Arg::B(W, o + wd_bytes), mtl::Arg::B(xn), mtl::Arg::B(lo),
+                    e.p = packed_down ? &packed : &pd;
+                    e.args = {packed_down ? mtl::Arg::B(Wp, set * plane_bytes) : mtl::Arg::B(W, o),
+                              mtl::Arg::B(W, o + wd_bytes), mtl::Arg::B(xn), mtl::Arg::B(lo),
                               mtl::Arg::B(injo), mtl::Arg::V(a)};
                     e.grid[0] = (LR + HC + grd_rs - 1) / grd_rs;   // RS = SG / KS rows per threadgroup
                     e.tg[0] = 32 * grd_sg;
@@ -126,6 +140,19 @@ int main(int argc, char** argv) {
                 std::vector<mtl::Dispatch> ds;
                 enc(0, ds, 7);
                 cx.run(ds);
+                if (planes) {
+                    const std::vector<float> lo0(lo.as<float>(), lo.as<float>() + nt * LR);
+                    const std::vector<float> in0(injo.as<float>(), injo.as<float>() + nt * HC);
+                    const std::vector<uint8_t> xp0(xp.as<uint8_t>(), xp.as<uint8_t>() + xp.bytes);
+                    ds.clear();
+                    enc(0, ds, 6, true);
+                    cx.run(ds);
+                    const bool exact = std::memcmp(lo.ptr, lo0.data(), lo0.size() * sizeof(float)) == 0 &&
+                                       std::memcmp(injo.ptr, in0.data(), in0.size() * sizeof(float)) == 0 &&
+                                       std::memcmp(xp.ptr, xp0.data(), xp0.size()) == 0;
+                    std::printf("HC planes T%d apply%d %s\n", nt, apply, exact ? "bitwise" : "DIFF");
+                    fails += !exact;
+                }
                 // reference
                 const uint8_t* b = W.as<uint8_t>();
                 std::vector<float> wd((size_t)LR * NIN), wi((size_t)HC * NIN), wu((size_t)NIN * LR);
@@ -190,6 +217,20 @@ int main(int argc, char** argv) {
                             "== xprep: %s  %s\n", nt, apply, eR.l2(), elo.l2(), einj.l2(), emix.l2(),
                             planes ? "bitwise" : "NO", ok ? "PASS" : "FAIL");
             } else {
+                if (planes) {
+                    for (const bool split : {false, true, true, false}) {
+                        std::vector<mtl::Dispatch> norm, down;
+                        enc(0, norm, 1);
+                        cx.run(norm);
+                        for (int r = 0; r < 96; ++r) enc(r % SETS, down, 2, split);
+                        cx.warm(down, 0.1);
+                        std::vector<double> ts;
+                        for (int i = 0; i < 7; ++i) ts.push_back(cx.run(down) / 96);
+                        std::printf("HC planes T%d apply%d %s %.3f us\n", nt, apply, split ? "split" : "stock",
+                                    median(ts) * 1e6);
+                    }
+                    continue;
+                }
                 for (int which : {1, 2, 4, 7}) {
                     std::vector<mtl::Dispatch> ds;
                     for (int r = 0; r < 96; ++r) enc(r % SETS, ds, which);

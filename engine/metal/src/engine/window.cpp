@@ -21,6 +21,7 @@
 #include "stream.h"
 #include "geo.h"
 #include "msl_libs.h"
+#include "hc_q8_planes.h"
 #include "../../tests/coop_probe.h"
 
 #include "strata/artifact/gguf_reader.hpp"
@@ -607,6 +608,7 @@ private:
     bool hc_q8_ = false;
     mtl::Buffer Q8_;
     std::map<std::string, size_t> q8off_;
+    std::set<std::string> hc_down_planes_;
     // MTP
     bool mtp_on_ = false;
     int lmtp_ = -1;
@@ -930,6 +932,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         const double tq = now_ms();
         size_t tot = 0;
         std::vector<std::string> names;
+        const char* split_hc = std::getenv("STRATA_METAL_HC_Q8_PLANES");
+        const bool down_planes = !stream_ && g_slot_cap == 0 && split_hc && std::strcmp(split_hc, "1") == 0;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
             // BF16 (when the Q8_0 read is on) and any quantized non-Q8_0/non-F32 HC tensor (Gyro / Unsloth packs):
@@ -939,11 +943,16 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
             q8off_[x.name] = tot;
+            if (down_planes && x.type == ref::BF16 && x.name.starts_with("blk.") && x.name.ends_with("_down.weight") &&
+                x.shape.size() == 2 && x.shape[0] == HC * N && x.shape[1] == LR && tot % 4 == 0)
+                hc_down_planes_.insert(x.name);
             names.push_back(x.name);
             tot += ne / 32 * 34;
         }
         Q8_ = cx_->alloc((tot + 4095) / 4096 * 4096 + 4096);   // + a page: a file with Q8_0 HC already has no copies
         std::vector<std::thread> th;
+        const auto& planes = hc_down_planes_;
+        const auto& offsets = q8off_;
         const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         for (unsigned k = 0; k < nth; ++k)
             th.emplace_back([&, k] {
@@ -965,10 +974,14 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                     // (tools/iq_pack.py --compat-bf16), so the Q8_0 copy below is made from the same numbers
                     if (x.type != ref::BF16)
                         for (uint64_t i = 0; i < ne; ++i) tmp[i] = ref::bf16_to_f32(ref::f32_to_bf16(tmp[i]));
-                    ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
+                    uint8_t* dst = Q8_.as<uint8_t>() + offsets.at(names[i]);
+                    if (planes.count(x.name)) strata_metal::quantize_hc_q8_planes(tmp.data(), ne, dst);
+                    else ref::quantize_q8_0(tmp.data(), ne, dst);
                 }
             });
         for (auto& x : th) x.join();
+        if (!planes.empty())
+            std::fprintf(stderr, "strata metal: HC Q8 down planes in existing buffer (%zu matrices)\n", planes.size());
         std::fprintf(stderr, "strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): %zu matrices, %.0f MB, made in %.0f ms\n",
                      names.size(), tot / 1e6, now_ms() - tq);
     }
@@ -1101,7 +1114,9 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     const bool injf = !final_ && !q8off_.count(tin.name) && tin.type == ref::F32;
     mtl::Dispatch d2;
     static const bool hcld = std::getenv("STRATA_METAL_HCLD") && std::string(std::getenv("STRATA_METAL_HCLD")) == "1";   // OFF (measured -10.9%, 4 of 4 rounds, M5 Max UD-Q4_K_XL): the HC kernels' units loaded two or three at a time, bitwise the same; registers and occupancy, as the earlier gemvu / moeu unrolls
-    const char* dn = q8 ? (injf ? (hcld ? "gr_downp_q8f_8_8" : "gr_down_q8f_8_8") : (hcld ? "gr_downp_q8_8_8" : "gr_down_q8_8_8"))
+    const bool planes = !hc_down_planes_.empty() && hc_down_planes_.count(tdn.name) != 0;
+    const char* dn = planes ? (injf ? "gr_down_planes_q8f_8_8" : "gr_down_planes_q8_8_8")
+                            : q8 ? (injf ? (hcld ? "gr_downp_q8f_8_8" : "gr_down_q8f_8_8") : (hcld ? "gr_downp_q8_8_8" : "gr_down_q8_8_8"))
                         : (injf ? (hcld ? "gr_downp_bf16f_8_8" : "gr_down_bf16f_8_8") : "gr_down_8_8");
     d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
     d2.args = {mtl::Arg::B(*bd, od), mtl::Arg::B(*bi, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
