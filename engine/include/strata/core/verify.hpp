@@ -56,6 +56,7 @@ struct AdaptGate {
     std::vector<Tick> ticks;              ///< host-function contexts, one per layer and the final one (stable storage)
     const int32_t* dvals = nullptr;       ///< device [0..n_layers]: the source of those copies
     volatile int32_t* hland = nullptr;   ///< pinned host int the copy stream writes (a D2H copy of the layer number), instead of a host function; null: host functions
+    int32_t* d_hland = nullptr;           ///< GPU0 device pointer to mapped hland
     int32_t reached() const {
         const int32_t a = landed.load(std::memory_order_acquire);
         if (hland == nullptr) return a;
@@ -69,6 +70,7 @@ struct AdaptGate {
     std::vector<uint8_t> peer_has;
     int32_t peer_last = -1;
     volatile int32_t* peer_hland = nullptr;
+    int32_t* d_peer_hland = nullptr;
     int32_t peer_reached() const {
         const int32_t a = peer_landed.load(std::memory_order_acquire);
         if (peer_hland == nullptr) return a;
@@ -358,7 +360,7 @@ public:
     /// 0.1.43: the adaptive tier's overlap gate (see AdaptGate).  Refused (false) with the device-planned layers (E-6),
     /// which never ask the host.  The pointer must outlive the verifier's windows.
     bool set_adapt_gate(AdaptGate* g) {
-        if (g != nullptr && (device_plan_ || device_hits_)) return false;
+        if (g != nullptr && device_plan_) return false;
         adapt_gate_ = g;
         return true;
     }
@@ -440,7 +442,7 @@ public:
     void set_no_pcie_share(bool on) { no_pcie_share_ = on; }
     bool device_hits_active() const {
         return device_hits_ && no_pcie_share_ && !ar_on() && !always_publish_ && remote_opt_ == nullptr &&
-               adapt_gate_ == nullptr && m_bal_ == nullptr;
+               (adapt_gate_ == nullptr || adapt_gate_->d_hland != nullptr) && m_bal_ == nullptr;
     }
 
     /// The PCIe count of each layer from measured costs (PcieModel) instead of a fixed share: the spin kernels stamp
@@ -486,8 +488,37 @@ private:
     std::vector<PeerWeightRef> peer_q_layers_;
     std::vector<void*> peer_dense_allocs_;
     std::vector<const void*> peer_q8_packed_keys_;
+    struct PeerSharedRef {
+        PeerWeightRef wsg;
+        PeerWeightRef wsu;
+        PeerWeightRef wsd;
+        const void* wgi = nullptr;
+    };
+    cudaStream_t peer_sh_cs_ = nullptr;
+    cudaEvent_t ev_peer_sh_in_ = nullptr;
+    cudaEvent_t ev_peer_sh_done_ = nullptr;
+    float* peer_sh_xm_ = nullptr;
+    uint16_t* peer_sh_bf16_ = nullptr;
+    float* peer_sh_gate_ = nullptr;
+    float* peer_sh_up_ = nullptr;
+    float* peer_sh_g_ = nullptr;
+    float* peer_sh_out_ = nullptr;
+    void* peer_sh_xq_ = nullptr;
+    void* peer_sh_xil_ = nullptr;
+    std::vector<PeerSharedRef> peer_sh_layers_;
+    cudaStream_t peer_exp_cs_ = nullptr;
+    cudaEvent_t ev_peer_exp_in_ = nullptr;
+    cudaEvent_t ev_peer_exp_done_ = nullptr;
+    int32_t* peer_exp_ids_ = nullptr;
+    uint8_t* peer_exp_xq_ = nullptr;
+    int32_t* peer_exp_plan_ = nullptr;
+    uint8_t* peer_exp_scratch_ = nullptr;
+    float* peer_exp_out_ = nullptr;
+    int32_t* d_peer_res0_ = nullptr;
     bool peer_gdn_z_on_ = false;
     bool peer_qsa_q_on_ = false;
+    bool peer_shared_on_ = false;
+    bool peer_in_graph_on_ = false;
     void release_peer_dense();
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);

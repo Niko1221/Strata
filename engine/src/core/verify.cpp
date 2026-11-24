@@ -332,6 +332,20 @@ inline bool g_peer_qsa_q() {
     }();
     return on;
 }
+inline bool g_peer_shared() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PEER_SHARED");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
+}
+inline bool g_peer_in_graph() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PEER_IN_GRAPH");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
+}
 #define VDBG(...) do { if (g_dbg) { std::fprintf(stderr, "verify dbg: " __VA_ARGS__); std::fflush(stderr); } } while (0)
 
 struct Bump {
@@ -782,20 +796,45 @@ void Verifier::diag(std::FILE* f) const {
 
 
 void Verifier::release_peer_dense() {
+    if (peer_ != nullptr) {
+        peer_->set_in_graph(false);
+        peer_->set_res_mirror0(nullptr, -1);
+    }
+    if (d_peer_res0_ != nullptr) {
+        const OnDevice on_dev(device_);
+        cudaFree(d_peer_res0_);
+        d_peer_res0_ = nullptr;
+    }
     for (const void* k : peer_q8_packed_keys_) strata::kernels::native_q8_0_packed_unregister(k);
     peer_q8_packed_keys_.clear();
     peer_z_layers_.clear();
     peer_q_layers_.clear();
-    if (ev_peer_z_in_ || ev_peer_q_in_) {
+    peer_sh_layers_.clear();
+    peer_z_xq_ = peer_z_xil_ = nullptr;
+    peer_z_out_ = peer_q_out_ = nullptr;
+    peer_sh_xm_ = peer_sh_gate_ = peer_sh_up_ = peer_sh_g_ = peer_sh_out_ = nullptr;
+    peer_sh_bf16_ = nullptr;
+    peer_sh_xq_ = peer_sh_xil_ = nullptr;
+    peer_exp_ids_ = peer_exp_plan_ = nullptr;
+    peer_exp_xq_ = peer_exp_scratch_ = nullptr;
+    peer_exp_out_ = nullptr;
+    peer_gdn_z_on_ = peer_qsa_q_on_ = peer_shared_on_ = peer_in_graph_on_ = false;
+    if (ev_peer_z_in_ || ev_peer_q_in_ || ev_peer_sh_in_ || ev_peer_exp_in_) {
         const OnDevice on_dev(device_);
         if (ev_peer_z_in_) { cudaEventDestroy(ev_peer_z_in_); ev_peer_z_in_ = nullptr; }
         if (ev_peer_q_in_) { cudaEventDestroy(ev_peer_q_in_); ev_peer_q_in_ = nullptr; }
+        if (ev_peer_sh_in_) { cudaEventDestroy(ev_peer_sh_in_); ev_peer_sh_in_ = nullptr; }
+        if (ev_peer_exp_in_) { cudaEventDestroy(ev_peer_exp_in_); ev_peer_exp_in_ = nullptr; }
     }
     if (peer_dev_ >= 0) {
         const OnDevice on_peer(peer_dev_);
         if (peer_dense_cs_) { cudaStreamSynchronize(peer_dense_cs_); cudaStreamDestroy(peer_dense_cs_); peer_dense_cs_ = nullptr; }
+        if (peer_sh_cs_) { cudaStreamSynchronize(peer_sh_cs_); cudaStreamDestroy(peer_sh_cs_); peer_sh_cs_ = nullptr; }
+        if (peer_exp_cs_) { cudaStreamSynchronize(peer_exp_cs_); cudaStreamDestroy(peer_exp_cs_); peer_exp_cs_ = nullptr; }
         if (ev_peer_z_done_) { cudaEventDestroy(ev_peer_z_done_); ev_peer_z_done_ = nullptr; }
         if (ev_peer_q_done_) { cudaEventDestroy(ev_peer_q_done_); ev_peer_q_done_ = nullptr; }
+        if (ev_peer_sh_done_) { cudaEventDestroy(ev_peer_sh_done_); ev_peer_sh_done_ = nullptr; }
+        if (ev_peer_exp_done_) { cudaEventDestroy(ev_peer_exp_done_); ev_peer_exp_done_ = nullptr; }
         for (void* p : peer_dense_allocs_) {
             if (p) cudaFree(p);
         }
@@ -805,8 +844,23 @@ void Verifier::release_peer_dense() {
     peer_z_xil_ = nullptr;
     peer_z_out_ = nullptr;
     peer_q_out_ = nullptr;
+    peer_sh_xm_ = nullptr;
+    peer_sh_bf16_ = nullptr;
+    peer_sh_gate_ = nullptr;
+    peer_sh_up_ = nullptr;
+    peer_sh_g_ = nullptr;
+    peer_sh_out_ = nullptr;
+    peer_sh_xq_ = nullptr;
+    peer_sh_xil_ = nullptr;
+    peer_exp_ids_ = nullptr;
+    peer_exp_xq_ = nullptr;
+    peer_exp_plan_ = nullptr;
+    peer_exp_scratch_ = nullptr;
+    peer_exp_out_ = nullptr;
     peer_gdn_z_on_ = false;
     peer_qsa_q_on_ = false;
+    peer_shared_on_ = false;
+    peer_in_graph_on_ = false;
     peer_dev_ = -1;
 }
 
@@ -823,9 +877,11 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
-    if (peer_dev_ >= 0 && peer_dense_cs_) {
+    if (peer_dev_ >= 0 && (peer_dense_cs_ || peer_sh_cs_ || peer_exp_cs_)) {
         const OnDevice on_peer(peer_dev_);
-        cudaStreamSynchronize(peer_dense_cs_);
+        if (peer_dense_cs_) cudaStreamSynchronize(peer_dense_cs_);
+        if (peer_sh_cs_) cudaStreamSynchronize(peer_sh_cs_);
+        if (peer_exp_cs_) cudaStreamSynchronize(peer_exp_cs_);
     }
     for (auto& row : exec_)
         for (auto& e : row)
@@ -1496,7 +1552,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         if (!ok2) { cudaGetLastError(); all_resident_ = false; device_plan_ = false; device_hits_ = false; }
     }
     release_peer_dense();
-    const bool any_peer_dense = g_peer_gdn_z() || g_peer_qsa_q();
+    const bool any_peer_dense = g_peer_gdn_z() || g_peer_qsa_q() || g_peer_shared() || g_peer_in_graph();
     if (any_peer_dense && (peer_ == nullptr || !peer_->p2p() || peer_->device() < 0)) {
         std::fprintf(stderr, "strata verify: peer dense offload requested but no P2P peer device is active\n");
     } else if (any_peer_dense && peer_ != nullptr && peer_->p2p() && peer_->device() >= 0) {
@@ -1619,6 +1675,109 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             std::fprintf(stderr,
                          "strata verify: STRATA_PEER_QSA_Q=1: offloaded %lld QSA query projections (%.1f MiB) to peer GPU %d over P2P\n",
                          (long long) q_cnt, (double) q_bytes / 1048576.0, peer_dev_);
+        }
+        if (g_peer_shared() && g.n_ff > 0) {
+            peer_sh_layers_.resize((size_t) (le_ - lb_));
+            uint64_t sh_bytes = 0;
+            for (int64_t l = lb_; l < le_; ++l) {
+                const LayerView v(wt, l);
+                const WeightRef *wgi = v.get("ffn_gate_inp_shexp.weight"), *wsg = v.get("ffn_gate_shexp.weight"),
+                                *wsu = v.get("ffn_up_shexp.weight"), *wsd = v.get("ffn_down_shexp.weight");
+                if (!wgi || !wsg || !wsu || !wsd) { err = "verify peer shared: missing shared expert weight"; release_peer_dense(); return false; }
+                const size_t wgi_bytes = (size_t) g.n_embd * sizeof(uint16_t);
+                if (wgi->data == nullptr || wgi->bytes < wgi_bytes) {
+                    err = "verify peer shared: unexpected gate_inp size";
+                    release_peer_dense();
+                    return false;
+                }
+                PeerSharedRef& dst = peer_sh_layers_[(size_t) (l - lb_)];
+                if (!copy_native_to_peer(wsg, dst.wsg, "ffn_gate_shexp.weight") ||
+                    !copy_native_to_peer(wsu, dst.wsu, "ffn_up_shexp.weight") ||
+                    !copy_native_to_peer(wsd, dst.wsd, "ffn_down_shexp.weight")) {
+                    release_peer_dense();
+                    return false;
+                }
+                void* wgi_p = nullptr;
+                if (!alloc_peer(wgi_bytes, &wgi_p, "ffn_gate_inp_shexp.weight") ||
+                    cudaMemcpyPeer(wgi_p, peer_dev_, wgi->data, device_, wgi_bytes) != cudaSuccess) {
+                    err = "verify peer shared: gate_inp copy failed";
+                    release_peer_dense();
+                    return false;
+                }
+                dst.wgi = wgi_p;
+                sh_bytes += dst.wsg.bytes + dst.wsu.bytes + dst.wsd.bytes + wgi_bytes;
+            }
+            const size_t sh_xq_bytes = strata::kernels::native_q8_1_bytes((int) g.n_embd, qcols);
+            const size_t sh_xil_bytes = strata::kernels::native_q8_1_il_bytes((int) g.n_embd, std::max(4, qcols));
+            if (!alloc_peer(sh_xq_bytes, &peer_sh_xq_, "peer_sh_xq") ||
+                !alloc_peer(sh_xil_bytes, &peer_sh_xil_, "peer_sh_xil") ||
+                !alloc_peer((size_t) qcols * (size_t) g.n_embd * sizeof(float), (void**) &peer_sh_xm_, "peer_sh_xm") ||
+                (!strata::kernels::shared_expert_native_bf16_enabled() &&
+                 !alloc_peer((size_t) qcols * (size_t) g.n_embd * sizeof(uint16_t), (void**) &peer_sh_bf16_, "peer_sh_bf16")) ||
+                !alloc_peer((size_t) qcols * (size_t) g.n_ff * sizeof(float), (void**) &peer_sh_gate_, "peer_sh_gate") ||
+                !alloc_peer((size_t) qcols * (size_t) g.n_ff * sizeof(float), (void**) &peer_sh_up_, "peer_sh_up") ||
+                !alloc_peer((size_t) qcols * sizeof(float), (void**) &peer_sh_g_, "peer_sh_g") ||
+                !alloc_peer((size_t) qcols * (size_t) g.n_embd * sizeof(float), (void**) &peer_sh_out_, "peer_sh_out")) {
+                release_peer_dense();
+                return false;
+            }
+            bool sh_ok = cudaEventCreateWithFlags(&ev_peer_sh_in_, cudaEventDisableTiming) == cudaSuccess;
+            if (sh_ok) {
+                const OnDevice on_peer(peer_dev_);
+                sh_ok = cudaStreamCreateWithFlags(&peer_sh_cs_, cudaStreamNonBlocking) == cudaSuccess &&
+                        cudaEventCreateWithFlags(&ev_peer_sh_done_, cudaEventDisableTiming) == cudaSuccess;
+            }
+            if (!sh_ok) {
+                err = "verify peer shared: stream/event creation failed";
+                release_peer_dense();
+                return false;
+            }
+            peer_shared_on_ = true;
+            std::fprintf(stderr,
+                         "strata verify: STRATA_PEER_SHARED=1: offloaded %lld pre-router shared experts (%.1f MiB) to peer GPU %d over P2P\n",
+                         (long long) (le_ - lb_), (double) sh_bytes / 1048576.0, peer_dev_);
+        }
+        if (g_peer_in_graph()) {
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            if (!lay.native || peer_->d_res() == nullptr || peer_->cache_base() == nullptr) {
+                std::fprintf(stderr, "strata verify: STRATA_PEER_IN_GRAPH=1 requires native peer expert cache\n");
+            } else {
+                const uint64_t K = g.n_expert_used;
+                const size_t scratch_bytes = (size_t) std::max<uint64_t>(
+                    strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
+                    strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff));
+                if (!alloc_peer((size_t) (T * K) * sizeof(int32_t) + 64, (void**) &peer_exp_ids_, "peer_exp_ids") ||
+                    !alloc_peer((size_t) T * (size_t) (g.n_embd / 32) * 36 + 64, (void**) &peer_exp_xq_, "peer_exp_xq") ||
+                    !alloc_peer(2 * ((size_t) plan_i32_ + 16) * sizeof(int32_t), (void**) &peer_exp_plan_, "peer_exp_plan") ||
+                    !alloc_peer(scratch_bytes, (void**) &peer_exp_scratch_, "peer_exp_scratch") ||
+                    !alloc_peer((size_t) (T * K * g.n_embd) * sizeof(float), (void**) &peer_exp_out_, "peer_exp_out")) {
+                    release_peer_dense();
+                    return false;
+                }
+                bool exp_ok = cudaEventCreateWithFlags(&ev_peer_exp_in_, cudaEventDisableTiming) == cudaSuccess;
+                if (exp_ok) {
+                    const OnDevice on_peer(peer_dev_);
+                    exp_ok = cudaStreamCreateWithFlags(&peer_exp_cs_, cudaStreamNonBlocking) == cudaSuccess &&
+                             cudaEventCreateWithFlags(&ev_peer_exp_done_, cudaEventDisableTiming) == cudaSuccess;
+                }
+                if (!exp_ok) {
+                    err = "verify peer in-graph: stream/event creation failed";
+                    release_peer_dense();
+                    return false;
+                }
+                if (cudaMalloc((void**) &d_peer_res0_, (size_t) (g.n_layers * g.n_expert) * sizeof(int32_t)) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    err = "verify: peer res mirror allocation failed";
+                    release_peer_dense();
+                    return false;
+                }
+                peer_->set_res_mirror0(d_peer_res0_, device_);
+                peer_->set_in_graph(true);
+                peer_in_graph_on_ = true;
+                std::fprintf(stderr,
+                             "strata verify: STRATA_PEER_IN_GRAPH=1: %lld peer experts on GPU %d scheduled directly in CUDA graph over NVLink P2P\n",
+                             (long long) peer_->resident(), peer_dev_);
+            }
         }
     }
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
@@ -2059,6 +2218,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
                 const bool use_mk = g_megakernel() && mk_counters_ != nullptr && lb_ == 0 && le_ == g.n_layers &&
                                     next_ == nullptr && !br && !sidem && !side_proj && !batch_rec_ && !self_commit &&
+                                    !peer_gdn_z_on_ &&
                                     tb == 0 && n >= 1 && n <= 8 && wqkv->native_type == 8 && wg->native_type == 8 &&
                                     wout->native_type == 8;
                 if (use_mk) {
@@ -2885,13 +3045,47 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 16, grp);
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
         stamp(l, 32, grp);   // the profile only: the FFN-side read ends here, the router starts
+        const PeerSharedRef* psh = (peer_shared_on_ && !batch_rec_) ? &peer_sh_layers_[(size_t) (l - lb_)] : nullptr;
+        const bool peer_sh_layer = psh != nullptr && psh->wgi != nullptr;
+        if (peer_sh_layer) {
+            if (cudaEventRecord(ev_peer_sh_in_, cs) != cudaSuccess) {
+                err = "verify: peer shared fork event failed";
+                return false;
+            }
+            {
+                const OnDevice on_peer(peer_dev_);
+                if (cudaStreamWaitEvent(peer_sh_cs_, ev_peer_sh_in_, 0) != cudaSuccess) {
+                    err = "verify: peer shared wait event failed";
+                    return false;
+                }
+                p2p_copy_words(peer_sh_xm_, xm, (size_t) n * (size_t) N * sizeof(float), peer_sh_cs_);
+                if (!shared_expert_native_bf16_enabled()) {
+                    if (dec_batch) f32_to_bf16_bulk(peer_sh_xm_, peer_sh_bf16_, (int64_t) n * N, peer_sh_cs_);
+                    else for (int t = 0; t < n; ++t) f32_to_bf16_bulk(peer_sh_xm_ + (size_t) t * N, peer_sh_bf16_ + (size_t) t * N, N, peer_sh_cs_);
+                }
+                NativeSharedWeights p_nsw;
+                p_nsw.gate_type = psh->wsg.type; p_nsw.gate_data = psh->wsg.data;
+                p_nsw.up_type = psh->wsu.type; p_nsw.up_data = psh->wsu.data;
+                p_nsw.down_type = psh->wsd.type; p_nsw.down_data = psh->wsd.data;
+                p_nsw.q8_1 = peer_sh_xq_;
+                p_nsw.q8_1_il = g_mmvq_il() ? peer_sh_xil_ : nullptr;
+                shared_expert_multi(n, peer_sh_xm_, peer_sh_bf16_, p_nsw, (const uint16_t*) psh->wgi,
+                                    peer_sh_gate_, peer_sh_up_, peer_sh_g_, peer_sh_out_, N, g.n_ff, peer_sh_cs_,
+                                    nullptr, (lfuse_on(n) && g_lfuse_pair() ? 2 : 0));
+                p2p_copy_words(shared_ + tb * N, peer_sh_out_, (size_t) n * (size_t) N * sizeof(float), peer_sh_cs_);
+                if (cudaEventRecord(ev_peer_sh_done_, peer_sh_cs_) != cudaSuccess) {
+                    err = "verify: peer shared done event failed";
+                    return false;
+                }
+            }
+        }
         // with CPU experts in the window the shared expert forks off once the doorbell is published (it no longer
         // competes with it for the GPU's first microseconds); STRATA_SH_FORK_LATE=0 forks at the top as before
         static const bool sh_fork_late_env = [] {
             const char* e = std::getenv("STRATA_SH_FORK_LATE");
             return !e || e[0] != '0';
         }();
-        const bool sh_fork = sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
+        const bool sh_fork = !peer_sh_layer && sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
         const bool sh_fork_late = sh_fork && sh_fork_late_env && !ar_on();
         cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
         if (sh_fork && !sh_fork_late) {
@@ -2904,7 +3098,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const WeightRef* w_router = v.get("ffn_gate_inp.weight");
         // S26 STRATA_LFUSE=1: the shared expert's gate row rides in the router GEMV launch, its sigmoid + row scale
         // move into the combine, gate + up share one launch (all bitwise; resident combine path, 2-8 rows only)
-        const WeightRef* w_sgi = lfuse_on(n) && g_lfuse_gate() ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
+        const WeightRef* w_sgi = (!peer_sh_layer && lfuse_on(n) && g_lfuse_gate()) ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
         bool sg_ready = false;
         if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && NE == 512 && K == 10) {
             try {
@@ -2994,7 +3188,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 17, grp);
         bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
-        {
+        if (peer_sh_layer) {
+            sg_gated_[grp] = false;
+        } else {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
                             *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
             if (!wgi || !wsg || !wsu || !wsd) return false;
@@ -3045,6 +3241,50 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         } else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+        if (peer_in_graph_on_ && !batch_rec_) {
+            const int64_t cap = (int64_t) n * K, capx = (int64_t) max_t_ * K;
+            int32_t* ppl = peer_exp_plan_ + (size_t) grp * (size_t) (plan_i32_ + 16);
+            const int32_t* pp_counts = ppl;
+            const int32_t* pp_start = ppl + 4;
+            const int32_t* pp_dst = pp_start + capx + 1;
+            const int32_t* pp_tok = pp_dst + capx;
+            const int64_t ptr_off = ((4 + (capx + 1) + 2 * capx) + 1) & ~1ll;
+            const unsigned long long* pp_ptr = (const unsigned long long*) (ppl + ptr_off);
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            const auto& f = lay.fmt[(size_t) l];
+            if (cudaEventRecord(ev_peer_exp_in_, cs) != cudaSuccess) {
+                err = "verify: peer exp fork event failed";
+                return false;
+            }
+            {
+                const OnDevice on_peer(peer_dev_);
+                if (cudaStreamWaitEvent(peer_exp_cs_, ev_peer_exp_in_, 0) != cudaSuccess) {
+                    err = "verify: peer exp wait event failed";
+                    return false;
+                }
+                copy_i32_from_mapped(peer_exp_ids_ + (size_t) tb * K, ids_ + (size_t) tb * K, cap, peer_exp_cs_);
+                p2p_copy_words(peer_exp_xq_ + (size_t) tb * (N / 32) * 36,
+                               nat_xq_ + (size_t) tb * (N / 32) * 36,
+                               (size_t) n * (size_t) (N / 32) * 36, peer_exp_cs_);
+                if (adapt_gate_ != nullptr && adapt_gate_->d_peer_hland != nullptr)
+                    wait_flag_i32_ge(adapt_gate_->d_peer_hland, (int32_t) l, peer_exp_cs_);
+                resident_hits_plan(peer_exp_ids_ + (size_t) tb * K, (int) cap, (int) K,
+                                   peer_->d_res() + l * g.n_expert, (int) g.n_expert,
+                                   peer_->cache_base(), peer_->slot_off_d(), (long long) lay.blob_bytes(l),
+                                   ppl, capx, peer_exp_cs_);
+                NativeExpertLayout Lp = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+                if (f.had_d) { Lp.had_block = f.had_block; Lp.d_signs = (const float*) peer_->d_sh(); }
+                native_expert_grouped(Lp, pp_ptr, pp_start, pp_counts, pp_dst, pp_tok, cap, cap,
+                                      peer_exp_xq_ + (size_t) tb * (N / 32) * 36, peer_exp_scratch_,
+                                      peer_exp_out_ + (size_t) tb * K * N, peer_exp_cs_, 0);
+                scatter_rows_counted_f32(peer_exp_out_ + (size_t) tb * K * N, parts_ + (size_t) tb * K * N,
+                                         pp_dst, pp_counts + 1, cap, N, peer_exp_cs_);
+                if (cudaEventRecord(ev_peer_exp_done_, peer_exp_cs_) != cudaSuccess) {
+                    err = "verify: peer exp done event failed";
+                    return false;
+                }
+            }
+        }
         stamp(l, 18, grp);
         return true;
     };
@@ -3105,6 +3345,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 20, grp);
         } else if (dev_hits) {
             strata::dispatch::note("experts layer: partial residency, device_hits_plan (--pcie-frac 0: no flagA/flagB spins, no PCIe staging)");
+            if (adapt_gate_ != nullptr && adapt_gate_->d_hland != nullptr)
+                wait_flag_i32_ge(adapt_gate_->d_hland, (int32_t) l, cs);
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out, true);
             stamp(l, 20, grp);
@@ -3117,17 +3359,25 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 note_prio_tail(sh_cs_, -1);
                 cudaEventRecord(ev_join_, sh_cs_);
             }
+            const int32_t* peer_skip_ids = (peer_in_graph_on_ && !batch_rec_ && d_peer_res0_ != nullptr) ? ids_ + (size_t) tb * K : nullptr;
+            const int32_t* peer_skip_res = peer_skip_ids ? d_peer_res0_ + l * g.n_expert : nullptr;
             const bool fuse_rows = fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch && m_bal_ == nullptr;
             if (!fuse_rows) wait_flag_ge(m_flag_, ring, cs);
             stamp(l, 23, grp);
             if (fuse_rows)
                 copy_rows_from_mapped_after(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                            p_dst, p_counts + 1, cs);
+                                            p_dst, p_counts + 1, cs, peer_skip_ids, peer_skip_res);
             else if (dec_batch)
                 copy_rows_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                      p_dst, p_counts + 1, cs);
+                                      p_dst, p_counts + 1, cs, peer_skip_ids, peer_skip_res);
             else
                 copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+            if (peer_in_graph_on_ && !batch_rec_) {
+                if (cudaStreamWaitEvent(cs, ev_peer_exp_done_, 0) != cudaSuccess) {
+                    err = "verify: peer exp join event failed";
+                    return false;
+                }
+            }
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
                               native_moe_combine_enabled() && n <= 8 &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
@@ -3193,19 +3443,29 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 23, grp);
                 if (remote_opt_)   // #578: the helper's rows come back reduced; skip them as well
                     remote_opt_->copy_rows(parts_out, m_ymiss_ + (size_t) tb * K * N, tb, n, p_dst, p_counts + 1, cs);
-                else if (fuse_rows)   // the wait folded into the copy's blocks
-                    copy_rows_from_mapped_after(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                                p_dst, p_counts + 1, cs);
-                else if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
-                    copy_rows_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                          p_dst, p_counts + 1, cs);
-                else
-                    copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+                else {
+                    const int32_t* peer_skip_ids = (peer_in_graph_on_ && !batch_rec_ && d_peer_res0_ != nullptr) ? ids_ + (size_t) tb * K : nullptr;
+                    const int32_t* peer_skip_res = peer_skip_ids ? d_peer_res0_ + l * g.n_expert : nullptr;
+                    if (fuse_rows)   // the wait folded into the copy's blocks
+                        copy_rows_from_mapped_after(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
+                                                    p_dst, p_counts + 1, cs, peer_skip_ids, peer_skip_res);
+                    else if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
+                        copy_rows_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
+                                              p_dst, p_counts + 1, cs, peer_skip_ids, peer_skip_res);
+                    else
+                        copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+                }
             }
             // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
                               native_moe_combine_enabled() && n <= 8 &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
+            if (peer_in_graph_on_ && !batch_rec_) {
+                if (cudaStreamWaitEvent(cs, ev_peer_exp_done_, 0) != cudaSuccess) {
+                    err = "verify: peer exp join event failed";
+                    return false;
+                }
+            }
             strata::dispatch::notef("experts layer: cpu rows via %ld (1 = fused wait+copy, 0 = wait then copy), hits in combine=%ld", (long) (fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch && m_bal_ == nullptr), (long) hits_in_combine);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
@@ -3213,6 +3473,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // actually ran (a wait on an event never recorded is a no-op, but saying it outright reads better).
         if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
+        }
+        if (peer_shared_on_ && !batch_rec_ && cudaStreamWaitEvent(cs, ev_peer_sh_done_, 0) != cudaSuccess) {
+            err = "verify: peer shared join event failed";
+            return false;
         }
         strata::dispatch::notef("combine layer: kind %ld (0 per-token, 1 multi, 2 multi+hits, 3 multi+hits gated)", (long) (sg_gated_[grp] ? 3 : hits_in_combine ? 2 : (dec_batch && n > 1 && native_moe_combine_enabled()) ? 1 : 0));
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
@@ -3997,7 +4261,9 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
     if (h_bal_ != nullptr) std::memset(h_bal_, 0, (size_t) bal_p_.size() * 4 * 8);   // this window's stamps only
     if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
     // 0.1.43: the same gate run() applies before it launches (the adaptive tier's copies land first)
-    if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
+    if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) &&
+        (ar_on() || (device_hits_active() && adapt_gate_->d_hland == nullptr) ||
+         (peer_in_graph_on_ && adapt_gate_->d_peer_hland == nullptr)) &&
         !adapt_gate_wait((int32_t) g_->n_layers, err)) return false;
     strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
     const cudaError_t le = cudaGraphLaunch(exec_t, cs_);
@@ -4163,7 +4429,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (h_bal_ != nullptr) std::memset(h_bal_, 0, (size_t) bal_p_.size() * 4 * 8);   // this window's stamps only
         if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
         // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
-        if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
+        if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) &&
+            (ar_on() || (device_hits_active() && adapt_gate_->d_hland == nullptr) ||
+             (peer_in_graph_on_ && adapt_gate_->d_peer_hland == nullptr)) &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
 #if defined(STRATA_VERIFY_HGL)
         // A blocking instrumented launch cannot also serve the graph's CPU doorbells.

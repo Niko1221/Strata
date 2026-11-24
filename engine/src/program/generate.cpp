@@ -6742,6 +6742,12 @@ int main(int argc, char** argv) {
         const char* e = std::getenv("STRATA_DF2_STAGE");
         return e != nullptr && std::string(e) == "first";
     }();
+    const bool df2_peer = [&] {
+        if (multi_gpu || !stages.empty() || o.peer_device < 1 || o.draft != "dflash2" || o.draft_auto ||
+            o.expert_profile.empty() || o.expert_cache == 0) return false;
+        const char* e = std::getenv("STRATA_DF2_PEER");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
 
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!o.expert_profile.empty()) {
@@ -8271,7 +8277,7 @@ int main(int argc, char** argv) {
                               : o.pipeline_windows > 0 ? "it does not run beside --pipeline-windows (the MTP's speculative next window has no DFlash2 counterpart); --pipeline-windows 0"
                               : o.draft_model.empty() ? "it needs --draft-model PACK (tools/dflash2_pack.py)" : nullptr;
             if (why == nullptr) {
-                if (df2.load(o.draft_model, multi_gpu && last_st != nullptr && !df2_first ? last_st->dev : 0, err)) {
+                if (df2.load(o.draft_model, df2_peer ? o.peer_device : (multi_gpu && last_st != nullptr && !df2_first ? last_st->dev : 0), err)) {
                     use_df2 = true;
                     // Per card class, from the measured A/Bs (notes-dflash2-p1.md, RESULTS-CONF.md 11-08; the numbers are in core/draft_cap.hpp): Strix Halo 8, Blackwell cc 12.0 with
                     // at least 48 GB 8, other Blackwell 6; a 12 GB NVIDIA card is slower with DFlash2 than with the MTP at every cap but code, which only the user can know.
@@ -8806,7 +8812,7 @@ int main(int argc, char** argv) {
                         int64_t mtp_b = (!o.mtp.empty() && native_head.loaded())
                                             ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
 #if defined(STRATA_HAVE_DFLASH2)
-                        if (use_df2 && native_head.loaded()) mtp_b += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging)
+                        if (use_df2 && native_head.loaded() && df2.device() == 0) mtp_b += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging)
 #endif
                         if (stages.empty())
                             for (const auto& d : slot_mtp) mtp_b += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
@@ -9197,7 +9203,7 @@ int main(int argc, char** argv) {
             for (const auto& d : slot_mtp)
                 mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
 #if defined(STRATA_HAVE_DFLASH2)
-        if (use_df2 && native_head.loaded()) mtp_bind += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging), bound after this
+        if (use_df2 && native_head.loaded() && df2.device() == 0) mtp_bind += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging), bound after this
 #endif
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t max_blob = (int64_t) nibble_max_slot_bytes();   // max_blob (STRATA_EXPERT_NIBBLE: or a larger 4-bit slot)
@@ -10220,8 +10226,18 @@ int main(int argc, char** argv) {
             offload_mib += 456;
         if (const char* v = std::getenv("STRATA_PEER_QSA_Q"); v != nullptr && std::atoi(v) != 0)
             offload_mib += 304;
+        if (const char* v = std::getenv("STRATA_PEER_SHARED"); v != nullptr && std::atoi(v) != 0)
+            offload_mib += 256;
+        if (const char* v = std::getenv("STRATA_PEER_IN_GRAPH"); v != nullptr && std::atoi(v) != 0)
+            offload_mib += 16;
+#if defined(STRATA_HAVE_DFLASH2)
+        if (use_df2 && df2.device() == o.peer_device) {
+            const int64_t df2_b = (native_head.loaded() ? df2_head_bytes() : 0) + (48 << 20) + (o.serve ? (112 << 20) : 0);
+            offload_mib += (int) ((df2_b + (1LL << 20) - 1) >> 20);
+        }
+#endif
         const int eff_peer_reserve_mib =
-            offload_mib > 0 ? std::max(o.peer_reserve_mib, 1420 + offload_mib) : o.peer_reserve_mib;
+            offload_mib > 0 ? std::max(o.peer_reserve_mib, 1000 + offload_mib) : o.peer_reserve_mib;
         if (offload_mib > 0) {
             std::fprintf(stderr,
                          "strata generate: peer GPU %d: offload reserve %d MiB (effective reserve %d MiB) for "
@@ -13602,11 +13618,13 @@ int main(int argc, char** argv) {
             // where the drafter's weights come from: the last stage's card by default (its head rows and embedding path), as the MTP's
             const bool df2_on_last = multi_gpu && last_st != nullptr && !df2_first;
             const bool df2_chain = n_stages > 1;   // the taps come from several verifiers (gather_taps lands them on the drafter's card)
+            const bool df2_remote = df2_chain || df2.device() != 0;
+            const int df2_head_dev = df2_first ? last_st->dev : (df2.device() != 0 && !native_head.is_split() ? 0 : -1);
             if (df2.device() != 0 && strata::core::native_embed() != nullptr && strata::core::native_embed()->in_vram()) why_not = "the embedding table sits in CUDA0's VRAM (STRATA_EMBED_VRAM), out of reach of the drafter's card";
             else if (!(df2_chain ? ver.tapping_chain() : ver.tapping())) why_not = "the verifier keeps no taps here";
-            else if (!df2.bind(df2_on_last ? last_st->wt : wt, multi_gpu ? &last_st->head : &native_head, df2_vocab_path(), why_not, df2_first ? last_st->dev : -1) ||
-                     !df2.prepare(df2_chain ? df2.landing() : ver.tap_dev(), why_not) ||
-                     !(multi_gpu ? df2_stage_prompt_taps_reserve(why_not) : sp.reserve_taps(df2.tap_layers(), 2048, g.n_embd, why_not))) {
+            else if (!df2.bind(df2_on_last ? last_st->wt : wt, multi_gpu ? &last_st->head : &native_head, df2_vocab_path(), why_not, df2_head_dev) ||
+                     !df2.prepare(df2_remote ? df2.landing() : ver.tap_dev(), why_not) ||
+                     !(df2_remote ? df2_stage_prompt_taps_reserve(why_not) : sp.reserve_taps(df2.tap_layers(), 2048, g.n_embd, why_not))) {
                 if (why_not.empty()) why_not = "the drafter could not be set up";
             }
             if (!why_not.empty()) {
@@ -13619,18 +13637,22 @@ int main(int argc, char** argv) {
                 use_df2 = false;
                 if (o.draft_mtp_spec_set && o.spec > o.draft_mtp_spec) o.spec = o.draft_mtp_spec;   // the MTP drafts with its own window, not DFlash2's
             } else {
-                if (multi_gpu) df2_stage_prompt_taps_install();
+                if (df2_remote) df2_stage_prompt_taps_install();
                 else sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd); return df2.context(taps, rows, pos0, e); };
+                std::string loc_note;
+                if (df2_chain)
+                    loc_note = std::string("; layer split: the drafter is on CUDA") + std::to_string(df2.device()) + " (" + (df2_on_last ? "last" : "first") + " stage), the other stages' taps are gathered onto it";
+                else if (df2.device() != 0)
+                    loc_note = std::string("; STRATA_DF2_PEER=1: offloaded to peer CUDA") + std::to_string(df2.device()) + " over P2P";
                 std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; %s%s\n",
                              o.draft_model.c_str(), df2.ms_capture, o.spec, df2_solo ? "no MTP layer is loaded (--draft-fallback none)" : "the MTP layer stays as the fallback",
-                             df2_chain ? (std::string("; layer split: the drafter is on CUDA") + std::to_string(df2.device()) + " (" + (df2_on_last ? "last" : "first") +
-                                          " stage), the other stages' taps are gathered onto it").c_str() : "");
+                             loc_note.c_str());
             }
         }
         // the taps of the window just run (rows 0..rows-1), where the drafter reads them: the verifier's own buffer on one card; on a layer split every
         // stage's share landed on the drafter's card (Verifier::gather_taps; the drafter's stream waits on the copies)
         auto df2_win_taps = [&](int rows, std::string& e) -> const float* {
-            if (n_stages <= 1) return ver.tap_dev();
+            if (n_stages <= 1 && df2.device() == 0) return ver.tap_dev();
             if (!ver.gather_taps(df2.landing(), df2.device(), 0, rows, 0, df2.stream(), e)) return nullptr;
             return df2.landing();
         };
@@ -15072,7 +15094,11 @@ int main(int argc, char** argv) {
                               : remote_opt || drive.d.remote_count > 0 ? "helper GPUs" : o.adapt_async ? "--adapt-async"
                               : o.pipeline_windows > 0 ? "--pipeline-windows" : o.batch > 0 ? "--batch"
                               : adapt_overlap() ? "STRATA_ADAPT_OVERLAP=1" : nullptr;
-        if (fetch_off == nullptr && !pcie_auto.on && drive.d.pcie_num == 0 && fs_swap == nullptr && !ver.pcie_balance_on()) {
+        const bool allow_peer_dev_hits =
+            peer.valid() && !o.spec_split && !multi_gpu && stages.empty() && !remote_opt &&
+            drive.d.remote_count == 0 && !o.adapt_async && o.pipeline_windows == 0 && o.batch == 0;
+        if ((fetch_off == nullptr || allow_peer_dev_hits) && !pcie_auto.on && drive.d.pcie_num == 0 &&
+            fs_swap == nullptr && !ver.pcie_balance_on()) {
             ver.set_no_pcie_share(true);
             if (ver.device_hits_active())
                 std::fprintf(stderr, "strata serve: STRATA_VERIFY_DEVICE_HITS=1: planning VRAM expert hits on-device "
@@ -15171,21 +15197,29 @@ int main(int argc, char** argv) {
                 if (aov_why == nullptr && sig_copy) {
                     // the landing of each layer's copies is told by a stream-ordered D2H copy of the layer number into pinned memory
                     // (STRATA_ADAPT_SIGNAL=host: a host function instead). No callback thread has to be scheduled while the pool's workers spin on every other CPU
-                    int32_t* vals = nullptr; void* hp = nullptr;
+                    int32_t* vals = nullptr; void* hp = nullptr; void* dp = nullptr;
                     std::vector<int32_t> iota((size_t) g.n_layers + 1);
                     for (size_t i = 0; i < iota.size(); ++i) iota[i] = (int32_t) i;
                     if (cudaMalloc((void**) &vals, iota.size() * 4) == cudaSuccess &&
                         cudaMemcpy(vals, iota.data(), iota.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess &&
-                        cudaHostAlloc(&hp, 64, cudaHostAllocPortable) == cudaSuccess) {
-                        *(volatile int32_t*) hp = -1;
+                        cudaHostAlloc(&hp, 64, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess &&
+                        cudaHostGetDevicePointer(&dp, hp, 0) == cudaSuccess) {
+                        *(volatile int32_t*) hp = (int32_t) g.n_layers;
                         agate.hland = (volatile int32_t*) hp;
+                        agate.d_hland = (int32_t*) dp;
                         agate.dvals = vals;
                         std::fprintf(stderr, "strata serve: adaptive overlap signal: stream-ordered copies (STRATA_ADAPT_SIGNAL=host: a host function)\n");
-                    } else { (void) cudaGetLastError(); }
+                    } else {
+                        (void) cudaGetLastError();
+                        if (hp) cudaFreeHost(hp);
+                        if (vals) cudaFree(vals);
+                    }
                 }
                 // the peer tier's copies land over its own link and are gated the same way, with the same kind of signal
-                if (aov_why == nullptr && peer.valid())
+                if (aov_why == nullptr && peer.valid()) {
                     agate.peer_hland = peer.set_overlap_gate(&agate.peer_landed, &agate.peer_has, &agate.peer_last, sig_copy);
+                    agate.d_peer_hland = peer.overlap_gate_dev();
+                }
             }
             aov = aov_why == nullptr;
             if (aov)
@@ -15215,6 +15249,7 @@ int main(int argc, char** argv) {
                 // flight), and the gate closes with them
                 if (!(peer.valid() && peer.has_pending())) {
                     agate.active.store(false, std::memory_order_release);
+                    if (agate.hland != nullptr) *agate.hland = (int32_t) g.n_layers;
                     aflipped = false;
                 }
                 return;
@@ -15241,6 +15276,7 @@ int main(int argc, char** argv) {
             pending.clear();
             pending_age = 0;
             agate.active.store(false, std::memory_order_release);   // 0.1.43: the copies have landed (STRATA_ADAPT_OVERLAP)
+            if (agate.hland != nullptr) *agate.hland = (int32_t) g.n_layers;
             aflipped = false;
             if (res_upload() == cudaSuccess) {   // the whole table: the hook has nothing left
                 drive.d.res_dirty = false;
@@ -15394,7 +15430,7 @@ int main(int argc, char** argv) {
             if (aov) {   // 0.1.43: the copies go in layer order and each layer's landing is told to the verify window
                 std::stable_sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.layer < b.layer; });
                 agate.landed.store(-1, std::memory_order_release);
-                if (agate.hland != nullptr) *agate.hland = -1;
+                if (agate.hland != nullptr) *agate.hland = swaps.empty() ? (int32_t) g.n_layers : swaps[0].layer - 1;
                 agate.has.assign((size_t) g.n_layers, 0);
                 agate.last = -1;
                 for (const Swap& s : swaps) { agate.has[(size_t) s.layer] = 1; agate.last = std::max(agate.last, s.layer); }
@@ -15482,17 +15518,20 @@ int main(int argc, char** argv) {
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
-                if (aov && (si + 1 == swaps.size() || swaps[si + 1].layer != s.layer) &&
-                    (agate.hland != nullptr
-                         ? cudaMemcpyAsync((void*) agate.hland, agate.dvals + s.layer, 4, cudaMemcpyDeviceToHost, adapt_stream)
-                         : cudaLaunchHostFunc(adapt_stream, [](void* p) {
-                        auto* t = (strata::core::AdaptGate::Tick*) p;
-                        int32_t cur = t->counter->load(std::memory_order_relaxed);
-                        while (cur < t->layer && !t->counter->compare_exchange_weak(cur, t->layer, std::memory_order_release)) {}
-                    }, &agate.ticks[(size_t) s.layer])) != cudaSuccess) {
-                    (void) cudaGetLastError();
-                    cudaStreamSynchronize(adapt_stream);   // no callback: wait here, the gate opens at once
-                    agate.landed.store((int32_t) g.n_layers, std::memory_order_release);
+                if (aov && (si + 1 == swaps.size() || swaps[si + 1].layer != s.layer)) {
+                    const int32_t next_ready = (si + 1 < swaps.size()) ? (swaps[si + 1].layer - 1) : (int32_t) g.n_layers;
+                    if ((agate.hland != nullptr
+                             ? cudaMemcpyAsync((void*) agate.hland, agate.dvals + next_ready, 4, cudaMemcpyDeviceToHost, adapt_stream)
+                             : cudaLaunchHostFunc(adapt_stream, [](void* p) {
+                            auto* t = (strata::core::AdaptGate::Tick*) p;
+                            int32_t cur = t->counter->load(std::memory_order_relaxed);
+                            while (cur < t->layer && !t->counter->compare_exchange_weak(cur, t->layer, std::memory_order_release)) {}
+                        }, &agate.ticks[(size_t) s.layer])) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        cudaStreamSynchronize(adapt_stream);   // no callback: wait here, the gate opens at once
+                        agate.landed.store((int32_t) g.n_layers, std::memory_order_release);
+                        if (agate.hland != nullptr) *agate.hland = (int32_t) g.n_layers;
+                    }
                 }
                 if (!drive.d.in_flight.empty()) drive.d.in_flight[in] = 1;   // STRATA_ADAPT_FETCH leaves it alone
             }
@@ -20194,7 +20233,7 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
                                          "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
                                  (long long) std::max<int64_t>(df2.last_missing, 1));
-                if (multi_gpu) df2_stage_prompt_taps_begin(std::max<int64_t>(0, n - 2047));
+                if (multi_gpu || df2.device() != 0) df2_stage_prompt_taps_begin(std::max<int64_t>(0, n - 2047));
                 else sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
             }
 #endif
@@ -22693,11 +22732,13 @@ int main(int argc, char** argv) {
                     const strata::spec::DraftPolicy::Pick pk = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
                     if (kd > 0 && pk.lookup) {
                         dfr_lookup = true; dfr_T = pk.t; dfr_match = md;
-                        if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* tp_dfr = df2_win_taps(dfr_n, err);
+                        if (tp_dfr == nullptr || !df2.context(tp_dfr, dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                     } else {
                         int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                         float pp[strata::core::Dflash2Drafter::kDrafts];
-                        if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* tp_dfr = df2_win_taps(dfr_n, err);
+                        if (tp_dfr == nullptr || !df2.draft(tp_dfr, dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                         for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                     }
                 }
@@ -23107,7 +23148,8 @@ int main(int argc, char** argv) {
                     const Clock::time_point tk0 = Clock::now();
                     // queued on the idle drafter's own stream, overlapped with the other's draft; keep_sync() below waits before the next window rewrites the taps / rows
                     if (!req_df2) {
-                        if (!df2.context_async(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* tp_keep = df2_win_taps(a + 1, err);
+                        if (tp_keep == nullptr || !df2.context_async(tp_keep, a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
                         keep_pending = true;
                     } else if (use_mtp) {
                         if (!mtp.prefill(ver.final_R_all(), outv.data(), a + 1, p, err, false)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
@@ -24163,10 +24205,32 @@ int main(int argc, char** argv) {
             };
         }
 #if defined(STRATA_HAVE_DFLASH2)
+        float* cli_df2_land = nullptr;
         if (use_df2) {   // the drafter's context: the last 2047 prompt rows' taps
             df2.reset();
             prefill.set_taps(df2.tap_layers(), std::max<int64_t>(0, n_prompt - 2047), 2048);
-            prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd); return df2.context(taps, rows, pos0, e); };
+            if (df2.device() != 0) {
+                const strata::core::OnDevice on_d(df2.device());
+                if (cudaMalloc((void**) &cli_df2_land, (size_t) 2048 * (size_t) df2.n_taps() * (size_t) g.n_embd * 4) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    cli_df2_land = nullptr;
+                    if (df2_solo) { std::fprintf(stderr, "strata generate: DFlash2 peer prompt landing allocation failed\n"); return 1; }
+                    use_df2 = false;
+                }
+            }
+            if (use_df2) {
+                prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool {
+                    df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd);
+                    if (df2.device() == 0) return df2.context(taps, rows, pos0, e);
+                    const size_t bytes = (size_t) rows * (size_t) df2.n_taps() * (size_t) g.n_embd * sizeof(float);
+                    const cudaError_t ce = cudaMemcpyPeerAsync(cli_df2_land, df2.device(), taps, 0, bytes, df2.stream());
+                    if (ce != cudaSuccess || cudaStreamSynchronize(df2.stream()) != cudaSuccess) {
+                        e = std::string("DFlash2 prompt taps: ") + cudaGetErrorString(ce != cudaSuccess ? ce : cudaGetLastError());
+                        return false;
+                    }
+                    return df2.context(cli_df2_land, rows, pos0, e);
+                };
+            }
         }
 #endif
         if (!kvg_started) {   // the elastic K/V: every cell this run can reach (no loan)
@@ -24176,9 +24240,11 @@ int main(int argc, char** argv) {
         }
         const Clock::time_point tp0 = Clock::now();
         if (!prefill.run(o.tokens.data(), n_batched, 0, err)) {
+            if (cli_df2_land != nullptr) { const strata::core::OnDevice on_d(df2.device()); cudaFree(cli_df2_land); }
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (cli_df2_land != nullptr) { const strata::core::OnDevice on_d(df2.device()); cudaFree(cli_df2_land); cli_df2_land = nullptr; }
         // refill the lent slots from the arena and give them back to the decode tier
         if (borrow != nullptr && o.expert_cache > 0 && xcache.slots() > 0) {
             const uint8_t* bptr = static_cast<const uint8_t*>(borrow);
@@ -24530,14 +24596,15 @@ int main(int argc, char** argv) {
             use_df2 = false;
         }
         if (use_df2) df2_offer_head();
-        if (use_df2 && !df2.bind(wt, &native_head, df2_vocab_path(), err)) {
+        const int cli_df2_head_dev = (df2.device() != 0 && !native_head.is_split()) ? 0 : -1;
+        if (use_df2 && !df2.bind(wt, &native_head, df2_vocab_path(), err, cli_df2_head_dev)) {
             std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.76 GiB, buffers and K/V ring "
                                  "0.25 GiB, a draft head 0.2 GiB); --vram-reserve-mib 1900 keeps it (the expert cache gives up about 2.5%% of its experts "
                                  "to the CPU). The MTP drafts instead.\n", err.c_str());
             use_df2 = false;
         }
         if (use_df2) df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
-        if (use_df2 && !df2.prepare(ver.tap_dev(), err)) {
+        if (use_df2 && !df2.prepare(df2.device() != 0 ? df2.landing() : ver.tap_dev(), err)) {
             std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.76 GiB, buffers and K/V ring "
                                  "0.25 GiB, a draft head 0.2 GiB); --vram-reserve-mib 1900 keeps it (the expert cache gives up about 2.5%% of its experts "
                                  "to the CPU). The MTP drafts instead.\n", err.c_str());
@@ -24975,7 +25042,12 @@ int main(int argc, char** argv) {
                 if (wait_commit_first && !ver.wait_commit(err)) return false;
                 int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                 float pp[strata::core::Dflash2Drafter::kDrafts];
-                if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+                const float* cli_tp = ver.tap_dev();
+                if (df2.device() != 0) {
+                    if (!ver.gather_taps(df2.landing(), df2.device(), 0, a_ + 1, 0, df2.stream(), err)) return false;
+                    cli_tp = df2.landing();
+                }
+                if (!df2.draft(cli_tp, a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 // what the MTP does while it drafts: the PLE rows of the tokens the next window will hold are read ahead
                 // (the window's gather would otherwise wait for them: 1.8 ms a round on strix)
@@ -25016,13 +25088,18 @@ int main(int argc, char** argv) {
                 const int kd = sfx.propose(o.spec - 1, sbuf.data());
                 const int md = sfx.last_match();
                 const strata::spec::DraftPolicy::Pick pk = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
+                const float* cli_dfr_tp = ver.tap_dev();
+                if (df2.device() != 0) {
+                    if (!ver.gather_taps(df2.landing(), df2.device(), 0, dfr_n, 0, df2.stream(), err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    cli_dfr_tp = df2.landing();
+                }
                 if (kd > 0 && pk.lookup) {
                     dfr_lookup = true; dfr_T = pk.t; dfr_match = md;
-                    if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    if (!df2.context(cli_dfr_tp, dfr_n, dfr_pos, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
                 } else {
                     int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                     float pp[strata::core::Dflash2Drafter::kDrafts];
-                    if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    if (!df2.draft(cli_dfr_tp, dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
                     for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 }
             }

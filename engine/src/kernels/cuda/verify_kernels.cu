@@ -1394,6 +1394,21 @@ __device__ __forceinline__ unsigned long long strata_now_ns() {
     return t;
 }
 
+__global__ void wait_flag_i32_ge_kernel(const volatile int32_t* flag, int32_t value) {
+#if defined(__HIPCC__) && defined(_WIN32)
+    constexpr unsigned long long kWddmTdrEscapeNs = 1'200'000'000ull;
+    const unsigned long long t0 = strata_now_ns();
+    uint32_t iter = 0;
+    while (*flag < value) {
+        strata_spin_pause();
+        if ((++iter & 255u) == 0u && strata_now_ns() - t0 > kWddmTdrEscapeNs) break;
+    }
+#else
+    while (*flag < value) strata_spin_pause();
+#endif
+    __threadfence_system();
+}
+
 __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
 #if defined(__HIPCC__) && defined(_WIN32)
     // Windows WDDM enforces a strict 2,000 ms TdrDelay; cap a single spin to 1,200 ms so an extreme
@@ -1923,6 +1938,11 @@ void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* ds
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");
+}
+
+void wait_flag_i32_ge(const int32_t* flag, int32_t value, void* stream) {
+    wait_flag_i32_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
+    check("wait_flag_i32_ge");
 }
 
 namespace {
