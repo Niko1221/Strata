@@ -644,7 +644,18 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         else ckpt_max = std::min(ckpt_max, static_cast<int>(budget / one / static_cast<size_t>(P)));
         if (one != 0 && ckpt_max == 1) ckpt_max = 2;       // (one grid mark and the mark before the prompt's end)
     }
-    const int ckpt_every = ink_env_int("STRATA_INK_CKPT_EVERY", 8192, 0, 1 << 24);  // the chunk; 0: only where a prompt ends
+    // The grid: a mark every ckpt_every tokens (0: none).  A store keeps ckpt_max marks, so on a long prompt the grid thins itself
+    // (the mark whose neighbours are closest goes first).  Where prompts differ in practice is the end - the last turn is edited or
+    // sent again - so the last ckpt_fine_span tokens of every read are marked every ckpt_fine tokens, and half of the marks are
+    // kept for those (the newest ones).  A mark is the whole ring state (ckpt_bytes), not a block of position-indexed KV, which is
+    // why the fine step cannot be used for the whole context.
+    const int ckpt_every = ink_env_int("STRATA_INK_CKPT_EVERY", 2048, 0, 1 << 24);
+    const int ckpt_fine = ink_env_int("STRATA_INK_CKPT_FINE", 256, 0, 1 << 24);     // 0: no fine marks
+    const int ckpt_fine_span = ink_env_int("STRATA_INK_CKPT_FINE_SPAN", 2048, 0, 1 << 24);
+    auto on_grid = [&](int pos) { return ckpt_every > 0 && pos % ckpt_every == 0; };
+    auto fine_mark = [&](const ActiveReq& rq, int pos) {      // is `pos` one of the fine marks of the prompt being read?
+        return ckpt_fine > 0 && pos % ckpt_fine == 0 && pos >= rq.prompt_len - 1 - ckpt_fine_span;
+    };
     const int fork_min = ink_env_int("STRATA_INK_FORK_MIN", 2048, 1, 1 << 24);      // a prefix of another store shorter than this is read again
     auto ckpt_drop_from = [&](ActiveReq& rq, int pos) {         // free the checkpoints at positions >= pos
         while (!rq.ckpts.empty() && rq.ckpts.back().pos >= pos) {
@@ -656,14 +667,29 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (ckpt_max <= 0 || pos <= 0) return;
         if (!rq.ckpts.empty() && rq.ckpts.back().pos >= pos) return;
         if (static_cast<int>(rq.ckpts.size()) >= ckpt_max) {
-            // full: drop the one whose neighbours are closest together (the first, nearest the shared system prompt, stays)
-            size_t drop = rq.ckpts.size() - 1;
-            int best = INT_MAX;
-            for (size_t i = 1; i < rq.ckpts.size(); ++i) {
-                const int next = (i + 1 < rq.ckpts.size()) ? rq.ckpts[i + 1].pos : pos;
-                const int gap = next - rq.ckpts[i - 1].pos;
-                if (gap < best) { best = gap; drop = i; }
+            // full.  The tail marks - those off the grid (fine marks, prompt ends) and any mark within the fine span of the new one,
+            // which is where the next prompt is most likely to part - have half of the places: past that the oldest of them goes.
+            // Else the grid mark whose neighbours are closest together goes (the first, nearest the shared system prompt, stays).
+            const int fine_keep = std::max(1, ckpt_max / 2);
+            auto is_tail = [&](int p) { return !on_grid(p) || p >= pos - ckpt_fine_span; };
+            int n_fine = 0;
+            size_t oldest_fine = rq.ckpts.size();
+            for (size_t i = 0; i < rq.ckpts.size(); ++i) {
+                if (!is_tail(rq.ckpts[i].pos)) continue;
+                if (n_fine++ == 0) oldest_fine = i;
             }
+            size_t drop = rq.ckpts.size();
+            if (oldest_fine < rq.ckpts.size() && n_fine >= fine_keep) drop = oldest_fine;
+            if (drop == rq.ckpts.size()) {
+                int best = INT_MAX;
+                for (size_t i = 1; i < rq.ckpts.size(); ++i) {
+                    if (is_tail(rq.ckpts[i].pos)) continue;
+                    const int next = (i + 1 < rq.ckpts.size()) ? rq.ckpts[i + 1].pos : pos;
+                    const int gap = next - rq.ckpts[i - 1].pos;
+                    if (gap < best) { best = gap; drop = i; }
+                }
+            }
+            if (drop == rq.ckpts.size()) drop = (oldest_fine < rq.ckpts.size()) ? oldest_fine : rq.ckpts.size() - 1;
             backend.ckpt_free(rq.ckpts[drop].handle);
             rq.ckpts.erase(rq.ckpts.begin() + static_cast<long>(drop));
         }
@@ -1390,6 +1416,13 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                             const int next_mark = (rq.prefill_pos / ckpt_every + 1) * ckpt_every;
                             if (rq.prefill_pos + take > next_mark) take = next_mark - rq.prefill_pos;
                         }
+                        // ... and, near the prompt's end, at every multiple of the fine step
+                        if (ckpt_fine > 0) {
+                            const int from = std::max(0, rq.prompt_len - 1 - ckpt_fine_span);
+                            int next_fine = (rq.prefill_pos / ckpt_fine + 1) * ckpt_fine;
+                            if (next_fine < from) next_fine = (from + ckpt_fine - 1) / ckpt_fine * ckpt_fine;
+                            if (rq.prefill_pos + take > next_fine) take = next_fine - rq.prefill_pos;
+                        }
                     } else if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                         // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
@@ -1484,7 +1517,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 // a checkpoint where the prompt ends (before anything is generated), and every ckpt_every tokens on the way there
                 // (ckpt=0, a continuation pass: no mark at this prompt's end, the marks of the request's first pass stay the newest)
                 if (ckpt_max > 0) {
-                    if ((rq.prefill_pos == rq.prompt_len - 1 && !rq.no_ckpt) || (ckpt_every > 0 && rq.prefill_pos % ckpt_every == 0)) ckpt_take(rq, rq.prefill_pos);
+                    if ((rq.prefill_pos == rq.prompt_len - 1 && !rq.no_ckpt) || on_grid(rq.prefill_pos) || fine_mark(rq, rq.prefill_pos)) ckpt_take(rq, rq.prefill_pos);
                 } else if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.phys, rq.prefill_pos)) {
