@@ -2728,6 +2728,9 @@ class StrataEngine:
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
         silence = float(self.silence_s or 0)
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
+        picture_s, self.picture_allow_s = float(getattr(self, "picture_allow_s", 0.0) or 0.0), 0.0    # #7043: the CPU picture reader's time, this request only
+        if allow > 0 and picture_s > allow:
+            allow = picture_s                          # (a larger engine_silence_s of the person's stays: it is already above)
         heard, read_to = time.monotonic(), 0
         beat = heard
         stall_s = ENGINE_STALL_S or 0.0
@@ -4262,6 +4265,8 @@ class Service:
             self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
         except ValueError:
             self.inkling_thinking_budget = None
+        self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
+        self.inkling_image_max_px = 0                 # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -5637,10 +5642,28 @@ class Service:
                 raise ValueError(kind_mod.NO_IMAGES_REPLY)
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+            sizes: list[int] = []
+
+            def picture(data, _cap=self.inkling_image_max_px if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
+                data = Vision.normalize(data)
+                if _cap:
+                    data, note = inkling_kind.cap_picture(data, _cap)
+                    if note:
+                        print(f"[strata] {note}", flush=True)
+                if self.inkling:
+                    sizes.append(inkling_kind.picture_pixels(data))
+                return data
             written = kind_mod.write_images(
-                images, lambda s: fetched[s] if s in fetched else Vision.load(s), Vision.normalize, cancel)
+                images, lambda s: fetched[s] if s in fetched else Vision.load(s), picture, cancel)
             if self.inkling:
                 self.embeddings.inkling = written
+                # #7043: where the reader is the CPU, the engine says nothing while it reads a picture: this request may stay silent for as long as the
+                # pictures take (measured), at least engine_silence_s (StrataEngine.generate)
+                allow = inkling_kind.picture_allowance_s(sizes, self.inkling_image_max_px) if self.inkling_cpu_pictures else 0.0
+                self.embeddings.inkling_allow = allow
+                if allow > float(getattr(self.engine, "silence_s", 0) or 0):
+                    print(f"[strata] {len(sizes)} picture(s), {sum(sizes) / 1e6:.2f} MP in all: the engine's CPU picture reader may take a while, "
+                          f"this request may stay silent for up to {allow:.0f} s", flush=True)
             else:
                 self.embeddings.hy4 = written
             images = []
@@ -6187,6 +6210,8 @@ class Service:
                             # (STRATA_INKLING_PROMPT_CKPT=0: no pass saves one: for an exactness A/B against an engine that has none)
                             pass_sampling = {**(pass_sampling or {}), KEEP_CKPT_KEY: True}
                         pass_n += 1
+                        if emb and self.inkling:
+                            self.engine.picture_allow_s = float(getattr(self.embeddings, "inkling_allow", 0.0) or 0.0)   # #7043 (read once by generate)
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None
@@ -9605,6 +9630,15 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (CUDA, cpu), its own setting, 0 = off
+        svc.inkling_cpu_pictures = inkling_kind.cpu_picture_reader(cfg)
+        try:
+            svc.inkling_image_max_px = inkling_kind.image_cap_pixels(cfg)
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if svc.inkling_image_max_px:
+            print(f"[strata] pictures: scaled down to at most {svc.inkling_image_max_px / 1e6:.2f} MP before the engine reads them "
+                  "(inkling_image_max_mp in the run config, in megapixels, sets another size, 0 turns it off)", flush=True)
     if cfg.get("inkling_thinking_budget") is not None:     # Inkling-2-Mini's default thinking budget (tokens, 0 = none); else STRATA_INKLING_THINKING_BUDGET
         v = cfg["inkling_thinking_budget"]
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
