@@ -993,6 +993,22 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 # a quoted call's opener in a value: `<function=NAME>` and its first parameter or close; a bare FUNC_START is text
 _QUOTED_OPEN = re.compile(r"<function=[^<>\s]+>\s*(?:<parameter=|</function>)")
 
+# #5839 (opt-in, OutputParser.mention_lead_in): the words a text uses to introduce a marker it is about to write out.
+# Only these: an answer may end on any other word.  (No ">" and no dash: a marker that was kept as text ends on one,
+# and the turn may end right after it.)
+LEAD_IN_SIGNS = ":：=＝(（[【{,，、"
+LEAD_IN_WORDS = frozenset(
+    "is are was called named known use used uses using with as e.g. i.e. emit emits emitted emitting output outputs "
+    "outputting write writes wrote written writing print prints printed end ends ended ending marker token string says said "
+    "means denotes denote denoting reads".split())
+_LEAD_IN_WORD = re.compile(r"([A-Za-z][A-Za-z.]*)$")
+_LEAD_IN_CJK = re.compile(
+    r"(?:例如|比如|譬如|诸如|包括|称为|叫作|叫做|称作|名为|写作|读作|记作|写成|输出|写入|打出|就是|即是|指的是|说的是|"
+    r"意思是|或者说|以及|遇到|看到|读到|碰到|包含|含有|带有|加上|改成|改为|换成|设为|写为|记为|读成|结束于|止于|即|"
+    r"(?:标记|记号|符号|名字|名称|答案|它|这|那|就|便|则|也|还|都|均|正|乃)是|"
+    r"(?:称|读|写|记|叫|视|看|当|变|化|分|划|定|转)为|"
+    r"(?:使|调|应|采|借|运|通|引|停|禁|复|专)用)$")
+
 
 #: #4701: how much text after a closing sequence is looked at before the value is taken as ended there (a call followed by a long sentence)
 CLOSE_LOOKAHEAD_CHARS = 1500
@@ -1765,6 +1781,10 @@ class OutputParser:
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
+        # #5839 (opt-in, the server sets it from "quoted_eos_recovery"): the end of the thinking is a </think> that a line
+        # break follows; one the model quotes on a line of its own, as in an example, is reasoning text (#4077)
+        self.line_think_end = False
+        self.prev_line = ""         # the last line that was completed while tracking (the opt-in mention_lead_in reads it)
         self.schemas = {t.get("name"): t for t in tools or []}
         # #4663: the request defers tools (Anthropic's tool search, see anthropic_tools): the client holds back more tools
         # than it declares, so a call for an undeclared name is a call too - Claude Code runs it, where text ended the turn.
@@ -1837,7 +1857,7 @@ class OutputParser:
         self.after_think = False     # #4077: the reasoning ended at a bare `</think>` (a second one in the answer is a stray)
         self.stray_think = 0         # ... and the strays of that kind dropped from the answer
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
-        self.fence, self.line, self.ticks = "", "", 0
+        self.fence, self.line, self.ticks, self.quotes = "", "", 0, 0
         self._prev_blank = self._indented = False   # #4703: the line before was blank / this is inside an indented (4-space) code block
         # recover (on in the server since 0.2.8, off for a bare OutputParser; the config's "tool_call_recovery": false turns it off): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
@@ -1855,6 +1875,38 @@ class OutputParser:
         """Nothing is held back: a clean point to stop the thinking at (a parser that rewrites the model's text also counts
         what it holds; #4686: so does a call body moved out of the buffer while it streams)."""
         return not self.buf and not self._held and not self._scan_parts
+
+    def quoting_control_token(self) -> bool:
+        """#5839 (opt-in): an end token arrives while the text has an open code example or JSON string: the model is
+        quoting the marker as text, not ending the turn."""
+        if self.state not in ("reasoning", "content"):
+            return False
+        line = self.line + self.buf
+        if self.fence:
+            closer = r"[ \t]*" + re.escape(self.fence[0]) + "{" + str(len(self.fence)) + r",}[ \t]*"
+            return re.fullmatch(closer, line) is None
+        if (self.ticks + line.count("`")) % 2:
+            return True
+        # Count unescaped quotation marks, treating escaped backslashes as pairs.
+        quotes = sum(part == '"' for part in re.findall(r'\\.|"', line))
+        return (self.quotes + quotes) % 2 == 1
+
+    def mention_lead_in(self) -> bool:
+        """#5839 (opt-in): the end token arrives where the text introduces it - after a colon or a comma, after "is",
+        "uses", "called", after 是, 例如, 输出 … - so it is the marker being written out, not the end of the turn.  When
+        the marker starts a line, the line before it is read.  A heuristic by design: it names the introductions, never
+        the words an answer may end on."""
+        line = (self.line + self.buf).rstrip() or self.prev_line
+        if not line:
+            return False
+        if len(line) > 1 and line[-1] in LEAD_IN_SIGNS:
+            return True
+        word = _LEAD_IN_WORD.search(line)
+        return bool(word and word.group(1).lower() in LEAD_IN_WORDS) or bool(_LEAD_IN_CJK.search(line))
+
+    def only_whitespace_held(self) -> bool:
+        """Nothing is held back but whitespace (a line break at the end of the answer waits for what follows it)."""
+        return not self._held and not self._scan_parts and not self.buf.strip()
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
@@ -2033,6 +2085,8 @@ class OutputParser:
                 self._line_parts.clear()
                 self._line_blocks = None
                 s = line.lstrip()
+                if s:
+                    self.prev_line = line.rstrip()
                 was_fenced = bool(self.fence)
                 if self.fence:
                     # #4702: a fence is closed only by a line of at least as many of the same character as opened it (CommonMark), so a
@@ -2057,6 +2111,10 @@ class OutputParser:
                     # backtick that ends its line, or is followed on it by markup (`<tool_call>`), opens a span that goes on to the next line
                     # (the quote "`" + line break + call + "`").
                     self.ticks = 1 if line.count("`") % 2 and line[line.rfind("`") + 1:].strip()[:1] in ("", "<") else 0
+                if was_fenced or self.fence or not s:
+                    self.quotes = 0
+                else:
+                    self.quotes += sum(part == '"' for part in re.findall(r'\\.|"', line))
                 # #4703: an indented (4 spaces or a tab) code block starts after a blank line and goes on until a line that is not indented
                 if was_fenced or self.fence:
                     self._prev_blank = self._indented = False
@@ -2082,13 +2140,14 @@ class OutputParser:
         return (self._prev_blank or self._indented) and self.line.startswith(("    ", "\t"))
 
     def _snap(self) -> tuple:
-        return (self.fence, self.line, self.ticks, self._prev_blank, self._indented)
+        return (self.fence, self.line, self.ticks, self.quotes, self._prev_blank, self._indented)
 
     def _restore(self, snap: tuple) -> None:
-        self.fence, self.line, self.ticks, self._prev_blank, self._indented = snap
+        self.fence, self.line, self.ticks, self.quotes, self._prev_blank, self._indented = snap
 
     def _reset_track(self) -> None:
-        self.fence, self.line, self.ticks = "", "", 0
+        self.fence, self.line, self.ticks, self.quotes = "", "", 0, 0
+        self.prev_line = ""
         self._prev_blank = self._indented = False
 
     def _in_code(self) -> bool:
@@ -2102,9 +2161,20 @@ class OutputParser:
         (`...number only."</think>2`) is no quoting of the tag: GLM ends short reasoning that way and answers on the
         same line, which the old test kept as reasoning, leaving the answer empty.  None while the character after the
         tag has not arrived."""
+        after = self.buf[i + len(THINK_END):]
+        if self.line_think_end:
+            # #5839 (opt-in): inside code or a quotation the tag is a quoted one, whatever follows it; elsewhere it ends
+            # the thinking only where a line break follows it
+            snap = self._snap()
+            self._track(self.buf[:i])
+            quotes = sum(part == '"' for part in re.findall(r'\\.|"', self.line))
+            quoted = self._in_code() or (self.quotes + quotes) % 2 == 1
+            self._restore(snap)
+            if quoted:
+                return True
+            return after[0] not in "\r\n" if after else None
         head = self.line + self.buf[:i]
         before = self.buf[i - 1] if i else self.line[-1:]
-        after = self.buf[i + len(THINK_END):]
         if before not in ('"', "'", "`"):
             # #6218: a backtick span the model opened (an odd count in the paragraph so far) that the tag sits inside, written on its own line:
             # "the marker `" + line break + tag + line break + "`" - the backtick after the tag closes the span the tag is quoted in
@@ -2134,6 +2204,14 @@ class OutputParser:
         while k >= 0:
             before = self.buf[:k]
             if not (before.rsplit("\n", 1)[1] if "\n" in before else self.line + before).strip():
+                if self.line_think_end:               # #5839 (opt-in): a tag the answer's own code example quotes is no stray
+                    snap = self._snap()
+                    self._track(before)
+                    quoted = self._in_code()
+                    self._restore(snap)
+                    if quoted:
+                        k = self.buf.find(THINK_END, k + 1)
+                        continue
                 return k
             k = self.buf.find(THINK_END, k + 1)
         return -1

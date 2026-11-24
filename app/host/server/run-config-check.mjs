@@ -23,6 +23,7 @@ export const KNOWN_KEYS = new Set([
   'max_queue', 'queue_timeout', 'max_tokens', 'min_tokens', 'answer_room', 'threads', 'replicas', 'replica_cpus', 'replica_load_tokens',
   'elastic', 'elastic_idle_s', 'elastic_mib', 'min_free_vram_mib', 'vram_segment_mib', 'slot_save_path', 'telemetry_read_key', 'batch_telemetry',
   'reasoning_effort', 'inkling_thinking_budget', 'reasoning_close_retry', 'reasoning_loop_recovery', 'repeat_stop_tokens', 'tool_call_recovery', 'codex_compaction_cache',
+  'quoted_eos_recovery', 'think_eos_ban',
   'codex_thread_titles', 'expert_profile_save', 'expert_profile_save_every', 'images', 'vision', 'mmproj', 'draft_vocab', 'ui_resource_profile',
   'ui_vision_enabled', 'ui_vision_chosen', 'ui_context_chosen', 'ui_budget_work_gib', 'shape_title', 'component', 'native', 'uma', 'remote_expert_opt', 'diffusion_model', 'llm', 'vae', 'quant', 'type', 'url', 'timeout_s',
 ]);
