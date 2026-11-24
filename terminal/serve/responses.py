@@ -31,7 +31,7 @@ import re
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, cut_arguments, declared_parameters, effort_kwargs
+from serve.frontend import Event, _late_system_to_user, _name_tool_results, _parts_of, cut_arguments, declared_parameters, effort_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -332,7 +332,8 @@ def input_messages(req: dict) -> list[dict]:
 def _order_tool_results(messages):
     """The template places tool results by position: each run of tool messages is put in the order of the calls of
     the assistant turn before it (a client may send the results in the order they finished), then the private call
-    ids are dropped."""
+    ids are dropped (Inkling: after each result has been given the name of its call, #7051)."""
+    _name_tool_results(messages)
     i = 0
     while i < len(messages):
         if messages[i]["role"] != "tool":
