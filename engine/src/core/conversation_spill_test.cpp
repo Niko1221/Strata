@@ -1,6 +1,7 @@
 // The conversation cache's SSD tier: its folder per engine process and its budget (conversation_spill.hpp).  No GPU, no model.
 #include "strata/core/conversation_spill.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -103,6 +104,79 @@ int main() {
             check(s.best(std::vector<int32_t>{20, 21, 0}, {}, true).tokens == 2 && s.best(std::vector<int32_t>{30, 31, 0}, {}, true).tokens == 2,
                   "supersede: entries that are no prefix stay");
             check(s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 0}, {}, true).tokens == 6, "supersede: the grown one serves the resume");
+        }
+        {   // a snapshot parked in RAM that extends a spilled one deletes it (file, index file, entry) at once; a restart finds the newest
+            ConversationSpill s;
+            std::string e2;
+            size_t ad = 0;
+            check(s.open(proot, cap, e2, nullptr, &A, &ad), "drop: open");
+            while (s.size() > 0) s.drop(0);
+            check(s.put(img({1, 2, 3}, 1), A, e2) && s.put(img({50, 51}, 2), A, e2) && s.size() == 2, "drop: two spilled");
+            const auto old = s.best(std::vector<int32_t>{1, 2, 3, 0}, {}, true);
+            const fs::path oldf = s.find(old.serial)->file;
+            const fs::path oldm = fs::path(oldf).replace_extension(".meta");
+            check(fs::exists(oldf) && fs::exists(oldm), "drop: the files are there");
+            check(s.drop_superseded({1, 2}, {}, true).empty() && s.drop_superseded({1, 2, 3, 4}, {}, false).empty() && s.size() == 2,
+                  "drop: a shorter or a differently steered image supersedes nothing");
+            const auto gone = s.drop_superseded({1, 2, 3, 4, 5}, {}, true);
+            check(gone == std::vector<size_t>({3}) && s.size() == 1 && !fs::exists(oldf) && !fs::exists(oldm) && !s.find(old.serial),
+                  "drop: the superseded spill is deleted with its index file and entry");
+            check(s.put(img({1, 2, 3, 4, 5, 6}, 3), A, e2) && s.size() == 2, "drop: the newest is spilled later");
+        }
+        {   // restart adoption: only the newest snapshot of the conversation is found
+            ConversationSpill s;
+            size_t ad = 0;
+            check(s.open(proot, cap, e, nullptr, &A, &ad) && ad == 2 && s.size() == 2, "adopt: two entries after the drop");
+            bool short_one = false;
+            for (size_t k = 0; k < s.size(); ++k) if (s.entry(k).live.ids.size() == 3) short_one = true;
+            check(s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7}, {}, true).tokens == 6 && !short_one, "adopt: the newest serves the conversation");
+        }
+        {   // #6833: two agents on one engine for a long time: the folder never passes the cap, and an appending conversation keeps one entry
+            ConversationSpill s;
+            std::string e3;
+            size_t ad = 0;
+            check(s.open(proot, cap, e3, nullptr, &A, &ad), "churn: open");
+            while (s.size() > 0) s.drop(0);
+            auto files_on_disk = [&]() {
+                size_t n = 0;
+                std::error_code fec;
+                for (const auto& f : fs::directory_iterator(s.dir(), fec))
+                    if (f.is_regular_file() && f.path().filename() != ".lock") ++n;
+                return n;
+            };
+            bool within_cap = true, files_bounded = true;
+            uint64_t peak = 0;
+            size_t most_files = 0;
+            std::vector<int32_t> x = {1, 2, 3}, y = {500, 501, 502};
+            for (int turn = 0; turn < 40; ++turn) {   // agent X and agent Y, each appending a turn, parked one whole snapshot per turn
+                x.push_back(10 + turn);
+                (void) s.drop_superseded(x, {}, true);
+                SavedConversation sx = img(x, 1);
+                within_cap = within_cap && s.put(std::move(sx), A, e3);
+                y.push_back(600 + turn);
+                (void) s.drop_superseded(y, {}, true);
+                SavedConversation sy = img(y, 2);
+                within_cap = within_cap && s.put(std::move(sy), A, e3);
+                peak = std::max<uint64_t>(peak, s.bytes());
+                most_files = std::max(most_files, files_on_disk());
+                files_bounded = files_bounded && s.bytes() <= cap;
+            }
+            check(within_cap && files_bounded && peak <= cap, "churn: 80 parked snapshots of two appending agents never pass the cap");
+            check(s.size() == 2 && files_on_disk() == 4, "churn: one entry (file and index file) per conversation is left");
+            check(most_files <= 6, "churn: the folder never holds more than the cap's three entries");
+            std::vector<int32_t> px = x, py = y;   // (the next turn's prompt: the parked tokens and one more)
+            px.push_back(-1);
+            py.push_back(-1);
+            check(s.best(px, {}, true).tokens == (int64_t) x.size() && s.best(py, {}, true).tokens == (int64_t) y.size(),
+                  "churn: each agent's resume finds its newest snapshot");
+            // many unrelated conversations (the evictions of a busy engine): the oldest-used go at the cap, their files with them
+            for (int c = 0; c < 40; ++c) {
+                SavedConversation sc = img({7000 + c, 7001 + c, 7002 + c}, 3);
+                check(s.put(std::move(sc), A, e3), "churn: an unrelated conversation spills");
+                peak = std::max<uint64_t>(peak, s.bytes());
+                most_files = std::max(most_files, files_on_disk());
+            }
+            check(peak <= cap && s.size() <= 3 && files_on_disk() <= 6, "churn: forty unrelated conversations: the LRU tier stays under the cap");
         }
         {   // the same model, other settings: the files are not this run's
             ConversationSpill s;

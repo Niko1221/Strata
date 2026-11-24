@@ -18,6 +18,14 @@ int main() {
     check(!no_host_wants_device_plan("", nullptr), "NO_HOST empty: nothing");
     check(!no_host_wants_device_plan(nullptr, nullptr), "neither set: nothing");
     check(!no_host_wants_device_plan(nullptr, "1"), "DEVICE_PLAN alone: nothing");
+    using strata::arena_refuses_no_host;
+    check(arena_refuses_no_host("1", true, 24576, 9114), "#4698: NO_HOST=1, host arena, 9114 of 24576 experts in VRAM: refused");
+    check(arena_refuses_no_host("true", true, 24576, 0), "#4698: NO_HOST=true (any value but 0), host arena, none in VRAM: refused");
+    check(!arena_refuses_no_host("1", true, 24576, 24576), "#4698: every expert in VRAM: the arena is never read, not refused");
+    check(!arena_refuses_no_host("0", true, 24576, 9114), "#4698: NO_HOST=0 (an i915 card, the arena's own mode): not refused");
+    check(!arena_refuses_no_host("", true, 24576, 9114), "#4698: NO_HOST empty: not refused");
+    check(!arena_refuses_no_host(nullptr, true, 24576, 9114), "#4698: NO_HOST not set: not refused");
+    check(!arena_refuses_no_host("1", false, 24576, 9114), "#4698: --stream-experts (the USM mirror answers): not refused");
     std::printf("%s\n", g_fail ? "FAILED" : "all ok");
     return g_fail ? 1 : 0;
 }

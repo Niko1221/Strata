@@ -5,7 +5,7 @@
 #   VARIANT=cuda13 tools/packaging/build_cuda_linux.sh     # CUDA 13: RTX 20 and newer (sm_75 .. sm_120)
 #   SHAPE=q4_lite tools/packaging/build_cuda_linux.sh      # the engine of a model shape, its own component (tools/packaging/shape_build.sh)
 #
-# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc) and a Python 3 venv with requirements.txt and
+# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc; CUDA_HOME=<toolkit> names its lib64 for the library bundle when it is not /usr/local/cuda) and a Python 3 venv with requirements.txt and
 # requirements-build.txt. ggml comes from the vendored engine/third_party/strata-ggml: nothing is downloaded. STRATA_GGML_DIR=<llama.cpp checkout>
 # builds from that checkout instead (an override, kept for two releases).
 # The package lands in $OUT (default ./out-engine-<variant>). Nothing is uploaded.
@@ -70,7 +70,7 @@ if [ -f "$vision_dir/bin/strata-vision" ]; then
   vision_json=", \"vision_archs\": \"$archs\""        # package_engine.py refuses a reader whose archs do not cover the engine's
 fi
 echo "{\"version\": \"$ver\", \"source\": \"tools/packaging/build_cuda_linux.sh\", \"archs\": \"$archs\", \"cuda\": \"$cudafull\", \"portable\": true$vision_json}" > "$stage/BUILD.json"
-"$py" tools/packaging/collect_libs.py --binary "$build/strata" --search /usr/local/cuda/lib64 --out "$stage" --also 'libcublasLt.so*'
+"$py" tools/packaging/collect_libs.py --binary "$build/strata" --search "${CUDA_HOME:-/usr/local/cuda}/lib64" --out "$stage" --also 'libcublasLt.so*'
 shape_check env LD_LIBRARY_PATH="$stage" "$stage/strata"
 arch_args=""; for a in $(echo "$archs" | tr ';,' '  '); do arch_args="$arch_args --arch sm_$a"; done
 mkdir -p "$out"

@@ -12,11 +12,16 @@ def measure(executable, model, mpi, draft, timeout):
     # The optional wrapper provides the MPI host list and transport environment.
     # It must pass its arguments through and direct stdin to rank 0.
     command = [str(executable), "--serve", "--native", str(model), "--parallel", "4",
-               "--max-context", "4096", "--chunk", "128", "--draft", draft]
+               "--max-context", "4096", "--draft", draft]
+    if draft != "off":
+        command.extend(["--chunk", "128"])
     if mpi:
         command.append("--mpi-experts")
     prefixes = [[32, 383, 712, 1001] * 9, [32, 383, 712, 1001] * 9 + [201, 220, 311],
                 [253, 270, 415, 811] * 17]
+    if draft == "off":
+        # Exercise the automatic chunk on both ranks with more than one 1024-token step.
+        prefixes[2] = [253, 270, 415, 811] * 320
     frames = ["GEN 8 temperature=0 " + ",".join(map(str, ids)) for ids in prefixes]
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           start_new_session=True) as proc, selectors.DefaultSelector() as monitor:

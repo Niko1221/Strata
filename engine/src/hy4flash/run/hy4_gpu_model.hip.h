@@ -15,6 +15,8 @@
 
 #include "hy4_io.h"
 #include "hy4_manifest.h"
+#include "hy4_plan_math.h"
+#include "hy4_uma_pool.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 #if !HY4_CUDA
@@ -486,7 +488,8 @@ inline int plan_memory(int max_ctx, int chunk, size_t total, const std::string& 
     const double dfly_gb = has_draft ? 0.28 : 0.0;  // DFly2 runtime KV/logit/graph buffers (allocated AFTER Runner::init)
     auto est_work_gb = [&](int c) {
         // Aliased work_arena (max(2*c*16384*4, moe_ws_bytes(c))) + qa_h/H1/x/z/etc (~0.195 MB/tok) + SWA rings (30*(512+c)*kv_row_b) + misc 0.22 GB
-        const double arena = std::max(2.0 * c * 16384.0 * 4.0, (double)c * 16.0 * 1536.0 * 6.0) / GB;
+        // #6744: the score buffer (chunk x (max_ctx / 4 + 8) floats) is part of the arena and grows with the context
+        const double arena = (double)work_arena_bytes((uint64_t)(2.0 * c * 16384.0 * 4.0), (uint64_t)c, (uint64_t)max_ctx, (uint64_t)((double)c * 16.0 * 1536.0 * 6.0)) / GB;
         return arena + c * 0.195e6 / GB + 0.22 + 30.0 * (512.0 + c) * kv_row_b / GB;
     };
     if (chunk <= 0) {
@@ -786,6 +789,34 @@ inline bool p2p_probe_pair(int dev0, int dev1, double* out_ms = nullptr) {
 }
 #endif
 
+// The GPU's own (dedicated, BIOS carve-out) memory on a unified-memory chip: what is NOT the system RAM. Windows: hipMemGetInfo's total (the
+// dedicated video memory; a Strix Halo with a 112 GB carve-out reports 111.8 GB there and leaves the OS 31.6 GB). Linux: the amdgpu driver's
+// mem_info_vram_total of the device (the carve-out, 0.5-4 GiB on a GTT-backed Strix Halo; hipMemGetInfo reports the GTT there, which is RAM).
+// Unreadable on Linux: 4 GiB at most (the safe side: the RAM budget caps the arena).
+inline uint64_t uma_dedicated_bytes(int dev) {
+    size_t fr = 0, tot = 0;
+    (void)hipSetDevice(dev);
+    const bool have = hipMemGetInfo(&fr, &tot) == hipSuccess;
+    if (!have) (void)hipGetLastError();
+#ifdef _WIN32
+    return have ? (uint64_t)tot : 0;
+#else
+    char bus[64] = {0};
+    if (hipDeviceGetPCIBusId(bus, (int)sizeof bus, dev) == hipSuccess && bus[0]) {
+        std::string path = std::string("/sys/bus/pci/devices/") + bus + "/mem_info_vram_total";
+        for (auto& ch : path) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+        if (FILE* f = fopen(path.c_str(), "r")) {
+            unsigned long long v = 0;
+            const bool ok = fscanf(f, "%llu", &v) == 1;
+            fclose(f);
+            if (ok) return (uint64_t)v;
+        }
+    }
+    (void)hipGetLastError();
+    return have ? std::min<uint64_t>((uint64_t)tot, 4ull << 30) : 0;
+#endif
+}
+
 // Expert tiering for cards that cannot hold Section 4: the hottest ranks (rank-major over the 41 layers, Section 4 is stored hot to cold) go to a device arena,
 // every other expert goes to pinned, device-mapped host memory that the GPU reads directly (zero-copy over PCIe). Each expert's body_off is rewritten as the
 // (wrapping) distance of its final address from g.d_sec4, so the kernels keep their `sec4 + body_off` addressing and need no change.
@@ -839,10 +870,24 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         all_al_bytes += sz;
         max_body_sz = std::max<size_t>(max_body_sz, (size_t)sz);
     }
+    // #6648: on unified memory (Strix Halo, 890M, 780M) the VRAM arena, the adaptive VRAM slots and the host-resident experts are ONE physical pool.
+    // The arena takes at most the safe RAM budget, there are no adaptive slots (they copy experts that also sit in host RAM), and the host-resident
+    // experts get what the arena leaves; the coldest ranks go to the SSD tier. A 128 GiB Strix Halo with SQ-128 at 128K took 97 GB of slots next to
+    // a 106 GB host arena and was killed by the OOM killer.
+    const bool uma_pool = ng == 1 && gpu_is_uma();
+    const uint64_t dedicated_bytes = uma_pool ? uma_dedicated_bytes(g.primary_gpu) : 0;
+    if (uma_pool) {
+        const uint64_t capped = uma_vram_budget(true, vram_budget, ram_budget_bytes, dedicated_bytes);
+        if (capped < vram_budget)
+            fprintf(stderr, "[load] unified memory: GPU arena %.1f GB -> %.1f GB (%.1f GB dedicated + the safe RAM budget %.1f GB; GPU and host experts share one pool)\n",
+                    vram_budget / 1e9, capped / 1e9, dedicated_bytes / 1e9, ram_budget_bytes / 1e9);
+        vram_budget = (size_t)capped;
+    }
+    const uint64_t host_room_bytes = uma_host_room(uma_pool, ram_budget_bytes, vram_budget, dedicated_bytes, all_al_bytes);
     // Cross-platform (Windows + Linux + macOS) automatic SSD cold-expert tier (#6556, #6528):
     // whenever host experts exceed safe MemAvailable / ullAvailPhys, auto-enable cpu_mode so ColdStore streams cold tail from SSD with 0 swap!
     const uint64_t est_host_need = all_al_bytes > vram_budget ? (all_al_bytes - vram_budget) : 0;
-    if (!cpu_mode && est_host_need > ram_budget_bytes) {
+    if (!cpu_mode && est_host_need > host_room_bytes) {
         cpu_mode = true;
         fprintf(stderr, "[load] host experts %.1f GB exceed safe RAM budget %.1f GB (avail %.1f / %.1f GiB); auto-enabling 4-tier CPU + SSD cold-expert streaming\n",
                 est_host_need / 1e9, ram_budget_gb, avail_gb, lim_gb);
@@ -863,6 +908,7 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
             if ((double)max_body_sz > 1.20 * avg_body_sz) dyn_frac = 0.35;
         }
     }
+    dyn_frac = uma_dyn_frac(uma_pool, dyn_frac, vram_budget, dedicated_bytes);
     size_t static_budget = vram_budget;
     int dyn_slots = 0;
     size_t dyn_bytes = 0;
@@ -1093,7 +1139,7 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         for (size_t i = 0; i < N; ++i)
             if (tier[i] == 2) host_total += al(dir[i].body_bytes);
         const double budget_gb = ram_budget_gb;
-        const uint64_t budget = ram_budget_bytes;
+        const uint64_t budget = host_room_bytes;
         if (host_total > budget) {
             uint64_t used2 = 0;
             bool cold = false;
@@ -1111,7 +1157,17 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         }
     }
     HCK(hipSetDevice(g.primary_gpu));
-    HCK(hipMalloc((void**)&g.d_sec4, vb ? vb : 4096));
+    {
+        const hipError_t se = hipMalloc((void**)&g.d_sec4, vb ? vb : 4096);
+        if (se != hipSuccess && uma_pool && vb > (4ull << 30)) {
+            // #6648: the whole static arena is one allocation (the kernels address `sec4 + body_off`); on a unified-memory chip it can still fail when the
+            // pool is fragmented or the driver's limit is below what was asked. Plan again with a tenth less instead of ending the load.
+            (void)hipGetLastError();
+            fprintf(stderr, "[load] unified memory: the %.2f GB expert arena could not be allocated; planning again with %.2f GB\n", vb / 1e9, 0.9 * vb / 1e9);
+            return load_experts_tiered(g, path, (size_t)(0.9 * (double)vb), cpu_mode, err);
+        }
+        HCK(se);
+    }
     g.vcache_slabs.clear();
     g.vcache_slot_bytes = vcache_slot_sz;
     {

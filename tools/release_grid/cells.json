@@ -1,0 +1,950 @@
+{
+ "_comment": "The release test grid: which box runs which model with the drafter on and off. See docs/RELEASE_GRID.md. A box entry lists its models; a model entry says where the files are on that box (path = a folder or file that already exists and is only read, files = a list of files that are hard-linked into the grid's own folder, fetch = download with the pinned SHA-256 into the grid's folder) or why the cell is skipped. Skips stay in the table.",
+ "version": 1,
+ "defaults": {
+  "port": 18770,
+  "profile": {
+   "context": "32k",
+   "small_tokens": 4000,
+   "big_tokens": 30000,
+   "step_budget_s": 1500,
+   "agent_turns": 10,
+   "agent_reply_tokens": 700,
+   "decode_tokens": 160,
+   "speed_reps": 4,
+   "prefill_tokens": 2000,
+   "prefill_reps": 3,
+   "answer_tokens": 200,
+   "min_correct": 5,
+   "min_agent_correct": 4,
+   "min_reuse": 0.5,
+   "request_timeout_s": 900,
+   "big_request_timeout_s": 3600,
+   "ready_timeout_s": 2400,
+   "cell_budget_s": 7200,
+   "min_free_gib": 6,
+   "guard_free_gib": 2.5,
+   "guard_swap_growth_gib": 1.0
+  }
+ },
+ "profiles": {
+  "slow": {
+   "agent_turns": 6,
+   "agent_reply_tokens": 300,
+   "decode_tokens": 48,
+   "speed_reps": 3,
+   "prefill_tokens": 1000,
+   "prefill_reps": 2,
+   "step_budget_s": 900,
+   "answer_tokens": 80,
+   "min_correct": 4,
+   "min_agent_correct": 2,
+   "request_timeout_s": 1800,
+   "cell_budget_s": 9000
+  }
+ },
+ "references": {
+  "_comment": "Published numbers to show a cell's distance from (the coordinator, 2026-11-23). A box with a reference field names the entry; the summary adds the percentage of the reference.",
+  "ink-5090": {
+   "model_glob": "ink-*",
+   "decode_tps": 500,
+   "prefill_tps": 10000,
+   "c64_total_tps": 3000,
+   "source": "owner target, RTX 5090: decode 500 tok/s at C1, 3000+ total at C64, prefill 10000 tok/s"
+  },
+  "ink-8gb": {
+   "model_glob": "ink-*",
+   "decode_tps": 150,
+   "source": "owner target, 8 GB VRAM + 32 GB RAM: decode at least 150 tok/s"
+  },
+  "ink-12gb": {
+   "model_glob": "ink-*",
+   "decode_tps": 300,
+   "source": "owner target, 12 GB VRAM + 32 GB RAM: decode at least 300 tok/s"
+  },
+  "ink-record": {
+   "model_glob": "ink-*",
+   "source": "owner: record prefill and decode at C1 and C32 (no number yet)"
+  },
+  "a6000-ud-q4kxl": {
+   "model": "ink-ud-q4kxl",
+   "decode_tps": 116,
+   "decode_note": "at 47 tokens (112 at 4K)",
+   "prefill_4k_tps": 2670,
+   "source": "robertkarl/UnbiasedStrata, published RTX A6000 numbers"
+  }
+ },
+ "models": {
+  "qwen-pack-q2": {
+   "family": "qwen",
+   "title": "Qwen3.8-Flash-Next Strata pack, Q2_0 (ISTA-DASLab GSQ-RCO)",
+   "gb": 66.4,
+   "drafter": true,
+   "pins": "qwen/Q2_0",
+   "launch_args": [
+    "--family",
+    "qwen"
+   ]
+  },
+  "qwen-pack-iq3s": {
+   "family": "qwen",
+   "title": "Qwen3.8-Flash-Next Strata pack, IQ3_S (ISTA-DASLab GSQ-RCO)",
+   "gb": 78.0,
+   "drafter": true,
+   "pins": "qwen/IQ3_S",
+   "launch_args": [
+    "--family",
+    "qwen"
+   ]
+  },
+  "qwen-ud-q4kxl": {
+   "family": "qwen",
+   "title": "Qwen3.8-Flash-Next Unsloth UD-Q4_K_XL (4 shards; carries Q8_0 projections)",
+   "gb": 104,
+   "drafter": true,
+   "pins": "qwen/UD-Q4_K_XL",
+   "launch_args": [
+    "--family",
+    "qwen"
+   ]
+  },
+  "ink-sq10": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini SQ-10",
+   "gb": 10.5,
+   "drafter": true,
+   "pins": "ink/SQ-10"
+  },
+  "ink-sq20": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini SQ-20",
+   "gb": 19.3,
+   "drafter": true,
+   "pins": "ink/SQ-20",
+   "priority": 3
+  },
+  "ink-ud-q2kxl": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini Unsloth UD-Q2_K_XL GGUF + DSpark",
+   "gb": 9.5,
+   "drafter": true,
+   "pins": "ink/UD-Q2_K_XL"
+  },
+  "ink-ud-q4kxl": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini Unsloth UD-Q4_K_XL GGUF + DSpark",
+   "gb": 18.0,
+   "drafter": true,
+   "pins": "ink/UD-Q4_K_XL",
+   "priority": 1
+  },
+  "ink-ud-iq4xs": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini Unsloth UD-IQ4_XS GGUF + DSpark (an Unsloth IQ quant)",
+   "gb": 16.5,
+   "drafter": true,
+   "pins": "ink/UD-IQ4_XS",
+   "priority": 2
+  },
+  "ink-ud-iq3xxs": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini Unsloth UD-IQ3_XXS GGUF + DSpark (an Unsloth IQ quant)",
+   "gb": 12.1,
+   "drafter": true,
+   "pins": "ink/UD-IQ3_XXS",
+   "priority": 2
+  },
+  "ink-ud-iq1s": {
+   "family": "inkling",
+   "title": "Inkling 2 Mini Unsloth UD-IQ1_S GGUF + DSpark (the small-card file)",
+   "gb": 8.2,
+   "drafter": true,
+   "pins": "ink/UD-IQ1_S"
+  },
+  "hy4-sq64": {
+   "family": "hy4",
+   "title": "Hy4-Flash SQ-64",
+   "gb": 62.0,
+   "drafter": false,
+   "tier": "full",
+   "pins": "hy4/SQ-64"
+  }
+ },
+ "boxes": {
+  "vast0221-3060": {
+   "jobq": "vast0221-3060",
+   "ssh": "vast0221-3060",
+   "os": "linux",
+   "class": "NVIDIA sm_86 (RTX 3060 12 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-12gb"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000,
+    "min_free_gib": 8
+   },
+   "models": {
+    "qwen-ud-q4kxl": {
+     "path": "/workspace/p0cuda/models/UD-Q4_K_XL",
+     "profile": {
+      "ready_timeout_s": 3600,
+      "step_budget_s": 900,
+      "agent_turns": 8
+     }
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "profile": {
+      "ready_timeout_s": 3600,
+      "step_budget_s": 900
+     }
+    },
+    "ink-sq10": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-10.strata"
+     ]
+    },
+    "ink-sq20": {
+     "fetch": true
+    },
+    "ink-ud-q2kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q2_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true
+    },
+    "hy4-sq64": {
+     "fetch": true,
+     "skip": "Hy4-Flash SQ-64 is a full-tier cell: not downloaded for the dry run"
+    }
+   },
+   "note": "Stopped by the coordinator 2026-11-23 14:51 (looked idle); use vast0221-3060c. Cells below keep their 0.2.20 dry-run results."
+  },
+  "vast0221-5090": {
+   "jobq": "vast0221-5090",
+   "ssh": "vast0221-5090",
+   "os": "linux",
+   "class": "NVIDIA sm_120 (RTX 5090 32 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-5090"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true,
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true,
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "fetch": true,
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    },
+    "ink-sq10": {
+     "fetch": true,
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    },
+    "qwen-ud-q4kxl": {
+     "fetch": true,
+     "tier": "full"
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "tier": "full"
+    }
+   }
+  },
+  "vast0221-4060": {
+   "jobq": "vast0221-4060",
+   "ssh": "vast0221-4060",
+   "os": "linux",
+   "class": "NVIDIA sm_89 (RTX 4060 8 GB, engine RAM capped to 32 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-8gb"
+   ],
+   "ram_cap_gib": 32,
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true
+    },
+    "ink-sq20": {
+     "fetch": true
+    },
+    "ink-sq10": {
+     "fetch": true
+    }
+   }
+  },
+  "vast0221-spark": {
+   "jobq": "vast0221-spark",
+   "ssh": "vast0221-spark",
+   "os": "linux",
+   "class": "NVIDIA GB10 (DGX Spark class, sm_121, linux-aarch64)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-record"
+   ],
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true
+    },
+    "ink-sq20": {
+     "fetch": true
+    }
+   }
+  },
+  "vast0221-a6000": {
+   "jobq": "vast0221-a6000",
+   "ssh": "vast0221-a6000",
+   "os": "linux",
+   "class": "NVIDIA sm_86 (RTX A6000 48 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "reference": "a6000-ud-q4kxl",
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true
+    },
+    "ink-sq20": {
+     "fetch": true
+    },
+    "qwen-ud-q4kxl": {
+     "fetch": true,
+     "tier": "full"
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "tier": "full"
+    }
+   }
+  },
+  "vast0221-3090": {
+   "jobq": "vast0221-3090",
+   "ssh": "vast0221-3090",
+   "os": "linux",
+   "class": "NVIDIA sm_86 (RTX 3090 24 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "reference": "a6000-ud-q4kxl",
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true
+    },
+    "ink-sq20": {
+     "fetch": true
+    },
+    "qwen-ud-q4kxl": {
+     "fetch": true,
+     "tier": "full"
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "tier": "full"
+    }
+   }
+  },
+  "vast0221-4090b-v8": {
+   "jobq": "vast0221-4090b",
+   "ssh": "vast0221-4090b",
+   "os": "linux",
+   "class": "NVIDIA sm_89 held to an 8 GB card (RTX 4090 + VRAM hog)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "vram_class_gib": 8,
+   "targets": [
+    "ink-8gb"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-20.strata"
+     ]
+    }
+   }
+  },
+  "vast0221-4090b-v12": {
+   "jobq": "vast0221-4090b",
+   "ssh": "vast0221-4090b",
+   "os": "linux",
+   "class": "NVIDIA sm_89 held to a 12 GB card (RTX 4090 + VRAM hog)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "vram_class_gib": 12,
+   "targets": [
+    "ink-12gb"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-20.strata"
+     ]
+    }
+   }
+  },
+  "vast0221-4090b-v16": {
+   "jobq": "vast0221-4090b",
+   "ssh": "vast0221-4090b",
+   "os": "linux",
+   "class": "NVIDIA sm_89 held to a 16 GB card (RTX 4090 + VRAM hog)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "vram_class_gib": 16,
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-20.strata"
+     ]
+    }
+   }
+  },
+  "owner-5070": {
+   "jobq": null,
+   "ssh": null,
+   "os": "windows",
+   "class": "NVIDIA sm_120 (owner PC RTX 5070 12 GB, Windows)",
+   "backend": "nvidia",
+   "grid_dir": "C:/grid0221",
+   "python": "python",
+   "note": "Windows: cell_runner.py is POSIX only. Run the usage suite against a server started in a test folder (jobq box owner, --lock gpu): python tools/release_grid/usage/usage_suite.py --url http://127.0.0.1:PORT",
+   "models": {
+    "ink-ud-q4kxl": {
+     "skip": "Windows cell: cell_runner.py is POSIX only; the usage suite can be run by hand against a test-folder server on the owner PC (12 GB, experts in RAM)"
+    },
+    "ink-sq20": {
+     "skip": "Windows cell: cell_runner.py is POSIX only; the usage suite can be run by hand against a test-folder server on the owner PC (12 GB, experts in RAM)"
+    }
+   }
+  },
+  "z440": {
+   "jobq": "z440",
+   "ssh": "z440",
+   "os": "linux",
+   "class": "NVIDIA sm_86 (2x RTX A4000 16 GB, two-card)",
+   "backend": "nvidia",
+   "grid_dir": "/data/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "models": {
+    "qwen-pack-q2": {
+     "skip": "z440's data disk has 8.8 GB free (2026-11-23): no model fits; the sm_86 class runs on vast0221-3060"
+    },
+    "ink-sq10": {
+     "skip": "z440's data disk has 8.8 GB free (2026-11-23): no model fits; the sm_86 class runs on vast0221-3060"
+    }
+   }
+  },
+  "vast0221-4090b": {
+   "jobq": "vast0221-4090b",
+   "ssh": "vast0221-4090b",
+   "os": "linux",
+   "class": "NVIDIA sm_89 (RTX 4090 24 GB)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "qwen-ud-q4kxl": {
+     "path": "/workspace/p0cuda/models/UD-Q4_K_XL",
+     "profile": {
+      "ready_timeout_s": 3600
+     }
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "profile": {
+      "ready_timeout_s": 3600
+     }
+    },
+    "ink-sq10": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-10.strata"
+     ]
+    },
+    "ink-sq20": {
+     "files": [
+      "/workspace/models/Inkling-2-Mini-SQ-20.strata"
+     ],
+     "vision_files": [
+      "/workspace/models/Inkling-2-Mini-Vision.strata"
+     ]
+    },
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ],
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true,
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "hy4-sq64": {
+     "fetch": true
+    }
+   }
+  },
+  "l620": {
+   "jobq": "l620",
+   "ssh": "l620",
+   "os": "linux",
+   "class": "NVIDIA sm_120 (RTX PRO 5000 72 GB)",
+   "backend": "nvidia",
+   "grid_dir": "~/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "offline": true,
+   "feed_variants": [
+    "cuda13"
+   ],
+   "models": {
+    "qwen-pack-iq3s": {
+     "skip": "l620 has no internet and about 4 GB free on its disk (2026-11-23): needs a staged feed and a shared model copy; ask the coordinator"
+    },
+    "ink-sq10": {
+     "skip": "l620 has about 4 GB free on its disk (2026-11-23)"
+    }
+   }
+  },
+  "boxia-7900xt": {
+   "jobq": "boxia",
+   "ssh": "boxia",
+   "os": "linux",
+   "class": "AMD RDNA3 (RX 7900 XT 24 GB, gfx1100)",
+   "backend": "amd",
+   "grid_dir": "~/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "env": {
+    "HIP_VISIBLE_DEVICES": "0"
+   },
+   "profile": {
+    "min_free_gib": 10,
+    "guard_free_gib": 6,
+    "guard_swap_growth_gib": 0.03
+   },
+   "models": {
+    "ink-ud-iq3xxs": {
+     "files": [
+      "~/grid0221/models/ink-ud-iq3xxs/Inkling-2-Mini-UD-IQ3_XXS.gguf",
+      "~/grid0221/models/ink-ud-iq3xxs/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq10": {
+     "files": [
+      "~/grid0221/models/ink-sq10/Inkling-2-Mini-SQ-10.strata"
+     ]
+    },
+    "qwen-pack-q2": {
+     "skip": "boxia's disk is 32 GiB with about 7 GB free (2026-11-23): a 66 GB pack cannot be stored; no shared copy under /models"
+    }
+   }
+  },
+  "boxia-6700xt": {
+   "jobq": "boxia",
+   "ssh": "boxia",
+   "os": "linux",
+   "class": "AMD RDNA2 (RX 6700 XT 12 GB, gfx1031)",
+   "backend": "amd",
+   "grid_dir": "~/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "env": {
+    "HIP_VISIBLE_DEVICES": "1"
+   },
+   "profile": {
+    "min_free_gib": 10,
+    "guard_free_gib": 6,
+    "guard_swap_growth_gib": 0.03
+   },
+   "models": {
+    "ink-ud-iq3xxs": {
+     "files": [
+      "~/grid0221/models/ink-ud-iq3xxs/Inkling-2-Mini-UD-IQ3_XXS.gguf",
+      "~/grid0221/models/ink-ud-iq3xxs/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq10": {
+     "files": [
+      "~/grid0221/models/ink-sq10/Inkling-2-Mini-SQ-10.strata"
+     ]
+    }
+   }
+  },
+  "p620": {
+   "jobq": "p620",
+   "ssh": "p620",
+   "os": "linux",
+   "class": "AMD RDNA4 (Radeon AI PRO R9700 32 GB, gfx1201)",
+   "backend": "amd",
+   "grid_dir": "/data/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "offline": true,
+   "feed_variants": [
+    "hip-rx9070"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000
+   },
+   "models": {
+    "qwen-pack-iq3s": {
+     "path": "/data/models/models/IQ3_S",
+     "profile": {
+      "ready_timeout_s": 3600
+     }
+    },
+    "ink-sq10": {
+     "files": [
+      "/data/models/inkling2/Inkling-2-Mini-SQ-10.strata"
+     ]
+    }
+   }
+  },
+  "p1006": {
+   "jobq": "p1006",
+   "ssh": "p1006ssh.claryel.space",
+   "os": "linux",
+   "class": "Intel Arc A750 8 GB (SYCL)",
+   "backend": "intel",
+   "grid_dir": "/data/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "profile_name": "slow",
+   "targets": [
+    "ink-record"
+   ],
+   "models": {
+    "ink-ud-iq1s": {
+     "files": [
+      "/data/grid0221/models/ink-ud-iq1s/Inkling-2-Mini-UD-IQ1_S.gguf",
+      "/data/grid0221/models/ink-ud-iq1s/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ]
+    },
+    "ink-sq10": {
+     "fetch": true
+    },
+    "qwen-pack-q2": {
+     "skip": "p1006 has 18 GB free on its disk (2026-11-23): a 66 GB pack does not fit"
+    }
+   }
+  },
+  "github-b70": {
+   "jobq": null,
+   "ssh": null,
+   "os": "linux",
+   "class": "Intel Arc Pro B70 (Battlemage, GitHub Actions runner)",
+   "backend": "intel",
+   "grid_dir": "~/grid0221",
+   "python": "python3",
+   "profile_name": "slow",
+   "note": "No jobq: the coordinator pushes branch ci/intel-runner and starts .github/workflows/intel-runner.yml, whose step runs cell_runner.py --plan PLAN --out OUT with the plan made by grid.py planfile --boxes github-b70.",
+   "models": {
+    "ink-sq10": {
+     "fetch": true
+    }
+   }
+  },
+  "m1002": {
+   "jobq": "m1002",
+   "ssh": "m1002",
+   "os": "mac",
+   "class": "Apple M5 Max (Metal, 128 GB)",
+   "backend": "metal",
+   "grid_dir": "~/strata-m5/grid0221",
+   "python": "python3",
+   "locks": [],
+   "targets": [
+    "ink-record"
+   ],
+   "wrapper": [
+    "~/strata-m5/locks/lockrun.py",
+    "grid0221",
+    "--stream",
+    "GRID",
+    "--nice",
+    "--max-min",
+    "{minutes}",
+    "--"
+   ],
+   "profile": {
+    "min_free_gib": 0,
+    "guard_free_gib": 0,
+    "guard_swap_growth_gib": 4
+   },
+   "models": {
+    "ink-sq10": {
+     "files": [
+      "~/strata-m5/models/inkling/Inkling-2-Mini-SQ-10.strata"
+     ],
+     "skip": "Mac cell: waits for the SQ-10 download on m1002 (about 1 MB/s) and for the owner's word on more downloads; runs under lockrun.py (both locks)"
+    }
+   }
+  },
+  "p2006": {
+   "jobq": "p2006",
+   "ssh": "p2006",
+   "os": "linux",
+   "class": "CPU only (Ryzen 7 255, AVX-512; the 780M is not used)",
+   "backend": "cpu",
+   "grid_dir": "~/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "profile_name": "slow",
+   "profile": {
+    "guard_free_gib": 0,
+    "guard_swap_growth_gib": null
+   },
+   "note": "The 780M iGPU is used by the HIP engine (rx7900 package): never kill an engine mid-run here, so the memory guard is off.",
+   "models": {
+    "ink-sq10": {
+     "fetch": true
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "tier": "full"
+    }
+   }
+  },
+  "vast0221-3060c": {
+   "jobq": "vast0221-3060c",
+   "ssh": "vast0221-3060c",
+   "os": "linux",
+   "class": "NVIDIA sm_86 (RTX 3060 12 GB, the 3060c rental)",
+   "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-12gb"
+   ],
+   "profile": {
+    "ready_timeout_s": 3000,
+    "min_free_gib": 8
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "files": [
+      "/workspace/grid0221/models/keep/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+      "/workspace/grid0221/models/keep/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ],
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "files": [
+      "/workspace/grid0221/models/keep/Inkling-2-Mini-UD-IQ4_XS.gguf",
+      "/workspace/grid0221/models/keep/dspark-Inkling-2-Mini-Q8_0.gguf"
+     ],
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "files": [
+      "/workspace/grid0221/models/keep/Inkling-2-Mini-SQ-20.strata"
+     ],
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    },
+    "ink-sq10": {
+     "files": [
+      "/workspace/grid0221/models/keep/Inkling-2-Mini-SQ-10.strata"
+     ],
+     "vision_files": [
+      "/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    },
+    "qwen-ud-q4kxl": {
+     "fetch": true,
+     "tier": "full"
+    },
+    "qwen-pack-q2": {
+     "fetch": true,
+     "tier": "full"
+    }
+   }
+  },
+  "olares": {
+   "jobq": "olares",
+   "ssh": "olares",
+   "os": "linux",
+   "class": "NVIDIA sm_120 (RTX 5090 Laptop 24 GB, Olares One; the owner's 24 GB laptop class)",
+   "backend": "nvidia",
+   "grid_dir": "~/strata-work/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-record"
+   ],
+   "note": "Lent: our files only under ~/strata-work, no sudo, never touch Olares services or pods; keep at least 20 GB disk and 16 GB RAM free (83 GB disk free at the start).",
+   "profile": {
+    "ready_timeout_s": 3000,
+    "min_free_gib": 16,
+    "guard_free_gib": 8,
+    "guard_swap_growth_gib": 1.0
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    }
+   }
+  }
+ }
+}

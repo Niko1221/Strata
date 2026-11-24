@@ -56,6 +56,8 @@ Every single-GPU or uniform-`sm_70` run enables 21 bit-exact switches by default
 
 - `STRATA_ADAPT_OVERLAP=1`, `STRATA_SM70_TABLE=1`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_TSUM=1`, `STRATA_SMALL_UNR=3`, `STRATA_GR_NORM_FAST=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ARGMAX_ROWS_SM70=1`, `STRATA_LFUSE=1`, `STRATA_GDN_SPLIT=1`, `STRATA_SH_STREAM=1`, `STRATA_Q80_ROWS1=1`, `STRATA_NO_MMVQ_ROWS2=1`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_GR_Q8_DOWN_MODE=2`, `STRATA_GR_Q8_UP_COLS=16`, `STRATA_GR_Q8_UP_MODE=2`, `STRATA_SCORES_HALVE=1`, `STRATA_SCORES_THREAD=1`, `STRATA_TOPK_SAMPLE=1`, `STRATA_SELECT_LONG=1`.
 
+`STRATA_GDN_SPLIT=1` holds one 8-row window per thread and has no batched commit, so the 12-token `--lookup-max-t` default of the 8-row CUDA build cannot run with it (0.2.20 ended the engine on the first request with `gdn_step_norm_multi: invalid arguments`). Since 0.2.21 the engine drops the table's `STRATA_GDN_SPLIT=1` (one line at start) when the lookup window is wider than the build's rows; a `-DSTRATA_WINDOW_MAX_T=16` build keeps it. A `STRATA_GDN_SPLIT=1` you set yourself is kept and the lookup window is clamped to 8 with a warning.
+
 When running under CUDA 13 via [nbald/volta-forever](https://github.com/nbald/volta-forever), Strata probes `volta_forever_version` in `libcuda.so.1`, remaps emulated `7.5` reporting back to Volta `(7, 0)` for defaults and kernel selection, and keeps `CUDA_MODULE_LOADING=LAZY` so cuBLAS initialization does not exhaust heap memory.
 
 ## Opt-in switches

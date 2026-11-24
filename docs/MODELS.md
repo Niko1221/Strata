@@ -165,6 +165,15 @@ options and never setup's default. The download includes the 28 GB n-gram table.
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
 | **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory |
 
+The **fits** label compares the model files (excluding the n-gram table) with
+the available RAM and VRAM together. Setup makes a separate decision about
+keeping experts in memory. It can select low-RAM mode when system RAM cannot
+hold the experts with about 10 GiB left for the OS and other buffers. In that
+mode, Strata keeps experts in RAM only if the experts outside the GPU cache
+still fit with that headroom. Otherwise it reads them through the OS file cache,
+which can mean repeated SSD reads. A model can show **fits** and still stream
+experts from disk.
+
 Gyro runs on NVIDIA and AMD (experimental), on Intel Arc under Linux, and on Apple Silicon Macs. It reads pictures.
 On an RTX 3060 12 GB and an R9700, Gyro-M decodes 16 to 21% slower than Q2_0. Details, measurements and credit:
 [GYRO.md](GYRO.md). Intel Arc: [INTEL_ARC.md](INTEL_ARC.md). Mac: [MAC.md](MAC.md#gyro-s-and-gyro-m-agentionais-trellis-experts).
@@ -272,7 +281,7 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 | **SQ-15** | 14.3 GB | 16 GB GPU, 24 GB Mac, or 12 GB hybrid | flagship quality |
 | **SQ-20** | 19.3 GB | 24 GB GPU or 32+ GB unified | near-lossless native SF4+MX8 build |
 
-**Unsloth Dynamic GGUF builds** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), plus 0.40 GB companion DSpark drafter)
+**Unsloth Dynamic GGUF builds** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), plus a 0.40 to 0.64 GB companion DSpark drafter)
 
 | Range | File sizes | Typical hardware |
 | --- | ---: | --- |
@@ -283,6 +292,41 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 ```sh
 strata launch --family inkling-2-mini --model SQ-15
 ```
+
+**The DSpark drafter (speculative drafting)** is decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dspark` always turns it on, `--drafting off` always off).
+It is one small model: the original `mtp.safetensors` of Thinking Machines (636 MB, BF16; downloaded for the GGUF builds, pinned by commit and checksum), with Unsloth's 402 MB Q8_0 copy of the same weights (`dspark-...-Q8_0.gguf`, the version before 2026-11-23) as the fallback; the copy inside the SQ builds is the same checkpoint too. It guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
+code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
+are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs
+a few hundred MB of video memory on a card that is already full (it takes a little expert space; up to 1 GB when the card has room), and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+
+### Inkling-2-Mini: thinking levels
+
+Inkling-2-Mini is trained with a **number** for how much it should think: the chat template writes `Thinking effort level: <n>` ahead of
+the conversation, `0` meaning no thinking. Strata sends the number the model was trained with and keeps names for convenience:
+
+| You send | Level written | Notes |
+| --- | --- | --- |
+| `"none"`, `"off"`, `0`, `"chat_template_kwargs": {"enable_thinking": false}`, Anthropic `"thinking": {"type": "disabled"}` | `0` | No thinking pass; the answer starts at once. |
+| `"minimal"` | `0.1` | |
+| `"low"` | `0.2` | **The default** when a request names none (config `reasoning_effort`, or `STRATA_INKLING_EFFORT`, changes it). |
+| `"medium"` | `0.7` | Anthropic `budget_tokens` 2K to 8K. |
+| `"high"` | `0.9` | |
+| `"xhigh"`, `"max"` | `0.99` | |
+| a number from 0 to 0.99 (`"reasoning_effort": 0.5`) | that number | Passed to the template as it is; above 0.99 is 0.99. |
+
+A level above 0 lets the model write its thinking before the answer or a tool call. It comes back where each API puts thinking: chat
+completions `message.reasoning_content` (streamed as `delta.reasoning_content`), Anthropic messages a `thinking` content block, the
+Responses API a `reasoning` output item with `reasoning_text` content. The thinking tokens are counted in
+`usage.completion_tokens_details.reasoning_tokens` (Responses: `output_tokens_details.reasoning_tokens`).
+
+**The thinking cannot run away.** A request's own `reasoning_budget_tokens` (or Anthropic `budget_tokens`) is the limit; without one
+the default of its level applies: 1,024 tokens at `none` and `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at
+`xhigh` and `max`. `STRATA_INKLING_THINKING_BUDGET=<tokens>` (config `inkling_thinking_budget`) sets one number for every level, `0`
+none; a request's `reasoning_budget_tokens: 0` turns the default off for that request. When the budget is spent the server ends the
+thinking with a short wrap-up and the model answers. Whatever `max_tokens` is, a quarter of it (at least 512 tokens, but never more
+than half of it) stays for the answer. A reply that still ends with no text and no tool call is retried once with the answer
+opened, and if nothing visible can be produced the reply says so (`[No answer: ...]`) with `finish_reason` left as it was: never an
+empty string. See [DETAILS.md](DETAILS.md) for the settings.
 
 ## Adding or switching models
 

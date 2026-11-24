@@ -36,11 +36,21 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
     def test_discrete_16gb_and_24gb_mac_select_sq15(self):
         # #6613: 16 GiB discrete GPU at 32K plans SQ-15 as safe hybrid (never OOMing on KV growth),
         # while speed preference selects 100%-VRAM SQ-10 and 24 GiB Mac UMA fits SQ-15 100% in memory.
-        rec_16 = inkling_fit.recommend(vram_gib=16, ram_gib=32)
+        # quality: the biggest build with part of its experts in RAM (safe on HIP, slow); CUDA balanced: SQ-15 all in the card, K/V in RAM
+        rec_16 = inkling_fit.recommend(vram_gib=16, ram_gib=32, preference="quality")
         self.assertEqual(rec_16["build"], "SQ-15")
         self.assertEqual(rec_16["mode"], "ram_vram_zero_ssd")
         self.assertTrue(rec_16["fits"])
         self.assertLessEqual(rec_16["placement"]["vram_gb"], 10.6)
+        rec_16_cuda = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend="cuda", preference="balanced")
+        self.assertEqual(rec_16_cuda["build"], "SQ-15")
+        self.assertEqual(rec_16_cuda["mode"], "full_vram")
+        self.assertGreater(rec_16_cuda["placement"]["host_kv_gb"], 0.5)
+        # "balanced" with a backend that is not named, or HIP, keeps SQ-10 (the K/V grow pool of #6613 has no room beside SQ-15)
+        for bkd in (None, "hip"):
+            rec_16_safe = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend=bkd, preference="balanced")
+            self.assertEqual(rec_16_safe["build"], "SQ-10", bkd)
+            self.assertEqual(rec_16_safe["mode"], "full_vram", bkd)
 
         rec_16_speed = inkling_fit.recommend(vram_gib=16, ram_gib=32, preference="speed")
         self.assertEqual(rec_16_speed["build"], "SQ-10")
@@ -115,7 +125,7 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
         # #6613: 16 GiB (and 15.92 GiB Radeon RX 9060 XT / RX 9070 XT) + SQ-15 + 32K must NOT plan full_vram=True
         # (12.28 GB experts leaves <100 MiB for HIP kv grow_pool); it keeps safe VRAM headroom (~10.44-10.53 GB experts)
         # while SQ-10 fits 100% in VRAM at 32K and SQ-15 fits 100% in VRAM at 8K.
-        for v_16, bkd in ((15.92, "hip"), (15.92, None), (16.0, "cuda")):
+        for v_16, bkd in ((15.92, "hip"), (15.92, None)):
             p16 = inkling_fit.compute("SQ-15", v_16, 64, 32768, backend=bkd)
             self.assertEqual(p16["kv_dtype"], "fp16")
             self.assertFalse(p16["full_vram"], (v_16, bkd, p16))
@@ -123,6 +133,13 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
             self.assertGreater(p16["ram_gb"], 1.5, (v_16, bkd, p16))
             self.assertEqual(p16["ssd_gb"], 0.0)
             self.assertEqual(p16["host_kv_gb"], 0.0)
+
+        # CUDA names itself: all 12.28 GB of SQ-15 experts in the card, the K/V in RAM (the engine does this by itself on a card this size;
+        # an A4000 16 GB kept 0.4 GiB free after start-up and answered 8K prompts: RESULTS-0221-INKCUDA.md)
+        p16_cuda = inkling_fit.compute("SQ-15", 15.5, 64, 32768, backend="cuda")
+        self.assertTrue(p16_cuda["full_vram"], p16_cuda)
+        self.assertEqual(p16_cuda["ram_gb"], 0.0)
+        self.assertGreater(p16_cuda["host_kv_gb"], 0.5)
 
         p16_radeon_vis = inkling_fit.compute("SQ-15", 15.92, 64, 32768, vision=True, backend="hip")
         self.assertFalse(p16_radeon_vis["full_vram"])
@@ -197,7 +214,8 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
                     self.assertTrue(p["full_vram"], (pool, b, p))
                 elif pool == 24 and b in ("SQ-15", "SQ-10", "UD-Q4_K_XL", "UD-Q4_K_M", "UD-IQ4_XS", "UD-Q3_K_XL", "UD-IQ3_XXS", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
                     self.assertTrue(p["full_vram"], (pool, b, p))
-                elif pool == 16 and b in ("SQ-10", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
+                # UD-Q2_K_XL: its routed experts are 7.89 GB (GGUF headers), not the 7.26 the table once said: 0.05 GB short of a 16 GiB pool
+                elif pool == 16 and b in ("SQ-10", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
                     self.assertTrue(p["full_vram"], (pool, b, p))
 
     def test_kv_cache_scales_for_parallel_1_to_64(self):

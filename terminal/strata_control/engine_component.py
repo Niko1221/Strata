@@ -1109,6 +1109,79 @@ def hip_preference(archs) -> int:
     return 0 if archs and all(a.startswith("gfx103") for a in archs) else 1
 
 
+#: AMD chips that share the system memory (an iGPU): a card with memory of its own is preferred over them, and an engine build that has
+#: code only for such a chip does not "fit" a PC that also has a discrete card (#6650: an RX 7900 build chosen for an R9700 beside a 780M).
+HIP_IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+
+
+def _gfx_base(arch) -> str:
+    return str(arch or "").split(":", 1)[0].strip().lower()
+
+
+def hip_counted(present, main: str = "") -> list[str]:
+    """The AMD architectures an engine build has to cover on this PC: the discrete cards, or every card when the PC has only integrated
+    ones (a Strix Halo alone), or just  when that is an integrated chip the person chose. An iGPU beside a discrete card does not count: the model runs on the discrete card, and a build with code for the
+    iGPU only would start and give garbage or be refused there (#6650)."""
+    base = [a for a in (_gfx_base(x) for x in present or ()) if a]
+    if _gfx_base(main) in HIP_IGPU_ARCHS and _gfx_base(main) in base:      # the person pointed the model at the integrated chip (HIP_VISIBLE_DEVICES)
+        return [_gfx_base(main)]
+    discrete = [a for a in base if a not in HIP_IGPU_ARCHS]
+    return discrete or base
+
+
+def hip_covers_main(archs, main: str) -> int:
+    """1 when the build has code for the card the model will run on (`hip_main_arch`), else 0 (also 0 when that card is not known)."""
+    wanted = _gfx_base(main)
+    return 1 if wanted and any(_gfx_base(a) == wanted for a in archs or ()) else 0
+
+
+def hip_cards_present(kfd_root: str | None = None) -> list[dict]:
+    """Linux: ``[{"index", "arch", "vram_gb"}]`` for each AMD GPU of the kernel driver's topology, numbered as the HIP runtime numbers them
+    (GPU nodes in node order). ``vram_gb`` is 0.0 when the memory banks cannot be read. Empty when there is no topology."""
+    root = Path(kfd_root or "/sys/class/kfd/kfd/topology/nodes")
+    try:
+        nodes = sorted((n for n in root.iterdir() if n.name.isdigit()), key=lambda n: int(n.name))
+    except OSError:
+        return []
+    cards: list[dict] = []
+    for node in nodes:
+        try:
+            props = dict(line.split(None, 1) for line in (node / "properties").read_text(encoding="utf-8").splitlines() if len(line.split(None, 1)) == 2)
+            version, simd = int(props.get("gfx_target_version", "0")), int(props.get("simd_count", "0"))
+        except (OSError, ValueError):
+            continue
+        if version <= 0 or simd <= 0:
+            continue
+        vram = 0
+        try:
+            for bank in sorted((node / "mem_banks").iterdir()):
+                text = dict(line.split(None, 1) for line in (bank / "properties").read_text(encoding="utf-8").splitlines() if len(line.split(None, 1)) == 2)
+                if str(text.get("heap_type", "")).strip() in ("1", "2"):
+                    vram += int(str(text.get("size_in_bytes", "0")).strip() or 0)
+        except (OSError, ValueError):
+            pass
+        cards.append({"index": len(cards), "arch": f"gfx{version // 10000}{version // 100 % 100:x}{version % 100:x}", "vram_gb": vram / 2 ** 30})
+    return cards
+
+
+def hip_main_arch(cards: list[dict], environ=None) -> str:
+    """The architecture of the card the model runs on when the person has not said otherwise: the first card of HIP_VISIBLE_DEVICES /
+    ROCR_VISIBLE_DEVICES, else a discrete card before an integrated one, then the most memory (the order setup's ``amd_rank`` uses).
+    "" when `cards` is empty."""
+    cards = [c for c in cards or () if isinstance(c, dict) and c.get("arch")]
+    if not cards:
+        return ""
+    env = os.environ if environ is None else environ
+    for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        first = str(env.get(name) or "").split(",", 1)[0].strip()
+        if first.isdigit():
+            picked = [c for c in cards if int(c.get("index", -1)) == int(first)]
+            if picked:
+                return _gfx_base(picked[0]["arch"])
+    best = min(cards, key=lambda c: (_gfx_base(c["arch"]) in HIP_IGPU_ARCHS, -round(float(c.get("vram_gb") or 0)), int(c.get("index", 0))))
+    return _gfx_base(best["arch"])
+
+
 def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
     """The plain sentence for an AMD engine that has code for other cards than this computer's (a tester build for another card)."""
     if here and all(a in NO_PACKAGE_HIP for a in here):      # asking for "the RX 6000 build" would send the person to one that does not exist
@@ -1156,7 +1229,8 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
     hip_here = hip_archs_present() if wanted == "hip" else []
     if wanted == "hip" and not hip_here and os.name != "nt":
         hip_here = hip_archs_from_pci()
-    hip_here_base = {a.split(":", 1)[0].lower() for a in hip_here}
+    hip_here_base = set(hip_counted(hip_here))            # the discrete cards; the iGPU only when it is the only one (#6650)
+    hip_main = hip_main_arch(hip_cards_present()) if (wanted == "hip" and len(hip_here_base) > 1) else ""
     have_runtime = runtime if runtime is not None else runtime_version()
     for item in found:
         label = f"{item.version} {item.platform}-{item.backend}"
@@ -1228,7 +1302,8 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
                             base, problems=problems)
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
     return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0")),
-                                         hip_preference(item.hip_archs), arch_native(item.cuda_archs, archs_here)))
+                                         hip_covers_main(item.hip_archs, hip_main), hip_preference(item.hip_archs),
+                                         arch_native(item.cuda_archs, archs_here)))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the

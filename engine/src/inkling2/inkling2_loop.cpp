@@ -44,17 +44,7 @@ inline float fp16_bits_to_f32(uint16_t h) noexcept {
 }
 
 inline float dot_f32(const float* a, const float* b, size_t n) noexcept {
-    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
-    size_t i = 0;
-    for (; i + 4 <= n; i += 4) {
-        s0 += a[i + 0] * b[i + 0];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
-    }
-    float s = (s0 + s1) + (s2 + s3);
-    for (; i < n; ++i) s += a[i] * b[i];
-    return s;
+    return strata::quant::sk::dot_f32(a, b, n);   // the run-time ISA tier (AVX-512 / AVX2 / NEON; plain C++ on a CPU with none)
 }
 
 }  // namespace
@@ -518,6 +508,240 @@ void eval_inkling2_expert_batch(
             quantize_q8_1_g64(at, qact.data() + t * a_stride, inter);
         }
         gemm_paired2_sk_q8_1(body + dn_offset, dn_code, qact.data(), y_out, hidden, inter, m);
+    }
+}
+
+namespace {
+
+// The GGUF_RAW kernels eval_inkling2_expert_batch picks for one tensor type (quantized dot with an activation quantizer).
+struct GgufDot {
+    const strata::quant::DotKernel* dk = nullptr;
+    const strata::quant::DotX4Kernel* dk4 = nullptr;
+    const strata::quant::ActKernel* ak = nullptr;
+    size_t row_b = 0, act_rb = 0;
+    bool ok = false;
+};
+
+GgufDot gguf_dot_for(uint32_t type, size_t cols) noexcept {
+    GgufDot g;
+    int be = 0, bb = 0;
+    strata::block_geometry(type, be, bb);
+    g.row_b = (be > 0) ? (cols / static_cast<size_t>(be)) * static_cast<size_t>(bb) : 0;
+    const auto qt = static_cast<strata::quant::Type>(type);
+    const auto* ti = strata::quant::type_info(qt);
+    const auto arith = strata::quant::default_arith();
+    g.dk = (ti && ti->has_dot) ? strata::quant::dot_kernel(qt, arith) : nullptr;
+    g.dk4 = (ti && ti->has_dot) ? strata::quant::dot_x4_kernel(qt, arith) : nullptr;
+    g.ak = (g.dk && ti && ti->act != qt) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
+    g.act_rb = g.ak ? strata::quant::row_bytes(static_cast<int>(ti->act), static_cast<int64_t>(cols)) : 0;
+    g.ok = g.dk && g.ak && g.act_rb > 0 && g.row_b > 0;
+    return g;
+}
+
+// One weight row -> floats, as the dequantize fallback of eval_inkling2_expert_batch does it.
+void gguf_deq_row(uint32_t type, const uint8_t* src, float* wrow, size_t n) noexcept {
+    if (type == 0) {
+        std::memcpy(wrow, src, n * 4);
+    } else if (type == 1) {
+        const uint16_t* p = reinterpret_cast<const uint16_t*>(src);
+        for (size_t c = 0; c < n; ++c) wrow[c] = fp16_bits_to_f32(p[c]);
+    } else if (type == 30) {
+        const uint16_t* p = reinterpret_cast<const uint16_t*>(src);
+        for (size_t c = 0; c < n; ++c) {
+            uint32_t u = static_cast<uint32_t>(p[c]) << 16;
+            std::memcpy(&wrow[c], &u, 4);
+        }
+    } else {
+        strata::quant::dequant_row(static_cast<strata::quant::Type>(type), src, wrow, static_cast<int64_t>(n));
+    }
+}
+
+}  // namespace
+
+bool expert_m1_splittable(SkCode gu_code, SkCode dn_code, const uint8_t* body, size_t hidden, size_t inter) noexcept {
+    if (gu_code != SkCode::GGUF_RAW && dn_code != SkCode::GGUF_RAW) return true;
+    if (gu_code != dn_code || !body) return false;
+    // GGUF_RAW: the quantized-dot fast path and the dequantize fallback (Q8_0, F16, ...) are both split, as long as
+    // the tensor type has a known block geometry
+    GgufExpertHeader hdr{};
+    std::memcpy(&hdr, body, sizeof(hdr));
+    return gguf_dot_for(hdr.gu_type, hidden).row_b > 0 && gguf_dot_for(hdr.dn_type, inter).row_b > 0;
+}
+
+void expert_m1_gu_rows(const uint8_t* body, SkCode gu_code, const float* x_in, size_t hidden, size_t inter,
+                       size_t r0, size_t r1, float* gu) noexcept {
+    if (r1 <= r0) return;
+    if (gu_code == SkCode::GGUF_RAW) {
+        // same kernels and the same 4-row grouping as the whole-expert function (r0, r1 are multiples of 4)
+        GgufExpertHeader hdr{};
+        std::memcpy(&hdr, body, sizeof(hdr));
+        const GgufDot g = gguf_dot_for(hdr.gu_type, hidden);
+        const uint8_t* w_base = body + sizeof(GgufExpertHeader);
+        if (!g.ok) {   // dequantize fallback (Q8_0 ...): one decoded row at a time, dot in float
+            static thread_local std::vector<float> wrow;
+            wrow.resize(hidden);
+            if ((hdr.flags & 1u) != 0) {
+                for (size_t r = r0; r < r1; ++r) {
+                    gguf_deq_row(hdr.gu_type, w_base + r * g.row_b, wrow.data(), hidden);
+                    gu[r] = dot_f32(wrow.data(), x_in, hidden) * (((r & 1u) == 0) ? hdr.gate_scale : hdr.up_scale);
+                }
+            } else {
+                for (size_t j = r0 / 2; j < r1 / 2; ++j) {
+                    gguf_deq_row(hdr.gu_type, w_base + j * g.row_b, wrow.data(), hidden);
+                    gu[2 * j + 0] = dot_f32(wrow.data(), x_in, hidden) * hdr.gate_scale;
+                    gguf_deq_row(hdr.gu_type, w_base + (inter + j) * g.row_b, wrow.data(), hidden);
+                    gu[2 * j + 1] = dot_f32(wrow.data(), x_in, hidden) * hdr.up_scale;
+                }
+            }
+            return;
+        }
+        static thread_local std::vector<uint8_t> qa;
+        qa.resize(g.act_rb);
+        g.ak->fn(x_in, qa.data(), static_cast<int64_t>(hidden));
+        if ((hdr.flags & 1u) != 0) {
+            size_t r = r0;
+            if (g.dk4) {
+                for (; r + 4 <= r1; r += 4) {
+                    float s4[4];
+                    g.dk4->fn(static_cast<int>(hidden), s4, w_base + r * g.row_b, g.row_b, qa.data());
+                    gu[r + 0] = s4[0] * hdr.gate_scale;
+                    gu[r + 1] = s4[1] * hdr.up_scale;
+                    gu[r + 2] = s4[2] * hdr.gate_scale;
+                    gu[r + 3] = s4[3] * hdr.up_scale;
+                }
+            }
+            for (; r < r1; ++r) {
+                float s = 0.0f;
+                g.dk->fn(static_cast<int>(hidden), &s, w_base + r * g.row_b, qa.data());
+                gu[r] = s * (((r & 1u) == 0) ? hdr.gate_scale : hdr.up_scale);
+            }
+        } else {
+            // split layout: gate rows [0, inter), up rows [inter, 2*inter); the output is interleaved (2j gate, 2j+1 up)
+            size_t j = r0 / 2;
+            const size_t j1 = r1 / 2;
+            if (g.dk4) {
+                for (; j + 4 <= j1; j += 4) {
+                    float g4[4], u4[4];
+                    g.dk4->fn(static_cast<int>(hidden), g4, w_base + j * g.row_b, g.row_b, qa.data());
+                    g.dk4->fn(static_cast<int>(hidden), u4, w_base + (inter + j) * g.row_b, g.row_b, qa.data());
+                    float* dst = gu + 2 * j;
+                    for (int k = 0; k < 4; ++k) {
+                        dst[2 * k + 0] = g4[k] * hdr.gate_scale;
+                        dst[2 * k + 1] = u4[k] * hdr.up_scale;
+                    }
+                }
+            }
+            for (; j < j1; ++j) {
+                float gs = 0.0f, us = 0.0f;
+                g.dk->fn(static_cast<int>(hidden), &gs, w_base + j * g.row_b, qa.data());
+                g.dk->fn(static_cast<int>(hidden), &us, w_base + (inter + j) * g.row_b, qa.data());
+                gu[2 * j + 0] = gs * hdr.gate_scale;
+                gu[2 * j + 1] = us * hdr.up_scale;
+            }
+        }
+        return;
+    }
+    if (gu_code == SkCode::SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w13_outer = hdr[0] / hdr[1];
+        const size_t w13_p_bytes = (2 * inter) * (hidden / 2);
+        const uint8_t* w13_p = body + 16;
+        const uint8_t* w13_s = w13_p + w13_p_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            gu[r] = dot_sf4_f32_row(w13_p + r * (hidden / 2), w13_s + r * (hidden / 16), w13_outer, x_in, hidden);
+        }
+    } else if (gu_code == SkCode::MX8) {
+        const size_t w13_w_bytes = (2 * inter) * hidden;
+        const uint8_t* w13_w = body;
+        const uint8_t* w13_s = w13_w + w13_w_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            gu[r] = dot_mx8_f32_row(w13_w + r * hidden, w13_s + r * (hidden / 32), x_in, hidden);
+        }
+    } else {
+        const uint8_t* gu_ptr = body + inter * 2;
+        const size_t x_stride = hidden / SUB_G;
+        static thread_local std::vector<BlockQ8_1_G64> qx;
+        qx.resize(x_stride);
+        quantize_q8_1_g64(x_in, qx.data(), hidden);
+        const size_t row_bytes = (hidden / QK_S) * superblock_bytes(gu_code);
+        gemm_sk_q8_1(gu_ptr + r0 * row_bytes, gu_code, qx.data(), gu + r0, r1 - r0, hidden, 1);
+    }
+}
+
+void expert_m1_act(const float* gu, size_t j0, size_t j1, float* act) noexcept {
+    for (size_t j = j0; j < j1; ++j) act[j] = situ_scalar(gu[2 * j], gu[2 * j + 1], kSituBeta, kSituLb);
+}
+
+void expert_m1_dn_rows(const uint8_t* body, SkCode dn_code, uint32_t dn_offset, const float* act,
+                       size_t hidden, size_t inter, size_t r0, size_t r1, float* y) noexcept {
+    if (r1 <= r0) return;
+    if (dn_code == SkCode::GGUF_RAW) {
+        GgufExpertHeader hdr{};
+        std::memcpy(&hdr, body, sizeof(hdr));
+        const GgufDot g = gguf_dot_for(hdr.dn_type, inter);
+        const uint8_t* w2_base = body + dn_offset;
+        if (!g.ok) {
+            static thread_local std::vector<float> wrow;
+            wrow.resize(inter);
+            for (size_t r = r0; r < r1; ++r) {
+                gguf_deq_row(hdr.dn_type, w2_base + r * g.row_b, wrow.data(), inter);
+                y[r] = dot_f32(wrow.data(), act, inter) * hdr.dn_scale;
+            }
+            return;
+        }
+        static thread_local std::vector<uint8_t> qa;
+        qa.resize(g.act_rb);
+        g.ak->fn(act, qa.data(), static_cast<int64_t>(inter));
+        size_t r = r0;
+        if (g.dk4) {
+            for (; r + 4 <= r1; r += 4) {
+                float s4[4];
+                g.dk4->fn(static_cast<int>(inter), s4, w2_base + r * g.row_b, g.row_b, qa.data());
+                y[r + 0] = s4[0] * hdr.dn_scale;
+                y[r + 1] = s4[1] * hdr.dn_scale;
+                y[r + 2] = s4[2] * hdr.dn_scale;
+                y[r + 3] = s4[3] * hdr.dn_scale;
+            }
+        }
+        for (; r < r1; ++r) {
+            float s = 0.0f;
+            g.dk->fn(static_cast<int>(inter), &s, w2_base + r * g.row_b, qa.data());
+            y[r] = s * hdr.dn_scale;
+        }
+        return;
+    }
+    if (dn_code == SkCode::SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w2_outer = hdr[2] / hdr[3];
+        const size_t w2_p_bytes = hidden * (inter / 2);
+        const uint8_t* w2_p = body + dn_offset;
+        const uint8_t* w2_s = w2_p + w2_p_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            y[r] = dot_sf4_f32_row(w2_p + r * (inter / 2), w2_s + r * (inter / 16), w2_outer, act, inter);
+        }
+    } else if (dn_code == SkCode::MX8) {
+        const size_t w2_w_bytes = hidden * inter;
+        const uint8_t* w2_w = body + dn_offset;
+        const uint8_t* w2_s = w2_w + w2_w_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            y[r] = dot_mx8_f32_row(w2_w + r * inter, w2_s + r * (inter / 32), act, inter);
+        }
+    } else {
+        static thread_local std::vector<float> at;
+        static thread_local std::vector<BlockQ8_1_G64> qact;
+        at.resize(inter);
+        qact.resize(inter / SUB_G);
+        for (size_t j = 0; j < inter; ++j) {
+            uint16_t bits;
+            std::memcpy(&bits, body + 2 * j, 2);
+            const float inv_s = 1.0f / fp16_bits_to_f32(bits);
+            at[j] = act[j] * inv_s;
+        }
+        quantize_q8_1_g64(at.data(), qact.data(), inter);
+        const size_t pair_bytes = ((2 * inter) / QK_S) * superblock_bytes(dn_code);
+        gemv_paired2_sk_q8_1(body + dn_offset + (r0 / 2) * pair_bytes, dn_code, qact.data(), y + r0, r1 - r0, inter);
     }
 }
 

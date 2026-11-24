@@ -4,7 +4,9 @@ and `strata launch` all ask.
 Three kinds of place hold a model's run config (`strata-<tag>.json`), looked at in this order, the first that has any is the main one:
 
 * explicit   STRATA_INSTALL_DIR or an --install-dir argument (it is the only place looked at);
-* here       the Terminal's own folder, when it has run configs (a source checkout that ran setup);
+* here       the Terminal's own folder, when it has run configs (a source checkout that ran setup); a running control
+             component counts with its own store's install folder, the ``<components>/../install`` beside it (#6732: an
+             older dev checkout remembered in the settings file must not outrank the install whose command is running);
 * remembered the folders earlier Strata installs wrote into the user's settings file (``installs``);
 * app        the desktop app's install folder, which the Terminal shares: ``<components>/../install`` (Windows
              ``%LOCALAPPDATA%\\Strata\\install``, Linux and Mac ``$XDG_DATA_HOME/strata/install``, default ``~/.local/share/strata/install``).
@@ -158,6 +160,17 @@ class Place:
     configs: int = 0
 
 
+def component_store_install(here: Path) -> Path | None:
+    """The install folder of the control component that is running: components sit at ``<store>/components/control/<version>``
+    and that store's run configs live in ``<store>/install``, beside the components folder. None for anything else (a source
+    checkout, an old Terminal folder). #6732: without it `strata launch --model` read the model's settings from an older dev
+    checkout remembered in the settings file and started that build's older engine quietly, though the caller's own components
+    were current."""
+    if here.parent.name.lower() == "control" and len(here.parents) > 1:
+        return here.parents[1].parent / "install"
+    return None
+
+
 def places(*, here: Path | None = None, explicit: str | os.PathLike | None = None, environ=None, windows: bool | None = None,
            home: Path | None = None) -> list[Place]:
     """Every folder that holds run configs, in the order described above. An explicit folder is the only one."""
@@ -172,6 +185,9 @@ def places(*, here: Path | None = None, explicit: str | os.PathLike | None = Non
         cands.append((Path(data_root).expanduser() / "install", "datadir"))
     if here is not None:
         cands.append((Path(here), "here"))
+        own_store = component_store_install(Path(here))
+        if own_store is not None:
+            cands.append((own_store, "here"))      # the running component's own install folder, not "an earlier install" (#6732)
     own = own_settings_file(environ, windows=windows, home=home)
     cands += [(p, "remembered") for p in _installs_in(_read_json(own))]
     cands += [(app_install_dir(environ, windows=windows, home=home), "app")]

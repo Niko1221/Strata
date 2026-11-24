@@ -17,7 +17,8 @@ struct ImageRec;  // defined in ink_vision.h
 struct BackendOpts {
     int max_ctx = 32768;
     int parallel = 1;            // 1..64 concurrent slots
-    int chunk = 512;
+    int chunk = 512;             // prompt tokens per step; the CUDA backend picks a larger one by itself while chunk_auto (see strata/core/ink_chunk.hpp)
+    bool chunk_auto = true;      // false once --chunk is given; only the CUDA backend reads it, every other backend uses chunk as it is
     int gpu_index = 0;
     int gpus = 1;                // 1..4 (--gpus 2 / --gpus 0,1 / --layer-split auto)
     std::vector<int> gpu_ids;    // optional explicit GPU ordinals (--gpus 0,1 / --devices 0,1 / IK2_GPUS)
@@ -33,6 +34,10 @@ struct BackendOpts {
     bool kv_dtype_auto = true;   // default lossless FP16; Host KV Offload handles VRAM capacity (#552)
     std::string kv_offload = "auto"; // "auto" | "on" | "off" (zero-copy mapped pinned host global KV spill)
     bool enable_dspark = true;
+    int spec_beam = -1;          // --draft-beam N: 1 = one linear chain (the block drafter), 4 = the beam tree (default); < 0 = STRATA_INK_SPEC_BEAM or 4
+    double spec_cost = -1.0;     // --draft-cost R: the MoE share of a verify step in the window-size model (default 4.2)
+    double spec_plain = -1.0;    // --draft-plain X: > 0 lets a step fall back to one plain token when the drafter's expected tokens do not pay for the window (1.0 = break-even)
+    bool spec_adapt = false;     // --draft-adapt: per request, drafting goes off for 40 steps when its measured gain falls below 0.93 (all backends, see ink_serve.h)
     std::string dspark_path;     // optional external mtp.safetensors or dspark-*.gguf
     std::string vision_path;
 };
@@ -46,6 +51,18 @@ struct BackendStats {
     int active_slots = 0;
     int max_slots = 1;
     KvDtype kv_dtype = KvDtype::FP16;
+    uint64_t expert_selections = 0;   // routed experts counted on the batched path (decode), 0 when the backend does not count
+    uint64_t expert_misses = 0;       // of those, the ones not in the card
+};
+
+// Candidate rows of forward_batch_cand: row r (in the order of the wanted-logits rows) holds `k` = min(kInkCandidates, vocab)
+// ids and logits in val / idx [r * kInkCandidates + 0 .. k), and finite[r] (1 = every 67th logit of the row is finite).
+struct CandRows {
+    int rows = 0;
+    int k = 0;
+    std::vector<float> val;
+    std::vector<int32_t> idx;
+    std::vector<uint8_t> finite;
 };
 
 class InkBackend {
@@ -56,6 +73,11 @@ public:
     virtual std::string device_info() const = 0;
     virtual BackendStats stats() const = 0;
     virtual int effective_max_ctx() const { return 0; }
+    virtual int effective_chunk() const { return 0; }     // the prefill chunk the backend really runs with (0: opts.chunk)
+    // The last forward_batch failed only because the global K/V could not grow (no room in the card, none to spill to): the engine is fine, the
+    // requests whose positions reach kv_capacity_tokens() are the ones to end (#6905); every other failure is fatal.
+    virtual bool last_failure_is_kv_growth() const { return false; }
+    virtual int kv_capacity_tokens() const { return 0; }
 
     // Load Section 1 trunk + DSpark + 3x loop-weighted Section 4 experts into device/host memory
     virtual bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) = 0;
@@ -79,6 +101,17 @@ public:
         return false;
     }
 
+    // Separate shared-prefix snapshot; valid only while this slot's global KV prefix is intact.
+    virtual bool supports_shared_checkpoint() const { return false; }
+    virtual bool save_shared_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+    virtual bool restore_shared_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }
 
@@ -89,6 +122,19 @@ public:
         float* logits_out,
         TapCapture* taps_out,
         std::string& err) = 0;
+
+    // The same step, but a row of logits is not copied to the host: the backend returns, per wanted row, the kInkCandidates best
+    // token ids with their logits (larger logit first, the smaller id first on equal logits - the order the sampler uses) and a
+    // flag telling whether the row's every 67th logit is finite (what the host check looked at).  That is 128 x 8 bytes per row
+    // instead of 200058 x 4, which is what limits many concurrent slots.  Exact by construction: the values are the very floats
+    // forward_batch would have copied.  A backend that cannot do it returns false from supports_candidates() (the default).
+    static constexpr int kInkCandidates = 128;
+    virtual bool supports_candidates() const noexcept { return false; }
+    virtual bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) {
+        (void)batch; (void)out;
+        err = "this backend does not return candidate rows";
+        return false;
+    }
 
     // On-device DSpark Block-8 Recurrent Markov drafting for one slot.
     // Returns number of drafted tokens (0..max_draft, typically up to 7); returns 0 if unavailable/disabled.
@@ -133,6 +179,8 @@ std::unique_ptr<InkBackend> make_cpu_backend();
 
 #ifdef INKLING_ENABLE_CUDA
 std::unique_ptr<InkBackend> make_cuda_backend();
+// true when the GPU can run the Q8_0 dense path (int8 tensor-core GEMM: compute capability 8.0 or newer)
+bool ink_cuda_q8f_supported(int gpu_index);
 #endif
 #ifdef INKLING_ENABLE_EP_CUDA
 std::unique_ptr<InkBackend> make_ep_cuda_backend();

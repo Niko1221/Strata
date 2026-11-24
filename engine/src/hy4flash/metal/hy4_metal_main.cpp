@@ -1482,7 +1482,7 @@ static int export_tokenizer(const std::string& file, const std::string& dir) {
 }
 
 #ifndef STRATA_HY4_VERSION
-#define STRATA_HY4_VERSION "0.1.66"
+#define STRATA_HY4_VERSION "0.1.67"
 #endif
 
 int main(int argc, char** argv) {

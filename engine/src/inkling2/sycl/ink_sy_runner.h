@@ -162,9 +162,18 @@ struct InkSyRunner {
     InkSyVision vis;
     InkSyHybridEngine hybrid;
 
+#if defined(SYCL_EXT_ONEAPI_GRAPH)
+    using GraphExec = sycl::ext::oneapi::experimental::command_graph<sycl::ext::oneapi::experimental::graph_state::executable>;
+    std::unordered_map<uint64_t, GraphExec> graphs;
+#endif
+    bool graph_failed = false;
+
     ~InkSyRunner() { release(); }
 
     void release() {
+#if defined(SYCL_EXT_ONEAPI_GRAPH)
+        if (!graphs.empty()) { try { wait(); } catch (...) {} graphs.clear(); }
+#endif
         hybrid.release();
         for (auto* p : kv_k) dfree(p);
         for (auto* p : kv_v) dfree(p);
@@ -269,7 +278,7 @@ struct InkSyRunner {
         b_blocks = dalloc<float>(6 * MB * D); b_prelude = dalloc<float>(MB * D);
         b_bank_blk = dalloc<float>(2 * MB * D); b_bank_out = dalloc<float>(MB * D);
         b_msgs = dalloc<float>(4 * MB * D); b_in3 = dalloc<float>(3 * MB * D);
-        b_cat = dalloc<float>(MB * 2 * D); b_ctrl_gate = dalloc<float>(MB * c.gate_rank);
+        b_cat = dalloc<float>(3 * MB * 2 * D); b_ctrl_gate = dalloc<float>(3 * MB * c.gate_rank);   // one region per controller (attn, k, v) of a visit
 
         b_q = dalloc<float>(MB * 3072); b_k_raw = dalloc<float>(MB * 1024); b_v_raw = dalloc<float>(MB * 1024);
         b_k = dalloc<float>(MB * 1024); b_v = dalloc<float>(MB * 1024); b_r = dalloc<float>(MB * 384);
@@ -418,6 +427,43 @@ struct InkSyRunner {
     const float* tf32(const std::string& n) const { return reinterpret_cast<const float*>(mod->man.get(n).dev_ptr); }
     const float* df32(const std::string& n) const { return reinterpret_cast<const float*>(mod->man.get_d(n).dev_ptr); }
 
+    static bool sy_graph_enabled() {
+        static const bool v = [] { const char* e = std::getenv("INK_SY_GRAPH"); return e && e[0] == '1'; }();
+        return v;
+    }
+
+    // Records enqueue() into a command graph (once per key) and submits it. False when the graph extension or the backend
+    // refuses: the caller then enqueues the step the normal way and graphs stay off for the run.
+    template <class F>
+    bool run_graph(uint64_t key, F&& enqueue) {
+#if defined(SYCL_EXT_ONEAPI_GRAPH)
+        namespace sx = sycl::ext::oneapi::experimental;
+        try {
+            auto it = graphs.find(key);
+            if (it == graphs.end()) {
+                wait();
+                sx::command_graph<sx::graph_state::modifiable> g(Q().get_context(), Q().get_device());
+                g.begin_recording(Q());
+                try { enqueue(); } catch (...) { try { g.end_recording(Q()); } catch (...) {} throw; }
+                g.end_recording(Q());
+                it = graphs.emplace(key, g.finalize()).first;
+                fprintf(stderr, "[ink_sycl] SYCL graph recorded (key %llu)\n", (unsigned long long)key);
+            }
+            Q().ext_oneapi_graph(it->second);
+            return true;
+        } catch (const std::exception& e) {
+            graph_failed = true;
+            fprintf(stderr, "[ink_sycl] SYCL graph off: %s\n", e.what());
+            try { wait(); } catch (...) {}
+            return false;
+        }
+#else
+        (void)key; (void)enqueue;
+        graph_failed = true;
+        return false;
+#endif
+    }
+
     bool forward_batch(const int* tok_ids, const int* slot_ids, const int* positions, int M,
                        const uint8_t* is_img_host, const float* img_emb_host,
                        int logits_mode,  // 0=none, 1=last token only, 2=all M tokens (or want_idx_host[0..n_want-1])
@@ -426,6 +472,7 @@ struct InkSyRunner {
                        const int* want_idx_host = nullptr, int n_want = 0) {
         if (M <= 0 || M > max_batch) return false;
         hybrid.decay_step();
+        sy_prof_begin(M);
         const auto& man = mod->man;
         const auto& c = man.c;
         const int D = c.hidden;
@@ -465,11 +512,19 @@ struct InkSyRunner {
             dzero(b_is_img, (size_t)M);
         }
 
+        const bool dbg = (std::getenv("INK_SY_DEBUG") && std::getenv("INK_SY_DEBUG")[0] == '1' && M == 1);
+        // INK_SY_GRAPH=1: a single-token step (everything from the embedding to the logits) is recorded once into a SYCL command
+        // graph and replayed, so the ~2,000 kernel launches of a step cost one submission. Same kernels, same arguments, same bits.
+        const bool graph_ok = sy_graph_enabled() && !graph_failed && M == 1 && !dbg && !sy_prof().on && !hybrid.active &&
+                              !(mod->ep2_active && mod->q_peer) && logits_mode <= 1 && !(is_img_host && img_emb_host);
+        const uint64_t graph_key = (uint64_t)(record_dspark_ctx && use_dspark ? 1 : 0) | ((uint64_t)logits_mode << 1) |
+                                   ((uint64_t)(out_argmax_host ? 1 : 0) << 3) | ((uint64_t)(out_logits_host ? 1 : 0) << 4) |
+                                   ((uint64_t)((record_dspark_ctx && use_dspark) ? (slot_ids[0] + 1) : 0) << 8);
+        auto enqueue_all = [&](bool capturing) {
         // 1. Embedding + embed_norm (bypassed for image tokens)
         k_embed_sg16(man.get("model.llm.embed.weight"), tf32("model.llm.embed_norm.weight"),
                      b_tok_ids, b_is_img, b_img_emb, b_cur, M, c.vocab_padded);
 
-        const bool dbg = (std::getenv("INK_SY_DEBUG") && std::getenv("INK_SY_DEBUG")[0] == '1' && M == 1);
         auto dbg_buf = [&](const char* tag, const float* p, int n) {
             if (!dbg) return;
             std::vector<float> h(n);
@@ -500,13 +555,14 @@ struct InkSyRunner {
             const std::string p = "model.llm.layers." + std::to_string(ip);
             const bool is_swa = (c.is_swa[ip] != 0);
 
-            d2d(b_res, b_cur, (size_t)M_stride * 4);
+            if (ip == 0) d2d(b_res, b_cur, (size_t)M_stride * 4);   // for ip > 0 the mix kernel below writes the copy
+            sy_prof_fmark(FX_RES);
 
             // Attention-Residual mix before attention (ip > 0)
             if (ip > 0) {
                 const int nq = is_swa ? 1 : 3;
                 k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.attn_queries." + std::to_string(ip - 1)),
-                                    b_in3, n_blocks, block_stride, M, nq);
+                                    b_in3, n_blocks, block_stride, M, nq, b_res);
                 if (is_swa && has_msgs) {
                     d2d(b_in3 + M_stride, b_in3, (size_t)M_stride * 4);
                     d2d(b_in3 + 2 * M_stride, b_in3, (size_t)M_stride * 4);
@@ -514,21 +570,45 @@ struct InkSyRunner {
             } else {
                 d2d(b_in3, b_cur, (size_t)M_stride * 4);
             }
+            sy_prof_fmark(FX_ARM);
 
             // Cross-pass loop controllers (attn, k, v) + input RMSNorm
             if (has_msgs) {
                 const char* cnames[3] = {"attn", "k", "v"};
                 const char* nnames[3] = {"q_input_norm.weight", "k_input_norm.weight", "v_input_norm.weight"};
+                // The three controllers of a visit are independent (each one's concat reads only its own stream and message, each apply writes only its
+                // own stream), so: three concats, ONE launch of the three down linears, three applies. Same kernels and arithmetic as one after the other.
+                const size_t cat_stride = (size_t)max_batch * 2 * c.hidden, gate_stride = (size_t)max_batch * c.gate_rank;
+                const InkTensorInfo& t0 = man.get(p + ".controllers.attn.down_weight");
+                const InkTensorInfo& t1 = man.get(p + ".controllers.k.down_weight");
+                const InkTensorInfo& t2 = man.get(p + ".controllers.v.down_weight");
+                const bool fuse3 = t0.fmt == FMT_F32 && t1.fmt == FMT_F32 && t2.fmt == FMT_F32 &&
+                                   t0.rows() == t1.rows() && t0.rows() == t2.rows() && t0.cols() == t1.cols() && t0.cols() == t2.cols();
+                if (fuse3) {
+                    for (int j = 0; j < 3; ++j) k_ctrl_cat_rms_sg16(b_in3 + (size_t)j * M_stride, b_msgs + (size_t)j * M_stride, b_cat + j * cat_stride, M);
+                    sy_prof_fmark(FX_CCAT);
+                    k_linear_f32x3_sg16(reinterpret_cast<const float*>(t0.dev_ptr), reinterpret_cast<const float*>(t1.dev_ptr),
+                                        reinterpret_cast<const float*>(t2.dev_ptr), (int)t0.rows(), (int)t0.cols(),
+                                        b_cat, b_cat + cat_stride, b_cat + 2 * cat_stride,
+                                        b_ctrl_gate, b_ctrl_gate + gate_stride, b_ctrl_gate + 2 * gate_stride, M);
+                    sy_prof_fmark(FX_CLIN);
+                }
                 for (int j = 0; j < 3; ++j) {
                     float* inp = b_in3 + (size_t)j * M_stride;
                     const float* mp = b_msgs + (size_t)j * M_stride;
-                    k_ctrl_cat_rms_sg16(inp, mp, b_cat, M);
-                    dispatch_linear(man.get(p + ".controllers." + cnames[j] + ".down_weight"), b_cat, b_ctrl_gate, M);
+                    if (!fuse3) {
+                        k_ctrl_cat_rms_sg16(inp, mp, b_cat, M);
+                        sy_prof_fmark(FX_CCAT);
+                        dispatch_linear(man.get(p + ".controllers." + cnames[j] + ".down_weight"), b_cat, b_ctrl_gate, M);
+                        sy_prof_fmark(FX_CLIN);
+                    }
+                    const float* gate_j = fuse3 ? (b_ctrl_gate + j * gate_stride) : b_ctrl_gate;
                     const std::string nkey = is_swa ? (p + ".attn_norm.weight") : (p + "." + nnames[j]);
-                    k_ctrl_apply_norm_sg16(inp, mp, b_ctrl_gate,
+                    k_ctrl_apply_norm_sg16(inp, mp, gate_j,
                                            tf32(p + ".controllers." + cnames[j] + ".gain_weight"),
                                            tf32(p + ".controllers." + cnames[j] + ".forget_weight"),
                                            tf32(nkey), inp, M, 1);
+                    sy_prof_fmark(FX_CAPP);
                 }
             } else {
                 if (is_swa) {
@@ -545,6 +625,7 @@ struct InkSyRunner {
             const float* in_q = b_in3;
             const float* in_k = (is_swa && !has_msgs) ? b_in3 : (b_in3 + M_stride);
             const float* in_v = (is_swa && !has_msgs) ? b_in3 : (b_in3 + 2 * M_stride);
+            sy_prof_mark(PF_MIX);
 
             // Q, K, V, R, Sinks, GateAttn
             dispatch_linear(man.get(p + ".attn.wq_du.weight"), in_q, b_q, M);
@@ -557,6 +638,7 @@ struct InkSyRunner {
                 dispatch_linear(man.get(p + ".attn.k_sconv.weight_proj"), in_k, b_kd_taps, M);
                 dispatch_linear(man.get(p + ".attn.v_sconv.weight_proj"), in_v, b_vd_taps, M);
             }
+            sy_prof_mark(PF_QKV);
 
             // 4-tap ShortConv on K & V
             const float* sc_layer = mod->static_sconv_dev + (size_t)ip * InkSyModel::kSconvLayerFloats;
@@ -574,12 +656,14 @@ struct InkSyRunner {
                                b_pos, M, is_swa ? 1 : 0);
             k_kv_norm_store_f16_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
                                      b_slot_ids, b_pos, M, is_swa ? 1 : 0, visit_kv_stride[visit]);
+            sy_prof_mark(PF_SCONV);
 
             // Fused RelPos + Sink 24:8 GQA Flash Attention + sigmoid(gate_attn)
             k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
                                    b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
                                    b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
                                    c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            sy_prof_mark(PF_ATTN);
             if (visit == 0) {
                 dbg_buf("v0_q", b_q, 3072); dbg_buf("v0_k", b_k, 1024); dbg_buf("v0_v", b_v, 1024);
                 dbg_buf("v0_sinks", b_sinks, 24); dbg_buf("v0_attn", b_attn_out, 3072);
@@ -600,25 +684,33 @@ struct InkSyRunner {
             } else {
                 k_add_sg16(b_res, b_wo, b_cur, M_stride);
             }
+            sy_prof_mark(PF_WO);
 
             // ---- MoE Sublayer ----
-            d2d(b_res, b_cur, (size_t)M_stride * 4);
+            sy_prof_fmark(FX_RES);
             k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.mlp_queries." + std::to_string(ip)),
-                                b_mlp_in, n_blocks, block_stride, M, 1);
+                                b_mlp_in, n_blocks, block_stride, M, 1, b_res);   // also copies b_cur to b_res (the residual of this sublayer)
+            sy_prof_fmark(FX_MARM);
             if (has_msgs) {
                 const float* mp = b_msgs + 3 * M_stride;
                 k_ctrl_cat_rms_sg16(b_mlp_in, mp, b_cat, M);
+                sy_prof_fmark(FX_MCCAT);
                 dispatch_linear(man.get(p + ".controllers.mlp.down_weight"), b_cat, b_ctrl_gate, M);
+                sy_prof_fmark(FX_MCLIN);
                 k_ctrl_apply_norm_sg16(b_mlp_in, mp, b_ctrl_gate,
                                        tf32(p + ".controllers.mlp.gain_weight"),
                                        tf32(p + ".controllers.mlp.forget_weight"),
                                        tf32(p + ".mlp_norm.weight"), b_mlp_in, M, 1);
+                sy_prof_fmark(FX_MCAPP);
             } else {
                 k_rms_norm_sg16(b_mlp_in, tf32(p + ".mlp_norm.weight"), b_mlp_in, D, M);
+                sy_prof_fmark(FX_MNORM);
             }
 
             dispatch_linear(man.get(p + ".mlp.gate.weight"), b_mlp_in, b_r_logits, M);
+            sy_prof_fmark(FX_GATE);
             k_router_topk8_sg16(b_r_logits, tf32(p + ".mlp.gate.bias"), b_topk_idx, b_topk_w, c.route_scale, M);
+            sy_prof_mark(PF_ROUTER);
 
             if (mod->ep2_active && mod->q_peer) {
                 // Dual-GPU Expert Parallelism: run GPU 1 routed experts concurrently on q_peer while GPU 0 runs its share!
@@ -720,11 +812,13 @@ struct InkSyRunner {
                 k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, max_uniq, b_moe_h, b_moe_yp);
                 k_moe_reduce8_sg16(b_moe_yp, b_moe_raw, M);
             }
+            sy_prof_mark(PF_MOE);
 
             k_sconv4_multi_sg16(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr, sc_hist_mlp[visit],
                                 b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
                                 b_moe_out, n_active_slots, D, 0, sc_ring_mlp[visit], save_ring);
             k_add_sg16(b_res, b_moe_out, b_cur, M_stride);
+            sy_prof_mark(PF_TAILV);
             if (dbg) {
                 char tb[64];
                 std::snprintf(tb, sizeof(tb), "v%d_ip%d_moeh", visit, ip); dbg_buf(tb, b_moe_h, 8 * 1152);
@@ -797,9 +891,9 @@ struct InkSyRunner {
                 k_softcap_sg16(b_logits, V_un, c.logit_softcap);
                 if (out_argmax_host) {
                     k_argmax_rows_sg16(b_logits, b_argmax, V_un, 1);
-                    d2h(out_argmax_host, b_argmax, 4);
+                    if (!capturing) d2h(out_argmax_host, b_argmax, 4);
                 }
-                if (out_logits_host) {
+                if (out_logits_host && !capturing) {
                     d2h(out_logits_host, b_logits, (size_t)V_un * 4);
                 }
             } else {
@@ -827,8 +921,23 @@ struct InkSyRunner {
                 }
             }
         }
+        };  // enqueue_all
 
+        bool graph_done = false;
+        if (graph_ok) {
+            graph_done = run_graph(graph_key, [&] { enqueue_all(true); });
+            if (graph_done && logits_mode == 1) {
+                const int V_un = c.vocab_unpadded;
+                if (out_argmax_host) d2h(out_argmax_host, b_argmax, 4);
+                if (out_logits_host) d2h(out_logits_host, b_logits, (size_t)V_un * 4);
+            }
+        }
+        if (!graph_done) enqueue_all(false);
+
+        sy_prof_mark(PF_HEAD);
+        sy_prof_before_wait();
         wait();
+        sy_prof_end();
         return true;
     }
 

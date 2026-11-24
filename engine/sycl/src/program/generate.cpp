@@ -5190,6 +5190,18 @@ int main(int argc, char **argv) try {
     if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
                      (long long) xcache.slots(), xcache.gib());
+        // #4698: STRATA_VERIFY_NO_HOST=1 with the host arena (no --stream-experts) and fewer slots than experts: no host serves the rest and the device plan
+        // cannot read a pageable arena, so a reply came out as '!' x 256.  Refused here, before the fill reads anything, naming the setting.
+        if (!multi_gpu && srcp == &arena_src &&
+            strata::arena_refuses_no_host(std::getenv("STRATA_VERIFY_NO_HOST"), true, (long long) g.n_layers * (long long) g.n_expert,
+                                          (long long) xcache.slots())) {
+            std::fprintf(stderr, "strata generate: REFUSED: STRATA_VERIFY_NO_HOST=1 with the host expert arena (no --stream-experts): the VRAM cache holds "
+                                 "%lld of %lld experts and nothing answers for the rest, so replies come out as garbage ('!' x N, #4698) or the window "
+                                 "hangs. Use --stream-experts (its pinned mirror is read by the device plan), or set STRATA_VERIFY_NO_HOST=0 where the "
+                                 "card runs the arena (an i915 card)\n",
+                         (long long) xcache.slots(), (long long) g.n_layers * (long long) g.n_expert);
+            refuse_exit(2);
+        }
         // #6448: on an integrated GPU the auto cache took all the room the shared pool has and nothing mirrors the rest
         // (below), so a cache with fewer slots than the model has experts ends in the refusal after the fill.  It is
         // refused here instead, with the same words: the fill would first read every slot's expert from the disk (tens of
@@ -8344,9 +8356,22 @@ int main(int argc, char **argv) try {
         auto park_source = [&](const ParkSource& src, size_t held) -> bool {
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
-                std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
-                             "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            {
+                std::vector<size_t> gone;
+                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone);
+                if (dropped)
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
+                                 "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+                // a longer snapshot of the same conversation makes the older ones useless, in RAM and on the SSD tier alike
+                // (never spilled, and a spilled one is deleted with its index file)
+                if (spill.enabled()) {
+                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec);
+                    gone.insert(gone.end(), on_ssd.begin(), on_ssd.end());
+                }
+                for (const size_t n : gone)
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped superseded snapshot %zu tokens (extended by %zu)\n",
+                                 n, src.ids.size());
+            }
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).

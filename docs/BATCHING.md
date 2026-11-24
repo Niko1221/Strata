@@ -9,6 +9,11 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+**If your agent or app sends small side requests between turns (titles, summaries, suggestions), start the engine with `--parallel 2`
+(`"parallel": 2`) so the chat stays cached.** With one slot such a request replaces the cached conversation and the next turn reads the
+whole history again; the second slot holds the side request instead. On Inkling-2-Mini it costs about 164 MiB of video memory (measured at 64K
+context on an RTX PRO 5000; the slot's fixed state is the same size on a 12 GB card). The default stays one slot.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
@@ -192,6 +197,16 @@ ran 3-4x slower, a request alone included. `--parallel N` is honoured as asked e
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
+- **Inkling-2-Mini keeps one conversation per slot, and the server knows where it is** (0.2.21). The engine resumes a next turn
+  from the whole stream the slot holds or from the checkpoint at the end of the previous prompt (the reply's hidden thinking is
+  never sent back, so the stream alone rarely matches). The server records both for every slot, including slot 0, which is
+  the solo path (`GEN`, where the DSpark drafter works): a follow-up goes to the slot that holds its start, and with
+  `--parallel 2` or more a short request that continues nothing (a client's title or translation request between two turns,
+  under 2,048 tokens) goes to another slot while slot 0 holds a conversation of 2,048 tokens or more. With `--parallel 1`
+  there is no other slot: such a request replaces the conversation and the next turn reads it again. A second slot costs
+  little video memory (about 160 MiB at 64K context on an RTX PRO 5000), so `--parallel 2` is the way to keep an agent's
+  conversation next to a client's helper requests. Requests with tools replay the empty thinking turn the prompt ends with,
+  so their history extends the previous prompt too (`serve/inkling_dialect.py`).
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 

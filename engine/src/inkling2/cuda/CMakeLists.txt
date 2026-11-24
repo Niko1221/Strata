@@ -23,19 +23,10 @@ if(NOT DEFINED STRATA_INK_CUDA_ARCHS OR "${STRATA_INK_CUDA_ARCHS}" STREQUAL "")
   endif()
 endif()
 
-# Native Blackwell block-scaled MMA (mxf4nvf4 & mxf8f6f4) requires arch-specific sm_120a / sm_121a!
-set(_ink_sm120a_archs "")
-foreach(_a IN LISTS STRATA_INK_CUDA_ARCHS)
-  if("${_a}" STREQUAL "120" OR "${_a}" STREQUAL "120a")
-    list(APPEND _ink_sm120a_archs "120a")
-  elseif("${_a}" STREQUAL "121" OR "${_a}" STREQUAL "121a")
-    list(APPEND _ink_sm120a_archs "121a")
-  endif()
-endforeach()
-if("${_ink_sm120a_archs}" STREQUAL "")
-  set(_ink_sm120a_archs "${STRATA_INK_CUDA_ARCHS}")
-endif()
-list(REMOVE_DUPLICATES _ink_sm120a_archs)
+# Native Blackwell block-scaled MMA (mxf4nvf4 & mxf8f6f4) requires arch-specific sm_120a / sm_121a! An inherited CMAKE_CUDA_ARCHITECTURES
+# ("61-real;120-real;89-real") is mapped too, suffix kept (ink_sm120a.cmake, tests/cmake/ink_sm120a_test.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/ink_sm120a.cmake")
+ink_sm120a_archs(_ink_sm120a_archs ${STRATA_INK_CUDA_ARCHS})
 
 set(_ink_cuda_inc
   "${CMAKE_CURRENT_SOURCE_DIR}"

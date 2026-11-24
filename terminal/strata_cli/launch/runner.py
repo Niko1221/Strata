@@ -336,6 +336,12 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
                 put("--draft", "off")
         cfg["args"] = args
         return cfg
+    q36 = str(cfg.get("arch") or "").lower() == "qwen35moe"     # its own --kv widths (fp32 default, fp16/fp8/fp4), not Flash-Next's int8/q4_0/k8v4
+    if q36:
+        if s.kv in ("fp32", "fp16", "fp8", "fp4"):
+            put("--kv", s.kv)
+        cfg["args"] = args
+        return cfg
     kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
     if "--kv" in args or s.kv:
         put("--kv", kv)
@@ -397,6 +403,7 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     native_ep = (cfg.get("arch") in ("hy4flash", "inkling2_loop")
                  or cfg.get("exe") in ("component:strata-hy4", "component:strata-inkling")
                  or exe_low.startswith(("strata-hy4", "strata-inkling")))
+    q36 = cfg.get("arch") == "qwen35moe"               # its own engine path (OWN_PATH_FAMILIES): --peer-device, not --layer-split
     if isinstance(gpus, dict):
         for k in ("gpu", "gpu_order", "gpu_none", "gpu_roles", "gpu_cards"):
             cfg.pop(k, None)
@@ -404,10 +411,12 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
         cfg["gpus_asked"] = True
         cfg.pop("hip_ordinal", None)
         on = gpus.get("gpu")
-        if isinstance(on, list) and len(on) > 1 and not native_ep:
+        if isinstance(on, list) and len(on) > 1 and not native_ep and not q36:
             cfg["layer_split"] = cfg.get("layer_split") or "auto"
         else:
             cfg.pop("layer_split", None)
+        if q36:
+            apply_q36_peer(cfg, on if isinstance(on, list) else None)
         return
     if not gpus:
         return
@@ -417,10 +426,29 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
     cfg["gpus_asked"] = True
     cfg.pop("hip_ordinal", None)                             # an old AMD config's ordinal of ITS card would win over the card named now
-    if len(gpus) > 1 and not native_ep:
+    if len(gpus) > 1 and not native_ep and not q36:
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
     else:
         cfg.pop("layer_split", None)
+    if q36:
+        apply_q36_peer(cfg, gpus if len(gpus) > 1 else None)
+
+
+def apply_q36_peer(cfg: dict, gpus: "list[int] | None") -> None:
+    """Qwen3.6-35B-A3B (arch qwen35moe) has no layer split: two cards mean the second-card expert tier instead
+    (--peer-device). One card, or none chosen: --peer-device is dropped, same as the engine not seeing a second
+    card to begin with."""
+    args = [str(a) for a in cfg.get("args") or []]
+
+    def strip(flag: str) -> list[str]:
+        while flag in args:
+            i = args.index(flag)
+            del args[i:i + 2]
+        return args
+    strip("--peer-device")
+    if gpus and len(gpus) == 2:
+        args += ["--peer-device", "1"]                 # cfg["gpu"] = [main, peer]: the engine's second --gpu slot is ordinal 1
+    cfg["args"] = args
 
 
 def installed_cards(base: dict | None, usable: list[dict] | None = None) -> list[int] | None:
@@ -447,6 +475,23 @@ def fit_parallel_for(catalog, s: S.LaunchSettings, vram_gb: float | None) -> int
     failed after the download): there setup's own rule for that model and context decides (own_path_parallel_recommend; 0 = one at a time),
     never more than the table's number."""
     table = S.fit_parallel(vram_gb)
+    if s.family == "inkling-2-mini":
+        # Every slot reserves K/V for the whole context; slots whose fp16 K/V does not fit next to the experts spill it to host RAM and a long session
+        # reads half of it over PCIe (Olares, 3 slots at 32K on 24 GB: decode 86 -> 44 tok/s after 30K tokens). The table's number, but no more
+        # slots than keep the K/V on the card (NVIDIA only; any other make or a failed look keeps the table). An explicit --parallel never gets here.
+        try:
+            from strata_control import inkling_fit
+            comp = catalog.computer()
+            gpus = comp.usable_gpus
+            if gpus and (comp.engine_vendor in (None, "nvidia")) and str(s.model or "") in inkling_fit.BUILDS:
+                arch = str(gpus[0].get("arch") or "")
+                # the card's total memory is not what is free: the driver and the desktop keep about 0.75 GiB
+                return inkling_fit.launch_parallel(str(s.model), max(0.0, float(vram_gb or 0.0) - 0.75), float(comp.ram_gb or 0.0),
+                                                   int(s.context or inkling_fit.DEFAULT_CONTEXT),
+                                                   table, backend="cuda", sm=int(arch) if arch.isdigit() else None)
+        except Exception:                                    # noqa: BLE001 - the table as before when the plan cannot be made
+            return table
+        return table
     try:
         setup = catalog.strata.setup_module()
         fam = (getattr(setup, "OWN_PATH_FAMILIES", None) or {}).get(s.family) if setup is not None else None
@@ -871,6 +916,25 @@ class DownloadPace:
         return f" Finishing the last pieces ({size} left{pace})."
 
 
+class PictureOrder:
+    """0221 APPTUI: setup prints the picture reader's last figure again after the reader's check ("Downloading the picture reader: 11.1 of 11.1 GB" came back after
+    "Checking that the model files are complete"), so the lines read as if the download had started over. Once the reader was downloaded and its check shown, that
+    complete figure is stale and is not shown again."""
+
+    def __init__(self) -> None:
+        self.prev: str | None = None
+        self.checked = False
+
+    def stale(self, phase: str | None, dl: dict | None) -> bool:
+        if phase == "pictures" and self.checked and dl and float(dl.get("percent") or 0) >= 99.5:
+            return True
+        if phase == "verify" and self.prev == "pictures":
+            self.checked = True
+        if phase:
+            self.prev = phase
+        return False
+
+
 class SteadyBar:
     """S13: one bar for the whole model download that never moves back. Setup checks each finished file (a progress line of its own, 0 to 100 % of THAT file)
     between the downloads, and the bar followed it: 61 % (52 GB), 32 %, 96 %, then 69 % when the next file began (VAST V2, a real Hugging Face download). While
@@ -1278,6 +1342,9 @@ class Runner:
         if (desc or {}).get("images") in (None, "off"):
             note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
                     "so it will answer text only.")
+            if self.is_inkling():                            # 0221 APPTUI: the real reason, and the way to add it
+                note = ("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB) is installed for this model, so it answers text only. "
+                        "`strata launch --vision on` downloads it, or put the file next to the model files.")
             self.notices.append(note)
             self.emit("model", note, 100, level="warn")
 
@@ -1307,6 +1374,8 @@ class Runner:
                 args += ["--kv", eff_kv]
         if self.is_inkling() and str(s.drafting or "").strip().lower() == "off":
             args += ["--drafter", "off"]
+        if self.is_inkling() and s.parallel and int(s.parallel) > 1:
+            args += ["--parallel", str(int(s.parallel))]     # setup plans the experts in graphics memory with room for these slots
         if self.is_native_strata_family() and not WINDOWS and sys.platform != "darwin":
             try:
                 from strata_control import engine_component
@@ -1664,6 +1733,7 @@ class Runner:
         job = self.progress_job()
         pace, last_dl = DownloadPace(), None                 # T12: the last pieces of a big download crawl; say so
         steady = SteadyBar()
+        reader_order = PictureOrder()
         step_seen, step_since, quiet_since, said = None, time.monotonic(), time.monotonic(), None
         for line in self._read_lines(p):
             if self.cancel.is_set():
@@ -1688,12 +1758,13 @@ class Runner:
             if prog.get("step") != step_seen:
                 step_seen, step_since = prog.get("step"), time.monotonic()
             said = (label, phase) if label else None
+            if reader_order.stale(phase, dl):
+                continue                                     # the reader was downloaded and its check was shown: the same figure again as "Downloading the picture reader" is not news
             if phase == "waiting":                           # setup is waiting for a server to answer: say which one (netpolicy's line)
                 self.emit("model", label, None, step=prog.get("step"))
             elif phase == "pictures" and dl and not is_reader_file(dl.get("file")):
                 # 0217 item 18: the figures are the MODEL's last download line ("75.8 of 75.8 GB", 99 %), not the picture reader's (0.9 GB): say what is fetched, with its own size
-                from strata_control.discovery import MMPROJ_GB
-                self.emit("model", f"{label} ({MMPROJ_GB:.1f} GB)", None, step=prog.get("step"))
+                self.emit("model", f"{label} ({self.picture_reader_gb():.1f} GB)", None, step=prog.get("step"))
             elif dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
                 if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
@@ -2145,6 +2216,11 @@ class Runner:
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
                             log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base),
                             prev=previous, defaults=defaults)
+        if self.is_inkling():                                # a --kv the Inkling engine does not take is said, never dropped quietly
+            kv_note = S.inkling_kv_note(self.s.kv, cfg.get("backend"))
+            if kv_note:
+                self.notices.append(kv_note)
+                self.emit("config", kv_note, None, level="warn")
         used = {k: _setting_of(cfg, k) for k in (cfg.get(USER_DEFAULTS_KEY) or {}) if _setting_of(cfg, k) == cfg[USER_DEFAULTS_KEY][k]}
         if used:
             self.emit("config", f"Using your defaults from {user_defaults_path()}: " + ", ".join(f"{k}={v if isinstance(v, str) else json.dumps(v)}" for k, v in used.items()) +
@@ -2470,7 +2546,7 @@ class Runner:
         if c.get("context"):
             bits.append(f"context {S.context_label(c['context'])}")
         if c.get("vision"):
-            bits.append(f"pictures {c['vision']}")
+            bits.append(f"pictures {S.PICTURE_SHORT.get(c['vision'], c['vision'])}")
         if c.get("access"):
             bits.append(f"access {S.ACCESS_WORDS.get(c['access'], c['access'])}")
         return f"{row['name']} is serving on port {row['port']}" + (f" ({', '.join(bits)})" if bits else "")
@@ -2518,6 +2594,7 @@ class Runner:
         after the engine is here and before the model is prepared. Nothing runs when no restart was decided."""
         from strata_control import runtime
         from strata_control.profiles import ProfileError
+        self.refuse_before_stopping_for_disk()
         self.stop_others()
         name, self._stop_own = self._stop_own, None
         if not name:
@@ -2528,6 +2605,24 @@ class Runner:
             acc.stop_tunnel(name)
         except ProfileError as e:
             raise LaunchError(f"The running server {name[7:]} could not be stopped: {e}.", "Run `strata launch --stop` first.", 6) from None
+
+    def refuse_before_stopping_for_disk(self) -> None:
+        """0221 APPTUI (found in the end-to-end pass): switching to a model that cannot be downloaded for lack of disk stopped the model that was serving first
+        ("Stopping e2e-main so the new choices can use port ..."), and setup then failed on the disk: nothing was left serving. When a server would be stopped and the
+        model's files alone need more room than the drive has, say so before anything is stopped."""
+        if not (self._stop_first or self._stop_own):
+            return
+        try:
+            plan = self.download_plan()
+            need = sum(float(p["gb"]) for p in plan.get("parts") or [] if p.get("kind") == "weights")
+            data = Path(self.s.data_dir).expanduser() if self.s.data_dir else (self.existing_data_dir() or self.catalog.data_dir())
+            probe = next((q for q in (data, *data.parents) if q.exists()), None)
+            free = self.catalog.disk_free(probe) if probe is not None else None
+        except Exception:                                    # noqa: BLE001 - a check that cannot be made lets the launch go on, as before
+            return
+        if free is not None and need > 0.05 and need > free:
+            raise LaunchError(f"Not enough free disk space in {data}: the model needs about {need:.1f} GB and {free:.1f} GB are free. Nothing was stopped: the running model keeps serving.",
+                              "Use --data-dir on a bigger drive (strata launch --data-dir), or free some space.", 6)
 
     def checked(self) -> None:
         cb, self.after_check = self.after_check, None
@@ -2564,6 +2659,7 @@ class Runner:
             except ProfileError as e:
                 raise LaunchError(f"The running server could not be stopped: {e}.", "Run `strata launch --stop` first.", 6) from None
         self.check_port_free()
+        self.probe_drafting()
         self._marks = self.log_marks()                       # what the logs already held: only this attempt's lines are ever quoted
         self.emit("start", "Starting the engine and loading the model. The first start can take a few minutes.", None)
         done = threading.Event()
@@ -2603,6 +2699,31 @@ class Runner:
         warmed = bool(r.get("generation_ready"))
         self.emit("start", "The model is loaded and answering." + (MAC_FIRST_ANSWER if not warmed and self.mac_first_start() else ""), 100)
         self.report_drafting()
+
+    def probe_drafting(self) -> None:
+        """0221 DSPARK wiring: before the first start of a placement, when the run config wants the measured drafting choice (needs_drafting_probe: "auto" on any backend,
+        no probe valid for this placement), the real engine is started plain and drafting, two prompts are decoded, and the numbers and the
+        decision are saved in the run config (strata_control/inkling_probe.py). The bit-exact gate is gone (owner 2026-11-23): every backend is measured. A probe that cannot be
+        made never stops the launch: drafting stays off and the config says why."""
+        if not self.is_inkling() or self.config_path is None:
+            return
+        try:
+            from serve import inkling_kind
+            needs = getattr(inkling_kind, "needs_drafting_probe", None)         # (a tree without the probe has none)
+            if needs is None:
+                return
+            cfg = read_config(self.config_path)
+            if not needs(cfg):
+                return
+            from strata_control import inkling_probe
+            from serve.server import _component_exe, child_env
+            exe = _component_exe(cfg["exe"], cfg)
+            args = inkling_kind.engine_args(cfg, exe, announce=False)
+            self.emit("start", "Measuring whether drafting makes this model faster on this computer (two short runs; once for this setup)…", None)
+            inkling_probe.probe_run_config(cfg, exe, args, env=child_env(cfg), cwd=cfg.get("cwd"))
+            _atomic_mod.write_text(self.config_path, json.dumps(cfg, indent=1))
+        except Exception as e:                               # noqa: BLE001 - a measurement is never a reason to stop a launch
+            self.emit("start", f"The drafting measurement could not be made ({type(e).__name__}: {e}); drafting stays off.", None, level="warn")
 
     _marks: dict | None = None
 
@@ -2830,7 +2951,7 @@ class Runner:
         not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
         from strata_control import engine_component
         from strata_control import discovery
-        from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
+        from strata_control.discovery import MTP_FETCH_GB
         s = self.s
         st = self.model_state()
         parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts if p.gb >= 0.05]     # a part already on disk is not a download
@@ -2854,7 +2975,7 @@ class Runner:
                 # setup's rule, not any mmproj*.gguf: the pinned name (lane NET 4b; which file setup accepts is unchanged)
                 has_reader = modelstate.reader_present(self.catalog, s.family, homes, own=own)
                 if wants_pictures and "mmproj" not in have and not has_reader:
-                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
+                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": self.picture_reader_gb()})
             except OSError:
                 pass
         try:
@@ -2877,9 +2998,14 @@ class Runner:
             shape = self.model_shape()
             if shape:
                 from strata_control import shape_engine
-                found = shape_engine.find(shape, Path(self.components_dir) if self.components_dir else None, full=False, title=self.model_title())
-                engine = bool(found.usable)
-                here = [found.version] if found.installed and found.version else []
+                try:
+                    found = shape_engine.find(shape, Path(self.components_dir) if self.components_dir else None, full=False, title=self.model_title())
+                    engine = bool(found.usable)
+                    here = [found.version] if found.installed and found.version else []
+                except engine_component.EngineIntegrityError:
+                    engine, here = False, ["installed"]          # an engine is here that did not pass the check: said as such below
+                except engine_component.EngineMissing:
+                    engine, here = False, []                     # none for this model's shape here: the plan says it is downloaded first (it used to say nothing: the error left engine True)
             else:
                 report = engine_component.status(Path(self.components_dir) if self.components_dir else None)
                 engine = bool(report.get("usable"))
@@ -2914,6 +3040,9 @@ class Runner:
                 text += " To skip the draft layer (a little slower, less memory), add --mtp off."
             if any(p["kind"] == "dflash2" for p in parts):
                 text += " To skip the DFlash2 drafter, add --drafting mtp."
+            room = self.room_words(gb)
+            if room:
+                text += " " + room
         if not engine and here:
             # B03: an engine IS installed, but this plan cannot use it (its signature cannot be checked here, or it is for another card): not "missing"
             text += (f" An engine ({', '.join(here[:3])}) is installed, but it did not pass Strata's check on this computer, so Strata looks for a working one "
@@ -2923,6 +3052,32 @@ class Runner:
         if intel:
             text += " For the Intel card Strata builds the model's pack from your files itself, once; it takes a few minutes and downloads nothing."
         return {"gb": gb, "parts": parts, "engine_missing": not engine and not here, "engine_usable": engine, "own_files": st.own_files, "text": text}
+
+    def picture_reader_gb(self) -> float:
+        """The size of the picture reader this model fetches: Inkling-2-Mini's Vision.strata is 0.64 GB (the shown 0.9 GB is the Qwen projector's)."""
+        from strata_control.discovery import MMPROJ_GB
+        if self.is_inkling():
+            try:
+                from strata_control import inkling_family
+                return round((inkling_family.size_of(inkling_family.VISION_FILE) or MMPROJ_GB * 1e9) / 1e9, 2)
+            except Exception:                                # noqa: BLE001
+                return MMPROJ_GB
+        return MMPROJ_GB
+
+    def room_words(self, gb: float) -> str:
+        """The free-disk check of the plan, in words: the room on the drive the download goes to against what is downloaded. "" when it cannot be read."""
+        s = self.s
+        try:
+            data = Path(s.data_dir).expanduser() if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir())
+            probe = next((q for q in (data, *data.parents) if q.exists()), None)
+            free = self.catalog.disk_free(probe) if probe is not None else None
+        except Exception:                                    # noqa: BLE001 - a plan that cannot read the disk still shows the rest
+            return ""
+        if free is None:
+            return ""
+        if free < gb * 1.05 + 1:
+            return f"Not enough room: {free:.0f} GB are free where it goes ({data}). Choose a bigger drive with --data-dir."
+        return f"{free:.0f} GB are free where it goes ({data})."
 
     def ready_pack_gap(self) -> dict | None:
         """For a ready-made pack family (NVFP4): what setup would still fetch into its models folder for these choices, {gb, folder, free_gb}, or None."""

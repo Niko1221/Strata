@@ -22,6 +22,7 @@
 #include "strata/hip_uma_guard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
+#include "strata/platform/commit.hpp"
 #include "strata/quant/sk_codecs.hpp"
 #if defined(__linux__)
 #include "strata/platform/numa_balancing.hpp"
@@ -562,6 +563,19 @@ public:
         opts_ = opts;
         c_ = model.m.c;
         dspark_cfg_ = model.m.dspark;
+        // Debug only (--spec-check): STRATA_INK_TAP_VISITS=a,b,c,d takes the four host taps after those visits instead of the
+        // drafter's [5, 23, 41, 48]; the drafter reads the same taps, so use it with --draft off or in a check run only.
+        if (const char* tv = std::getenv("STRATA_INK_TAP_VISITS"); tv && tv[0] && dspark_cfg_.target_visits.size() >= 4) {
+            std::vector<int> vv;
+            for (const char* q = tv; *q;) {
+                char* ee = nullptr;
+                const long x = std::strtol(q, &ee, 10);
+                if (ee == q) break;
+                vv.push_back(static_cast<int>(x));
+                q = (*ee == ',') ? ee + 1 : ee;
+            }
+            if (vv.size() == 4) for (int i = 0; i < 4; ++i) dspark_cfg_.target_visits[i] = vv[i];
+        }
 
         if (kv_dtype_is_int_quant(opts.kv_dtype)) {
             err = "[ink-hip] --kv k8v4/k8v8 is not supported on the HIP backend (allocates fp16-sized pages); use --kv fp8 or fp16";
@@ -699,7 +713,33 @@ public:
         }
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         max_ctx_ = std::max(256, opts.max_ctx);
+        // SWA KV ring. forward_batch_chunk stores K/V of all B batch tokens before attention reads the ring, so a
+        // ring of exactly swa_win positions lets a later token of the same batch overwrite a key that an earlier
+        // query of that batch still needs (ring slot (p - swa_win + j) % swa_win == (p + j) % swa_win).
+        // A ring of swa_win + S positions is safe for any batch whose per-slot position span is <= S + 1, so the
+        // ring gets the prefill chunk as margin (as the CUDA backend: swa_ring = kInkSwaWin + max_batch,
+        // cuda/ink_runner.cuh) and forward_batch splits larger batches at S. Rounded to whole 64-token pages, capped
+        // at max_ctx (positions below the ring size never wrap). STRATA_INK_SWA_RING=N overrides the ring size
+        // (N = swa_win restores the old exact-window ring and its overwrite, for A/B checks only).
+        {
+            const int win = std::max(1, c_.swa_win);
+            int ring = win + std::max(opts.chunk, 64);
+            if (const char* e = std::getenv("STRATA_INK_SWA_RING"); e && *e) {
+                const int v = std::atoi(e);
+                if (v >= win) ring = v;
+            }
+            ring = (ring + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+            const int ctx_cap = (std::max(max_ctx_, win) + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+            swa_ring_ = std::max(win, std::min(ring, ctx_cap));
+            swa_span_cap_ = (swa_ring_ > win && swa_ring_ < ctx_cap) ? (swa_ring_ - win) : 0;
+            std::fprintf(stderr, "[ink-hip] SWA KV ring %d positions (window %d, forward_batch span cap %d)\n",
+                         swa_ring_, win, swa_span_cap_);
+        }
 
+        if (const char* ev = std::getenv("STRATA_INK_EXACT_ROWS")) exact_verify_enabled_ = !(ev[0] == '0');
+        if (const char* ev = std::getenv("STRATA_INK_HASH"); ev && ev[0] == '1') {
+            dbg_hash_on_ = alloc_gpu_buffer(d_dbg_hash_, static_cast<size_t>(kTreeMaxM) * kDbgSlots * 8, mem_info_.is_uma) == hipSuccess;
+        }
         // Initialize dynamic hipBLASLt Tensile runner (RDNA3/3.5/4; cleanly falls back on RDNA2 or missing DLL/SO)
         (void)blaslt_.init(mem_info_.is_uma, mem_info_.gen);
         blaslt_.warmup(mem_info_.is_uma, stream_);
@@ -978,12 +1018,34 @@ public:
         } else {
             const size_t trunk_now = vram_used_bytes();
             // Reserve headroom for KV + activations + OS/desktop (always keep at least OS reserve + 768 MiB)
-            const size_t kv_est = std::min<size_t>(
-                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() * static_cast<size_t>(max_slots_),
-                mem_info_.effective_total_bytes / 4);
-            const size_t overhead = mem_info_.reserve_bytes + trunk_now + kv_est + (768ULL << 20);
-            if (mem_info_.effective_total_bytes > overhead) {
-                vram_budget = mem_info_.effective_total_bytes - overhead;
+            // The K/V of every slot that will run and the batch scratch of the biggest step are reserved BEFORE the card is filled with experts (no cap
+            // at a quarter of the card: 32 clients need 32 slots; a plan without them ended with "scratch alloc: out of memory" at the first batch).
+            // (#6878: a slot's SWA pools grow past position swa_win up to the ring, which the slot estimate does not count.)
+            const size_t kv_est =
+                (estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() +
+                 static_cast<size_t>(c_.n_swa_visits) * static_cast<size_t>(std::max(0, std::min(swa_ring_, std::min(max_ctx_, 4096)) - c_.swa_win)) *
+                     2u * static_cast<size_t>(c_.n_kv * c_.head_dim) * (default_kv_dtype_ == KvDtype::FP8_E4M3 ? 1u : 2u)) *
+                static_cast<size_t>(max_slots_);
+            ink2::BatchGeom bg;
+            bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
+            bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
+            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, 512)));
+            vram_budget = plan_expert_vram_budget(mem_info_.effective_total_bytes, mem_info_.reserve_bytes, trunk_now, kv_est, scratch_est, 768ULL << 20);
+            // #6711: the budget above is the card's TOTAL minus what this engine holds. The desktop, the browser and other programs hold VRAM too (3 GB on the
+            // reporter's R9700 with 29 GB free), so the single arena allocation failed "out of memory" before any model line. What is free NOW (the trunk is
+            // already in it) bounds the arena as well, like the CUDA backend's free-VRAM sizing.
+            size_t fr_now = 0, tot_now = 0;
+            if (hipMemGetInfo(&fr_now, &tot_now) == hipSuccess) {
+                uint64_t eff_fr = fr_now, eff_tot = tot_now;
+                effective_uma_memory(mem_info_.is_uma, fr_now, tot_now, eff_fr, eff_tot);
+                const size_t keep = mem_info_.reserve_bytes + kv_est + scratch_est + (768ULL << 20);
+                const size_t by_free = eff_fr > keep ? static_cast<size_t>(eff_fr - keep) : 0u;
+                if (by_free < vram_budget) {
+                    std::fprintf(stderr, "[ink-hip] expert arena budget %.2f GiB -> %.2f GiB: only %.2f GiB of the card is free now (other programs hold the rest)\n",
+                                 static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(by_free) / 1073741824.0,
+                                 static_cast<double>(eff_fr) / 1073741824.0);
+                    vram_budget = by_free;
+                }
             }
         }
 
@@ -1043,6 +1105,16 @@ public:
                 }
                 std::fclose(fp);
             }
+#elif defined(_WIN32)
+            {   // #6748: Windows had no cap at all here (ram_cap stayed unlimited): the free RAM and the commit left bound the host experts
+                MEMORYSTATUSEX ms{};
+                ms.dwLength = sizeof(ms);
+                if (GlobalMemoryStatusEx(&ms)) {
+                    const uint64_t commit = strata::platform::commit_available(static_cast<uint64_t>(ms.ullAvailPageFile),
+                                                                                 strata::platform::commit_growth(static_cast<uint64_t>(ms.ullTotalPhys)));
+                    host_avail = strata::platform::host_ram_budget(static_cast<uint64_t>(ms.ullAvailPhys), commit);
+                }
+            }
 #endif
             if (host_avail > 0) {
                 const uint64_t os_res = std::max<uint64_t>(2ULL << 30, std::min<uint64_t>(host_avail / 4, 4ULL << 30));
@@ -1097,13 +1169,78 @@ public:
                 }
             }
         }
+        // A GGUF whose experts need a transcode (types without a HIP kernel: IQ1_S, IQ2_*, IQ3_S ...) grows when it is
+        // transcoded to S_K, so the planner's file-size budget can leave experts that fit neither VRAM nor RAM. They would
+        // be re-read from the file and re-transcoded on every token (0.3 tok/s, #6729). Keep them in RAM when RAM allows.
+        if (model.kind != ModelSourceKind::Strata && !opts.ssd_experts && !ep2_active_) {
+            std::vector<char> in_ram(n_dir, 0);
+            for (uint16_t idx : ram_plan) in_ram[idx] = 1;
+            std::vector<uint16_t> left;
+            size_t left_bytes = 0;
+            for (uint16_t idx : model.vram_load_order) {
+                if (idx >= n_dir || in_ram[idx] || expert_gpu_offset_[idx] != static_cast<size_t>(-1)) continue;
+                left.push_back(idx);
+                left_bytes += dir[idx].body_bytes;
+            }
+            if (!left.empty()) {
+                uint64_t host_avail = 0;
+#ifdef __linux__
+                if (FILE* fp = std::fopen("/proc/meminfo", "r")) {
+                    char key[64];
+                    unsigned long long kb = 0;
+                    char unit[32];
+                    while (std::fscanf(fp, "%63[^:]: %llu %31s\n", key, &kb, unit) == 3) {
+                        if (std::strcmp(key, "MemAvailable") == 0) { host_avail = kb * 1024ull; break; }
+                    }
+                    std::fclose(fp);
+                }
+#endif
+                const uint64_t os_res = std::max<uint64_t>(2ULL << 30, std::min<uint64_t>(host_avail / 4, 4ULL << 30));
+                const size_t safe_host = static_cast<size_t>(host_avail > os_res ? (host_avail - os_res) : 0);
+                if (host_avail == 0 || left_bytes + ram_bytes <= safe_host) {
+                    for (uint16_t idx : left) ram_plan.push_back(idx);
+                    std::fprintf(stderr, "[ink-hip] %zu experts (%.2f GiB, transcoded) did not fit --vram-experts-gb / --ram-experts-gb: keeping them in RAM "
+                                         "instead of re-reading and re-transcoding them from the file on every token\n",
+                                 left.size(), static_cast<double>(left_bytes) / 1073741824.0);
+                } else {
+                    std::fprintf(stderr, "[ink-hip] WARNING: %zu experts (%.2f GiB, transcoded) fit neither VRAM nor RAM here: they are re-read and "
+                                         "re-transcoded from the file on every token, so decode will be very slow. Use a smaller GGUF or a quant with a native HIP kernel.\n",
+                                 left.size(), static_cast<double>(left_bytes) / 1073741824.0);
+                }
+            }
+        }
         if (ep2_active_ && peer_gpu_plan.empty()) {
             ep2_active_ = false;
         }
 
         const int tc_threads = transcode::default_transcode_threads();
         if (arena_bytes > 0) {
-            if (!hip_ok(alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma), "expert GPU arena alloc", err)) {
+            // #6711: one contiguous arena can still fail on a discrete card whose free VRAM is fragmented or capped by the driver (Windows WDDM). Give up the
+            // coldest GPU-planned experts in 5% steps (they go to the RAM tier, or the SSD tier when RAM is short) and try again, instead of failing the start.
+            hipError_t arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+            while (arena_err == hipErrorOutOfMemory && !mem_info_.is_uma && !gpu_plan.empty() && arena_bytes > (1ULL << 30)) {
+                (void)hipGetLastError();
+                const size_t target = arena_bytes - std::max<size_t>(arena_bytes / 20, 256ULL << 20);
+                size_t dropped = 0;
+                while (!gpu_plan.empty()) {
+                    const uint16_t di = gpu_plan.back();
+                    const size_t end = expert_gpu_offset_[di] + ((dir[di].body_bytes + 63u) & ~size_t(63u));
+                    if (end <= target) break;
+                    expert_gpu_offset_[di] = static_cast<size_t>(-1);
+                    if (ram_bytes + dir[di].body_bytes <= ram_cap) {
+                        ram_bytes += dir[di].body_bytes;
+                        ram_plan.push_back(di);
+                    }
+                    gpu_plan.pop_back();
+                    ++dropped;
+                }
+                arena_bytes = gpu_plan.empty() ? 0 : expert_gpu_offset_[gpu_plan.back()] + ((dir[gpu_plan.back()].body_bytes + 63u) & ~size_t(63u));
+                std::fprintf(stderr, "[ink-hip] expert GPU arena did not fit: %zu experts move to the RAM/SSD tier, arena now %.2f GiB\n",
+                             dropped, static_cast<double>(arena_bytes) / 1073741824.0);
+                if (arena_bytes == 0) { arena_err = hipSuccess; break; }
+                arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+            }
+            if (!hip_ok(arena_err, "expert GPU arena alloc", err)) {
                 return false;
             }
             if (model.kind == ModelSourceKind::Strata) {
@@ -1331,7 +1468,7 @@ public:
 
         // 4. Initialize GPU Paged KV pools & 48-Visit ShortConv BF16 pools
         const int kv_dim = c_.n_kv * c_.head_dim;
-        const int max_swa_pages = (c_.swa_win + kKvPageTokens - 1) / kKvPageTokens;
+        const int max_swa_pages = (swa_ring_ + kKvPageTokens - 1) / kKvPageTokens;
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
 
         // Post-load VRAM check (#6613 / #6621): auto-select FP8_E4M3 KV & cap max_prefill_chunk when remaining VRAM
@@ -1419,6 +1556,7 @@ public:
         for (auto& p : swa_pools_) p.free_slot_pages(slot);
         for (auto& p : glob_pools_) p.free_slot_pages(slot);
         slots_[slot].release();
+        if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // its SWA pages are unmapped
     }
 
     void reset_slot(int slot) override {
@@ -1435,6 +1573,7 @@ public:
         sl.tree_ema_gain = 1.25f;
         sl.tree_cool_rem = 0;
         clear_slot_sconv(slot);
+        if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // as in the CPU and CUDA backends
     }
 
     void snapshot_slot(int slot) override {
@@ -1511,12 +1650,206 @@ public:
         }
     }
 
+    // Prompt checkpoint (save_prompt_checkpoint / restore_prompt_checkpoint in ink_backend.h). The serve saves after
+    // reading prompt_len - 1 prompt tokens and restores when a later prompt starts with exactly those tokens, so
+    // seq_len is the same token count both times. Saved per slot:
+    //  - SWA visits: KV is a ring of swa_ring_ positions (swa_win plus the batch-span margin, #6878) in 64-token pages
+    //    (page (p % swa_ring_) / 64, ensure_page), so the slot's mapped ring pages are copied to pinned host memory, one
+    //    copy per run of consecutive physical pages: 2 x n_swa_visits x (swa_ring_ / 64) pages x 64 x kv_dim x 2 B, about
+    //    160 MiB per slot at BF16 KV with a 1024 ring and 240 MiB with the default 1536 ring (half at FP8, plus the
+    //    per-token scales). No VRAM is taken from the KV pools;
+    //  - ShortConv state (n_visits x 3 lags) goes to small device buffers through the snapshot_slot copy kernel;
+    //  - global-visit KV and the DSpark context are indexed by absolute position and are not written below seq_len
+    //    while the checkpoint is valid (forward_batch drops the checkpoint otherwise), so a restore only sets seq_len
+    //    back and caps dspark_len.
+    // All copies are queued on stream_ in order with the forward passes, so no host sync is needed.
+    static constexpr int kPromptCkptMaxSlots = 8;  // bounds pinned host RAM; same slot limit as the CUDA backend
+
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated || max_slots_ > kPromptCkptMaxSlots) return false;
+        if (swa_pools_.empty() || seq_len <= 0) return false;
+        if (static_cast<int>(ckpts_.size()) < max_slots_) ckpts_.resize(max_slots_);
+        PromptCkpt& ck = ckpts_[slot];
+        ck.valid = false;
+        // The SWA ring holds positions [seq_len - swa_win, seq_len) (and older ones up to the ring size) only when nothing past seq_len has been fed.
+        if (slots_[slot].seq_len != seq_len) return false;
+        const int n_pools = static_cast<int>(swa_pools_.size());
+        const int mpp = swa_pools_[0].max_pages_per_slot;
+        const bool fp8 = swa_pools_[0].is_fp8;
+        const size_t page_b = static_cast<size_t>(kKvPageTokens) * swa_pools_[0].kv_dim * (fp8 ? 1u : 2u);
+        const size_t sc_page_b = static_cast<size_t>(kKvPageTokens) * sizeof(float);
+        for (const VisitKvPool& kvp : swa_pools_) {
+            if (kvp.max_pages_per_slot != mpp || kvp.is_fp8 != fp8 || kvp.kv_dim != swa_pools_[0].kv_dim) return false;
+        }
+        if (!ck.alloc_host(static_cast<size_t>(n_pools) * mpp * page_b,
+                           fp8 ? static_cast<size_t>(n_pools) * mpp * sc_page_b : 0)) return false;
+        const int kv_dim = c_.n_kv * c_.head_dim;
+        const size_t kv_one = 3u * kv_dim * sizeof(uint16_t);
+        const size_t h_one  = 3u * c_.hidden * sizeof(uint16_t);
+        if (!ck.sc_k.dev_ptr) {
+            if (alloc_gpu_buffer(ck.sc_k, static_cast<size_t>(c_.n_visits) * kv_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_v, static_cast<size_t>(c_.n_visits) * kv_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_attn, static_cast<size_t>(c_.n_visits) * h_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_mlp, static_cast<size_t>(c_.n_visits) * h_one, mem_info_.is_uma) != hipSuccess) {
+                (void)hipGetLastError();
+                ck.release();
+                return false;
+            }
+        }
+        // hipMemcpyDefault: the pools can be host-mapped (UMA, or the VRAM-tight fallback in grow_pool).
+        bool ok = true;
+        ck.phys.assign(static_cast<size_t>(n_pools) * mpp, -1);
+        for (int i = 0; i < n_pools && ok; ++i) {
+            const VisitKvPool& kvp = swa_pools_[i];
+            const int32_t* row = kvp.h_pt.data() + static_cast<size_t>(slot) * mpp;
+            for (int lp = 0; lp < mpp && ok;) {
+                const int32_t ph = row[lp];
+                if (ph < 0) { ++lp; continue; }
+                int n = 1;
+                while (lp + n < mpp && row[lp + n] == ph + n) ++n;
+                for (int k = 0; k < n; ++k) ck.phys[static_cast<size_t>(i) * mpp + lp + k] = ph + k;
+                const size_t hp = static_cast<size_t>(i) * mpp + lp;
+                ok = ok && hipMemcpyAsync(ck.h_k + hp * page_b, static_cast<const uint8_t*>(kvp.k_pool.dev_ptr) + ph * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                ok = ok && hipMemcpyAsync(ck.h_v + hp * page_b, static_cast<const uint8_t*>(kvp.v_pool.dev_ptr) + ph * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                if (fp8) {
+                    ok = ok && hipMemcpyAsync(ck.h_ks + hp * sc_page_b, static_cast<const uint8_t*>(kvp.k_scales.dev_ptr) + ph * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                    ok = ok && hipMemcpyAsync(ck.h_vs + hp * sc_page_b, static_cast<const uint8_t*>(kvp.v_scales.dev_ptr) + ph * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                }
+                lp += n;
+            }
+        }
+        if (!ok) { (void)hipGetLastError(); return false; }
+        k_sconv_snapshot_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_k_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(d_sconv_v_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_v.dev_ptr),
+            slot, max_slots_, c_.n_visits, kv_dim);
+        k_sconv_snapshot_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_attn_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_mlp.dev_ptr),
+            slot, max_slots_, c_.n_visits, c_.hidden);
+        if (hipGetLastError() != hipSuccess) return false;
+        ck.seq_len = seq_len;
+        ck.dspark_len = std::min(slots_[slot].dspark_len, seq_len);
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= max_slots_ || slot >= static_cast<int>(ckpts_.size()) || !slots_[slot].allocated) return false;
+        PromptCkpt& ck = ckpts_[slot];
+        if (!ck.valid || ck.seq_len != seq_len || swa_pools_.empty()) return false;
+        const int n_pools = static_cast<int>(swa_pools_.size());
+        const int mpp = swa_pools_[0].max_pages_per_slot;
+        if (ck.phys.size() != static_cast<size_t>(n_pools) * mpp) { ck.valid = false; return false; }
+        // The slot must still map the saved pages: only free_slot unmaps them, and grow_pool keeps page indices.
+        for (int i = 0; i < n_pools; ++i) {
+            const int32_t* row = swa_pools_[i].h_pt.data() + static_cast<size_t>(slot) * mpp;
+            for (int lp = 0; lp < mpp; ++lp) {
+                const int32_t want = ck.phys[static_cast<size_t>(i) * mpp + lp];
+                if (want >= 0 && row[lp] != want) { ck.valid = false; return false; }
+            }
+        }
+        const bool fp8 = swa_pools_[0].is_fp8;
+        const size_t page_b = static_cast<size_t>(kKvPageTokens) * swa_pools_[0].kv_dim * (fp8 ? 1u : 2u);
+        const size_t sc_page_b = static_cast<size_t>(kKvPageTokens) * sizeof(float);
+        bool ok = true;
+        for (int i = 0; i < n_pools && ok; ++i) {
+            const VisitKvPool& kvp = swa_pools_[i];
+            for (int lp = 0; lp < mpp && ok;) {
+                const int32_t ph = ck.phys[static_cast<size_t>(i) * mpp + lp];
+                if (ph < 0) { ++lp; continue; }
+                int n = 1;
+                while (lp + n < mpp && ck.phys[static_cast<size_t>(i) * mpp + lp + n] == ph + n) ++n;
+                const size_t hp = static_cast<size_t>(i) * mpp + lp;
+                ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.k_pool.dev_ptr) + ph * page_b, ck.h_k + hp * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.v_pool.dev_ptr) + ph * page_b, ck.h_v + hp * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                if (fp8) {
+                    ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.k_scales.dev_ptr) + ph * sc_page_b, ck.h_ks + hp * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                    ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.v_scales.dev_ptr) + ph * sc_page_b, ck.h_vs + hp * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                }
+                lp += n;
+            }
+        }
+        if (!ok) { (void)hipGetLastError(); ck.valid = false; return false; }
+        // keep_steps = 0: all three lags come from the checkpoint (the rec arguments are not read).
+        const int kv_dim = c_.n_kv * c_.head_dim;
+        k_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(ck.sc_k.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(ck.sc_v.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_v.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+            slot, max_slots_, c_.n_visits, 0, kv_dim);
+        k_sconv_rollback_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(ck.sc_attn.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(ck.sc_mlp.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_mlp.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            slot, max_slots_, c_.n_visits, 0, c_.hidden);
+        if (hipGetLastError() != hipSuccess) { ck.valid = false; return false; }
+        auto& sl = slots_[slot];
+        sl.seq_len = seq_len;  // forward_batch only raises seq_len (std::max), so set it back here
+        sl.dspark_len = std::min(sl.dspark_len, ck.dspark_len);
+        sl.has_snap = false;
+        sl.sconv_rec_n = 0;
+        // DSpark's adaptive draft state restarts as for a fresh prompt (as in reset_slot)
+        sl.dspark_ema_acc = 0.50f;
+        sl.dspark_last_draft = 0;
+        sl.dspark_last_anchor = -1;
+        sl.dspark_skip_rem = 0;
+        sl.dspark_had_rollback = false;
+        sl.tree_ema_gain = 1.25f;
+        sl.tree_cool_rem = 0;
+        return true;
+    }
+
+    // Largest batch forward_batch_chunk takes in one go: the TDR / VRAM guard cap, and the SWA ring margin when the
+    // batch could overwrite in-window keys: some slot reaches position swa_ring_ (the ring wraps) and its positions in
+    // this batch span more than swa_span_cap_. Split sub-batches then hold <= swa_span_cap_ tokens, so each slot's
+    // span stays within the margin (a slot's positions are consecutive in batch order).
+    int batch_token_cap(const StepBatch& batch) const {
+        const int cap = std::max(1, guard_.max_prefill_chunk);
+        if (swa_span_cap_ <= 0 || batch.n_tokens <= swa_span_cap_) return cap;
+        int lo[kMaxParallelSlots], hi[kMaxParallelSlots];
+        for (int s = 0; s < kMaxParallelSlots; ++s) { lo[s] = 0x3fffffff; hi[s] = -1; }
+        for (int b = 0; b < batch.n_tokens; ++b) {
+            const int s = batch.slot_ids[b];
+            if (s < 0 || s >= kMaxParallelSlots) return std::min(cap, swa_span_cap_);
+            lo[s] = std::min(lo[s], batch.pos[b]);
+            hi[s] = std::max(hi[s], batch.pos[b]);
+        }
+        for (int s = 0; s < kMaxParallelSlots; ++s) {
+            if (hi[s] >= swa_ring_ && hi[s] - lo[s] + 1 > swa_span_cap_) return std::min(cap, swa_span_cap_);
+        }
+        return cap;
+    }
+
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         const int B_tot = batch.n_tokens;
         if (B_tot <= 0) return true;
+        // A prompt checkpoint is only valid while nothing below its seq_len is written again.
+        if (!ckpts_.empty()) {
+            for (int b = 0; b < B_tot; ++b) {
+                const int s = batch.slot_ids[b];
+                if (s >= 0 && s < static_cast<int>(ckpts_.size()) && ckpts_[s].valid && batch.pos[b] < ckpts_[s].seq_len) {
+                    ckpts_[s].valid = false;
+                }
+            }
+        }
 
-        // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM!
-        const int chunk_cap = std::max(1, guard_.max_prefill_chunk);
+        // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM, and the SWA ring margin
+        const int chunk_cap = batch_token_cap(batch);
         if (B_tot > chunk_cap) {
             const int V = c_.vocab_unpadded;
             const int D = c_.hidden;
@@ -1549,7 +1882,9 @@ public:
             }
             return true;
         }
-        return forward_batch_chunk(batch, logits_out, taps_out, err);
+        const bool fb_ok = forward_batch_chunk(batch, logits_out, taps_out, err);
+        if (fb_ok && dbg_hash_on_) dbg_hash_print("fwd", B_tot, batch.pos.data(), -1, nullptr, batch.token_ids.data(), nullptr);
+        return fb_ok;
     }
 
     int dspark_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) override {
@@ -2100,7 +2435,7 @@ public:
         // Pre-ensure KV pages for all possible committed positions anchor_pos .. anchor_pos + max_dep
         for (int d = 0; d <= max_dep; ++d) {
             const int p = anchor_pos + d;
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring_) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(slot, swa_lp, stream_, err)) return 0;
@@ -2130,7 +2465,7 @@ public:
                     reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr),
                     kvp.max_pages_per_slot,
-                    is_swa ? c_.swa_win : 0
+                    is_swa ? swa_ring_ : 0
                 };
             }
             if (!hip_ok(hipMemcpyAsync(d_tree_kv_descs_.dev_ptr, h_descs.data(),
@@ -2147,6 +2482,7 @@ public:
         (void)hipMemcpyAsync(sc_img_idx_.dev_ptr, h_img, M * 4, hipMemcpyHostToDevice, stream_);
 
         if (!forward_tree_verify(M, slot, kv_gen_sum, err)) return 0;
+        if (dbg_hash_on_) dbg_hash_print("tree", M, h_pos, anchor_pos, t_dep, t_tok, t_par);
         if (tprof) (void)hipEventRecord(tev[2], stream_);
 
         int32_t h_argmax[kTreeMaxM];
@@ -2580,6 +2916,10 @@ private:
     }
 
     void launch_bf16_opt(const uint16_t* W, const float* X, const float* bias, float* Y, int M, int N, int K) {
+        if (exact_rows_ && M >= 2 && M <= 16) {
+            launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
+            return;
+        }
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
             if (sc_x_bf16_.bytes >= need) {
@@ -3120,7 +3460,7 @@ private:
         for (int b = 0; b < B; ++b) {
             const int s = batch.slot_ids[b];
             const int p = batch.pos[b];
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring_) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(s, swa_lp, stream_, err)) return false;
@@ -3159,6 +3499,7 @@ private:
                 slots_[s0].sconv_rec_n = B;
             }
         }
+        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_ && rec_slot >= 0);
 
         bool is_contiguous_single_slot = (!all_distinct_slots && n_groups == 1 && B >= 16);
         for (int b = 1; b < B && is_contiguous_single_slot; ++b) {
@@ -3447,7 +3788,7 @@ private:
                             target_in, msgs, 4, msg_ch, cg, cf, target_in, B, D);
                     }
                 } else if (is_bf) {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<true><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, bf16_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -3457,7 +3798,7 @@ private:
                     k1_loop_ctrl_up<true><<<dim3((D + 63) / 64, B), 64, 0, stream_>>>(
                         target_in, msgs, 4, msg_ch, ctrl_gate, bf16_ptr(cp + ".gain_weight"), bf16_ptr(cp + ".forget_weight"), target_in, B, D, c_.gate_rank);
                 } else {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<false><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, f32_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -3481,8 +3822,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -3518,7 +3863,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
@@ -3596,7 +3941,12 @@ private:
                 launch_trunk_linear(p + ".attn.gate_attn.weight", q_in, gatea, B, q_dim, D);
             }
             if (!sink_done) {
-                launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                if (exact_rows_ && B >= 2 && sink_is_f32 && trunk_qkvrg_[ip].dev_ptr != nullptr && D <= 4096 && (D & 7) == 0) {
+                    // the one-token step projects the sinks inside k_bf16_gemv1_qkvrg: same arithmetic per row
+                    launch_f32_sink_rows_exact(f32_ptr(p + ".attn.attn_sink_proj.weight"), q_in, sinks, B, c_.n_head, D, stream_);
+                } else {
+                    launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                }
             }
             if (!is_swa) {
                 launch_trunk_linear(p + ".attn.k_sconv.weight_proj", k_in, k_dyn, B, c_.n_kv * 4, D);
@@ -3626,6 +3976,7 @@ private:
             const int r_sc_stride = (trunk_f32_.at(r_sc_k).bytes >= static_cast<size_t>(c_.n_head) * c_.d_rel * 4) ? c_.d_rel : 0;
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
+            const int swa_r = is_swa ? swa_ring_ : 0;
             if (!is_fp8 && c_.head_dim <= 128 && c_.d_rel <= 16 && (c_.rel_extent & 3) == 0) {
                 k2_qrkv_kvstore_relpos_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
                     q, f32_ptr(q_sc_k), q_sc_stride,
@@ -3637,7 +3988,7 @@ private:
                     reinterpret_cast<half_t*>(kvp.k_pool.dev_ptr),
                     reinterpret_cast<half_t*>(kvp.v_pool.dev_ptr),
                     !is_swa, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
-                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_w, c_.rel_extent);
+                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_r, c_.rel_extent);
             } else {
                 if (c_.head_dim <= 128 && c_.d_rel <= 32) {
                     k2_qrkv_norm_clip_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
@@ -3659,13 +4010,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<float*>(kvp.k_scales.dev_ptr), reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
-                        B, c_.n_kv, c_.head_dim, swa_w);
+                        B, c_.n_kv, c_.head_dim, swa_r);
                 } else {
                     k3_kv_paged_store<false><<<B, 256, 0, stream_>>>(
                         k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        B, c_.n_kv, c_.head_dim, swa_w);
+                        B, c_.n_kv, c_.head_dim, swa_r);
                 }
                 k_relpos_bias_proj<<<dim3(c_.n_head, B), 256, 0, stream_>>>(
                     r_raw, f32_ptr(p + ".attn.rel_logits_proj.proj"), pos_dev, rbias, B, c_.n_head, c_.d_rel, c_.rel_extent);
@@ -3681,15 +4032,15 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_swa_gqa_prefill_wmma<false><<<fgrid, 128, 0, stream_>>>(
                         q, gatea, rbias, sinks, batch.slot_ids[0], batch.pos[0],
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
-            } else if (B <= 4) {
+            } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
                 // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
                 float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
                 if (is_fp8) {
@@ -3698,13 +4049,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_splitkv_part<false, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
                         q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
                 k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(
                     sp_part, gatea, aout, B, c_.n_head);
@@ -3715,13 +4066,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_swa_gqa_splitkv<false><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                         q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
             } else if (is_fp8) {
                 k3_flash_swa_gqa<true><<<dim3((c_.n_head + 3) / 4, B), 128, 0, stream_>>>(
@@ -3729,16 +4080,17 @@ private:
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                     reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                    aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             } else {
                 k3_flash_swa_gqa<false><<<dim3((c_.n_head + 3) / 4, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                    aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             }
 
             // O-proj + post-attention ShortConv + AttnRes block boundary rule (1-launch super-fused at B=1 distinct-slot!)
+            if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
             pmark(4);
             const std::string wo_key = p + ".attn.wo_ud.weight";
             if (B == 1 && all_distinct_slots && rec_slot < 0 && q_dim <= 4096 && (q_dim & 7) == 0 && trunk_bf16_.count(wo_key) > 0) {
@@ -3787,14 +4139,17 @@ private:
             }
 
             // k4: Top-8/128 Sigmoid Router (fused with f32->f16 mlpin conversion for B<=4!)
+            dbg_hash(visit * 4 + 0, cur, B, D);
+            dbg_hash(visit * 4 + 1, mlpin, B, D);
             pmark(5);
-            if (B >= 8 && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
+            if (B >= 8 && !exact_rows_ && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
                 mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                 launch_bf16_opt(bf16_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D);
             } else {
                 launch_f32_linear(f32_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D, stream_, mem_info_.gen);
             }
-            const bool fused_router_f16 = (layer_all_gpu_[ip] && B <= 4 && (D & 3) == 0);
+            dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
+            const bool fused_router_f16 = (layer_all_gpu_[ip] && (B <= 4 || exact_rows_) && (D & 3) == 0);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
                     rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale);
@@ -3874,7 +4229,7 @@ private:
             }
             if (ep2_active_ && layer_all_ep2_[ip]) {
                 // Already completed on GPU 0 || GPU 1 above!
-            } else if (layer_all_gpu_[ip] && B <= 4) {
+            } else if (layer_all_gpu_[ip] && (B <= 4 || exact_rows_)) {
                 if (!fused_router_f16) {
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                 }
@@ -3888,6 +4243,7 @@ private:
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
                     y_part, B, c_.top_k, D, c_.inter);
+                if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 if (all_distinct_slots && rec_slot < 0) {
                     const size_t vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
                     k_moe_reduce_sconv_add<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
@@ -4069,6 +4425,7 @@ private:
             } else if (hybrid_.active() && B <= 16) {
                 // Fast Path B1: Strata Predictive CPU/RAM Hybrid Decode!
                 // Coherent Host Doorbell + Spin-Wait AVX-512/AVX2 CPU Worker Pool overlapped with GPU VRAM + Elastic Cache + 3x-Loop Predictive Async DMA Prefetch!
+                const double hp_t0 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!hybrid_.ensure_doorbell_cap(B, D, c_.top_k)) {
                     err = "hybrid doorbell resize failed";
                     return false;
@@ -4079,6 +4436,7 @@ private:
                     !hip_ok(hipStreamSynchronize(stream_), "hyb route sync", err)) {
                     return false;
                 }
+                const double hp_t1 = hyb_prof_.on ? HybProf::now() : 0.0;
                 const auto& dir = adj_dir_;
                 const bool is_core_repeat_candidate = (ip >= c_.core_start && ip < c_.core_end && visit < (c_.core_start + 2 * (c_.core_end - c_.core_start)));
 
@@ -4238,15 +4596,27 @@ private:
                         (void)hybrid_.stage_prefill_async(mi + 2, mx8_stream_jobs[mi + 2].body, dir[mx8_stream_jobs[mi + 2].dir_idx].body_bytes, true);
                     }
                 }
+                const double hp_t2 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!cpu_jobs.empty()) {
                     hybrid_.pool().wait_and_reduce();
                     // Upload ONLY the tiny 9 KB/tok output vector (NOT 4.5 MB expert weights!) and accumulate!
                     (void)hipMemcpyAsync(hybrid_.d_cpu_y(), hybrid_.h_y(), static_cast<size_t>(B) * D * 4, hipMemcpyHostToDevice, stream_);
                     k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(moeout, hybrid_.d_cpu_y(), moeout, B * D);
                 }
+                const double hp_t3 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!disk_fallback_bufs.empty()) {
                     (void)hipStreamSynchronize(hybrid_.dma_stream());
                     (void)hipStreamSynchronize(stream_);
+                }
+                if (hyb_prof_.on) {
+                    const double hp_t4 = HybProf::now();
+                    hyb_prof_.route_sync += hp_t1 - hp_t0;
+                    hyb_prof_.launch_to_wait += hp_t2 - hp_t1;
+                    hyb_prof_.cpu_wait += hp_t3 - hp_t2;
+                    hyb_prof_.rest += hp_t4 - hp_t3;
+                    hyb_prof_.cpu_jobs += static_cast<long>(cpu_jobs.size());
+                    ++hyb_prof_.visits;
+                    hyb_prof_.report();
                 }
             } else {
                 // Fast Path B2: Chunked Double-Buffered GPU Matrix-Core Expert Streaming for Hybrid Prefill!
@@ -4417,6 +4787,7 @@ private:
                 run_sconv(moeout, p + ".mlp_sconv", nullptr, d_sconv_mlp_all_, msc, D, 0, rsl ? &rsl->sconv_rec_mlp : nullptr, visit);
                 k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(cur, msc, cur, B * D);
             }
+            dbg_hash(visit * 4 + 2, cur, B, D);
             pmark(8);
             pflush();
             ++visit;
@@ -4466,6 +4837,7 @@ private:
         run_attnres_norm(blk_ptrs, cur, f32_ptr("model.llm.attn_res.output_query"),
                          f32_ptr("model.llm.norm.weight"), h_norm);
         maybe_tap(c_.n_visits, h_norm);
+        dbg_hash(192, h_norm, B, D);
 
         if (use_graph) {
             if (do_dspark_ctx) {
@@ -4689,6 +5061,7 @@ private:
     // Exact 48-Visit Tree Verify + On-GPU Greedy Argmax (100% HIP-Graphable per tree size M=2..12!)
     bool forward_tree_verify(int B, int slot, uint64_t kv_gen_sum, std::string& err) {
         if (B < 1 || B > 12) return false;
+        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_);
         const int tprof_lvl = (std::getenv("STRATA_HIP_TREE_PROF") ? std::atoi(std::getenv("STRATA_HIP_TREE_PROF")) : 0);
         const bool tprof_detail = (tprof_lvl >= 2);
         hipGraphExec_t& g_exec = graph_tree_verify_exec_[B];
@@ -4831,7 +5204,7 @@ private:
                 k1_loop_ctrl_rms<<<B, 256, 0, stream_>>>(target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, B, D);
                 const bool is_bf = trunk_bf16_.count(cp + ".down_weight") > 0;
                 if (is_bf) {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<true><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, bf16_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -4841,7 +5214,7 @@ private:
                     k1_loop_ctrl_up<true><<<dim3((D + 63) / 64, B), 64, 0, stream_>>>(
                         target_in, msgs, 4, msg_ch, ctrl_gate, bf16_ptr(cp + ".gain_weight"), bf16_ptr(cp + ".forget_weight"), target_in, B, D, c_.gate_rank);
                 } else {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<false><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, f32_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -4865,8 +5238,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -4900,7 +5277,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
@@ -4965,7 +5342,12 @@ private:
                 launch_trunk_linear(p + ".attn.gate_attn.weight", q_in, gatea, B, q_dim, D);
             }
             if (!sink_done) {
-                launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                if (exact_rows_ && B >= 2 && sink_is_f32 && trunk_qkvrg_[ip].dev_ptr != nullptr && D <= 4096 && (D & 7) == 0) {
+                    // the one-token step projects the sinks inside k_bf16_gemv1_qkvrg: same arithmetic per row
+                    launch_f32_sink_rows_exact(f32_ptr(p + ".attn.attn_sink_proj.weight"), q_in, sinks, B, c_.n_head, D, stream_);
+                } else {
+                    launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                }
             }
             if (!is_swa) {
                 launch_trunk_linear(p + ".attn.k_sconv.weight_proj", k_in, k_dyn, B, c_.n_kv * 4, D);
@@ -5009,22 +5391,33 @@ private:
             pm(3);
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
-            if (is_fp8) {
+            const int swa_r = is_swa ? swa_ring_ : 0;
+            if (exact_rows_ && !is_fp8) {
+                // #6671: the arithmetic of the one-token step (split-KV, four chunks), so tree row m = step at that position
+                float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
+                k3_flash_tree_splitkv_part<<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
+                    q, rbias, sinks, d_tm, pos_dev,
+                    reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                    kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, tk_v, tv_v,
+                    sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(sp_part, gatea, aout, B, c_.n_head);
+            } else if (is_fp8) {
                 k3_flash_swa_gqa_tree<true><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, d_tm, pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                     reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             } else {
                 k3_flash_swa_gqa_tree<false><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, d_tm, pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             }
 
             // O-proj + Tree post-attn ShortConv + AttnRes block boundary
+            if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
             pm(4);
             launch_trunk_linear(p + ".attn.wo_ud.weight", aout, oproj, B, D, q_dim);
             const size_t h_vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
@@ -5054,14 +5447,17 @@ private:
                 k_rms_norm_rows<<<B, 256, 0, stream_>>>(mlpin, f32_ptr(p + ".mlp_norm.weight"), mlpin, B, D, c_.rms_eps);
             }
 
+            dbg_hash(visit * 4 + 0, cur, B, D);
+            dbg_hash(visit * 4 + 1, mlpin, B, D);
             pm(5);
-            if (B >= 8 && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
+            if (B >= 8 && !exact_rows_ && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
                 mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                 launch_bf16_opt(bf16_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D);
             } else {
                 launch_f32_linear(f32_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D, stream_, mem_info_.gen);
             }
-            const bool use_direct_moe = (B <= 6);
+            dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
+            const bool use_direct_moe = (B <= 6 || exact_rows_);
             const bool fused_router_f16 = ((D & 3) == 0);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
@@ -5082,6 +5478,7 @@ private:
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
                     y_part, B, c_.top_k, D, c_.inter);
+                if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 k_moe_direct_reduce<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     y_part, tk_w, moeout, B, c_.top_k, D);
             } else {
@@ -5123,6 +5520,7 @@ private:
                 reinterpret_cast<uint16_t*>(d_tree_rec_mlp_.dev_ptr) + visit * h_trec_st,
                 msc, B, D, 0);
             k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(cur, msc, cur, B * D);
+            dbg_hash(visit * 4 + 2, cur, B, D);
             pm(8);
             pf();
             ++visit;
@@ -5160,6 +5558,7 @@ private:
         run_attnres_norm(blk_ptrs, cur, f32_ptr("model.llm.attn_res.output_query"),
                          f32_ptr("model.llm.norm.weight"), h_norm);
         maybe_tap(c_.n_visits, h_norm);
+        dbg_hash(192, h_norm, B, D);
 
         const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
         const int V = c_.vocab_unpadded;
@@ -5319,6 +5718,8 @@ private:
         }
         for (auto& sl : slots_) sl.release();
         slots_.clear();
+        for (auto& ck : ckpts_) ck.release();
+        ckpts_.clear();
         for (auto& p : swa_pools_) p.release();
         for (auto& p : glob_pools_) p.release();
         swa_pools_.clear(); glob_pools_.clear();
@@ -5424,13 +5825,46 @@ private:
     float* h_ep_y1_ = nullptr;
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
+    HybProf hyb_prof_;
     int blaslt_min_m_ = 16;
+    // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), every linear
+    // layer uses the kernels whose row m is the value the one-token step gives (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.
+    bool exact_rows_ = false;
+    bool exact_verify_enabled_ = true;
+    // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), mlpin (4v+1), the router logits (4v+3),
+    // cur at the end of the visit (4v+2) and the final norm (192), printed as [HASH] lines by dbg_hash_print.
+    bool dbg_hash_on_ = false;
+    GpuBuffer d_dbg_hash_;
+    static constexpr int kDbgSlots = 208;
+    void dbg_hash(int slot, const float* ptr, int B, int dim) {
+        if (!dbg_hash_on_ || B > kTreeMaxM || !d_dbg_hash_.dev_ptr) return;
+        k_dbg_hash_rows<<<B, 256, 0, stream_>>>(ptr, dim, reinterpret_cast<unsigned long long*>(d_dbg_hash_.dev_ptr), slot, kDbgSlots);
+    }
+    void dbg_hash_print(const char* tag, int B, const int32_t* pos, int anchor, const int32_t* dep, const int32_t* tok, const int32_t* par) {
+        if (!dbg_hash_on_ || B > kTreeMaxM || !d_dbg_hash_.dev_ptr) return;
+        (void)hipStreamSynchronize(stream_);
+        std::vector<unsigned long long> h(static_cast<size_t>(B) * kDbgSlots);
+        (void)hipMemcpy(h.data(), d_dbg_hash_.dev_ptr, h.size() * 8, hipMemcpyDeviceToHost);
+        for (int b = 0; b < B; ++b) {
+            std::fprintf(stderr, "[HASH] %s B=%d row=%d pos=%d dep=%d anchor=%d tok=%d par=%d", tag, B, b, pos ? pos[b] : -1, dep ? dep[b] : 0, anchor,
+                         tok ? tok[b] : -1, par ? par[b] : b - 1);
+            for (int k = 0; k <= 202; ++k) std::fprintf(stderr, " %llx", h[static_cast<size_t>(b) * kDbgSlots + k]);
+            std::fputc('\n', stderr);
+        }
+    }
+    struct ExactRowsScope {
+        bool& f; bool old;
+        ExactRowsScope(bool& flag, bool on) : f(flag), old(flag) { f = on; }
+        ~ExactRowsScope() { f = old; }
+    };
     int blaslt_moe_min_b_ = 999999;
     bool use_i8_moe_wmma_ = true;
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;
     int max_slots_ = 1;
     int max_ctx_ = 32768;
+    int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)
+    int swa_span_cap_ = 0;  // max tokens per forward_batch_chunk so the ring margin holds (0 = no extra cap)
 
     std::vector<GpuBuffer> trunk_qkvrg_;
     std::unordered_map<std::string, GpuBuffer> trunk_bf16_;
@@ -5474,6 +5908,47 @@ private:
     GpuBuffer d_sconv_k_all_, d_sconv_v_all_, d_sconv_attn_all_, d_sconv_mlp_all_;
     std::vector<GpuSlotMeta> slots_;
     GpuVisionState vision_;
+
+    // Prompt checkpoint per slot (see save_prompt_checkpoint)
+    struct PromptCkpt {
+        bool valid = false;
+        int seq_len = 0;
+        int dspark_len = 0;
+        std::vector<int32_t> phys;  // [n_swa_visits * pages_per_slot] SWA page map when saved, -1 = unmapped
+        uint8_t* h_k = nullptr;     // pinned host copies of the slot's SWA ring pages [n_swa_visits * pages_per_slot][page]
+        uint8_t* h_v = nullptr;
+        uint8_t* h_ks = nullptr;    // FP8 KV: per-token scales of the same pages
+        uint8_t* h_vs = nullptr;
+        size_t kv_bytes = 0;
+        size_t sc_bytes = 0;
+        GpuBuffer sc_k, sc_v, sc_attn, sc_mlp;  // ShortConv state [n_visits, 3, C]
+
+        static void host_free(uint8_t*& p) noexcept { if (p) { (void)hipHostFree(p); p = nullptr; } }
+        bool alloc_host(size_t kvb, size_t scb) noexcept {
+            if (kvb == kv_bytes && scb == sc_bytes && h_k) return true;
+            host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+            kv_bytes = sc_bytes = 0;
+            if (hipHostMalloc(reinterpret_cast<void**>(&h_k), kvb, hipHostMallocDefault) != hipSuccess ||
+                hipHostMalloc(reinterpret_cast<void**>(&h_v), kvb, hipHostMallocDefault) != hipSuccess ||
+                (scb && hipHostMalloc(reinterpret_cast<void**>(&h_ks), scb, hipHostMallocDefault) != hipSuccess) ||
+                (scb && hipHostMalloc(reinterpret_cast<void**>(&h_vs), scb, hipHostMallocDefault) != hipSuccess)) {
+                (void)hipGetLastError();
+                host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+                return false;
+            }
+            kv_bytes = kvb;
+            sc_bytes = scb;
+            return true;
+        }
+        void release() noexcept {
+            host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+            kv_bytes = sc_bytes = 0;
+            free_gpu_buffer(sc_k); free_gpu_buffer(sc_v); free_gpu_buffer(sc_attn); free_gpu_buffer(sc_mlp);
+            phys.clear();
+            valid = false;
+        }
+    };
+    std::vector<PromptCkpt> ckpts_;
 
     int scratch_B_ = 0;
     int sc_moe_gu_cap_ = 0;

@@ -1131,6 +1131,9 @@ __global__ void __launch_bounds__(256) k2_shortconv4_batched(
     uint16_t* __restrict__ hist_pool,       // [max_slots, 3, C] (compact BF16 ring state matching CPU!)
     float* __restrict__ out,                // [M, C]
     int M, int C, int n_heads) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int m = blockIdx.y;
     if (c >= C || m >= M) return;
@@ -1175,6 +1178,9 @@ __global__ void __launch_bounds__(256) k2_shortconv4_grouped_seq(
     uint16_t* __restrict__ hist_pool,       // [max_slots, 3, C] BF16
     float* __restrict__ out,                // [M, C]
     int n_groups, int C, int n_heads) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int g = blockIdx.y;
     if (c >= C || g >= n_groups) return;
@@ -1274,6 +1280,9 @@ __global__ void __launch_bounds__(256) k2_shortconv4_kv_pair(
     float* __restrict__ v_out,
     const int32_t* __restrict__ slot_ids,
     int M, int C, int n_heads) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int by = blockIdx.y;
     const bool is_v = (by >= M);
@@ -1318,6 +1327,9 @@ __global__ void __launch_bounds__(256) k2_sconv_add_inplace(
     uint16_t* __restrict__ hist_pool,     // [max_slots, 3, D]
     float* __restrict__ cur,              // [M, D] (cur += sconv(in_x))
     int M, int D) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int m = blockIdx.y;
     if (c >= D || m >= M) return;
@@ -1439,7 +1451,7 @@ __global__ void __launch_bounds__(128) k2_qrkv_kvstore_relpos_fused(
     half_t* __restrict__ v_pool,
     bool apply_tau,
     float qk_clip, float rel_clip, float rms_eps,
-    int M, int n_head, int n_kv, int head_dim, int d_rel, int swa_window, int rel_extent) {
+    int M, int n_head, int n_kv, int head_dim, int d_rel, int swa_ring, int rel_extent) {
     const int bx = blockIdx.x;
     const int m = blockIdx.y;
     if (m >= M) return;
@@ -1524,7 +1536,7 @@ __global__ void __launch_bounds__(128) k2_qrkv_kvstore_relpos_fused(
         __syncthreads();
         if (tid < head_dim) {
             const int slot = slot_ids[m];
-            const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+            const int p = (swa_ring > 0) ? (pos[m] % swa_ring) : pos[m];
             const int phys = page_table[slot * max_pages_per_slot + (p >> 6)];
             const size_t dst = (static_cast<size_t>(phys) * 64 + (p & 63)) * (n_kv * head_dim) + h * head_dim + tid;
             k_pool[dst] = static_cast<half_t>(v * s_fac);
@@ -1544,7 +1556,7 @@ __global__ void __launch_bounds__(128) k2_qrkv_kvstore_relpos_fused(
         __syncthreads();
         if (tid < head_dim) {
             const int slot = slot_ids[m];
-            const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+            const int p = (swa_ring > 0) ? (pos[m] % swa_ring) : pos[m];
             const int phys = page_table[slot * max_pages_per_slot + (p >> 6)];
             const size_t dst = (static_cast<size_t>(phys) * 64 + (p & 63)) * (n_kv * head_dim) + h * head_dim + tid;
             v_pool[dst] = static_cast<half_t>(v * s_fac);
@@ -1573,14 +1585,14 @@ __global__ void __launch_bounds__(256) k3_kv_paged_store(
     void* __restrict__ v_pool,              // [n_phys_pages, 64, n_kv_heads, head_dim] (half_t or uint8_t)
     float* __restrict__ k_scales,           // nullptr or [n_phys_pages, 64] (for FP8_KV)
     float* __restrict__ v_scales,           // nullptr or [n_phys_pages, 64] (for FP8_KV)
-    int M, int n_kv_heads, int head_dim, int swa_window) {
+    int M, int n_kv_heads, int head_dim, int swa_ring) {
     const int m = blockIdx.x;
     if (m >= M) return;
     const int tid = threadIdx.x;
     const int elems = n_kv_heads * head_dim;
 
     const int slot = slot_ids[m];
-    const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+    const int p = (swa_ring > 0) ? (pos[m] % swa_ring) : pos[m];
     const int lpage = p >> 6;
     const int poff = p & 63;
     const int phys = page_table[slot * max_pages_per_slot + lpage];
@@ -1719,7 +1731,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa(
     const float* __restrict__ k_scales,     // nullptr or [n_phys_pages, 64]
     const float* __restrict__ v_scales,     // nullptr or [n_phys_pages, 64]
     float* __restrict__ O_out,              // [M, n_q_heads, 128]
-    int M, int n_q_heads, int n_kv_heads, int swa_window, int max_rel) {
+    int M, int n_q_heads, int n_kv_heads, int swa_window, int swa_ring, int max_rel) {
     const int wave = threadIdx.x >> 5;
     const int lane = threadIdx.x & 31;
     const int qh = blockIdx.x * 4 + wave;
@@ -1745,7 +1757,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = k_start; kp <= cur_pos; ++kp) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -1817,7 +1829,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
     const float* __restrict__ k_scales,
     const float* __restrict__ v_scales,
     float* __restrict__ O_out,
-    int M, int n_q_heads, int n_kv_heads, int swa_window, int max_rel) {
+    int M, int n_q_heads, int n_kv_heads, int swa_window, int swa_ring, int max_rel) {
     const int wave = threadIdx.x >> 5;  // 0..3 split across KV sequence!
     const int lane = threadIdx.x & 31;
     const int qh = blockIdx.x;
@@ -1843,7 +1855,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = k_start + wave; kp <= cur_pos; kp += 4) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -1934,7 +1946,7 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
     const float* __restrict__ k_scales,
     const float* __restrict__ v_scales,
     float* __restrict__ partials,           // [M, n_q_heads, KSPLITS, 130]
-    int M, int n_q_heads, int n_kv_heads, int swa_window, int max_rel) {
+    int M, int n_q_heads, int n_kv_heads, int swa_window, int swa_ring, int max_rel) {
     const int wave = threadIdx.x >> 5;      // 0..7
     const int lane = threadIdx.x & 31;
     const int qh = blockIdx.x;
@@ -1966,7 +1978,7 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = sp_beg + wave; kp < sp_end; kp += 8) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -2101,7 +2113,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
     const float* __restrict__ k_scales,
     const float* __restrict__ v_scales,
     float* __restrict__ O_out,
-    int M, int n_q_heads, int n_kv_heads, int swa_window, int max_rel) {
+    int M, int n_q_heads, int n_kv_heads, int swa_window, int swa_ring, int max_rel) {
 #if INK_HAS_WMMA
     constexpr int BQ = 64, BK = 64, HD = 128;
     constexpr int LDK = HD + 8;   // 136 -> 64 * 136 * 2 = 17,408 B
@@ -2195,7 +2207,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
             const int kp = kb + r;
             half_t* dst = &kv.sK[r * LDK + c4 * 4];
             if (kp <= q_max_pos) {
-                const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+                const int ring_p = (swa_window > 0) ? (kp % swa_ring) : kp;
                 const int phys = pt_row[ring_p >> 6];
                 const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
                 const size_t base = tok_base * elems + kv_off + c4 * 4;
@@ -2297,7 +2309,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
             const int kp = kb + r;
             const int d0 = c4 * 4;
             if (kp <= q_max_pos) {
-                const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+                const int ring_p = (swa_window > 0) ? (kp % swa_ring) : kp;
                 const int phys = pt_row[ring_p >> 6];
                 const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
                 const size_t base = tok_base * elems + kv_off + d0;
@@ -2362,7 +2374,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
 #else
     (void)Q; (void)gate_attn; (void)rel_bias; (void)sink_logit; (void)slot; (void)base_pos;
     (void)page_table; (void)max_pages_per_slot; (void)k_pool; (void)v_pool; (void)k_scales; (void)v_scales;
-    (void)O_out; (void)M; (void)n_q_heads; (void)n_kv_heads; (void)swa_window; (void)max_rel;
+    (void)O_out; (void)M; (void)n_q_heads; (void)n_kv_heads; (void)swa_window; (void)swa_ring; (void)max_rel;
 #endif
 }
 
@@ -4055,6 +4067,27 @@ __global__ void __launch_bounds__(64) k_vit_full_attn(
         max_l = nm;
     }
     O[(static_cast<size_t>(qi) * H + h) * hd + d] = o_acc / fmaxf(sum_e, 1e-30f);
+}
+
+// #6671 diagnostics (STRATA_INK_HASH=1): an order independent 64-bit hash of every FP32 bit of one row, so a verify window
+// can be compared stage by stage with the one-token steps.  Block per row, 256 threads.
+__global__ void __launch_bounds__(256) k_dbg_hash_rows(const float* __restrict__ x, int D, unsigned long long* __restrict__ out,
+                                                        int slot, int nslots) {
+    __shared__ unsigned long long sh[256];
+    const float* row = x + static_cast<size_t>(blockIdx.x) * D;
+    unsigned long long acc = 0;
+    for (int d = threadIdx.x; d < D; d += 256) {
+        unsigned long long z = static_cast<unsigned long long>(__float_as_uint(row[d])) + 0x9E3779B97F4A7C15ull * static_cast<unsigned long long>(d + 1);
+        z ^= z >> 30; z *= 0xBF58476D1CE4E5B9ull; z ^= z >> 27; z *= 0x94D049BB133111EBull; z ^= z >> 31;
+        acc += z;
+    }
+    sh[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[static_cast<size_t>(blockIdx.x) * nslots + slot] = sh[0];
 }
 
 }  // namespace strata::inkling2::hip

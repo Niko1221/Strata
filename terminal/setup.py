@@ -1360,6 +1360,48 @@ def ram_gb():
     return total
 
 
+def ram_free_gb():
+    """RAM the PC can give a program right now, in GiB (Windows: GlobalMemoryStatusEx available physical; Linux: MemAvailable, and
+    in a container the limit minus what the cgroup uses; macOS: free + inactive pages); None when it cannot be read.  The Inkling planner
+    keeps the experts held in RAM inside this (#6662)."""
+    try:
+        if WIN:
+            return _memory_status().ullAvailPhys / 2**30
+        if sys.platform == "darwin":
+            text = subprocess.run(["vm_stat"], capture_output=True, text=True, errors="replace", timeout=3, check=True).stdout
+            page = 4096
+            m = re.search(r"page size of (\d+) bytes", text)
+            if m:
+                page = int(m.group(1))
+            pages = 0
+            for line in text.splitlines():
+                if line.startswith(("Pages free", "Pages inactive", "Pages speculative")):
+                    pages += int(re.sub(r"[^0-9]", "", line.split(":")[1]) or 0)
+            return pages * page / 2**30
+        with open("/proc/meminfo") as stream:
+            for line in stream:
+                if line.startswith("MemAvailable"):
+                    free = int(line.split()[1]) * 1024 / 2**30
+                    break
+            else:
+                return None
+        limit = _cgroup_memory_limit()
+        if limit is not None:
+            used = None
+            for name in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+                try:
+                    with open(name) as stream:
+                        used = int(stream.read().strip())
+                    break
+                except (OSError, ValueError):
+                    continue
+            if used is not None:
+                free = min(free, max(0.0, (limit - used) / 2**30))
+        return free
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 def _cgroup_memory_limit(self_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
     """The smallest memory limit (bytes) on this process's cgroup and its ancestors, as the engine's memory guard reads
     it (strata_control/cgroup_memory.py). None when no level sets a limit or the files cannot be read."""
@@ -5046,7 +5088,7 @@ def _win_display_adapters() -> list[dict]:
     """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
     ps = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "      # the pipe is read as UTF-8 (#4675)
           "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
-          "$_.AdapterRAM }")
+          "$_.AdapterRAM + '|' + $_.DriverVersion }")
     text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
     found = []
     for line in (text or "").splitlines():
@@ -5054,7 +5096,8 @@ def _win_display_adapters() -> list[dict]:
         if len(parts) >= 2 and parts[1]:
             ram = parts[2] if len(parts) > 2 else ""
             found.append({"name": parts[0].strip(), "pnp": parts[1].strip(),
-                          "ram": int(ram) if ram.strip().isdigit() else 0})
+                          "ram": int(ram) if ram.strip().isdigit() else 0,
+                          "driver": parts[3].strip() if len(parts) > 3 else ""})
     return found
 
 
@@ -5118,19 +5161,24 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         if did is None:
             continue                                   # not an AMD (VEN_1002) PCI device
         vram, driver = 0.0, ""
-        for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
+        cands = []
+        for k, r in enumerate(registry):               # the same card's driver instances (a driver upgrade leaves the older ones, #6801)
             if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
                 continue
             if (r.get("DriverDesc") and ad.get("name") and "\ufffd" not in ad["name"]
                     and r["DriverDesc"].strip() != ad["name"].strip()):
                 continue
-            used.add(k)
             mem = r.get("HardwareInformation.qwMemorySize")
             if isinstance(mem, bytes):
                 mem = int.from_bytes(mem[:8], "little")
-            vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
+            mem = int(mem) if isinstance(mem, int) and mem > 0 else 0
+            live = bool(ad.get("driver")) and str(r.get("DriverVersion") or "") == str(ad["driver"])
+            cands.append((mem > 0, live, k, mem, r))
+        if cands:                                      # one with a size first, then the installed driver's, then the first
+            _has, _live, k, mem, r = max(cands, key=lambda c: (c[0], c[1], -c[2]))
+            used.add(k)
+            vram = mem / 2 ** 30
             driver = str(r.get("DriverVersion") or "")
-            break
         if vram == 0.0 and ad.get("ram", 0) > 0:
             vram = ad["ram"] / 2 ** 30                 # WMI's 32-bit figure (at most 4 GB)
         arch = win_amd_arch(did, ad.get("name", ""))
@@ -5461,10 +5509,39 @@ def rocm_dev_missing(sysroot: Path) -> list:
     return [name for name, paths in need.items() if not any(p.is_file() for p in paths)]
 
 
+ROCM_LIB_SUBDIRS = ("lib", "lib64", "lib/x86_64-linux-gnu", "lib/x86_64-unknown-linux-gnu",
+                    "lib/aarch64-linux-gnu")
+
+
+def rocm_hipblas_dirs(root: Path) -> list[Path]:
+    """#6376: the folders under `root` that hold libhipblas.so*: AMD's /opt/rocm keeps them in lib/, Fedora's and
+    Arch's packages in lib64/, Debian's in a multiarch folder - each with hipcc in <root>/bin."""
+    return [root / d for d in ROCM_LIB_SUBDIRS if list((root / d).glob("libhipblas.so*"))]
+
+
+def rocm_prefixes(named: Path) -> list[Path]:
+    """#6376: the folders to try as a system ROCm's prefix, in order: the one named (ROCM_PATH, else /opt/rocm),
+    the folders above it (Fedora's ROCM_PATH=/usr/lib64/rocm names a folder that holds neither hipcc nor the
+    libraries, while /usr holds both), and last the prefix of the hipcc on PATH (a distro package install with no
+    ROCM_PATH at all, or one naming a folder that is not the ROCm prefix)."""
+    out = [named]
+    for up in (named.parent, named.parent.parent):
+        if up != up.parent and up not in out:
+            out.append(up)
+    exe = shutil.which("hipcc")
+    if exe:
+        prefix = Path(exe).resolve().parent.parent
+        if prefix not in out:
+            out.append(prefix)
+    return out
+
+
 def rocm_clang(root: Path) -> Path:
-    """#6071: ROCm's HIP compiler.  ROCm 7 and TheRock's wheels have <root>/llvm/bin/clang++; rocm-core 10.1 (Arch Linux)
-    has only <root>/lib/llvm/bin/clang++.  The first that exists; when neither does, the old place (callers name it)."""
-    for d in (root / "llvm" / "bin", root / "lib" / "llvm" / "bin"):
+    """#6071: ROCm's HIP compiler.  ROCm 7 and TheRock's wheels have <root>/llvm/bin/clang++; rocm-core 10.1 (Arch
+    Linux) has only <root>/lib/llvm/bin/clang++; Fedora's packages keep it in <root>/lib64/rocm/llvm/bin (#6376).
+    The first that exists; when none does, the old place (callers name it)."""
+    for d in (root / "llvm" / "bin", root / "lib" / "llvm" / "bin", root / "lib64" / "llvm" / "bin",
+              root / "lib64" / "rocm" / "llvm" / "bin"):
         if (d / "clang++").exists():
             return d / "clang++"
     return root / "llvm" / "bin" / "clang++"
@@ -5476,17 +5553,24 @@ def rocm_root(archs):
     TheRock wheels (rocm_wanted: a version per card family, from the family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
     sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
-    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
-        ver = rocm_version(sysroot)
-        missing = rocm_dev_missing(sysroot)
+    for prefix in rocm_prefixes(sysroot):              # #6376: a distro splits hipcc, libraries and headers
+        libs = rocm_hipblas_dirs(prefix)
+        if not ((prefix / "bin" / "hipcc").exists() and libs):
+            continue
+        ver = rocm_version(prefix)
+        missing = rocm_dev_missing(prefix)
         if (ver is None or ver >= ROCM_SYSTEM_MIN) and not missing:
-            return sysroot, [str(sysroot / "lib")]
+            if prefix != sysroot:                      # say which folder was used: ROCM_PATH named another one
+                say(f"  System ROCm: {prefix} (this distribution keeps hipcc, the libraries and the development "
+                    "files in separate folders)")
+            return prefix, [str(p) for p in libs]
         if ver is not None and ver < ROCM_SYSTEM_MIN:
-            warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
+            warn(f"the ROCm in {prefix} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
                  "or newer: using AMD's wheels in .venv instead")
         else:                                          # #446: a runtime-only ROCm (no -dev packages): cmake would fail
-            warn(f"the ROCm in {sysroot} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
+            warn(f"the ROCm in {prefix} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
                  ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card)")
+        break                                          # a ROCm that is there but unusable: the wheels path follows
     missing_wheels = [a for a in archs if a not in ROCM_INDEXES]
     if missing_wheels:                                 # gfx906: no TheRock wheels (7.x families only)
         fail(f"no ready-made ROCm wheels for {', '.join(missing_wheels)}: this card runs from a source build, "
@@ -9757,8 +9841,14 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model: {fam['title']}")
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
-    if multi:
-        warn(f"{fam['title']} runs on one GPU so far: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
+    peer_gpu = None
+    if multi and len(multi) == 2 and not hip:        # the second-card expert tier (--peer-device): CUDA, two cards only so far
+        peer_gpu = next(i for i in multi if i != gpu.get("index", 0))
+        ok(f"{fam['title']}: GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) main, GPU {peer_gpu} as a second-card expert "
+           "tier (--peer-device)")
+    elif multi:
+        warn(f"{fam['title']} runs on one GPU, or two together with --peer-device (not {len(multi)}): using GPU "
+             f"{gpu.get('index', 0)} ({gpu_name(gpu)}) only")
     names = list(fam["models"])
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
@@ -9815,9 +9905,12 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             n = int(ask("How many requests at once (1 = one at a time)?", [str(i) for i in range(1, PARALLEL_MAX + 1)],
                         "1", a.yes))
             par = n if n > 1 else None
-    if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
-        warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
+    if a.rope_scaling or a.rope_scale or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
+        warn(f"--rope-scaling / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
+    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4") else None   # q36's own --kv widths; Flash-Next's int8/q4_0/k8v4 do not apply here
+    if a.kv and kv is None:
+        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8 or fp4 - kept at its default (fp32)")
     folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     published = fam["file"].format(q=model)           # the published file's name: its pinned size and SHA-256
     gguf = folder / published
@@ -9890,6 +9983,14 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    if kv:
+        args += ["--kv", kv]
+        ok(f"KV cache: --kv {kv}")
+    if peer_gpu is not None:
+        args += ["--peer-device", "1"]                         # the engine numbers --gpu's cards 0, 1: the config below lists [main, peer], whatever order the cards were chosen in
+        if getattr(a, "peer_reserve_mib", None) is not None:
+            args += ["--peer-reserve-mib", str(a.peer_reserve_mib)]
+        ok(f"second-card expert tier: --peer-device 1 (GPU {peer_gpu})")
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
         vram = gpu.get("vram_gb", 0.0)
         if vram > 0:
@@ -9902,7 +10003,10 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["cuda"] = 12
     if hip:
         cfg["backend"] = "hip"
-    if gpu.get("count", 1) > 1 or a.gpu is not None:
+    if peer_gpu is not None:
+        cfg["gpu"] = [gpu.get("index", 0), peer_gpu]    # both cards visible (CUDA_VISIBLE_DEVICES), the main card first: --peer-device 1 is the second
+        cfg["gpus_asked"] = True
+    elif gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
     if a.host:
@@ -10362,32 +10466,46 @@ def inkling_local_source(a, model: str | None = None) -> tuple[Path, Path, bool]
 
 
 def inkling_find_local_vision(folder: Path, data: Path, is_gguf: bool) -> Path | None:
-    """Find a local Inkling-2-Mini Vision shard (.strata) or companion mmproj*.gguf beside a local model."""
+    """Find a local Inkling-2-Mini picture reader beside a local model: the Vision shard (.strata). An `mmproj*.gguf` beside an Unsloth GGUF is NOT one: it is
+    llama.cpp's projector (architecture "clip"), which strata-inkling cannot read (`--info mmproj-BF16.gguf` says "GGUF architecture is 'clip', expected
+    'inkling2'"); handing it over as --vision left the engine without a reader and images failed with "does not read images yet" (0221 APPTUI, GRID report)."""
     for cand in (folder / inkling_family.VISION_FILE, data / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE):
         if cand.is_file():
             return cand
-    if is_gguf:
-        mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
-        if mmprojs:
-            for pref in ("bf16", "f16", "q8_0"):
-                hit = next((p for p in mmprojs if pref in p.name.lower()), None)
-                if hit:
-                    return hit
-            return mmprojs[0]
     return None
 
 
-def inkling_find_local_dspark(folder: Path) -> Path | None:
+def inkling_fetch_local_vision(a, folder: Path, data: Path) -> Path | None:
+    """The person's own model files have no picture reader beside them and pictures are on: download Inkling-2-Mini-Vision.strata (0.64 GB, checked by size and
+    SHA-256) into the data folder's models/inkling-2-mini, where the next start finds it too. None, and one plain sentence, when it cannot be had: the model then
+    starts without pictures and the sentence says how to add the file."""
+    dest = data / "models" / inkling_family.FAMILY
+    beside = sorted(p.name for p in folder.glob("mmproj*.gguf") if p.is_file())
+    why = (f"the {beside[0]} beside the model is llama.cpp's picture projector, which Strata's engine does not read" if beside
+           else "there is no picture reader beside the model")
+    say(f"  {why}; downloading {inkling_family.VISION_FILE} (0.64 GB, once) into {dest}")
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        got = inkling_fetch(a, inkling_family.VISION_FILE, dest, False)
+    except (SystemExit, OSError):
+        warn(f"images will not work: {inkling_family.VISION_FILE} could not be downloaded. The model starts without a picture reader. "
+             f"To add it later: put {inkling_family.VISION_FILE} in {dest} (or next to the model) and run this again")
+        return None
+    ok(f"images: on ({got.name})")
+    return got
+
+
+def inkling_find_local_dspark(folder: Path, reads_mtp: bool = True) -> Path | None:
     """Find an optional local DSpark drafter file (dspark*.gguf or mtp.safetensors) beside an Inkling GGUF."""
     for base in (folder, folder / "dspark"):
         if not base.is_dir():
             continue
+        mtp = base / "mtp.safetensors"                  # the original checkpoint first: a dspark*.gguf may be Unsloth's newer layout, which this engine cannot read
+        if mtp.is_file() and reads_mtp:                 # (an engine that does not list dspark_f32_widen=1 drafts nothing from it)
+            return mtp
         ggufs = sorted(p for p in base.glob("dspark*.gguf") if p.is_file())
         if ggufs:
             return ggufs[0]
-        mtp = base / "mtp.safetensors"
-        if mtp.is_file():
-            return mtp
     return None
 
 
@@ -10416,8 +10534,45 @@ def inkling_pc(gpu, ram) -> tuple:
     return effective_vram_gb(g), float(ram), False, False, arch
 
 
-def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_family.DEFAULT_VISION, *, igpu=False, arch=None) -> list:
-    rec = inkling_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, igpu=igpu, arch=arch)["build"]
+def inkling_expert_flags(placed) -> list:
+    """--vram-experts-gb / --ram-experts-gb for a planner placement.  The planner counts GB (10^9 bytes); strata-inkling reads the two
+    flags as GiB (2^30 bytes): written as they were, the engine's cap sat 7.4% above the plan (#6792)."""
+    # Rounded UP to the 0.01 GiB the flag carries: an exact figure rounded down cuts the last expert off (UD-Q4_K_XL: 15.48 GB written as 14.42 GiB left
+    # 38 of 3072 experts on the host, the hybrid path, 6% slower), and a plan that holds every expert in the card gets 0.05 GiB (about 11 experts) of slack.
+    slack = 0.05 if placed.get("full_vram") else 0.0
+    up = lambda gb, extra=0.0: math.ceil((gb / inkling_fit.GIB_TO_GB + extra) * 100 - 1e-6) / 100          # noqa: E731
+    flags = ["--vram-experts-gb", f"{up(placed['vram_gb'], slack):.2f}"]
+    # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only": a plan with every expert on the card leaves it
+    # out, so experts that do not fit after all (a bigger context, a --vram-experts-gb cap) go to RAM, not the SSD (#6752)
+    if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
+        flags += ["--ram-experts-gb", f"{up(placed['ram_gb']):.2f}"]
+    return flags
+
+
+def inkling_plan_extra(gpu) -> dict:
+    """What the Inkling planner is told beside the card's free memory (#6662 #6739): the free RAM, and that the card drives a display
+    (the desktop keeps a larger reserve).  Missing keys mean not known."""
+    out = {}
+    free = ram_free_gb()
+    if free is not None:
+        out["ram_free_gib"] = free
+    g = gpu or {}
+    try:
+        if g.get("index") is not None and not g.get("uma") and not g.get("unified") and gpu_drives_display(g):
+            out["desktop"] = True
+    except Exception:                                  # noqa: BLE001
+        pass
+    try:                                                # the card's compute capability ("86" -> 86): a GGUF's dense share depends on it
+        if str(g.get("arch", "")).isdigit():
+            out["sm"] = int(g["arch"])
+    except Exception:                                  # noqa: BLE001
+        pass
+    return out
+
+
+def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_family.DEFAULT_VISION, *, igpu=False, arch=None, extra=None) -> list:
+    extra = extra or {}
+    rec = inkling_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, igpu=igpu, arch=arch, **extra)["build"]
     words = {
         "full_vram": "100% GPU/UMA resident",
         "ram_vram_zero_ssd": "fits in VRAM + RAM (zero SSD spill)",
@@ -10425,7 +10580,7 @@ def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_fami
         "cross_tier_ssd": "streams experts from SSD: slower",
     }
     out = []
-    for r in inkling_fit.rows(vram_gib, ram_gib, unified, ctx, vision):
+    for r in inkling_fit.rows(vram_gib, ram_gib, unified, ctx, vision, **extra):
         out.append((r["build"], f"{r['build']:7s} {inkling_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.1f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
     return out
@@ -10436,14 +10591,16 @@ def inkling_have(a, dst: Path) -> bool:
         return False
     if done(dst) or bool(getattr(a, "gguf_dir", None)):
         return True
-    pin = inkling_family.FILES.get(dst.name) or inkling_family.TOKENIZER_FILES.get(dst.name)
-    return bool(pin and dst.stat().st_size == pin[0] and not dst.with_name(dst.name + ".part").exists())
+    pins = inkling_family.pins_for(dst.name)
+    return bool(pins and any(dst.stat().st_size == p[0] for p in pins) and not dst.with_name(dst.name + ".part").exists())
 
 
 def inkling_verify(dst: Path, name: str, own: bool) -> None:
-    pin = inkling_family.FILES.get(name) or inkling_family.TOKENIZER_FILES.get(name)
-    if not pin:
+    pins = inkling_family.pins_for(name)
+    if not pins:
         return
+    have = dst.stat().st_size if dst.exists() else -1
+    pin = next((p for p in pins if p[0] == have), pins[0])       # a file in the re-uploaded layout is checked against its own size and sha
     size, sha = pin
     if sha:
         verify_sha256(dst, size, sha, own=own)
@@ -10483,6 +10640,50 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
     if last is not None:
         raise last
     fail(f"no source lists {name}")
+
+
+def inkling_engine_reads_mtp(engine_program, model_file, lib_dirs=()) -> bool:
+    """Whether the installed engine can use the original mtp.safetensors: it says so on its --info line (dspark_f32_widen=1). The flag, not the
+    version, decides, so older, newer and custom builds are told apart by what they report; an engine that is missing, does not run or says nothing
+    counts as one that cannot (Unsloth's Q8_0 file is used then)."""
+    if engine_program is None or model_file is None:
+        return False
+    from serve import inkling_kind
+    info = inkling_kind.probe(str(engine_program), ["--native", str(model_file)], {"lib_dirs": [str(d) for d in (lib_dirs or ())]})
+    return inkling_family.engine_reads_mtp(info)
+
+
+def inkling_fetch_drafter(a, folder: Path, own: bool, reads_mtp: bool = True) -> Path | None:
+    """The DSpark drafter of a downloaded GGUF build, chosen by what the installed engine can read (reads_mtp: see inkling_engine_reads_mtp).
+    An engine that reads it: the original checkpoint of Thinking Machines (mtp.safetensors, BF16, 636 MB, pinned commit + SHA-256), or the file an
+    install already has; when the original cannot be fetched or does not check out, Unsloth's pinned Q8_0 file (402 MB, the same weights).
+    An engine that does not: Unsloth's pinned Q8_0 file only; an mtp.safetensors on disk stays there and is not passed. Both take the same memory
+    on the card (measured: DSpark took 416 MiB with either; the engine holds the matrices as BF16 in both cases)."""
+    names = [inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE] if reads_mtp else [inkling_family.DSPARK_GGUF_FILE]
+    for n in names:
+        if inkling_have(a, folder / n):
+            ok(f"drafter: DSpark ({n}) already downloaded")
+            inkling_verify(folder / n, n, own)
+            return folder / n
+    what = {inkling_family.MTP_FILE: "the original checkpoint (BF16, from Thinking Machines' repository)",
+            inkling_family.DSPARK_GGUF_FILE: "Unsloth's Q8_0 copy of the same checkpoint" + ("" if reads_mtp else " (this engine cannot read the original file)")}
+    say(f"  drafter: DSpark, {what[names[0]]}: {names[0]} ({inkling_family.size_of(names[0]) / 1e6:.0f} MB)")
+    if len(names) == 1:
+        return inkling_fetch(a, names[0], folder, own)
+    global fail
+    real_fail = fail
+
+    def soft_fail(msg, hint=None, **detail):                  # a failed first try is not the end of setup: no "Setup stopped", no error event
+        warn(f"{msg}" + (f" ({hint})" if hint else ""))
+        sys.exit(1)
+    fail = soft_fail
+    try:
+        return inkling_fetch(a, names[0], folder, own)
+    except SystemExit:
+        warn(f"{names[0]} could not be fetched; using {what[names[1]]}: {names[1]} ({inkling_family.size_of(names[1]) / 1e6:.0f} MB)")
+    finally:
+        fail = real_fail
+    return inkling_fetch(a, names[1], folder, own)
 
 
 def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool, *, data: Path | None = None) -> Path | None:
@@ -10566,13 +10767,18 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     mgpu_flags = inkling_fit.multi_gpu_flags(ink_gpus, windows=WIN) if (is_cuda_ink and len(ink_gpus) >= 2) else (["--gpus", "2"] if len(ink_gpus) >= 2 else [])
     use_ink_ls = "--layer-split" in mgpu_flags
     if len(ink_gpus) >= 2:
-        vram_gib = sum(float(g.get("vram_gb") or 0.0) for g in ink_gpus)
+        vram_gib = sum(effective_vram_gb(g) for g in ink_gpus)
         mode_desc = "pipeline layer-split" if use_ink_ls else "dual-GPU expert parallelism"
         ok("GPUs: " + " + ".join(gpu_name(c) for c in ink_gpus) + f" ({mode_desc})")
+        if use_ink_ls and is_cuda_ink and str(getattr(a, "drafter", None) or "").strip().lower() != "off":
+            warn("DSpark drafting does not run yet when the layers are split across several NVIDIA cards, so it decodes without it (#6741). "
+                 "On one card with the rest of the experts in RAM it does: add --gpu N to use one card")
     vision = a.vision not in ("no", "none")
     want_ctx = a.context or inkling_family.DEFAULT_CONTEXT
-    lines = inkling_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)
-    rec = inkling_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)
+    plan_extra = inkling_plan_extra(gpu) if not unified else {}
+    plan_extra["backend"] = "hip" if hip else ("sycl" if getattr(a, "backend", None) == "sycl" else ("metal" if sys.platform == "darwin" else "cuda"))
+    lines = inkling_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch, extra=plan_extra)
+    rec = inkling_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch, **plan_extra)
     say()
     order = [b for b, _ in lines]
     for i, (b, text) in enumerate(lines, 1):
@@ -10588,7 +10794,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         for i, c in enumerate(ctxs, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == inkling_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(inkling_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision)
+    par = max(1, min(inkling_family.MAX_PARALLEL, int(getattr(a, "parallel", None) or 1)))     # --parallel N: the slots the planner makes room for (0221 APPTUI: it planned for one)
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra)
     mode = inkling_fit.mode(placed)
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
@@ -10601,6 +10808,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         folder = local_src[1]
     data, _ = data_folder_for(a)
     vision_path: Path | None = None
+    fetch_vision = False
     dspark_path: Path | None = None
     drafter_asked = str(getattr(a, "drafter", None) or "").strip().lower()
     want_dspark = drafter_asked != "off"
@@ -10610,23 +10818,21 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             if vision_path is not None:
                 ok(f"images: on ({vision_path.name})")
             else:
-                vision = False
-                warn("no local Inkling-2-Mini Vision shard or mmproj found beside the model; starting text-only")
+                fetch_vision = True                          # step 5 downloads it (the engine comes first, as for any download)
         else:
             ok("images: off")
-        if is_gguf and want_dspark:
-            dspark_path = inkling_find_local_dspark(folder)
-            if dspark_path is not None:
-                ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
-        files = inkling_family.files_of(model, vision, dspark=want_dspark)
+        files = inkling_family.files_of(model, vision, dspark=False)
         left = 0.0
-        for n in files:
+        drafter = []
+        if is_gguf and want_dspark and not any(inkling_have(a, folder / d) for d in (inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE)):
+            drafter = [inkling_family.MTP_FILE]
+        for n in files + drafter:
             p = folder / n
             if not inkling_have(a, p):
                 part = p.with_name(p.name + ".part")
-                left += (inkling_family.FILES[n][0] - (part.stat().st_size if part.is_file() else 0)) / 1e9
+                left += (inkling_family.size_of(n) - (part.stat().st_size if part.is_file() else 0)) / 1e9
         if left and free_gb(folder) < left:
             fail(f"not enough free disk space in {folder}: need ~{left:.1f} GB, {free_gb(folder):.1f} GB free",
                  ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
@@ -10647,13 +10853,22 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         step(5, f"using local {fam['title']} files")
         model_file = local_src[0]
         ok(f"model file: {model_file}")
+        if fetch_vision:
+            vision_path = inkling_fetch_local_vision(a, folder, data)
+            if vision_path is None:
+                vision = False
+        if is_gguf and want_dspark:                     # after the engine step: which file it can read decides
+            dspark_path = inkling_find_local_dspark(folder, inkling_engine_reads_mtp(engine_program, model_file, lib_dirs))
+            if dspark_path is not None:
+                ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         step(5, f"downloading {fam['title']} {model}")
-        files = inkling_family.files_of(model, vision, dspark=want_dspark)
+        files = inkling_family.files_of(model, vision, dspark=False)
         paths = {n: inkling_fetch(a, n, folder, own) for n in files}
         model_file = paths[files[0]]
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
-        dspark_path = paths.get(inkling_family.DSPARK_GGUF_FILE) if (is_gguf and want_dspark) else None
+        reads_mtp = inkling_engine_reads_mtp(engine_program, model_file, lib_dirs) if (is_gguf and want_dspark) else True
+        dspark_path = inkling_fetch_drafter(a, folder, own, reads_mtp) if (is_gguf and want_dspark) else None
         if dspark_path is not None:
             ok(f"drafter: DSpark ({dspark_path.name})")
         ok(f"model file: {model_file}")
@@ -10667,9 +10882,12 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"tokenizer: {tokdir}")
 
     step(7, "writing the start script")
-    drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else inkling_family.DEFAULT_DRAFTER
     ink_backend = "hip" if hip else ("metal" if sys.platform == "darwin" else ("sycl" if getattr(a, "backend", None) == "sycl" else "cuda"))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"), backend=ink_backend)
+    # Drafting follows a measured probe at the first start of this placement ("auto", inkling_probe.py) unless the person asked (--drafter dspark / off)
+    # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
+    drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
+        inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend})
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
@@ -10686,7 +10904,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
-        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
+        args += inkling_expert_flags(placed)
         if placed.get("ssd_gb", 0.0) > 0.05:
             args += ["--ssd-experts"]
     cfg = {
@@ -10700,7 +10918,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         "lib_dirs": lib_dirs,
         "port": port,
         "drafting": drafting_mode,
-        "parallel": inkling_family.DEFAULT_PARALLEL,
+        "parallel": par if par > 1 else inkling_family.DEFAULT_PARALLEL,
     }
     if use_ink_ls:
         cfg["layer_split"] = "auto"
@@ -11354,6 +11572,9 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
+    ap.add_argument("--peer-reserve-mib", type=int, metavar="N",
+                    help="Qwen3.6-35B-A3B on two GPUs (--gpus): VRAM in MiB the second-card expert tier (--peer-device) "
+                         "leaves free there (the engine's default: 600)")
     ap.add_argument("--mtp", choices=["on", "off"],
                     help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
                          "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "

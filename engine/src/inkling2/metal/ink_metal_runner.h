@@ -74,6 +74,7 @@ struct InkBatchStep {
     bool capture_taps = false;          // capture visits [5, 23, 41, 48] into DSpark context KV + f_rnn
     bool compute_logits = true;         // compute final unembed + softcap(30.0)
     int logits_last_only_idx = -1;      // >= 0 -> compute unembed ONLY for token index `logits_last_only_idx` (prefill speed!)
+    std::vector<int> logits_rows;       // non-empty (and logits_last_only_idx < 0) -> logits of exactly these batch rows (<= 64), compact in this order
     bool record_verify_ring = false;    // save per-token ShortConv states [0..7] for O(1) zero-replay rollback!
     bool is_tree = false;               // exact Multi-Branch Tree verify (M <= 32, non-destructive KV & ShortConv!)
     int tree_anchor_pos = 0;            // anchor_pos for tree root node 0
@@ -206,7 +207,7 @@ struct InkMetalRunner {
     mtl::Buffer b_mlp_in, b_r_logits, b_topk_idx, b_topk_w;
     mtl::Buffer b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_meta, b_moe_tiles;
     mtl::Buffer b_moe_h, b_moe_yp, b_moe_raw, b_moe_out;
-    mtl::Buffer b_h_out, b_h_norm, b_logits, b_argmax;
+    mtl::Buffer b_h_out, b_h_norm, b_h_gather, b_logits, b_argmax;
     mtl::Buffer b_taps4;                   // [4, max_batch, 2304] for DSpark taps [5, 23, 41, 48]
 
     // DSpark Block-8 scratch buffers (M=8)
@@ -511,6 +512,7 @@ struct InkMetalRunner {
 
         b_h_out     = cx->alloc(MB * D * 4);
         b_h_norm    = cx->alloc(MB * D * 4);
+        b_h_gather  = cx->alloc(64ul * D * 4);
         // Logits buffer: up to min(max_batch, 64) rows simultaneously (prefill uses last-token-only mode!)
         b_logits    = cx->alloc((size_t)std::min(max_batch, 64) * c.vocab_padded * 4);
         b_argmax    = cx->alloc(MB * 4);
@@ -2034,7 +2036,23 @@ struct InkMetalRunner {
                 }
             } else {
                 n_lg = std::min(M, 64);
-                if (!logits_out && argmax_out && n_lg == 1 && (uti.fmt == FMT_Q8ROW || uti.fmt == FMT_BF16 || uti.fmt == FMT_S6)) {
+                // Logits for chosen rows only (a batch of M > 64 rows with several requests ending their prompt in it: the rows to
+                // read are scattered, and the first 64 rows are not them): copy them next to each other first.
+                const bool gather_rows = !step.logits_rows.empty();
+                if (gather_rows) {
+                    n_lg = (int)step.logits_rows.size();
+                    for (int j = 0; j < n_lg; ++j) {
+                        mtl::Dispatch dg;
+                        dg.p = &p_copy_f32;
+                        dg.barrier = (j == 0);
+                        dg.grid[0] = (uint32_t)((D + 255) / 256); dg.tg[0] = 256;
+                        dg.args = {mtl::Arg::B(b_h_norm, (size_t)step.logits_rows[j] * D * 4), mtl::Arg::B(b_h_gather, (size_t)j * D * 4),
+                                   mtl::Arg::V((int)D)};
+                        ds.push_back(std::move(dg));
+                    }
+                }
+                const mtl::Buffer& h_src = gather_rows ? b_h_gather : b_h_norm;
+                if (!logits_out && argmax_out && n_lg == 1 &&(uti.fmt == FMT_Q8ROW || uti.fmt == FMT_BF16 || uti.fmt == FMT_S6)) {
                     const int V = c.vocab_unpadded;
                     const int rpt = (uti.fmt == FMT_S6) ? 16 : 32;
                     const int nparts = (V + rpt - 1) / rpt;
@@ -2042,7 +2060,7 @@ struct InkMetalRunner {
                     du.p = (uti.fmt == FMT_Q8ROW) ? &p_unemb_argmax_q8
                          : (uti.fmt == FMT_BF16)  ? &p_unemb_argmax_bf16 : &p_unemb_argmax_sk6;
                     du.grid[0] = (uint32_t)nparts; du.tg[0] = 256;
-                    du.args = {mod->tw("model.llm.unembed.weight"), mtl::Arg::B(b_h_norm),
+                    du.args = {mod->tw("model.llm.unembed.weight"), mtl::Arg::B(h_src),
                                mtl::Arg::B(bd_part_val), mtl::Arg::B(bd_part_idx),
                                mtl::Arg::V(V), mtl::Arg::V(D)};
                     ds.push_back(std::move(du));
@@ -2058,7 +2076,7 @@ struct InkMetalRunner {
                     du.p = (uti.fmt == FMT_Q8ROW) ? &p_unemb_argmax_m_q8
                          : (uti.fmt == FMT_BF16)  ? &p_unemb_argmax_m_bf16 : &p_unemb_argmax_m_sk6;
                     du.grid[0] = (uint32_t)nparts; du.tg[0] = 256;
-                    du.args = {mod->tw("model.llm.unembed.weight"), mtl::Arg::B(b_h_norm),
+                    du.args = {mod->tw("model.llm.unembed.weight"), mtl::Arg::B(h_src),
                                mtl::Arg::B(bd_part_val), mtl::Arg::B(bd_part_idx),
                                mtl::Arg::V(V), mtl::Arg::V(D), mtl::Arg::V(n_lg), mtl::Arg::V(nparts)};
                     ds.push_back(std::move(du));
@@ -2077,13 +2095,13 @@ struct InkMetalRunner {
                             du.grid[0] = (uint32_t)((c.vocab_unpadded + 63) / 64);
                             du.tg[0] = 256;
                             du.args = {mod->tw("model.llm.unembed.weight"),
-                                       mtl::Arg::B(b_h_norm, (size_t)m0 * D * 4),
+                                       mtl::Arg::B(h_src, (size_t)m0 * D * 4),
                                        mtl::Arg::B(b_logits, (size_t)m0 * c.vocab_unpadded * 4),
                                        mtl::Arg::V(c.vocab_unpadded), mtl::Arg::V(D), mtl::Arg::V(mm)};
                             ds.push_back(std::move(du));
                         }
                     } else {
-                        push_trunk_linear(ds, "model.llm.unembed.weight", mtl::Arg::B(b_h_norm), mtl::Arg::B(b_logits),
+                        push_trunk_linear(ds, "model.llm.unembed.weight", mtl::Arg::B(h_src), mtl::Arg::B(b_logits),
                                           n_lg, c.vocab_unpadded);
                     }
                     if (logits_out) {

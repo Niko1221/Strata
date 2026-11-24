@@ -739,7 +739,8 @@ kernel void dspark_build_meff_q8(
                     const float eff = float(as_type<half>(dsp_ld16(blk))) * (float(blk[2 + g]) * (1.0f / 255.0f));
                     device const uchar* pl = blk + 6;
                     const uchar lb = pl[j >> 1];
-                    const uchar hb = pl[128 + (j >> 2)];
+                    device const uchar* hpl = pl + 128;   // pointer first, then index: `pl[128 + (j >> 2)]` crashes the Apple7/8 GPU compiler (#6608, #6720)
+                    const uchar hb = hpl[j >> 2];
                     const int sh = (j & 3) * 2;
                     const float q0 = float((lb & 15u) | (((hb >> sh) & 3u) << 4)) - 31.5f;
                     const float q1 = float((lb >> 4) | (((hb >> (sh + 2)) & 3u) << 4)) - 31.5f;

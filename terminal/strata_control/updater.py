@@ -333,6 +333,8 @@ def detect_hardware(environ=None) -> dict:
     elif backend == "hip":
         hw["gfx"] = _gfx_names()
         hw["gpu_names"] = _amd_card_names()
+        if len(ec.hip_counted(hw["gfx"])) > 1:                 # several cards: the one the model runs on picks between builds (#6650)
+            hw["gfx_main"] = ec.hip_main_arch(ec.hip_cards_present(), environ) if os.name != "nt" else ""
     return hw
 
 
@@ -710,6 +712,15 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
     if report["status"] == "available" and local:
         report["installed_locally"] = local
         report["download_bytes"] = 0
+        # #6830: the person went back to the engine in use (`strata components rollback`, Settings > Engine): it is pinned and the newer one is in "skipped".
+        # An explicit update still offers the newer engine (owner, 11-01), but anything that runs by itself (the app's install job: a model's settings, a
+        # download) must not switch back: SAFETY.md, "an engine is never updated by itself". `person_chose` says so; the app's engine step reads it.
+        pinned_name = section.get("pinned")
+        if pinned_name and getattr(installed, "root", None) is not None and installed.root.name == pinned_name \
+                and offered.version in (section.get("skipped") or []):
+            report["person_chose"] = True
+            report["note"] = (f"you went back to {installed.version} (the newer {offered.version} is installed and left alone); "
+                              "`strata update` or Update engine in Settings switches to it when you ask")
         if offered.version in (section.get("failed_unproven") or {}) and not ctx.force:
             # #5400: this engine was used without a test load (memory was short) and could not start the model; switching to it again by itself
             # would repeat that. The person can ask for it by name.
@@ -852,7 +863,11 @@ _SHAPE_ONLY_FLAGS = frozenset({"--engram", "--dspark", "--dfly-override", "--vra
 
 
 def _config_component_id(source) -> str:
-    """Which engine component (`strata-engine`, `strata-hy4`, `strata-inkling`, ...) a saved run config targets (#6589, #6623)."""
+    """Which engine component (`strata-engine`, `strata-hy4`, `strata-inkling`, ...) a saved run config targets (#6589, #6623).
+
+    The `exe` names it only when it names a shape engine. Setup writes `component:strata-engine` into an Inkling-2-Mini config (the serve start finds the
+    engine by the config's `arch`), so a reference to the general engine is not proof: the arch and the arguments decide (#6589, 0.2.20: the Qwen engine was
+    test-started with `--native Inkling-2-Mini-SQ-20.strata --vram-experts-gb ...` and refused it)."""
     cfg = source
     if not isinstance(cfg, dict):
         try:
@@ -864,7 +879,7 @@ def _config_component_id(source) -> str:
     exe = str(cfg.get("exe") or "").strip()
     if ec.is_reference(exe):
         comp = exe[len(ec.REFERENCE_PREFIX):].strip()
-        if comp:
+        if comp and comp != ec.COMPONENT_ID:
             return comp
     exe_base = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if exe_base.startswith("strata-hy4"):
@@ -882,11 +897,14 @@ def _config_component_id(source) -> str:
         arg_set = set(arg_list)
         if "--dspark" in arg_set:
             return "strata-inkling"
-        if arg_set & _SHAPE_ONLY_FLAGS:
+        if "--engram" in arg_set:
             return "strata-hy4"
-        for i, a in enumerate(arg_list):
-            if a == "--native" and i + 1 < len(arg_list) and arg_list[i + 1].lower().endswith(".strata"):
-                return "strata-inkling" if "inkling" in arg_list[i + 1].lower() else "strata-hy4"
+        native = next((arg_list[i + 1] for i, a in enumerate(arg_list) if a in ("--native", "--model") and i + 1 < len(arg_list)), "")
+        low = native.lower()
+        if low.endswith(".strata"):
+            return "strata-inkling" if "inkling" in low else "strata-hy4"
+        if arg_set & _SHAPE_ONLY_FLAGS:                  # --vram-experts-gb and the like belong to a shape engine, never to `strata`
+            return "strata-inkling" if "inkling" in low else "strata-hy4"
     return ec.COMPONENT_ID
 
 
@@ -1373,7 +1391,11 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         cfg.pop("lib_dirs", None)
         if isinstance(cfg.get("args"), list):
             cfg["args"] = light_test_args(cfg["args"])
+        mine = sorted(str(k) for k in (cfg.get("env") if isinstance(cfg.get("env"), dict) else {}))
         cfg["env"] = {**(cfg.get("env") if isinstance(cfg.get("env"), dict) else {}), **TEST_ENV}
+        if mine:
+            # #6868: the person can see that the settings they put in their run config's "env" are in this test (and which file it read)
+            ctx.say("test", f"Testing engine {component.version} with the run config {source}, with its environment settings {', '.join(mine)}", component="engine")
         short = (ctx.memory_check or low_memory)(cfg)
         if short:
             # #5400: loading the model now would push this PC out of memory (other programs hold it). The engine gets the check an install with no

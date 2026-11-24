@@ -109,6 +109,7 @@ public:
         }
         snaps_.resize((size_t)par);
         frnn_snaps_.resize((size_t)par);
+        ckpts_.assign((size_t)par, PromptCkpt{});
         slot_used_.assign((size_t)par, 0);
         slot_beam_depth_.assign((size_t)par, runner_.is_apple10 ? 5 : 4);
         slot_ema_gain_.assign((size_t)par, 1.15);
@@ -124,6 +125,7 @@ public:
         }
         if (!slot_used_[slot]) { slot_used_[slot] = 1; ++active_slots_; }
         runner_.reset_slot(slot);
+        drop_ckpt(slot);
         slot_beam_depth_[slot] = runner_.is_apple10 ? 5 : 4;
         slot_ema_gain_[slot] = 1.15;
         slot_cooldown_[slot] = 0;
@@ -138,6 +140,7 @@ public:
             slot_used_[slot] = 0;
             --active_slots_;
             runner_.reset_slot(slot);
+            drop_ckpt(slot);
             if (last_ver_slot_ == slot) last_ver_slot_ = -1;
             if (last_tree_slot_ == slot) last_tree_slot_ = -1;
         }
@@ -145,6 +148,7 @@ public:
 
     void reset_slot(int slot) override {
         runner_.reset_slot(slot);
+        drop_ckpt(slot);
         if (slot >= 0 && slot < (int)slot_beam_depth_.size()) {
             slot_beam_depth_[slot] = runner_.is_apple10 ? 5 : 4;
             slot_ema_gain_[slot] = 1.15;
@@ -192,6 +196,82 @@ public:
             const size_t D = (size_t)mod_.man.c.hidden;
             std::memcpy(runner_.dsp_frnn_slot.as<float>() + (size_t)slot * D, frnn_snaps_[slot].data(), D * 4);
         }
+    }
+
+    // Prompt-end conversation checkpoint (#6627), the same contract as the CUDA / HIP / CPU backends: save_prompt_checkpoint(slot, n)
+    // is called right after the prompt's first n tokens went through the slot, restore_prompt_checkpoint(slot, n) when a later request
+    // shares exactly those n tokens. Global KV at positions < n is left alone by whatever the slot generated afterwards, so only the
+    // state that generation overwrites is kept: the SWA rings (40 visits + DSpark context layers 0 and 2), the ShortConv histories and
+    // the drafter's latest f_rnn. Without it a chat that ends in hidden thinking / a tool call never matches the whole-stream prefix
+    // and every turn reads its whole history again.
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= (int)ckpts_.size() || seq_len <= 0 || seq_len > runner_.max_ctx) return false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
+        PromptCkpt& ck = ckpts_[slot];
+        ck.valid = false;
+        runner_.snapshot_slot(slot, ck.sconv);
+        ck.swa_k.resize((size_t)c.n_visits);
+        ck.swa_v.resize((size_t)c.n_visits);
+        for (int v = 0; v < c.n_visits; ++v) {
+            if (!c.is_swa[c.phys_for_visit(v)]) { ck.swa_k[v].clear(); ck.swa_v[v].clear(); continue; }
+            const size_t stride = (size_t)runner_.visit_kv_stride[v];
+            const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
+            ck.swa_k[v].resize(n);
+            ck.swa_v[v].resize(n);
+            std::memcpy(ck.swa_k[v].data(), runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+            std::memcpy(ck.swa_v[v].data(), runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+        }
+        for (int l = 0; l < 3; ++l) { ck.dsp_k[l].clear(); ck.dsp_v[l].clear(); }
+        ck.frnn.clear();
+        if (runner_.use_dspark) {
+            const size_t D = (size_t)c.hidden;
+            ck.frnn.assign(runner_.dsp_frnn_slot.as<float>() + (size_t)slot * D,
+                           runner_.dsp_frnn_slot.as<float>() + (size_t)(slot + 1) * D);
+            for (int l = 0; l < 3; ++l) {
+                if (!c.dspark_is_swa[l]) continue;   // the global layer keeps positions < seq_len
+                const size_t stride = (size_t)runner_.dsp_kv_stride[l];
+                const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
+                ck.dsp_k[l].resize(n);
+                ck.dsp_v[l].resize(n);
+                std::memcpy(ck.dsp_k[l].data(), runner_.dsp_ctx_k[l].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+                std::memcpy(ck.dsp_v[l].data(), runner_.dsp_ctx_v[l].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+            }
+        }
+        ck.seq_len = seq_len;
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= (int)ckpts_.size()) return false;
+        PromptCkpt& ck = ckpts_[slot];
+        if (!ck.valid || ck.seq_len != seq_len) return false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
+        runner_.restore_slot(slot, ck.sconv);
+        for (int v = 0; v < c.n_visits; ++v) {
+            if (ck.swa_k[v].empty()) continue;
+            const size_t stride = (size_t)runner_.visit_kv_stride[v];
+            std::memcpy(runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_k[v].data(), ck.swa_k[v].size() * 2);
+            std::memcpy(runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_v[v].data(), ck.swa_v[v].size() * 2);
+        }
+        if (runner_.use_dspark && !ck.frnn.empty()) {
+            const size_t D = (size_t)c.hidden;
+            std::memcpy(runner_.dsp_frnn_slot.as<float>() + (size_t)slot * D, ck.frnn.data(), D * 4);
+            for (int l = 0; l < 3; ++l) {
+                if (ck.dsp_k[l].empty()) continue;
+                const size_t stride = (size_t)runner_.dsp_kv_stride[l];
+                std::memcpy(runner_.dsp_ctx_k[l].as<uint16_t>() + (size_t)slot * stride * row, ck.dsp_k[l].data(), ck.dsp_k[l].size() * 2);
+                std::memcpy(runner_.dsp_ctx_v[l].as<uint16_t>() + (size_t)slot * stride * row, ck.dsp_v[l].data(), ck.dsp_v[l].size() * 2);
+            }
+        }
+        // the rollback snapshot and the verify / tree rings describe the state the slot had before this restore
+        snapshot_slot(slot);
+        if (last_ver_slot_ == slot) last_ver_slot_ = -1;
+        if (last_tree_slot_ == slot) last_tree_slot_ = -1;
+        slot_cooldown_[slot] = 0;
+        return true;
     }
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
@@ -258,6 +338,14 @@ public:
                 for (int m = 0; m < st.M; ++m) {
                     if (batch.want_logits[m]) { st.logits_last_only_idx = m; break; }
                 }
+                if (!runner_.forward_batch(st, logits_out, nullptr, err)) return false;
+            } else if (st.M > 64) {
+                // The runner computes the unembed for the FIRST min(M, 64) rows of the batch. With several requests ending their
+                // prompt in one batch of more than 64 rows, the wanted rows lie further down and came back as zeros (greedy token 0):
+                // the more slots, the more of the first replies were wrong (0.2.21 GRID: 9 of 32 clients at --parallel 32).
+                if (n_want > 64) { err = "metal: more than 64 logits rows in one batch"; return false; }
+                st.logits_last_only_idx = -1;
+                for (int m = 0; m < st.M; ++m) if (batch.want_logits[m]) st.logits_rows.push_back(m);
                 if (!runner_.forward_batch(st, logits_out, nullptr, err)) return false;
             } else {
                 const int V = mod_.man.c.vocab_unpadded;
@@ -510,6 +598,18 @@ public:
     }
 
 private:
+    struct PromptCkpt {
+        bool valid = false;
+        int seq_len = 0;
+        ink_metal::InkMetalRunner::SlotSconvSnap sconv;
+        std::vector<float> frnn;
+        std::vector<std::vector<uint16_t>> swa_k, swa_v;   // per visit; empty for a global visit
+        std::vector<uint16_t> dsp_k[3], dsp_v[3];          // DSpark context layers with a ring (0 and 2)
+    };
+    void drop_ckpt(int slot) {
+        if (slot >= 0 && slot < (int)ckpts_.size()) ckpts_[slot].valid = false;
+    }
+    std::vector<PromptCkpt> ckpts_;
     mtl::Context cx_;
     ink_metal::InkMetalModel mod_;
     ink_metal::InkMetalRunner runner_;

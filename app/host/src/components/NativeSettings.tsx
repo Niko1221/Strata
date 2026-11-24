@@ -88,7 +88,7 @@ export function NativeSettings({ model }: {
             const input = await api.patch<{
                 values: Record<string, any>;
                 mcp: Record<string, any>;
-            }>(`/api/native/models/${model}/settings`, { values: parsed, mcp: tools });
+            }>(`/api/native/models/${model}/settings`, { values: parsed, mcp: tools, base: JSON.parse(original ?? "{}").values });
             const result = nativeSettingsResponse(input);
             setValues(result.values);
             setMcp(JSON.stringify(result.mcp, null, 2));

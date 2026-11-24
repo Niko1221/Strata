@@ -6,6 +6,9 @@
 #include "ink_host_avx2.h"
 #include "strata/quant/isa.hpp"
 
+#include <cmath>
+#include <cstring>
+
 #if defined(INK_BUILD_HOST_AVX2) && defined(__AVX2__)
 #include <immintrin.h>
 #define INK_TU_HAS_AVX2 1
@@ -34,6 +37,17 @@ constexpr int kFmtS4_K = 4;
 constexpr int kFmtS5_K = 5;
 constexpr int kFmtS6_K = 6;
 constexpr int kFmtS8_K = 8;
+
+// The closing arithmetic of one S_K group, written out so that every compiler does the same thing (GCC's default contraction gave exactly this
+// form: the activation scale times the integer sum fused with the offset term, then the weight scales multiplied in): the result of a group is
+// the same in the per-group function and in the whole-row kernels below.
+inline float sk_term(float eff, float x_d, int32_t isum, float cst, float x_s) noexcept {
+    return eff * std::fma(x_d, (float)isum, -(cst * x_s));
+}
+// a + b with no fusing of an earlier multiply into the add
+inline float add_nofuse(float a, float b) noexcept {
+    return _mm_cvtss_f32(_mm_add_ss(_mm_set_ss(a), _mm_set_ss(b)));
+}
 
 inline float avx2_hsum_ps(__m256 v) noexcept {
     __m128 hi = _mm256_extractf128_ps(v, 1);
@@ -145,7 +159,7 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
         const __m256i u0 = _mm256_set_m128i(_mm_unpackhi_epi8(lo0, hi0), _mm_unpacklo_epi8(lo0, hi0));
         const __m256i u1 = _mm256_set_m128i(_mm_unpackhi_epi8(lo1, hi1), _mm_unpacklo_epi8(lo1, hi1));
         isum = avx2_dot_u8_i8_64(u0, u1, qs);
-        return eff * (x_d * (float)isum - 7.5f * x_s);
+        return sk_term(eff, x_d, isum, 7.5f, x_s);
     } else if (fmt == kFmtS8_K) {
         const int8_t* p = reinterpret_cast<const int8_t*>(pl + g * 64);
         const __m256i p0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
@@ -170,7 +184,7 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
             }
             isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
                                      _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 1.5f * x_s);
+            return sk_term(eff, x_d, isum, 1.5f, x_s);
         } else if (fmt == kFmtS3_K) {
             const uint8_t* p = pl + g * 16;
             const uint8_t* hp = pl + 64 + g * 8;
@@ -187,7 +201,7 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
             }
             isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
                                      _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 3.5f * x_s);
+            return sk_term(eff, x_d, isum, 3.5f, x_s);
         } else if (fmt == kFmtS5_K) {
             const uint8_t* p = pl + g * 32;
             const uint8_t* hp = pl + 128 + g * 8;
@@ -201,7 +215,7 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
             }
             isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
                                      _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 15.5f * x_s);
+            return sk_term(eff, x_d, isum, 15.5f, x_s);
         } else if (fmt == kFmtS6_K) {
             const uint8_t* p = pl + g * 32;
             const uint8_t* hp = pl + 128 + g * 16;
@@ -214,14 +228,175 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
             }
             isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
                                      _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 31.5f * x_s);
+            return sk_term(eff, x_d, isum, 31.5f, x_s);
         }
     }
     return 0.0f;
 }
 
+// ---- whole-row S_K kernels: SIMD unpack of the 2/3/5/6-bit payloads (the per-group scalar unpack above is ~8x slower), weights unpacked once for T tokens ----
+namespace {
+
+// 16 bytes holding four 2-bit fields each -> 64 bytes: out[4*i + k] = (b[i] >> 2k) & 3
+inline void unpack2_x16(__m128i v, __m128i o[4]) noexcept {
+    const __m128i m3 = _mm_set1_epi8(3);
+    const __m128i t0 = _mm_and_si128(v, m3);
+    const __m128i t1 = _mm_and_si128(_mm_srli_epi16(v, 2), m3);
+    const __m128i t2 = _mm_and_si128(_mm_srli_epi16(v, 4), m3);
+    const __m128i t3 = _mm_and_si128(_mm_srli_epi16(v, 6), m3);
+    const __m128i a_lo = _mm_unpacklo_epi8(t0, t1), a_hi = _mm_unpackhi_epi8(t0, t1);
+    const __m128i b_lo = _mm_unpacklo_epi8(t2, t3), b_hi = _mm_unpackhi_epi8(t2, t3);
+    o[0] = _mm_unpacklo_epi16(a_lo, b_lo);
+    o[1] = _mm_unpackhi_epi16(a_lo, b_lo);
+    o[2] = _mm_unpacklo_epi16(a_hi, b_hi);
+    o[3] = _mm_unpackhi_epi16(a_hi, b_hi);
+}
+
+// 8 bytes of bits -> 64 bytes: out[n] = value if bit (n & 7) of byte (n >> 3) is set, else 0
+inline void expand_bits_64(const uint8_t* h8, int value, __m256i& r0, __m256i& r1) noexcept {
+    int32_t w0, w1;
+    std::memcpy(&w0, h8, 4);
+    std::memcpy(&w1, h8 + 4, 4);
+    const __m256i mask = _mm256_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char)128, 1, 2, 4, 8, 16, 32, 64, (char)128,
+                                          1, 2, 4, 8, 16, 32, 64, (char)128, 1, 2, 4, 8, 16, 32, 64, (char)128);
+    const __m256i idx = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+                                         2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+    const __m256i val = _mm256_set1_epi8((char)value);
+    const __m256i s0 = _mm256_shuffle_epi8(_mm256_set1_epi32(w0), idx);
+    const __m256i s1 = _mm256_shuffle_epi8(_mm256_set1_epi32(w1), idx);
+    r0 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(s0, mask), mask), val);
+    r1 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(s1, mask), mask), val);
+}
+
+inline void nibbles_64(const uint8_t* p, __m256i& u0, __m256i& u1) noexcept {   // 32 bytes -> 64 bytes: out[2m] = lo(p[m]), out[2m+1] = hi(p[m])
+    const __m128i m0f = _mm_set1_epi8(0x0F);
+    const __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    const __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16));
+    const __m128i lo0 = _mm_and_si128(v0, m0f), hi0 = _mm_and_si128(_mm_srli_epi16(v0, 4), m0f);
+    const __m128i lo1 = _mm_and_si128(v1, m0f), hi1 = _mm_and_si128(_mm_srli_epi16(v1, 4), m0f);
+    u0 = _mm256_set_m128i(_mm_unpackhi_epi8(lo0, hi0), _mm_unpacklo_epi8(lo0, hi0));
+    u1 = _mm256_set_m128i(_mm_unpackhi_epi8(lo1, hi1), _mm_unpacklo_epi8(lo1, hi1));
+}
+
+// The unsigned weights (0 .. 2^bits-1) of group g of an S_K payload as 64 bytes; `cst` = the offset subtracted by the formula (half range).
+inline bool sk_unpack_group(int fmt, const uint8_t* pl, int g, __m256i& u0, __m256i& u1, float& cst) noexcept {
+    if (fmt == kFmtS2_K) {
+        __m128i o[4];
+        unpack2_x16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pl + g * 16)), o);
+        u0 = _mm256_set_m128i(o[1], o[0]);
+        u1 = _mm256_set_m128i(o[3], o[2]);
+        cst = 1.5f;
+        return true;
+    } else if (fmt == kFmtS3_K) {
+        __m128i o[4];
+        unpack2_x16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pl + g * 16)), o);
+        __m256i h0, h1;
+        expand_bits_64(pl + 64 + g * 8, 4, h0, h1);
+        u0 = _mm256_or_si256(_mm256_set_m128i(o[1], o[0]), h0);
+        u1 = _mm256_or_si256(_mm256_set_m128i(o[3], o[2]), h1);
+        cst = 3.5f;
+        return true;
+    } else if (fmt == kFmtS4_K) {
+        nibbles_64(pl + g * 32, u0, u1);
+        cst = 7.5f;
+        return true;
+    } else if (fmt == kFmtS5_K) {
+        nibbles_64(pl + g * 32, u0, u1);
+        __m256i h0, h1;
+        expand_bits_64(pl + 128 + g * 8, 16, h0, h1);
+        u0 = _mm256_or_si256(u0, h0);
+        u1 = _mm256_or_si256(u1, h1);
+        cst = 15.5f;
+        return true;
+    } else if (fmt == kFmtS6_K) {
+        nibbles_64(pl + g * 32, u0, u1);
+        __m128i o[4];
+        unpack2_x16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pl + 128 + g * 16)), o);
+        u0 = _mm256_or_si256(u0, _mm256_slli_epi16(_mm256_set_m128i(o[1], o[0]), 4));
+        u1 = _mm256_or_si256(u1, _mm256_slli_epi16(_mm256_set_m128i(o[3], o[2]), 4));
+        cst = 31.5f;
+        return true;
+    }
+    return false;
+}
+
+inline float f16_scale(const uint8_t* b) noexcept {
+    uint16_t h;
+    std::memcpy(&h, b, 2);
+    return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int)h)));
+}
+
+// groups [0, n_groups) of a row given as a list of super blocks, accumulated into acc[t]; xg0 = index of the activation block of the first group
+inline bool sk_accumulate(const uint8_t* row, int fmt, int sb_bytes, int sb_first, int sb_count, int xg0,
+                          const uint8_t* const* xq, int T, float* acc) noexcept {
+    for (int s = 0; s < sb_count; ++s) {
+        const uint8_t* b = row + (size_t)(sb_first + s) * sb_bytes;
+        const float Dsc = f16_scale(b);
+        for (int sg = 0; sg < 4; ++sg) {
+            __m256i u0, u1;
+            float cst;
+            if (!sk_unpack_group(fmt, b + 6, sg, u0, u1, cst)) return false;
+            const float eff = Dsc * ((float)b[2 + sg] * (1.0f / 255.0f));
+            const int xg = xg0 + s * 4 + sg;
+            for (int t = 0; t < T; ++t) {
+                const uint8_t* xb = xq[t] + (size_t)xg * 80;
+                float x_d, x_s;
+                std::memcpy(&x_d, xb + 64, 4);
+                std::memcpy(&x_s, xb + 68, 4);
+                const int32_t isum = avx2_dot_u8_i8_64(u0, u1, reinterpret_cast<const int8_t*>(xb));
+                acc[t] = add_nofuse(acc[t], sk_term(eff, x_d, isum, cst, x_s));
+            }
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool dot_sk_row_multi(const uint8_t* row, int fmt, int sb_bytes, int n_sb, const uint8_t* const* xq, int T, float* out) noexcept {
+    if (T < 1 || T > 16 || fmt == kFmtS8_K || fmt == kFmtS1_5) return false;
+    float acc[16];
+    for (int t = 0; t < T; ++t) acc[t] = 0.0f;
+    if (!sk_accumulate(row, fmt, sb_bytes, 0, n_sb, 0, xq, T, acc)) return false;
+    for (int t = 0; t < T; ++t) out[t] = acc[t];
+    return true;
+}
+
+bool dot_sk_pair_multi(const uint8_t* row, int fmt, int sb_bytes, const uint8_t* const* xq, int T, float* out0, float* out1) noexcept {
+    if (T < 1 || T > 16 || fmt == kFmtS8_K || fmt == kFmtS1_5) return false;
+    // 9 super blocks x 4 groups = 36 groups: groups 0..17 -> row 2r (activation blocks 0..17), groups 18..35 -> row 2r+1 (blocks 0..17).
+    // The 18 groups of a row are 4.5 super blocks: the middle super block (index 4) is split between the two rows.
+    float a0[16], a1[16];
+    for (int t = 0; t < T; ++t) { a0[t] = 0.0f; a1[t] = 0.0f; }
+    for (int s = 0; s < 9; ++s) {
+        const uint8_t* b = row + (size_t)s * sb_bytes;
+        const float Dsc = f16_scale(b);
+        for (int sg = 0; sg < 4; ++sg) {
+            const int sub_g = s * 4 + sg;
+            __m256i u0, u1;
+            float cst;
+            if (!sk_unpack_group(fmt, b + 6, sg, u0, u1, cst)) return false;
+            const float eff = Dsc * ((float)b[2 + sg] * (1.0f / 255.0f));
+            const int xg = sub_g < 18 ? sub_g : sub_g - 18;
+            float* acc = sub_g < 18 ? a0 : a1;
+            for (int t = 0; t < T; ++t) {
+                const uint8_t* xb = xq[t] + (size_t)xg * 80;
+                float x_d, x_s;
+                std::memcpy(&x_d, xb + 64, 4);
+                std::memcpy(&x_s, xb + 68, 4);
+                const int32_t isum = avx2_dot_u8_i8_64(u0, u1, reinterpret_cast<const int8_t*>(xb));
+                acc[t] = add_nofuse(acc[t], sk_term(eff, x_d, isum, cst, x_s));
+            }
+        }
+    }
+    for (int t = 0; t < T; ++t) { out0[t] = a0[t]; out1[t] = a1[t]; }
+    return true;
+}
+
 #else
 
+bool dot_sk_row_multi(const uint8_t*, int, int, int, const uint8_t* const*, int, float*) noexcept { return false; }
+bool dot_sk_pair_multi(const uint8_t*, int, int, const uint8_t* const*, int, float*, float*) noexcept { return false; }
 float dot_sf4_row(const uint8_t*, const uint8_t*, float, const float*, int, const float*) noexcept { return 0.0f; }
 float dot_mx8_row(const uint8_t*, const uint8_t*, const float*, int, const float*, const float*) noexcept { return 0.0f; }
 float dot_sk_sub64(const uint8_t*, int, int, const int8_t*, float, float, float, const int8_t (*)[5]) noexcept { return 0.0f; }
