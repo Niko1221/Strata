@@ -415,6 +415,7 @@ struct GpuPlanSink {
     /// kernel reads the mapped arena directly; 2 = a copy kernel stages it inside the graph.  For 1 and 2 `ptr2`
     /// holds the arena's device alias.
     int pcie_mode = 0;
+    int groups = 1;                ///< E1: token groups in this verify window (1 or 2)
     int32_t cpu_jobs = 0;   ///< host only: the distinct experts the pool computes for the layer just published
     float* hit_out_dev = nullptr;   ///< device address of this group's hit_out buffer on the primary GPU (P2P peer scatter)
     bool device_hits_only = false;   ///< STRATA_VERIFY_DEVICE_HITS=1: GPU built its own hit plan; host only marks kind[]
@@ -667,6 +668,10 @@ struct ExpertDispatch {
     bool evict_sync = false;
     bool res_dirty = false;
     std::vector<int32_t> res_dirty_idx;
+    struct FetchEvict { int32_t layer, evicted, admitted; };
+    std::vector<FetchEvict> fetch_evicted;
+    class FileExpertSource* exclusive = nullptr; ///< E1: in-place copy-kernel VRAM<->RAM swap on fetch_admit
+    int64_t fetch_swaps = 0;
     /// STRATA_ADAPT_CHECKRES: the device's residency table as read back before the window; a layer with CPU experts
     /// whose routed ids all look resident there publishes no activation (doorbell_publish_res) - counted
     const int32_t* dres_check = nullptr;
@@ -834,6 +839,11 @@ public:
     /// by replacing the coldest never/rarely-used RAM-resident experts of the same layer.  Bit-identical, 0 extra RAM.
     int64_t promote_cold_experts(const std::vector<float>& usage_snap, const std::vector<int32_t>& host_res,
                                  int max_promotes = 32);
+    /// Exstrata opt-in (STRATA_ADAPT_FETCH_EXCHANGE=1): immediately move VRAM-evicted experts `v` into the
+    /// RAM complement slot freed by the admitted expert `e` (0 extra RAM, bit-identical).
+    int64_t exchange_evicted_to_ram(std::vector<ExpertDispatch::FetchEvict>& evicted, int max_per_step = 64);
+    /// E1: transfer RAM complement ownership of `in` to `out` (the GPU copy kernel swaps their bytes in place).
+    bool exchange_resident(int64_t layer, int64_t in, int64_t out);
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
     /// `bounce`: how many of the last buffers are only staged through and never hold an exchange (STRATA_EXCHANGE_ROTATE
     /// keeps those in the largest block size alone).

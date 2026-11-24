@@ -6,6 +6,7 @@
 #include "strata/core/bw_dense_defaults.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/exclusive_cache.hpp"   // E1: the fetch target's swap bit
 #include "strata/core/sm120_series.hpp"
 #define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
@@ -650,14 +651,21 @@ __global__ void fetch_blobs_kernel(const unsigned long long* __restrict__ src, c
     const long long total = (long long) *n * per;
     long long kd = -1;
     uint4* d = nullptr;
+    bool swap = false;
     for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total;
          i += (long long) gridDim.x * blockDim.x) {
         const long long k = i / per, off = i - k * per;
         if (k != kd) {   // the blob's target, read once per blob a thread visits
             kd = k;
-            d = dst2 != nullptr && dst2[k] != 0 ? (uint4*) dst2[k] : dst + k * per;
+            const unsigned long long t = dst2 != nullptr ? dst2[k] : 0;
+            d = t != 0 ? (uint4*) strata::core::exclusive::fetch_slot(t) : dst + k * per;
+            swap = strata::core::exclusive::fetch_swaps(t);
         }
-        d[off] = ((const uint4*) src[k])[off];
+        // E1 (exclusive_cache.hpp): both sides of the element are read before either is written, by this thread alone
+        uint4* s = (uint4*) src[k];
+        const uint4 in = s[off];
+        if (swap) s[off] = d[off];
+        d[off] = in;
     }
 }
 
@@ -668,7 +676,8 @@ __global__ void res_patch_kernel(int32_t* __restrict__ table, const volatile int
 __global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes,
                                    const unsigned long long* dst2) {
     const int k = threadIdx.x;
-    if (k < *n) ptr[k] = dst2 != nullptr && dst2[k] != 0 ? dst2[k] : base + (unsigned long long) k * (unsigned long long) bytes;
+    if (k < *n) ptr[k] = dst2 != nullptr && dst2[k] != 0 ? strata::core::exclusive::fetch_slot(dst2[k])
+                                                         : base + (unsigned long long) k * (unsigned long long) bytes;
 }
 
 __global__ void add_streams_broadcast_kernel(const float* __restrict__ h, const float* __restrict__ e,

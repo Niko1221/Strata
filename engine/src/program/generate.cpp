@@ -2354,6 +2354,12 @@ static int ram_adapt_cold() {
     return v;
 }
 
+/// Opt-in: immediately move VRAM-evicted experts into the RAM slot freed by fetch_admit.
+static int adapt_fetch_exchange() {
+    static const int v = [] { const char* e = std::getenv("STRATA_ADAPT_FETCH_EXCHANGE"); return e != nullptr && e[0] != '\0' ? std::atoi(e) : 0; }();
+    return v;
+}
+
 /// ExpertDispatch::evict_sync where the tier does not wait for its copies; STRATA_ADAPT_EVICT_SYNC=0 turns it off.
 bool adapt_evict_sync() {
     static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_EVICT_SYNC"); return e == nullptr || std::atoi(e) != 0; }();
@@ -8624,7 +8630,7 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
         // the GPU cache's fill and the RAM copy read unbuffered even so: through the mapping their pages sat in the
         // working set beside the copy (end_startup_unbuffered below, once the copy is built).  Windows, experts.bin
-        if (o.resident_cpu_experts && !src.unbuffered() && o.native_shard.empty()) {
+        if (o.resident_cpu_experts && !src.unbuffered() && !src.transient(0, 0)) {
             std::string why;
             if (src.begin_startup_unbuffered(why))
                 std::fprintf(stderr, "strata generate: the GPU cache's fill and the RAM copy read unbuffered (%s)\n",
@@ -15017,6 +15023,7 @@ int main(int argc, char** argv) {
             }
             else {
                 drive.d.fetch_admit = adapt_fetch();
+                if (src.complement_ready() && adapt_fetch_resident()) drive.d.exclusive = &src;
                 drive.d.res_mut = host_res.data();
                 drive.d.in_flight.assign(host_res.size(), 0);
                 drive.d.fetch_avail.assign((size_t) g.n_layers, 0);
@@ -15288,6 +15295,12 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&](const std::vector<float>& usage_snap) -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
+            if (adapt_fetch_exchange() > 0 && src.complement_ready() && !drive.d.fetch_evicted.empty()) {
+                const int max_ex = adapt_fetch_exchange() == 1 ? 64 : adapt_fetch_exchange();
+                (void) src.exchange_evicted_to_ram(drive.d.fetch_evicted, max_ex);
+            } else {
+                drive.d.fetch_evicted.clear();
+            }
             if (ram_adapt_cold() > 0 && src.complement_ready()) {
                 const int max_p = ram_adapt_cold() == 1 ? 32 : ram_adapt_cold();
                 (void) src.promote_cold_experts(usage_snap, host_res, max_p);
@@ -24523,6 +24536,7 @@ int main(int argc, char** argv) {
             }
             else {
                 drive.d.fetch_admit = adapt_fetch();
+                if (src.complement_ready() && adapt_fetch_resident()) drive.d.exclusive = &src;
                 drive.d.res_mut = host_res.data();
                 drive.d.in_flight.assign(host_res.size(), 0);
                 drive.d.fetch_avail.assign((size_t) g.n_layers, 0);
