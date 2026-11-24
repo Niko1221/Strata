@@ -10575,6 +10575,19 @@ def inkling_plan_extra(gpu) -> dict:
     return out
 
 
+def inkling_plan_kv(a, backend) -> dict:
+    """The K/V type the person chose, for the HIP plan only (#7022): fp8 or fp16 is planned as asked (the plan assumed FP16 on a card of more than 13 GiB, twice the K/V of an
+    --kv fp8 start); no choice, or another backend, leaves the planner's own rule (the other backends' plans are the ones they always were)."""
+    if backend != "hip":
+        return {}
+    asked = str(getattr(a, "kv", None) or "").strip().lower()
+    if asked in ("fp8", "k8v8", "k8v4"):                  # setup turns k8v8 / k8v4 into fp8 on HIP (below)
+        return {"fp8_kv": True}
+    if asked == "fp16":
+        return {"fp8_kv": False}
+    return {}
+
+
 def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_family.DEFAULT_VISION, *, igpu=False, arch=None, extra=None) -> list:
     extra = extra or {}
     rec = inkling_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, igpu=igpu, arch=arch, **extra)["build"]
@@ -10800,7 +10813,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == inkling_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(inkling_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
     par = max(1, min(inkling_family.MAX_PARALLEL, int(getattr(a, "parallel", None) or 1)))     # --parallel N: the slots the planner makes room for (0221 APPTUI: it planned for one)
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra)
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra, **inkling_plan_kv(a, plan_extra.get("backend")))
     mode = inkling_fit.mode(placed)
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
@@ -10892,7 +10905,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
     drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
         inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend})
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
