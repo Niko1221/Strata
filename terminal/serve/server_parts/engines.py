@@ -587,6 +587,8 @@ def vision_log_size(log=None) -> int:
     """How long the encoder's stderr file is now (0 when there is none): a start reads only what it wrote after this."""
     try:
         name = getattr(log, "name", None)
+        if not isinstance(name, (str, bytes, os.PathLike)):  # #6467: never pass an int fd from os.fdopen()
+            return 0
         return os.path.getsize(name) if name else 0
     except (OSError, TypeError):
         return 0
@@ -597,7 +599,7 @@ def vision_log_tail(log=None, limit: int = 16384, since: int = 0) -> str:
     is none or it cannot be read), but nothing from before `since` (the file's size when this start began: a log that several starts share)."""
     try:
         name = getattr(log, "name", None)
-        if name:
+        if isinstance(name, (str, bytes, os.PathLike)) and name:  # #6467: open(int) would wrap and close the log fd
             with open(name, "rb") as f:
                 f.seek(0, 2)
                 f.seek(max(since, f.tell() - limit))
@@ -821,6 +823,14 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
             args[args.index("--batch") + 1] = str(min(n, SPLIT_MAX_LANES))
         return []
+    if cfg.get("arch") in ("inkling2_loop", "inkling2", "inkling2_loop_text"):
+        # Inkling-2-Mini supports native 1..64 continuous batching (`--parallel 1|4|8|32|64`)!
+        if "--parallel" in args or "--batch" in args or "--slots" in args:
+            return []
+        n = cfg.get("parallel")
+        if isinstance(n, bool) or not isinstance(n, int) or n <= 1:
+            return []
+        return ["--parallel", str(min(n, 64))]
     if "--batch" in args or "--slots" in args:
         return []
     n = cfg.get("parallel")
@@ -1058,9 +1068,9 @@ def pick_hip_devices(devices: list[dict]) -> tuple[list[int] | None, str | None]
 
 
 def parallel_slots(cfg: dict) -> int:
-    """How many batch slots the config asks for (0 = none): the args' own --batch/--slots, else "parallel"."""
+    """How many batch slots the config asks for (0 = none): the args' own --batch/--slots/--parallel, else "parallel"."""
     args = list(cfg.get("args") or [])
-    for k in ("--batch", "--slots"):
+    for k in ("--batch", "--slots", "--parallel"):
         if k in args:
             try:
                 return int(args[args.index(k) + 1])

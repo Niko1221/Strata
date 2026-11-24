@@ -54,6 +54,8 @@ DRAFTER_GB = {name: int(mib / 10 + 0.5) / 100 for name, mib in DRAFTER_MIB.items
 #: GPU architecture (what nvidia-smi's compute capability and the kernel driver report) -> card class
 ARCH_CLASS = (
     (re.compile(r"^gfx1151$"), "strix_halo"),
+    (re.compile(r"^gfx1150$"), "strix_point"),
+    (re.compile(r"^gfx1103$"), "radeon_780m"),
     (re.compile(r"^gfx120[01]$"), "rdna4"),
     (re.compile(r"^sm_12\d$"), "blackwell"),
     (re.compile(r"^sm_86$"), "ampere"),
@@ -321,6 +323,7 @@ BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
 # conf 0.55. 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs faster, output identical
 # (conf 0.55 alone +1.1%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured; the other sets on that card were not measured and keep 0.35.
 BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
+BLACKWELL_W8_BYTES = 15_000_000_000 # 15 GB line: RTX 5080 (16 GB), RTX 5090 (32 GB), RTX PRO 5000 (72 GB); engine's kDflash2BlackwellW8Bytes
 
 
 @dataclass(frozen=True)
@@ -574,8 +577,16 @@ def gguf_facts(path: Any) -> dict[str, Any] | None:
                     break                                   # the words follow: everything wanted comes before them
                 if etype in _GGUF_SCALAR:
                     pos += count * _GGUF_SCALAR[etype]
+                elif etype == 8:                            # #6695: string arrays (general.tags, general.languages) before <arch>.block_count
+                    if count > (len(head) - pos) // 8:
+                        break
+                    for _ in range(count):
+                        (slen,) = struct.unpack_from("<Q", head, pos)
+                        pos += 8 + slen
+                        if pos > len(head):
+                            break
                 else:
-                    break                                   # an array of words before the tokens: not looked into
+                    break                                   # nested arrays before the tokens: not looked into
             else:
                 break
             if pos > len(head):
@@ -1014,6 +1025,13 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
 
 
+def blackwell_w8(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
+    """Desktop Blackwell cc 12.0 (sm_120) with at least 15 GB VRAM and normal expert cache: engine cap is 8 (dflash2_blackwell_w8)."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
+        return False
+    return vram_mib * 1048576 >= BLACKWELL_W8_BYTES and slots >= 3000
+
+
 def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
     """Is this start on the large-VRAM Blackwell class (the window of 8, and the sets' big_blackwell_conf): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
     at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
@@ -1029,11 +1047,11 @@ def big_blackwell_conf_for(backend: str | None, model_name: str | None, archs: A
 
 
 def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
-    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on the large-VRAM Blackwell class (big_blackwell), SPEC_WINDOW (6) everywhere else, so no other
-    card's effective window changes (the engine caps 6 on the Spark and the smaller Blackwell cards, and does not cap the rest)."""
+    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on desktop Blackwell cc 12.0 with >= 15 GB (blackwell_w8),
+    SPEC_WINDOW (6) everywhere else, so no other card's effective window changes."""
     if str(backend or "").strip().lower() == "hip" and first_arch(archs) == "gfx1151":
         return WIDE_WINDOW
-    return WIDE_WINDOW if big_blackwell(backend, archs, vram_mib, slots) else SPEC_WINDOW
+    return WIDE_WINDOW if blackwell_w8(backend, archs, vram_mib, slots) else SPEC_WINDOW
 
 
 def conf_for(backend: str | None, slots: int | float | None) -> float:
@@ -1217,7 +1235,7 @@ VOCAB_NAME = "draft_vocab.bin"
 
 
 #: The subsets a person can choose in setup (``--draft-vocab``), by name: the files Strata ships in data/ (setup.DRAFT_VOCABS names the same ones).
-VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
+VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin", "arabic": "draft_vocab_arabic.bin"}
 #: The sha256 of the 27-Han-token subset up to 0.1.26 (setup.OLD_DRAFT_VOCABS): a copy that is any shipped subset may be replaced by the person's later choice, a made-by-hand one never.
 OLD_VOCAB_SHA256 = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}
 
@@ -1234,17 +1252,18 @@ def shipped_vocab(choice: str | None = None) -> Path:
 # on those four, both within 0.3% of the default on English and code; either file costs 12-16% on Chinese and Japanese. So with no choice saved, the file follows the computer's languages, and
 # anything that could mean Chinese, Japanese or Korean keeps the default (the costs are lopsided: the wrong file on CJK text costs far more than the right one gains elsewhere).
 
-#: Language codes by the script their text is written in (the ones the vocabulary files cover: Cyrillic, and the Latin script beyond English). Anything else (English, Arabic, Hebrew, Hindi, Thai,
+#: Language codes by the script their text is written in (the ones the vocabulary files cover: Cyrillic, Arabic, and the Latin script beyond English). Anything else (English, Hebrew, Hindi, Thai,
 #: Greek...) says nothing.
 _CJK_LANGS = frozenset("zh ja ko yue cmn wuu hak nan gan lzh".split())
 _CYRILLIC_LANGS = frozenset("ru uk be bg mk sr kk ky tg mn tt ba cv ce os sah ab av kv udm".split())
+_ARABIC_LANGS = frozenset("ar fa ur ps sd ckb ug prs".split())
 _LATIN_LANGS = frozenset(("de fr es pt it nl pl cs sk sl hr bs ro hu sv da nb nn no fi et lv lt tr vi id ms ca gl eu af sq is ga cy mt fil tl sw "
                           "lb fo gd br oc rm eo la uz az tk hsb dsb ast an co fy sc se smn nds wa ln zu xh st tn yo ig ha so mg haw mi sm to").split())
 _CJK_SCRIPTS = frozenset("hans hant hani jpan kore hang hira kana bopo".split())
 
 
 def script_of_language(tag: Any) -> str:
-    """The script group a language tag (``ru-RU``, ``sr-Latn-RS``, ``de_DE.UTF-8``, ``sr_RS@latin``, ``zh-Hans``) says: ``cjk``, ``cyrillic``, ``latin`` (a Latin-script language other than English) or ``""`` (English, another
+    """The script group a language tag (``ru-RU``, ``ar-SA``, ``sr-Latn-RS``, ``de_DE.UTF-8``, ``sr_RS@latin``, ``zh-Hans``) says: ``cjk``, ``cyrillic``, ``arabic``, ``latin`` (a Latin-script language other than English) or ``""`` (English, another
     script, ``C`` / ``POSIX``, nothing readable)."""
     text = str(tag or "").strip()
     if not text:
@@ -1264,10 +1283,14 @@ def script_of_language(tag: Any) -> str:
         return "cjk"
     if "cyrl" in scripts or modifier == "cyrillic":
         return "cyrillic"
+    if "arab" in scripts or modifier == "arabic":
+        return "arabic"
     if "latn" in scripts or modifier == "latin":
         return "" if lang == "en" else "latin"
     if lang in _CYRILLIC_LANGS:
         return "cyrillic"
+    if lang in _ARABIC_LANGS:
+        return "arabic"
     if lang in _LATIN_LANGS:
         return "latin"
     return ""
@@ -1831,13 +1854,16 @@ def take_note() -> str:
 
 
 def engine_info(args: list[Any], log_text: str = "", note: str = "") -> dict[str, str]:
-    """The facts of one engine start for /metrics and the apps: ``drafting`` (mtp | dflash2 | off) and ``drafting_note`` (plain words, or ""): the one drafter this
-    start loads (``--draft dflash2`` without ``--mtp``, ``--mtp`` without ``--draft``), and why it is not the one asked for. The engine's own log wins over the choice."""
+    """The facts of one engine start for /metrics and the apps: ``drafting`` (mtp | dflash2 | dspark | off) and ``drafting_note`` (plain words, or ""): the one drafter this
+    start loads (``--draft dflash2`` without ``--mtp``, ``--draft dspark``, ``--mtp`` without ``--draft``), and why it is not the one asked for. The engine's own log wins over the choice."""
     items = [str(a) for a in args]
     asked_dflash2 = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dflash2" for i in range(len(items)))
+    asked_dspark = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dspark" for i in range(len(items)))
     fell_back = fallback_note(log_text) if asked_dflash2 else ""
     drafter = "mtp" if "--mtp" in items else "off"
     if asked_dflash2 and not fell_back:
         drafter = "dflash2"
+    elif asked_dspark and "Skipping DSpark drafter" not in str(log_text or ""):
+        drafter = "dspark"
     text = fell_back or (line(drafter, note) if note else "")
     return {"drafting": drafter, "drafting_note": text}

@@ -221,7 +221,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
-    if ctx > 8192:
+    if ctx > 8192 or (kv and kv != "fp16"):
         args += ["--kv", kv]
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
         resident = False                               # an engine from before --resident-experts would refuse it
@@ -230,14 +230,17 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     work_budget, work_asked = None, None               # the app's "Leave 20% for my work" number (the old rule), written beside the budget (setup.work_budget_key)
     if low_ram and ready:
         # NVFP4 (68 GB of experts) on a PC whose RAM does not hold them: the RAM-budget mode, as Unsloth's files - the
-        # most-used experts outside VRAM pinned within RAM less 17 GB (24 on a unified-memory GPU), the rest read from experts.bin.  Mapped
-        # (--mmap-experts) on a 64 GB Windows PC, the experts it read stayed in the engine's working set: free RAM
-        # fell to 0.6 GB on the RTX 5070 PC (2026-10-13), where the budget mode kept 22 GB free
+        # most-used experts outside VRAM pinned within RAM less 17 GB (24 on a unified-memory GPU), the rest read from experts.bin.
+        # When host RAM is very small (rb <= 0), switch cleanly to GPU+SSD Only (--ssd-experts: bounded 1-2 GiB DMA ring, 0 swap).
         rb = resident_budget_gib(model, ram, uma=gpu_uma)
-        args += ["--resident-budget-gib", str(rb)]
-        work_budget = resident_budget_gib(model, ram, uma=gpu_uma, work=True)
-        ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
-           "experts.bin on the SSD as needed")
+        if rb <= 0:
+            args += ["--ssd-experts"]
+            ok(f"GPU+SSD streaming mode: {model}'s cold experts stream directly from SSD through a bounded pinned DMA ring (0 swap)")
+        else:
+            args += ["--resident-budget-gib", str(rb)]
+            work_budget = resident_budget_gib(model, ram, uma=gpu_uma, work=True)
+            ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
+               "experts.bin on the SSD as needed")
     elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
     elif is_gb10(gpu):
@@ -363,7 +366,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
-    elif hip and WIN and gpu.get("uma") and gfx_arch_is(gpu.get("arch"), "gfx1151") and not multi and "--vram-reserve-mib" not in args:
+    elif hip and WIN and gpu.get("uma") and any(gfx_arch_is(gpu.get("arch"), a) for a in ("gfx1151", "gfx1150", "gfx1103")) and not multi and "--vram-reserve-mib" not in args:
         # G16 (Q4-P8, 2026-11-08): a Windows Strix Halo config with no reserve at all (pictures off, or a model with no picture reader) never started
         # UD-Q4_K_XL: with no --vram-reserve-mib the engine puts its Windows floor of 2560 MiB on any card of 15 GiB or more (made for a 20 GB discrete
         # card that paged, #1376), and on this shared pool that room is taken straight back by the RAM budget's page-locked complement, so the prompt
@@ -454,6 +457,8 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             # them and turning the opt-in off takes them out again.
             cfg.setdefault("env", {}).update(GFX1103_SWITCHES)
         if GFX1150_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1150"):
+            if not WIN:
+                cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
             # the exact gfx1151 speed switches measured on this chip (GFX1150_SWITCHES): the engine has no arch defaults
             # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
             # them and turning the opt-in off takes them out again.

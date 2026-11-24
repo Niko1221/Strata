@@ -1096,8 +1096,17 @@ def _direct_calibration(ref: str, kind: str, report_path: Path, action) -> tuple
 
 
 def _calibration(a: argparse.Namespace) -> int:
+    from serve import hy4_kind, inkling_kind
     from strata_control import calibration
     machine = a.output == "json"
+    try:
+        _p, _s, _r, _cfg = _source(a.profile)
+    except Exception:                                        # noqa: BLE001
+        _cfg = {}
+    if hy4_kind.is_hy4(_cfg):
+        return _error("Tencent Hy4-Flash needs no calibration: its speed and memory placement are set automatically by strata-hy4.", 2, machine)
+    if inkling_kind.is_inkling(_cfg):
+        return _error("Inkling-2-Mini needs no calibration: its speed and memory placement are set automatically by strata-inkling.", 2, machine)
     if (a.out and not a.measure) or (a.exclusive and not (a.measure or a.apply_result or a.rollback_result)):
         return _error("--out is only for --measure; --exclusive is only for --measure, --apply-result "
                       "or --rollback-result", 2, machine)

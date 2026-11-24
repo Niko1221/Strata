@@ -28,6 +28,7 @@ if sys.platform == "win32":
 
 import argparse
 import importlib.util
+import itertools
 import json
 import os
 import platform
@@ -48,6 +49,7 @@ PROTOCOL = "2025-06-18"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this server answers in
 VERSION = "0.1.0"
 WIN = os.name == "nt"
+_INSTALL_SEQ = itertools.count(1)
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 # The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
 # .venv and installs no package (setup.py's own CONTROL mode).
@@ -587,6 +589,7 @@ class Strata:
         # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
         self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
+        self._non_strata_ports: set[int] = set()        # #6475: unconfigured fallback ports that already answered as non-Strata
 
     # ---- setup.py's own tables and logic
     def setup_module(self):
@@ -632,21 +635,120 @@ class Strata:
         for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", True)), "own_path": True, **({"feed": True} if d.get("feed") else {})}
+        if self.hy4_visible():                          # Tencent Hy4-Flash (setup.py HY4_FAMILIES): its own engine program; listed once there is a source or the files are here
+            for f, d in (getattr(s, "HY4_FAMILIES", None) or {}).items():
+                out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"), "vision": True, "own_path": True, "hy4": True}
+        if self.inkling_visible():                      # Thinking Machines Inkling-2-Mini (setup.py INKLING_FAMILIES): its own engine program (strata-inkling)
+            for f, d in (getattr(s, "INKLING_FAMILIES", None) or {}).items():
+                out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"), "vision": True, "own_path": True, "inkling": True}
         return out
 
+    def hy4_visible(self) -> bool:
+        """Is Hy4-Flash in the model list: a download source is configured (strata_control/hy4_family.py), or its files are already in the data folder's models folder
+        (or STRATA_HY4_SHOW=1, for the tests).  The owner decides where the public files are published; until then nothing is offered to download."""
+        try:
+            from strata_control import hy4_family
+            if os.environ.get("STRATA_HY4_SHOW") == "1" or hy4_family.sources():
+                return True
+            return bool(hy4_family.local_files(self.data_dir() / "models" / hy4_family.FAMILY))
+        except Exception:                               # noqa: BLE001 - the list never fails on this
+            return False
+
+    def inkling_visible(self) -> bool:
+        try:
+            from strata_control import inkling_family
+            if os.environ.get("STRATA_INKLING_SHOW") == "1" or inkling_family.sources():
+                return True
+            return bool(inkling_family.local_files(self.data_dir() / "models" / inkling_family.FAMILY))
+        except Exception:                               # noqa: BLE001
+            return False
+
     def own_size_names(self) -> list:
-        """The size names of the families that have an engine path of their own (Qwen3.6): the install tool accepts them as `model`."""
+        """The size names of the families that have an engine path of their own (Qwen3.6, Hy4-Flash, Inkling-2-Mini): the install tool accepts them as `model`."""
         s = self.setup_module()
         names = []
-        for table in ("OWN_PATH_FAMILIES",):
+        for table in ("OWN_PATH_FAMILIES", "HY4_FAMILIES", "INKLING_FAMILIES"):
             for fam in (getattr(s, table, None) or {}).values():
                 names.extend(n for n in fam.get("models", {}) if n not in names)
         return names
+
+    def hy4_fit_row(self, build, ram, usable, vision: bool = True) -> dict | None:
+        """Where Hy4-Flash `build`'s experts go on this PC (hy4_fit.place) and whether it is the recommended build; None when the RAM is not known."""
+        if ram is None:
+            return None
+        from strata_control import hy4_fit
+        uni = next((g for g in usable if g.get("unified_gb")), None)
+        uma = next((g for g in usable if g.get("uma")), None)
+        extra_vram_gib = 0.0
+        if uni:
+            vram_gib, ram_gib, unified = None, float(uni["unified_gb"]), True
+        elif uma:
+            vram_gib, ram_gib, unified = None, float(uma.get("vram_gb") or ram) / hy4_fit.GIB_TO_GB, True
+        else:
+            vrams = sorted((float(g["vram_gb"]) for g in usable), reverse=True)
+            vram_gib, ram_gib, unified = (vrams[0] if vrams else 0.0), float(ram), False
+            extra_vram_gib = sum(vrams[1:])
+        placed = hy4_fit.place(build, vram_gib, ram_gib, unified, None, vision, extra_vram_gib=extra_vram_gib)
+        return {"placement": placed, "mode": hy4_fit.mode(placed["ssd_gb"]), "recommended": hy4_fit.recommend(vram_gib, ram_gib, unified, None, vision, extra_vram_gib=extra_vram_gib)["build"] == build,
+                "unified": unified, "engram_gb": hy4_fit.ENGRAM_GB, "context": hy4_fit.DEFAULT_CONTEXT, "kv_gb": round(hy4_fit.kv_extra_gb(), 2)}
+
+    def inkling_fit_row(self, build, ram, usable, vision: bool = True) -> dict | None:
+        """Where Inkling-2-Mini `build` sits on this PC (inkling_fit.place) and whether it is auto-recommended."""
+        if ram is None:
+            return None
+        from strata_control import inkling_fit
+        uni = next((g for g in usable if g.get("unified_gb")), None)
+        uma = next((g for g in usable if g.get("uma") or g.get("unified") or inkling_fit.is_big_uma_arch(g.get("arch"), g.get("name"))), None)
+        igpu_dev = next((g for g in usable if inkling_fit.is_igpu_arch(g.get("arch")) or (
+            g.get("integrated") and not g.get("uma") and not g.get("unified") and not inkling_fit.is_big_uma_arch(g.get("arch"), g.get("name"))
+        )), None)
+        arch = str((igpu_dev or uma or uni or (usable[0] if usable else {})).get("arch") or "").lower() or None
+        igpu = bool(igpu_dev)
+        if uni:
+            vram_gib, ram_gib, unified = None, float(uni["unified_gb"]), True
+        elif uma:
+            v = float(uma.get("vram_gb") or 0.0)
+            vram_gib, ram_gib, unified = None, (float(ram) if v <= 0.0 else max(float(ram), v / inkling_fit.GIB_TO_GB)), True
+        elif igpu:
+            vram_gib, ram_gib, unified = None, float(ram), True
+        else:
+            vram_gib, ram_gib, unified = max((float(g["vram_gb"]) for g in usable), default=0.0), float(ram), False
+        rec = inkling_fit.recommend(vram_gib, ram_gib, unified, None, vision, igpu=igpu, arch=arch)
+        placed = inkling_fit.place(build, vram_gib, ram_gib, rec["unified"], None, vision)
+        return {"placement": placed, "mode": inkling_fit.mode(placed), "recommended": rec["build"] == build,
+                "unified": rec["unified"], "context": inkling_fit.DEFAULT_CONTEXT, "kv_gb": inkling_fit.kv_cache_gb(),
+                "parallel_choices": list(inkling_fit.PARALLEL_CHOICES)}
+
+    def hy4_size(self, family, model) -> dict | None:
+        """One build of Hy4-Flash as a model-table row: the download is the build plus the Engram shard every build shares; the memory figures are the author's (hy4_fit)."""
+        d = (getattr(self.setup_module(), "HY4_FAMILIES", None) or {}).get(family)
+        if not d or model not in d["models"]:
+            return None
+        from strata_control import hy4_fit
+        b = hy4_fit.BUILDS[model]
+        return {"about": d["models"][model]["about"], "download_gb": round(b["file_gb"] + hy4_fit.ENGRAM_GB + hy4_fit.VISION_GB, 1), "ram_gb": d["models"][model]["ram_gb"],
+                "arena_gb": b["bodies_gb"], "vision": True, "engine": None, "families": (family,), "context_fit": None, "hy4": True,
+                "footprint_gb": b["footprint_gb"], "engram_gb": hy4_fit.ENGRAM_GB}
+
+    def inkling_size(self, family, model) -> dict | None:
+        d = (getattr(self.setup_module(), "INKLING_FAMILIES", None) or {}).get(family)
+        if not d or model not in d["models"]:
+            return None
+        from strata_control import inkling_family, inkling_fit
+        b = inkling_fit.BUILDS[model]
+        dl_bytes = sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(model, vision=True, dspark=True))
+        return {"about": d["models"][model]["about"], "download_gb": round(dl_bytes / 1e9, 1), "ram_gb": d["models"][model]["ram_gb"],
+                "arena_gb": b["bodies_gb"], "vision": True, "engine": None, "families": (family,), "context_fit": None, "inkling": True,
+                "footprint_gb": b["footprint_gb"], "format": b.get("format", "strata")}
 
     def own_size(self, family, model) -> dict | None:
         """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
         The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
         d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if not d and family in (getattr(self.setup_module(), "HY4_FAMILIES", None) or {}):
+            return self.hy4_size(family, model)
+        if not d and family in (getattr(self.setup_module(), "INKLING_FAMILIES", None) or {}):
+            return self.inkling_size(family, model)
         if not d or model not in d["models"]:
             return None
         size_gb = d["sha256"][d["file"].format(q=model)][0] / 1e9
@@ -666,7 +768,9 @@ class Strata:
 
     def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
-        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        own = ((getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+               or (getattr(self.setup_module(), "HY4_FAMILIES", None) or {}).get(family)
+               or (getattr(self.setup_module(), "INKLING_FAMILIES", None) or {}).get(family))
         if own:
             return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
@@ -752,7 +856,7 @@ class Strata:
         def val(k):
             return a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None
         tag = path.stem[len("strata-"):]
-        missing = [p for p in [cfg.get("exe"), *[x for x in a if isinstance(x, str) and x.endswith(".gguf")]]
+        missing = [p for p in [cfg.get("exe"), *[x for x in a if isinstance(x, str) and x.lower().endswith((".gguf", ".strata"))]]
                    if not p or not (self.engine_here(p, cfg) if str(p).startswith("component:") else Path(p).exists())]
         gaps = shard_gaps([x for x in a if isinstance(x, str) and x.endswith(".gguf")])   # a model in parts is whole only with every part
         missing += gaps
@@ -763,8 +867,8 @@ class Strata:
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
-                else "off",
-                "port": cfg.get("port", DEFAULT_PORT), "host": cfg.get("host", "127.0.0.1"),
+                else ("on" if val("--vision") else "off"),
+                "port": cfg.get("port", self.default_port()), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
@@ -1266,6 +1370,49 @@ class Strata:
             if sizes:
                 out.append({"family": family, "title": fd["title"], "about": fd.get("about"), "experimental": False,
                             "images": any(x["images"] for x in sizes), "sizes": sizes})
+        if self.hy4_visible():
+            usable = self.engine_gpus(hw) or ([{"unified_gb": ram}] if ram else [])
+            S = self.setup_module()
+            for f, fd in (getattr(S, "HY4_FAMILIES", None) or {}).items():
+                sizes = []
+                for m in self.sizes_of(models, f):
+                    d = self.hy4_size(f, m)
+                    if not d:
+                        continue
+                    tag = (fd.get("tag", "") + m).lower()
+                    hy4 = self.hy4_fit_row(m, ram if ram else None, usable)
+                    verdict = None if hy4 is None else ("may run slower" if hy4["mode"] == "cross_tier_ssd" else "fits")
+                    sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
+                                  **({"hy4": hy4} if hy4 else {}),
+                                  "experimental": False, "images": True,
+                                  "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                                  "memory_gb": d["footprint_gb"], "fit_gb": d["footprint_gb"],
+                                  "on_this_pc": verdict, "installed": tag in have, "id": tag, "gpu_options": None})
+                if sizes:
+                    out.append({"family": f, "title": fd["title"], "about": fd.get("about"), "experimental": False,
+                                "images": True, "sizes": sizes})
+        if self.inkling_visible():
+            usable = self.engine_gpus(hw) or ([{"unified_gb": ram}] if ram else [])
+            S = self.setup_module()
+            for f, fd in (getattr(S, "INKLING_FAMILIES", None) or {}).items():
+                sizes = []
+                for m in self.sizes_of(models, f):
+                    d = self.inkling_size(f, m)
+                    if not d:
+                        continue
+                    tag = (fd.get("tag", "") + m).lower()
+                    ink = self.inkling_fit_row(m, ram if ram else None, usable)
+                    verdict = None if ink is None else ("may run slower" if ink["mode"] == "cross_tier_ssd" else "fits")
+                    sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
+                                  **({"inkling": ink} if ink else {}),
+                                  **({"format": d["format"]} if d.get("format") else {}),
+                                  "experimental": False, "images": True,
+                                  "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                                  "memory_gb": d["footprint_gb"], "fit_gb": d["footprint_gb"],
+                                  "on_this_pc": verdict, "installed": tag in have, "id": tag, "gpu_options": None})
+                if sizes:
+                    out.append({"family": f, "title": fd["title"], "about": fd.get("about"), "experimental": False,
+                                "images": True, "sizes": sizes})
         return self._feed_rows(out, self.setup_module())
 
     def recommend(self, hw: dict) -> dict:
@@ -1328,6 +1475,20 @@ class Strata:
             fam, why = "gyro", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but RAM + VRAM = {ram + vram:.0f} GB "
                                 f"holds {model} ({models[model]['ram_gb']} GB of memory in total; the quality is lower "
                                 "than the 2-3-bit sizes, and it needs the whole download on a fast SSD)")
+        elif self.inkling_visible() and ram >= 8:
+            from strata_control import inkling_family, inkling_fit
+            rec_ink = inkling_fit.recommend(vram, ram)
+            b = rec_ink["build"]
+            dl_gb = round(sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(b, vision=True, dspark=True)) / 1e9, 1)
+            why = (f"{ram:.0f} GB of RAM + {vram:.0f} GB of VRAM: Inkling-2-Mini {b} ({inkling_fit.BUILDS[b]['footprint_gb']:.1f} GB) "
+                   f"runs cleanly on 4+ GB GPUs with routed experts in RAM")
+            cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
+                   f" --yes --family {inkling_family.FAMILY} --model {b} --context {inkling_family.DEFAULT_CONTEXT}" +
+                   (f" --backend {backend}" if backend in ("hip", "sycl") else ""))
+            return {"family": inkling_family.FAMILY, "model": b, "title": f"{inkling_family.TITLE} {b}",
+                    "context": inkling_family.DEFAULT_CONTEXT, "backend": backend,
+                    "gpu": {k: best.get(k) for k in ("index", "name", "vram_gb")},
+                    "download_gb": dl_gb, "why": why, "notes": notes, "setup_command": cmd}
         else:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
@@ -1383,7 +1544,20 @@ class Strata:
                 verdict = None
                 if ram is not None:
                     verdict = fit_label.label(fit_gb, ram, card_room)
+                hy4 = None
+                ink = None
+                if d.get("hy4"):                              # Tencent Hy4-Flash: the author's rank-cut rule (strata_control/hy4_fit.py), not the weights-against-RAM rule; the Engram shard is read from the SSD
+                    memory_gb, fit_gb = d["footprint_gb"], d["footprint_gb"]
+                    hy4 = self.hy4_fit_row(m, ram, usable)
+                    verdict = None if hy4 is None else ("may run slower" if hy4["mode"] == "cross_tier_ssd" else "fits")
+                elif d.get("inkling"):                        # Thinking Machines Inkling-2-Mini (strata_control/inkling_fit.py)
+                    memory_gb, fit_gb = d["footprint_gb"], d["footprint_gb"]
+                    ink = self.inkling_fit_row(m, ram, usable)
+                    verdict = None if ink is None else ("may run slower" if ink["mode"] == "cross_tier_ssd" else "fits")
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
+                              **({"hy4": hy4} if hy4 else {}),
+                              **({"inkling": ink} if ink else {}),
+                              **({"format": d["format"]} if d.get("format") else {}),
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
                               # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
@@ -1449,20 +1623,51 @@ class Strata:
             return None
 
     # ---- the running server
+    @staticmethod
+    def configured_default_port() -> int | None:
+        """Preferred default model server port from STRATA_MODEL_PORT (1..65535), or None when unset/invalid (#6475)."""
+        raw = (os.environ.get("STRATA_MODEL_PORT") or "").strip()
+        if raw.isdigit():
+            p = int(raw)
+            if 1 <= p <= 65535:
+                return p
+        return None
+
+    @staticmethod
+    def default_port() -> int:
+        """Default model server port: STRATA_MODEL_PORT when set, else DEFAULT_PORT (8080)."""
+        return Strata.configured_default_port() or DEFAULT_PORT
+
+    @staticmethod
+    def no_default_port() -> bool:
+        """Whether STRATA_NO_DEFAULT_PORT disables probing the unconfigured fallback default port (8080)."""
+        return (os.environ.get("STRATA_NO_DEFAULT_PORT") or "").strip().lower() in ("1", "true", "yes", "on")
+
     def ports(self, port: int | None) -> list[int]:
         if port:
             return [port]
-        ps = [self.state("server").get("port")] + [self.describe_config(c)["port"] for c in self.configs()]
-        return list(dict.fromkeys(int(p) for p in [*ps, DEFAULT_PORT] if isinstance(p, int)))
+        ps = [p for p in ([self.state("server").get("port")] + [self.describe_config(c)["port"] for c in self.configs()])
+              if isinstance(p, int) and 1 <= p <= 65535]
+        explicit = self.configured_default_port()
+        if explicit is not None:
+            if explicit not in ps and explicit not in self._non_strata_ports:
+                ps.append(explicit)
+        elif not ps and not self.no_default_port():
+            # #6475: only probe DEFAULT_PORT (8080) as a fallback when no Strata configs/servers name other ports,
+            # STRATA_NO_DEFAULT_PORT is not set, and 8080 has not already answered as a non-Strata listener.
+            if DEFAULT_PORT not in self._non_strata_ports:
+                ps.append(DEFAULT_PORT)
+        return list(dict.fromkeys(int(p) for p in ps))
 
     def api_key_for(self, port: int) -> str | None:
         """The key a config of this folder set for that port (used for our own requests; never shown)."""
         def real(cfg):                                   # "api_key": "none" = served without a key on purpose
             k = cfg.get("api_key")
             return k if k and str(k).strip().lower() != "none" else None
+        fallback = self.default_port()
         for c in self.configs():
             cfg = self.read_config(c)
-            if real(cfg) and int(cfg.get("port", DEFAULT_PORT)) == port:
+            if real(cfg) and int(cfg.get("port", fallback)) == port:
                 return cfg["api_key"]
         for c in self.configs():
             if real(self.read_config(c)):
@@ -1483,12 +1688,15 @@ class Strata:
         nothing."""
         base = f"http://127.0.0.1:{port}"
         if not port_accepts(port):
+            self._non_strata_ports.discard(port)
             return None
         st, health = http_json(base + "/health", timeout=self.health_timeout)
         if st == 0:
             return None
         if st != 200 or not isinstance(health, dict) or health.get("service") != "strata":
+            self._non_strata_ports.add(port)
             return {"port": port, "other": True, "note": "something else answers on this port (not a Strata server)"}
+        self._non_strata_ports.discard(port)
         info = {"port": port, "url": base, "model": health.get("model"), "context": health.get("max_context"),
                 "images": health.get("images"), "loaded": health.get("loaded"),
                 "api_key_required": bool(health.get("api_key"))}
@@ -1589,6 +1797,19 @@ def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -
     Empty when the setup module cannot say (the caller then falls back to the folder scan)."""
     out = []
     try:
+        if family in (getattr(S, "HY4_FAMILIES", None) or {}):          # Hy4-Flash: the build and the Engram shard every build shares, in one folder
+            from strata_control import hy4_family
+            folder = Path(models_dir) / hy4_family.FAMILY
+            for name in hy4_family.files_of(model, bool(vision)):
+                out.append({"path": str(folder / name), "bytes": hy4_family.size_of(name), "role": "model"})
+            return out
+        if family in (getattr(S, "INKLING_FAMILIES", None) or {}):      # Inkling-2-Mini: the build (+ DSpark GGUF for Unsloth GGUFs) + optional Vision shard in one folder
+            from strata_control import inkling_family
+            folder = Path(models_dir) / inkling_family.FAMILY
+            for name in inkling_family.files_of(model, bool(vision), dspark=True):
+                role = "vision" if name == inkling_family.VISION_FILE else ("dspark" if name == inkling_family.DSPARK_GGUF_FILE else "model")
+                out.append({"path": str(folder / name), "bytes": inkling_family.size_of(name), "role": role})
+            return out
         own = (getattr(S, "OWN_PATH_FAMILIES", None) or {}).get(family)
         if own:                                         # Qwen3.6: the GGUF and the picture reader in the model's folder
             folder = Path(models_dir) / (own["tag"] + model)
@@ -1627,9 +1848,19 @@ def files_here(S, family: str, model: str, models_dir: Path, vision: bool) -> di
         size = f.get("bytes")
         if size is None:
             try:
-                size = S.fam_pin(fam, path)[0]
+                pin = S.fam_pin(fam, path)
+            except KeyError:
+                if "sha256" in fam:
+                    return None
+                try:
+                    pin = S.file_pin(S.model_hf(fam, model) + path.name)
+                except Exception:                       # noqa: BLE001
+                    return None
             except Exception:                           # noqa: BLE001 - an unpinned file: its size is not known, so "complete" cannot be said
                 return None
+            if not pin:
+                return None
+            size = pin[0]
         total += size
         try:
             if path.is_file() and path.stat().st_size == size and not path.with_name(path.name + ".part").exists():
@@ -2275,6 +2506,7 @@ class Tools:
                        gguf_dir=None, drafter=None, mtp=None) -> dict:
         s = self.s
         asked = time.monotonic()                         # when this call came in (before it waits for the lock)
+        asked_seq = next(_INSTALL_SEQ)
         with s.lock:
             job = s.install_job()
             if cancel:
@@ -2282,6 +2514,7 @@ class Tools:
                     # A start that came in before this cancel and is still waiting for the lock must not launch the job after it
                     # (the app quit while "Prepare and load" was starting: the job and its packer then ran on with nobody to stop them).
                     s.install_cancelled_at = time.monotonic()
+                    s.install_cancelled_seq = next(_INSTALL_SEQ)
                     return {"summary": "no install is running", "install": job}
                 j = s.state("install")
                 res = s.state("install-result")
@@ -2307,7 +2540,8 @@ class Tools:
                                       if job.get("download") else ""),
                         "install": job, "follow": "call strata_install again for progress, or strata_logs "
                                                   "source=setup for the full output"}
-            if confirm and getattr(s, "install_cancelled_at", 0) >= asked:
+            if confirm and (asked < getattr(s, "install_cancelled_at", 0)
+                            or asked_seq < getattr(s, "install_cancelled_seq", 0)):
                 raise ToolError("the install was cancelled before it started")
             given = [x for x in (family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir)
                      if x is not None]
@@ -2362,14 +2596,25 @@ class Tools:
         md = s.own_size(family, model) or models[model]   # Qwen3.6-35B-A3B: its sizes are not in setup's MODELS
         mac = bool(hw.get("mac"))
         if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
-            if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
+            if not md.get("hy4") and not md.get("inkling") and rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
                 raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
             gpu = gpus = kv = low_ram = None
-            context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
+            if md.get("hy4"):
+                from strata_control import hy4_family
+                context = context or hy4_family.DEFAULT_CONTEXT
+            elif md.get("inkling"):
+                from strata_control import inkling_family
+                context = context or inkling_family.DEFAULT_CONTEXT
+            else:
+                context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
-            context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
+            if md.get("inkling"):
+                from strata_control import inkling_family
+                context = inkling_family.DEFAULT_CONTEXT
+            else:
+                context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
             own = (getattr(s.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
             if own:                                   # Qwen3.6: the largest size that fits the card when 128K does not (#5715, setup's own rule)
                 context = s.setup_module().own_path_context(own, max((g["vram_gb"] for g in usable), default=0.0), model)
@@ -2393,13 +2638,28 @@ class Tools:
                 raise ToolError("no Intel Arc card Strata can use was found in this computer (the Intel Arc engine runs on Linux)")
             if not intel_app.can_set_up(family, families[family]):
                 raise ToolError(f"{families[family]['title']} {model} can't be set up for an Intel Arc card yet; "
-                                "the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Unsloth sizes can")
-            backend, vision = "sycl", "no"                  # pictures stay off on an Arc (strata_cli/launch/adopt.py)
-            if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
-                raise ToolError(intel_app.NO_DOWNLOAD)
+                                "the Qwen3.8-Flash-Next, Swift, Coder, Gyro, Unsloth, Hy4-Flash and Inkling-2-Mini sizes can")
+            backend = "sycl"
+            if not md.get("hy4") and not md.get("inkling"):
+                vision = "no"                  # pictures stay off on an Arc for GGUF families (strata_cli/launch/adopt.py)
+                if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
+                    raise ToolError(intel_app.NO_DOWNLOAD)
+        if md.get("hy4"):                                       # Hy4-Flash: the files are in <models>/hy4-flash (the build, the shared Engram shard); the disk need is what is not there yet
+            from strata_control import hy4_family
+            have_files = hy4_family.local_files(target / "models" / hy4_family.FAMILY)
+            md = {**md, "download_gb": round(sum(hy4_family.size_of(n) / 1e9 for n in hy4_family.files_of(model, vision != "no") if n not in have_files), 1)}
+        elif md.get("inkling"):
+            from strata_control import inkling_family
+            if gguf_dir:
+                md = {**md, "download_gb": 0.0}
+            else:
+                have_files = inkling_family.local_files(target / "models" / inkling_family.FAMILY)
+                md = {**md, "download_gb": round(sum(inkling_family.size_of(n) / 1e9 for n in inkling_family.files_of(model, vision != "no") if n not in have_files), 1)}
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir) \
             or (ready_dir is not None and ready_dir.is_dir() and any(ready_dir.glob("*.gguf*")))   # a local folder: nothing to download
-        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
+        repack_gb = 0 if (md.get("hy4") or md.get("inkling")) else (s.mac().repacked_gb(model) if mac and s.mac() else 0)
+        vision_extra = 0 if (md.get("hy4") or md.get("inkling")) else (1 if vision in ("yes", "gpu", "cpu") else 0)
+        need = (8 if partly else md["download_gb"] + 8) + vision_extra + repack_gb       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
@@ -2418,20 +2678,27 @@ class Tools:
                 args += [flag, str(v)]
         if gguf_dir:
             local = Path(os.path.expandvars(gguf_dir)).expanduser()
-            if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
-                raise ToolError("gguf_dir must be an existing absolute folder")
+            is_model_file = local.is_file() and local.suffix.lower() in (".gguf", ".strata")
+            if not local.is_absolute() or (not local.is_dir() and not is_model_file) or ".." in local.parts:
+                raise ToolError("gguf_dir must be an existing absolute folder or .gguf/.strata file")
             args += ["--gguf-dir", str(local)]
         if backend in ("cuda", "hip", "sycl"):
             args += ["--backend", backend]
-        if drafter in ("mtp", "dflash2") and backend != "sycl":      # an Arc runs with no drafter the installer sets up (the Terminal's adopted config has none either)
+        if drafter in ("mtp", "dflash2") and backend != "sycl" and not md.get("hy4") and not md.get("inkling"):
             args += ["--drafter", drafter]
-        if mtp in ("on", "off"):                                      # the app's Drafting Off: no draft layer is fetched, on a Mac too (setup.py takes --mtp everywhere)
+        if mtp in ("on", "off") and not md.get("hy4") and not md.get("inkling"):
             args += ["--mtp", mtp]
         fit = None
         ram = hw.get("ram_gb")
         if ram is not None:
             from strata_control import fit_label
             fit = fit_label.label(fit_label.files_gb(family, model, md), ram, fit_label.card_room_gb(s.engine_gpus(hw)))
+            if md.get("hy4"):
+                row = s.hy4_fit_row(model, ram, s.engine_gpus(hw))
+                fit = None if row is None else ("may run slower" if row["mode"] == "cross_tier_ssd" else "fits")
+            elif md.get("inkling"):
+                row = s.inkling_fit_row(model, ram, s.engine_gpus(hw))
+                fit = None if row is None else ("may run slower" if row["mode"] == "cross_tier_ssd" else "fits")
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         here = None                                     # the page's "already on this computer": the files whole, by the pinned sizes (a local folder: not asked)
         if not gguf_dir and not arc and s.setup_module() is not None:
@@ -2506,7 +2773,7 @@ class Tools:
             if not desc["ready"]:
                 raise ToolError(f"{cfg_path.name} refers to missing files ({', '.join(desc['missing_files'])}): run "
                                 "the install again (strata_install with confirm=true) to repair it")
-            port = port or desc["port"] or DEFAULT_PORT
+            port = port or desc["port"] or s.default_port()
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 info = s.probe(tracked["port"])
@@ -2698,7 +2965,7 @@ class Tools:
                 break
         if port is None:
             cfgs = s.configs()
-            port = target["port"] if target else (s.describe_config(cfgs[0])["port"] if cfgs else DEFAULT_PORT)
+            port = target["port"] if target else (s.describe_config(cfgs[0])["port"] if cfgs else s.default_port())
         model = (target or {}).get("model") or "strata"
         key_needed = (target or {}).get("api_key_required")
         if key_needed is None:

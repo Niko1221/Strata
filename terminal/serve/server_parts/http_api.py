@@ -314,7 +314,7 @@ SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "to
                "experimental_speed_projection")
 
 
-def load_shared_settings(path, warn=print) -> dict:
+def load_shared_settings(path, warn=print, *, hy4: bool = False) -> dict:
     """The Chat settings kept next to a config between starts, read so that one bad key cannot erase the others.
 
     The strict reader below belongs to POST /settings, where a client is there to be told which key is wrong and can
@@ -339,13 +339,13 @@ def load_shared_settings(path, warn=print) -> dict:
     out = {}
     for key, value in doc.items():
         try:
-            out.update(clean_shared_defaults({key: value}))
+            out.update(clean_shared_defaults({key: value}, hy4=hy4))
         except ValueError as e:
             warn(f"[strata] one Chat setting in {path} is skipped ({e}); the others still apply")
     return out
 
 
-def clean_shared_defaults(d) -> dict:
+def clean_shared_defaults(d, hy4: bool = False) -> dict:
     """The Chat settings other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
     if d is None:
         return {}
@@ -357,8 +357,13 @@ def clean_shared_defaults(d) -> dict:
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
-            if value not in ("none", "low", "medium", "high"):
-                raise ValueError("reasoning_effort: none, low, medium or high")
+            if hy4 and value == "xhigh":
+                value = "max"
+            elif hy4 and value == "no_think":
+                value = "none"
+            if value not in ("none", "low", "medium", "high") + (("max",) if hy4 else ()):    # Hy4's template also has max
+                raise ValueError("reasoning_effort: none, low, medium, high or max" if hy4
+                                 else "reasoning_effort: none, low, medium or high")
         elif key == "temperature":
             if not number or not 0 <= value <= 2:
                 raise ValueError("temperature: 0..2")
@@ -613,11 +618,28 @@ MODEL_CARD_SAMPLING = {
     # Qwen3.6-35B-A3B: the general-task sets (the card's precise-coding set is temperature 0.6, presence_penalty 0)
     "qwen35moe": {"thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
+    # Hy4-Flash (HY-4-Flash-200B): HuggingFace model card defaults when request/config omits sampling
+    "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
+                 "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)
 CARD_PENALTIES = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+SAMPLING_PARAM_KEYS = (
+    "temperature", "top_p", "top_k", "min_p",
+    "presence_penalty", "frequency_penalty", "repetition_penalty",
+)
+
+
+def request_asks_sampling(*layers) -> bool:
+    """True when any layer explicitly specifies any sampling or penalty parameter."""
+    for layer in layers:
+        if isinstance(layer, dict):
+            for k in SAMPLING_PARAM_KEYS:
+                if layer.get(k) is not None:
+                    return True
+    return False
 
 
 def model_card_sampling(arch, thinking, greedy=False) -> dict:

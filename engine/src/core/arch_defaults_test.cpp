@@ -266,10 +266,10 @@ int main() {
     for (const Mock& m : mocks) {
         const bool want = m.expect_on && std::string(m.gcn).rfind("gfx1103", 0) == 0;
 #if defined(_WIN32)
-        // 0.2.8: Strix Halo (gfx1151, integrated) gets the matrix-core prompt set on Windows; the 780M and the 890M are
-        // not measured there and stay off
+        // 0.2.8 / 0.2.19: Strix Halo (gfx1151, integrated) gets the matrix-core prompt + Wave32 decode set on Windows;
+        // the 780M and the 890M stay opt-in there
         const bool win_on = m.expect_on && m.integrated && std::string(m.gcn).rfind("gfx1151", 0) == 0;
-        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (win_on ? 9u : 0u));
+        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (win_on ? 12u : 0u));
 #else
         CHECK(igpu_default_env(m.gcn, m.integrated).size() == (want ? 5u : 0u));
 #endif
@@ -305,14 +305,22 @@ int main() {
 #if defined(_WIN32)
             halo_win = std::string(m.gcn).rfind("gfx1151", 0) == 0;
 #endif
-            CHECK(t.size() == (halo_win ? 9u : 5u));
+            CHECK(t.size() == (halo_win ? 12u : 5u));
             std::vector<const char*> want = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX"};
             want.push_back("STRATA_SELECT_WMMA");
-            if (halo_win) { want.push_back("STRATA_PF_FUSED"); want.push_back("STRATA_PF_F16"); want.push_back("STRATA_PF_DM16"); want.push_back("STRATA_PF_P1A"); }
+            if (halo_win) {
+                want.push_back("STRATA_PF_FUSED"); want.push_back("STRATA_PF_DM16"); want.push_back("STRATA_PF_P1A");
+                want.push_back("STRATA_PF_P1A_L2"); want.push_back("STRATA_DFLASH_WMMA"); want.push_back("STRATA_HIP_FAST_DEC");
+            }
             for (const char* w : want) {
                 bool found = false;
                 for (const auto& kv : t) found = found || (kv.first == w && kv.second == "1");
                 CHECK(found);
+            }
+            if (halo_win) {
+                bool found_f16_2 = false;
+                for (const auto& kv : t) found_f16_2 = found_f16_2 || (kv.first == "STRATA_PF_F16" && kv.second == "2");
+                CHECK(found_f16_2);
             }
             for (const auto& kv : t) CHECK(kv.first != "STRATA_HC_Q8" && kv.first != "STRATA_PF_HCDOWN");
             if (!halo_win) { for (const auto& kv : t) CHECK(kv.first != "STRATA_PF_FUSED"); }
@@ -331,10 +339,11 @@ int main() {
     put("STRATA_IGPU_PROMPT_SET", "0");
     CHECK(igpu_default_env("gfx1103", true).empty());
     put("STRATA_IGPU_PROMPT_SET", "1");
-    // apply: a discrete card sets nothing, an iGPU sets the five, a switch the user set (even to 0) is kept
+    // apply: an unconfigured discrete card (gfx1030) sets nothing, an iGPU sets the five, a switch the user set (even to 0) is kept
+    // (discrete RDNA3 gfx1100/1101/1102 has its own suite in gfx11_extra.hpp, tested in gfx11_extra_test)
     const char* five[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
     for (const char* k : five) unset(k);
-    CHECK(apply_arch_defaults("gfx1100", false).empty());
+    CHECK(apply_arch_defaults("gfx1030", false).empty());
     // gfx12: a discrete RDNA4 card gets its own twelve switches (five prompt, seven decode); a second call has nothing to do
     const char* g12[] = {"STRATA_GDN_HEAD", "STRATA_GDN_PP",  "STRATA_GDN_CONVL2",    "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
                          "STRATA_ATTN_LANECELL", "STRATA_ATTN_MERGE_V2", "STRATA_TSUM", "STRATA_EXPDEC"};
@@ -374,27 +383,30 @@ int main() {
     CHECK(!igpu_prompt_set_enabled("gfx1103", true));
     {
         const auto t = igpu_default_env("gfx1151", true);
-        CHECK(t.size() == 9);
-        auto has = [&t](const char* k) {
-            for (const auto& kv : t) if (kv.first == k) return kv.second == "1";
+        CHECK(t.size() == 12);
+        auto has = [&t](const char* k, const char* v = "1") {
+            for (const auto& kv : t) if (kv.first == k) return kv.second == v;
             return false;
         };
         CHECK(has("STRATA_HIP_WMMA") && has("STRATA_PF_GEMM") && has("STRATA_PA_FAST") && has("STRATA_HC_UPMIX") &&
-              has("STRATA_PF_FUSED") && has("STRATA_SELECT_WMMA") && has("STRATA_PF_F16") && has("STRATA_PF_DM16") && has("STRATA_PF_P1A"));
+              has("STRATA_PF_FUSED") && has("STRATA_SELECT_WMMA") && has("STRATA_PF_F16", "2") && has("STRATA_PF_DM16") &&
+              has("STRATA_PF_P1A") && has("STRATA_PF_P1A_L2") && has("STRATA_DFLASH_WMMA") && has("STRATA_HIP_FAST_DEC"));
         CHECK(igpu_default_env("gfx1151", false).empty());   // a gfx1151 reported as a discrete card
         CHECK(igpu_default_env("gfx1150", true).empty());    // 890M: unchanged
         CHECK(igpu_default_env("gfx1103", true).empty());    // 780M on Windows: unchanged
     }
     {
         const char* halo[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX", "STRATA_PF_FUSED",
-                              "STRATA_SELECT_WMMA", "STRATA_PF_F16", "STRATA_PF_DM16", "STRATA_PF_P1A"};
+                              "STRATA_SELECT_WMMA", "STRATA_PF_F16", "STRATA_PF_DM16", "STRATA_PF_P1A", "STRATA_PF_P1A_L2",
+                              "STRATA_DFLASH_WMMA", "STRATA_HIP_FAST_DEC"};
         for (const char* k : halo) unset(k);
         const auto set = apply_arch_defaults("gfx1151", true);
         for (const char* k : halo) {
             bool in = false;
             for (const auto& n : set) in = in || n == k;
             CHECK(in);
-            CHECK(std::getenv(k) != nullptr && std::string(std::getenv(k)) == "1");
+            const char* want = std::strcmp(k, "STRATA_PF_F16") == 0 ? "2" : "1";
+            CHECK(std::getenv(k) != nullptr && std::string(std::getenv(k)) == want);
         }
         // a switch the user set (even to 0) is kept, and the whole set turns off with either switch
         for (const char* k : halo) unset(k);
@@ -414,29 +426,37 @@ int main() {
         put("STRATA_GFX1151_DEFAULTS", "0");   // back to the state this block found (the 026 checks below rely on it)
     }
 #endif
-    // the registered arena asks for no transparent huge pages on an integrated gfx11 GPU under Linux (780M, 880M / 890M, Strix Halo),
+    // the registered arena asks for no transparent huge pages on an integrated gfx11 GPU under Linux (780M, 880M / 890M, Strix Halo, Krackan gfx1152, Gorgon Point gfx1153),
     // detected from the device (integrated + arch), with or without the target-feature suffix; never on Windows, never on a discrete card
-    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1103:sramecc-:xnack-", "gfx1151:sramecc+:xnack-"}) {
+    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153", "gfx1103:sramecc-:xnack-", "gfx1151:sramecc+:xnack-"}) {
         CHECK(igpu_arena_no_thp_default(g, true, false));
         CHECK(!igpu_arena_no_thp_default(g, true, true));     // Windows: unchanged
         CHECK(!igpu_arena_no_thp_default(g, false, false));   // not integrated
     }
-    for (const char* g : {"gfx1152", "gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1036", "gfx11030", "gfx11031", "", "gfx90a"})
+    for (const char* g : {"gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1036", "gfx11030", "gfx11031", "", "gfx90a"})
         CHECK(!igpu_arena_no_thp_default(g, true, false));
-    // the wait before READY (kfd_settle.hpp) is for the same class: integrated gfx1103 / gfx1150 / gfx1151 under Linux, nothing else
-    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1103:sramecc-:xnack-"}) {
+    // the wait before READY (kfd_settle.hpp) is for the same class: integrated gfx1103 / gfx1150..gfx1153 under Linux, nothing else
+    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153", "gfx1103:sramecc-:xnack-"}) {
         CHECK(igpu_kfd_settle_default(g, true, false));
         CHECK(!igpu_kfd_settle_default(g, true, true));     // Windows
         CHECK(!igpu_kfd_settle_default(g, false, false));   // not integrated
     }
-    for (const char* g : {"gfx1100", "gfx1201", "gfx90a", "gfx1030", "gfx1152", ""}) CHECK(!igpu_kfd_settle_default(g, true, false));
+    for (const char* g : {"gfx1100", "gfx1201", "gfx90a", "gfx1030", ""}) CHECK(!igpu_kfd_settle_default(g, true, false));
     // the file-cache give-back during and after the expert load (page_cache_drop.hpp): the same class
-    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1103:sramecc-:xnack-"}) {
+    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153", "gfx1103:sramecc-:xnack-"}) {
         CHECK(igpu_cache_drop_default(g, true, false));
         CHECK(!igpu_cache_drop_default(g, true, true));     // Windows
         CHECK(!igpu_cache_drop_default(g, false, false));   // not integrated
     }
-    for (const char* g : {"gfx1100", "gfx1201", "gfx90a", "gfx1030", "gfx1152", ""}) CHECK(!igpu_cache_drop_default(g, true, false));
+    for (const char* g : {"gfx1100", "gfx1201", "gfx90a", "gfx1030", ""}) CHECK(!igpu_cache_drop_default(g, true, false));
+    // ROCm 10.2.0 #10097: WSL2 on integrated Ryzen APUs (gfx1103, gfx1150..gfx1153) is flagged so startup tells the user to run native Windows HIP
+    for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153", "gfx1151:sramecc+:xnack-"}) {
+        CHECK(strata::core::wsl2_ryzen_apu_unsupported(g, true, "6.6.87.2-microsoft-standard-WSL2"));
+        CHECK(!strata::core::wsl2_ryzen_apu_unsupported(g, true, "6.11.0-21-generic"));       // bare-metal Linux: supported
+        CHECK(!strata::core::wsl2_ryzen_apu_unsupported(g, false, "6.6.87.2-microsoft-WSL2")); // discrete GPU: supported
+    }
+    CHECK(!strata::core::wsl2_ryzen_apu_unsupported("gfx1100", true, "6.6.87.2-microsoft-standard-WSL2"));
+    CHECK(!strata::core::wsl2_ryzen_apu_unsupported("gfx1201", true, "6.6.87.2-microsoft-standard-WSL2"));
     // the fused int8 prompt experts (STRATA_PF_FUSED=1 instead of llama.cpp's MMQ): the same class again, nothing else
     for (const char* g : {"gfx1103", "gfx1150", "gfx1151", "gfx1103:sramecc-:xnack-", "gfx1151:sramecc+:xnack-"}) {
         CHECK(igpu_fused_prompt_default(g, true, false));
@@ -448,8 +468,8 @@ int main() {
 #if !defined(_WIN32)
     {   // apply: nothing set -> STRATA_PF_FUSED=1 on the class, =0 (the way back) and =1 as the user set them are kept, other devices get nothing
         unset("STRATA_PF_FUSED");
-        apply_arch_defaults("gfx1100", false);
-        CHECK(std::getenv("STRATA_PF_FUSED") == nullptr);       // discrete
+        apply_arch_defaults("gfx1030", false);
+        CHECK(std::getenv("STRATA_PF_FUSED") == nullptr);       // unconfigured discrete (discrete RDNA3 is tested in gfx11_extra_test)
         apply_arch_defaults("gfx1103", false);
         CHECK(std::getenv("STRATA_PF_FUSED") == nullptr);       // a mixed box (iGPU + dGPU)
         apply_arch_defaults("gfx1201", false);

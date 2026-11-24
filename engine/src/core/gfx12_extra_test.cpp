@@ -52,7 +52,7 @@ int main() {
     apply_arch_defaults("gfx1201", false);
     CHECK(std::string(std::getenv("STRATA_HEAD_MIX_MULTI")) == "0");
     unset("STRATA_HEAD_MIX_MULTI");
-    apply_arch_defaults("gfx1100", false);
+    apply_arch_defaults("gfx1030", false);
     CHECK(std::getenv("STRATA_HEAD_MIX_MULTI") == nullptr);
     put("STRATA_GFX12_DEFAULTS", "0");
     apply_arch_defaults("gfx1201", false);
@@ -71,7 +71,7 @@ int main() {
     apply_arch_defaults("gfx1201", false);
     CHECK(std::string(std::getenv("STRATA_SELECT_WMMA")) == "0");
     unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
-    apply_arch_defaults("gfx1100", false);
+    apply_arch_defaults("gfx1030", false);
     CHECK(std::getenv("STRATA_SELECT_WMMA") == nullptr);
     // STRATA_MMQ_KQ (the K-quant experts' prompt products on MMQ): Linux gfx12 only, the same off switches, the user's own value wins
     unset("STRATA_GFX12_DEFAULTS"); unset("STRATA_DEFAULTS"); unset("STRATA_MMQ_KQ");
@@ -89,7 +89,7 @@ int main() {
     apply_arch_defaults("gfx1201", false);
     CHECK(std::string(std::getenv("STRATA_MMQ_KQ")) == "0");
     unset("STRATA_MMQ_KQ"); unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
-    apply_arch_defaults("gfx1100", false);
+    apply_arch_defaults("gfx1030", false);
     CHECK(std::getenv("STRATA_MMQ_KQ") == nullptr);
     put("STRATA_GFX12_DEFAULTS", "0");
     apply_arch_defaults("gfx1201", false);
@@ -109,6 +109,13 @@ int main() {
     CHECK(gfx12_chunk_step_down(32768) == 16384);
     CHECK(gfx12_chunk_step_down(16384) == 8192);
     CHECK(gfx12_chunk_step_down(12288) == 8192);
+    // #6687: STRATA_PREFILL_RAM_RESERVE_MIB override and resident vs non-resident defaults
+    CHECK(prefill_ram_reserve_mib(nullptr, true) == 6144);
+    CHECK(prefill_ram_reserve_mib(nullptr, false) == 3072);
+    CHECK(prefill_ram_reserve_mib("2048", true) == 2048);
+    CHECK(prefill_ram_reserve_mib("0", false) == 0);
+    CHECK(prefill_ram_reserve_mib("-100", false) == 3072);
+    CHECK(prefill_ram_reserve_mib("bad", true) == 6144);
     if (fails == 0) std::printf("gfx12_extra_test: OK\n");
     return fails == 0 ? 0 : 1;
 }

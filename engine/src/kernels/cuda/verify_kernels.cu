@@ -895,8 +895,8 @@ struct ArgRow {
 };
 
 // grid (blocks, rows): block b scans [b * per_block, +per_block) of its row
-__global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int per_block, ArgRow* __restrict__ rows,
-                                   int32_t* out) {
+__global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int per_block, int idx_offset,
+                                   ArgRow* __restrict__ rows, float* __restrict__ out_val, int32_t* out) {
     const int row = (int) blockIdx.y, b = (int) blockIdx.x, nb = (int) gridDim.x;
     unsigned* counter = &rows[row].counter;
     float* pv = rows[row].v;
@@ -928,9 +928,21 @@ __global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int 
     }
     arg_block(bv, bi, n);
     if (threadIdx.x == 0) {
-        out[row] = bi < n ? bi : 0;   // no value above -inf: 0, as the one-block kernel
+        if (out_val != nullptr) out_val[row] = bv;
+        out[row] = bi < n ? (bi + idx_offset) : idx_offset;   // no value above -inf: first index in slice
         *counter = 0;
     }
+}
+
+__global__ void argmax_merge_halves_kernel(const float* __restrict__ v0, const int32_t* __restrict__ i0,
+                                           const float* __restrict__ v1, const int32_t* __restrict__ i1,
+                                           int n_rows, int32_t* __restrict__ out) {
+    const int r = (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    if (r >= n_rows) return;
+    const float a = v0[r], b = v1[r];
+    const float ninf = __int_as_float(0xff800000);
+    if (!(a > ninf) && !(b > ninf)) { out[r] = 0; return; }
+    out[r] = (b > a) ? i1[r] : i0[r];
 }
 
 // a row's top-probability scratch: its counter, then its 32 warps' sums
@@ -975,8 +987,27 @@ void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t*
     const int nb = std::min(kArgMaxBlocks, std::max(1, (n + 4095) / 4096));
     const int per_block = (n + nb - 1) / nb;
     argmax_rows_kernel<<<dim3((unsigned) nb, (unsigned) n_rows), kArgThreads, 0, (cudaStream_t) stream>>>(
-        logits, n, per_block, (ArgRow*) scratch, out);
+        logits, n, per_block, 0, (ArgRow*) scratch, nullptr, out);
     check("argmax_rows");
+}
+
+void argmax_rows_val_idx(const float* logits, int n_rows, int n, int idx_offset, void* scratch, float* out_val,
+                         int32_t* out_idx, void* stream) {
+    if (n_rows <= 0 || n <= 0) return;
+    const int nb = std::min(kArgMaxBlocks, std::max(1, (n + 4095) / 4096));
+    const int per_block = (n + nb - 1) / nb;
+    argmax_rows_kernel<<<dim3((unsigned) nb, (unsigned) n_rows), kArgThreads, 0, (cudaStream_t) stream>>>(
+        logits, n, per_block, idx_offset, (ArgRow*) scratch, out_val, out_idx);
+    check("argmax_rows_val_idx");
+}
+
+void argmax_merge_halves(const float* v0, const int32_t* i0, const float* v1, const int32_t* i1, int n_rows,
+                         int32_t* out, void* stream) {
+    if (n_rows <= 0) return;
+    const int blocks = (n_rows + 255) / 256;
+    argmax_merge_halves_kernel<<<dim3((unsigned) blocks), 256, 0, (cudaStream_t) stream>>>(
+        v0, i0, v1, i1, n_rows, out);
+    check("argmax_merge_halves");
 }
 
 uint64_t row_top_prob_scratch_bytes(int n_rows) { return (uint64_t) n_rows * sizeof(TopRow); }
@@ -992,6 +1023,14 @@ void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int3
 uint64_t argmax_rows_scratch_bytes(int) { return 0; }
 void argmax_rows(const float*, int, int, void*, int32_t*, void*) {
     std::fprintf(stderr, "argmax_rows: not built for this backend\n");
+    std::exit(1);
+}
+void argmax_rows_val_idx(const float*, int, int, int, void*, float*, int32_t*, void*) {
+    std::fprintf(stderr, "argmax_rows_val_idx: not built for this backend\n");
+    std::exit(1);
+}
+void argmax_merge_halves(const float*, const int32_t*, const float*, const int32_t*, int, int32_t*, void*) {
+    std::fprintf(stderr, "argmax_merge_halves: not built for this backend\n");
     std::exit(1);
 }
 uint64_t row_top_prob_scratch_bytes(int) { return 0; }
@@ -1022,6 +1061,20 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
     logits_nonfinite_kernel<<<dim3((unsigned) kNonfiniteBlocks, (unsigned) n_rows), 256, 0, (cudaStream_t) stream>>>(
         logits, n, per_block, flags);
     check("logits_nonfinite_rows");
+}
+
+namespace {
+__global__ void or_u32_rows_kernel(uint32_t* __restrict__ dst, const uint32_t* __restrict__ src, int n) {
+    const int i = (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    if (i < n) dst[i] |= src[i];
+}
+}  // namespace
+
+void or_u32_rows(uint32_t* dst, const uint32_t* src, int n, void* stream) {
+    if (n <= 0) return;
+    const int blocks = (n + 255) / 256;
+    or_u32_rows_kernel<<<dim3((unsigned) blocks), 256, 0, (cudaStream_t) stream>>>(dst, src, n);
+    check("or_u32_rows");
 }
 
 bool multi_block_head_ops() {
@@ -1328,11 +1381,6 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 }
 
 namespace {
-__global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
-    while (*flag < value) strata_spin_pause();
-    __threadfence_system();
-}
-
 // the GPU's clock in ns (the same sources as gpu_stamp_kernel)
 __device__ __forceinline__ unsigned long long strata_now_ns() {
     unsigned long long t;
@@ -1346,11 +1394,32 @@ __device__ __forceinline__ unsigned long long strata_now_ns() {
     return t;
 }
 
+__global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
+#if defined(__HIPCC__) && defined(_WIN32)
+    // Windows WDDM enforces a strict 2,000 ms TdrDelay; cap a single spin to 1,200 ms so an extreme
+    // host/NVMe stall never resets the display driver.
+    constexpr unsigned long long kWddmTdrEscapeNs = 1'200'000'000ull;
+    const unsigned long long t0 = strata_now_ns();
+    uint32_t iter = 0;
+    while (*flag < value) {
+        strata_spin_pause();
+        if ((++iter & 255u) == 0u && strata_now_ns() - t0 > kWddmTdrEscapeNs) break;
+    }
+#else
+    while (*flag < value) strata_spin_pause();
+#endif
+    __threadfence_system();
+}
+
 // the overlapped split's hand-off wait, bounded: spin until *flag >= value, or give up after timeout_ns (0: never),
 // marking *err = 1 (mapped) so the host fails the window instead of using a stale hand-off.  The window's later
 // kernels still run (on whatever the hand-off buffer holds) so the graph completes and no stream is left hanging.
 __global__ void wait_handoff_kernel(const volatile uint32_t* flag, uint32_t value, uint32_t* err,
                                     unsigned long long timeout_ns) {
+#if defined(__HIPCC__) && defined(_WIN32)
+    constexpr unsigned long long kWddmCapNs = 1'200'000'000ull;
+    if (timeout_ns == 0ull || timeout_ns > kWddmCapNs) timeout_ns = kWddmCapNs;
+#endif
     const unsigned long long t0 = timeout_ns ? strata_now_ns() : 0ull;
     while (*flag < value) {
         strata_spin_pause();
@@ -1535,6 +1604,150 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
         }
     }
 }
+
+template <int NT>
+__global__ void __launch_bounds__(NT) resident_hits_plan_kernel(const int32_t* __restrict__ ids, int n, int k,
+                                                                const int32_t* __restrict__ res, int n_expert,
+                                                                const uint8_t* cache_base,
+                                                                const unsigned long long* slot_off, long long blob,
+                                                                int32_t* __restrict__ pl, long long capx) {
+    constexpr int NW = NT / 32;
+    __shared__ int32_t s_ids[NT];
+    __shared__ int32_t s_excl[NT];
+    __shared__ int32_t s_wsum[NW];
+    const int tid = threadIdx.x;
+
+    int32_t eid = -1;
+    int32_t slot = -1;
+    if (tid < n) {
+        eid = ids[tid];
+        slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
+        s_ids[tid] = slot >= 0 ? eid : -1;
+    } else {
+        s_ids[tid] = -1;
+    }
+    __syncthreads();
+
+    int first_j = tid;
+    int rank_in_group = 0;
+    int count_same = 0;
+    const bool hit = (tid < n && slot >= 0);
+    if (hit) {
+        for (int j = 0; j < n; ++j) {
+            if (s_ids[j] == eid) {
+                if (j < first_j) first_j = j;
+                if (j < tid) ++rank_in_group;
+                ++count_same;
+            }
+        }
+    }
+    const bool is_first = (hit && first_j == tid);
+    const int my_cnt = is_first ? count_same : 0;
+    const int my_pack = (my_cnt << 16) | (is_first ? 1 : 0);
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    int pref = my_pack;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) {
+        const int up = __shfl_up_sync(0xffffffffu, pref, d);
+        if (lane >= d) pref += up;
+    }
+    s_excl[tid] = pref - my_pack;
+    if (lane == 31) s_wsum[warp] = pref;
+    __syncthreads();
+
+    int32_t* counts = pl;
+    int32_t* start = pl + 4;
+    int32_t* dst = start + capx + 1;
+    int32_t* tok = dst + capx;
+    const long long ptr_off = ((4 + (capx + 1) + 2 * capx) + 1) & ~1ll;
+    unsigned long long* ptr = (unsigned long long*) (pl + ptr_off);
+    int32_t* start2 = pl + ptr_off + 4 * capx;
+
+    if (is_first) {
+        int tot = s_excl[tid];
+#pragma unroll
+        for (int w = 0; w < NW; ++w) {
+            if (w < warp) tot += s_wsum[w];
+        }
+        const int grp_idx = tot & 0xffff;
+        const int ent_start = tot >> 16;
+        ptr[grp_idx] = (unsigned long long) (cache_base + (slot_off ? (size_t) slot_off[slot] : (size_t) slot * (size_t) blob));
+        start[grp_idx] = ent_start;
+    }
+    if (hit) {
+        const int fj_warp = first_j >> 5;
+        int fj_tot = s_excl[first_j];
+#pragma unroll
+        for (int w = 0; w < NW; ++w) {
+            if (w < fj_warp) fj_tot += s_wsum[w];
+        }
+        const int out_idx = (fj_tot >> 16) + rank_in_group;
+        dst[out_idx] = tid;
+        tok[out_idx] = tid / k;
+    }
+    if (tid == 0) {
+        int tot = 0;
+#pragma unroll
+        for (int w = 0; w < NW; ++w) tot += s_wsum[w];
+        const int groups = tot & 0xffff;
+        const int entries = tot >> 16;
+        start[groups] = entries;
+        start2[0] = entries;
+        counts[0] = groups;
+        counts[1] = entries;
+        counts[2] = 0;
+    }
+}
+
+template <int NT>
+__global__ void __launch_bounds__(NT) route_tail_renorm_kernel(const int32_t* __restrict__ ids, float* __restrict__ w,
+                                                               const int32_t* __restrict__ res, int n_tok, int k,
+                                                               int n_expert, int tail_rank) {
+    __shared__ int32_t s_ids[NT];
+    __shared__ uint8_t s_skip[NT];
+    const int tid = threadIdx.x;
+    const int n = n_tok * k;
+
+    int32_t eid = -1;
+    if (tid < n) {
+        eid = ids[tid];
+        s_ids[tid] = eid;
+    } else {
+        s_ids[tid] = -1;
+    }
+    __syncthreads();
+
+    uint8_t sk = 0;
+    if (tid < n && eid >= 0 && eid < n_expert && res[eid] < 0) {
+        int min_r = k;
+        for (int j = 0; j < n; ++j) {
+            if (s_ids[j] == eid) {
+                const int rj = j % k;
+                if (rj < min_r) min_r = rj;
+            }
+        }
+        if (min_r >= tail_rank) sk = 1;
+    }
+    s_skip[tid] = sk;
+    __syncthreads();
+
+    if (tid < n_tok) {
+        float orig_sum = 0.0f;
+        float kept_sum = 0.0f;
+        for (int r = 0; r < k; ++r) {
+            const float wr = w[tid * k + r];
+            orig_sum += wr;
+            if (!s_skip[tid * k + r]) kept_sum += wr;
+        }
+        if (kept_sum > 0.0f && kept_sum < orig_sum) {
+            const float scale = orig_sum / kept_sum;
+            for (int r = 0; r < k; ++r) {
+                w[tid * k + r] = s_skip[tid * k + r] ? 0.0f : (w[tid * k + r] * scale);
+            }
+        }
+    }
+}
 // The same plan in one block of 128 threads (n <= 128): thread i owns entry i. Groups are the distinct experts in
 // order of first occurrence; group g's entries are its occurrences in increasing i - exactly the loop above
 // (S26: the one-thread loop took ~44 us per call on gfx1151, 48 per window).
@@ -1634,6 +1847,41 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                                                               blob, plan, capx, skip, ring, plan_err);
     }
     check("resident_plan");
+}
+void resident_hits_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
+                        const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
+                        long long capx, void* stream) {
+    if (n_entries > kResidentPlanNarrow) {
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            resident_hits_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(
+                ids, n_entries, k, res_layer, n_expert, cache_base, slot_off, blob, plan, capx);
+        else {
+            std::fprintf(stderr, "resident_hits_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        resident_hits_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(
+            ids, n_entries, k, res_layer, n_expert, cache_base, slot_off, blob, plan, capx);
+    }
+    check("resident_hits_plan");
+}
+void route_tail_renorm(const int32_t* ids, float* weights, const int32_t* res_layer, int n_tok, int k, int n_expert,
+                       int tail_rank, void* stream) {
+    const int n_entries = n_tok * k;
+    if (tail_rank <= 0 || n_entries <= 0) return;
+    if (n_entries > kResidentPlanNarrow) {
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            route_tail_renorm_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(
+                ids, weights, res_layer, n_tok, k, n_expert, tail_rank);
+        else {
+            std::fprintf(stderr, "route_tail_renorm: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        route_tail_renorm_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(
+            ids, weights, res_layer, n_tok, k, n_expert, tail_rank);
+    }
+    check("route_tail_renorm");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
     wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip);
