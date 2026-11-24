@@ -5525,6 +5525,9 @@ class Service:
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
+        requested_floor = (req or {}).get("strata_min_completion_tokens", 0)
+        if type(requested_floor) is not int or not 0 <= requested_floor <= FIT_MIN_ROOM:
+            raise ValueError(f"strata_min_completion_tokens must be an integer from 0 to {FIT_MIN_ROOM}")
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
         # Cached tool images are references in browser history, never arbitrary file paths or huge base64 strings.
@@ -5628,6 +5631,18 @@ class Service:
                 if ctx <= 0:
                     raise EngineStarting("the engine is starting (a minute or two); try again shortly")
             room = ctx - CTX_SLACK - len(ids)
+            # The agent asks for a lower bound in addition to its output cap (strata_min_completion_tokens). Use the
+            # fully rendered/tokenized input, including tool schemas and image tokens. This also covers a small cap that
+            # already fits but would mask overflow: the chat is told to compact instead of getting a cut-off answer.
+            floor = min(requested_floor, fit_floor(ctx))
+            if max_new is not None and max_new > 0:
+                floor = min(floor, max_new)
+            if floor > 0 and room < floor:
+                self.forget_prompt(encoded_ids)
+                raise ContextOverflow("request exceeds the context window: "
+                                      f"the prompt ({len(ids)} tokens) leaves {max(0, room)} of the {ctx}-token "
+                                      f"context, fewer than the {floor} the agent needs; requests are never truncated",
+                                      prompt=len(ids), context=ctx, max_new=max_new, min_room=floor)
             if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
                 if room < 1:
                     # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
