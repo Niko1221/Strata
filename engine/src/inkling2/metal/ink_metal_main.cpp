@@ -487,8 +487,10 @@ int main(int argc, char** argv) {
     if (do_warm) mod.warm(8);
 
     const bool want_dspark = (draft_mode != "off");
+    const char* kv8 = std::getenv("INK_METAL_KV_FP8");   // test hook: FP8_E4M3 KV pages (matches --kv fp8)
     InkMetalRunner runner;
-    if (!runner.init(cx, mod, max_slots, max_ctx, max_batch, want_dspark, vision_path, kernel_dir, err)) {
+    if (!runner.init(cx, mod, max_slots, max_ctx, max_batch, want_dspark, vision_path, kernel_dir,
+                     kv8 && kv8[0] == '1', err)) {
         fprintf(stderr, "[ERROR] runner init: %s\n", err.c_str());
         return 1;
     }

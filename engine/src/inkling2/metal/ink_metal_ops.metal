@@ -648,6 +648,76 @@ kernel void ink_sconv4_prefill_commit(
 //    - V [M, 8, 128]:  parameterless RMSNorm(eps=1e-6) -> write to KV cache (FP16 or FP8_E4M3)
 //    grid (M, 24, 1), 128 threads (for Q & R); grid (M, 8, 1), 128 threads (for K & V)
 // ============================================================================
+// FP8_E4M3FN <-> FP32 conversion for the KV cache (byte-identical to ink_batch.h's portable helpers:
+// 0x7F/0xFF decode to 0, encode clamps to +-448, round-half-up mantissa).
+constant float kInkF8Lut[256] = {
+    0.0, 0.001953125, 0.00390625, 0.005859375, 0.0078125, 0.009765625, 0.01171875, 0.013671875,
+    0.015625, 0.017578125, 0.01953125, 0.021484375, 0.0234375, 0.025390625, 0.02734375, 0.029296875,
+    0.03125, 0.03515625, 0.0390625, 0.04296875, 0.046875, 0.05078125, 0.0546875, 0.05859375,
+    0.0625, 0.0703125, 0.078125, 0.0859375, 0.09375, 0.1015625, 0.109375, 0.1171875,
+    0.125, 0.140625, 0.15625, 0.171875, 0.1875, 0.203125, 0.21875, 0.234375,
+    0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875,
+    0.5, 0.5625, 0.625, 0.6875, 0.75, 0.8125, 0.875, 0.9375,
+    1.0, 1.125, 1.25, 1.375, 1.5, 1.625, 1.75, 1.875,
+    2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75,
+    4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5,
+    8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+    16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0,
+    32.0, 36.0, 40.0, 44.0, 48.0, 52.0, 56.0, 60.0,
+    64.0, 72.0, 80.0, 88.0, 96.0, 104.0, 112.0, 120.0,
+    128.0, 144.0, 160.0, 176.0, 192.0, 208.0, 224.0, 240.0,
+    256.0, 288.0, 320.0, 352.0, 384.0, 416.0, 448.0, 0.0,
+    -0.0, -0.001953125, -0.00390625, -0.005859375, -0.0078125, -0.009765625, -0.01171875, -0.013671875,
+    -0.015625, -0.017578125, -0.01953125, -0.021484375, -0.0234375, -0.025390625, -0.02734375, -0.029296875,
+    -0.03125, -0.03515625, -0.0390625, -0.04296875, -0.046875, -0.05078125, -0.0546875, -0.05859375,
+    -0.0625, -0.0703125, -0.078125, -0.0859375, -0.09375, -0.1015625, -0.109375, -0.1171875,
+    -0.125, -0.140625, -0.15625, -0.171875, -0.1875, -0.203125, -0.21875, -0.234375,
+    -0.25, -0.28125, -0.3125, -0.34375, -0.375, -0.40625, -0.4375, -0.46875,
+    -0.5, -0.5625, -0.625, -0.6875, -0.75, -0.8125, -0.875, -0.9375,
+    -1.0, -1.125, -1.25, -1.375, -1.5, -1.625, -1.75, -1.875,
+    -2.0, -2.25, -2.5, -2.75, -3.0, -3.25, -3.5, -3.75,
+    -4.0, -4.5, -5.0, -5.5, -6.0, -6.5, -7.0, -7.5,
+    -8.0, -9.0, -10.0, -11.0, -12.0, -13.0, -14.0, -15.0,
+    -16.0, -18.0, -20.0, -22.0, -24.0, -26.0, -28.0, -30.0,
+    -32.0, -36.0, -40.0, -44.0, -48.0, -52.0, -56.0, -60.0,
+    -64.0, -72.0, -80.0, -88.0, -96.0, -104.0, -112.0, -120.0,
+    -128.0, -144.0, -160.0, -176.0, -192.0, -208.0, -224.0, -240.0,
+    -256.0, -288.0, -320.0, -352.0, -384.0, -416.0, -448.0, -0.0,
+};
+
+static inline float ink_f8_to_f32(uint b) { return kInkF8Lut[b & 0xFFu]; }
+
+static inline uint ink_f32_to_f8(float x) {
+    if (!(x == x)) return 0u;
+    uint sign = (x < 0.0f) ? 0x80u : 0x00u;
+    float ax = fabs(x);
+    if (ax >= 448.0f) return sign | 0x7Eu;
+    if (ax < 1.0f / 1024.0f) return sign;
+    uint u = as_type<uint>(ax);
+    int exp = (int)((u >> 23) & 0xFFu) - 127;
+    if (exp < -6) {
+        int man = (int)rint(ax * 512.0f);
+        if (man > 7) return sign | 0x08u;
+        return sign | ((uint)man & 7u);
+    }
+    int e4 = exp + 7;
+    int man = (int)(((u & 0x7FFFFFu) + (1u << 19)) >> 20);
+    if (man >= 8) { man = 0; ++e4; }
+    if (e4 > 15 || (e4 == 15 && man >= 7)) return sign | 0x7Eu;
+    return sign | ((uint)e4 << 3) | ((uint)man & 7u);
+}
+
+// Load 4 KV elements (dims 4*lane..4*lane+3) from a cache page: fp16 half4 or fp8 bytes (kv_fp8 != 0).
+// `off` is in ELEMENTS; the fp8 page is byte-per-element and 4-byte aligned (INK_HD=128).
+static inline float4 ink_kv_load4(device const half* cache, size_t off, int lane, bool kv_fp8) {
+    if (kv_fp8) {
+        const device const uchar* c8 = (device const uchar*)cache;
+        const uint b = ((const device uint*)(c8 + off))[lane];
+        return float4(ink_f8_to_f32(b), ink_f8_to_f32(b >> 8), ink_f8_to_f32(b >> 16), ink_f8_to_f32(b >> 24));
+    }
+    return float4(((device const half4*)(cache + off))[lane]);
+}
+
 static inline float log_pos_tau(int pos) {
     const float r = float(pos + 1) * (1.0f / 8192.0f);
     return 1.0f + 0.1f * log(max(1.0f, r));
@@ -687,8 +757,8 @@ kernel void ink_qr_clip_tau(
     }
 }
 
-// K L2 clip + V parameterless RMSNorm + KV Cache Write (FP16)
-// kv_cache_k, kv_cache_v: [max_slots, kv_stride, 8, 128] half
+// K L2 clip + V parameterless RMSNorm + KV Cache Write (FP16, or FP8_E4M3 when kv_fp8 != 0)
+// kv_cache_k, kv_cache_v: [max_slots, kv_stride, 8, 128] half (fp16) or uchar (fp8)
 // grid (M, 8, 1), 128 threads
 kernel void ink_kv_norm_store_f16(
     device const float* k_in   [[buffer(0)]],
@@ -699,6 +769,7 @@ kernel void ink_kv_norm_store_f16(
     device const int* pos_buf  [[buffer(5)]],
     constant int& is_swa       [[buffer(6)]],
     constant int& kv_stride    [[buffer(7)]],
+    constant int& kv_fp8      [[buffer(8)]],
     uint2 tgp [[threadgroup_position_in_grid]],
     uint tid  [[thread_index_in_threadgroup]]) {
     threadgroup float sh[4];
@@ -718,8 +789,13 @@ kernel void ink_kv_norm_store_f16(
     const float vfac = rsqrt(vss / float(INK_HD) + INK_RMS_EPS);
 
     const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
-    k_cache[dst_off] = half(kv * kfac);
-    v_cache[dst_off] = half(vv * vfac);
+    if (kv_fp8) {
+        ((device uchar*)k_cache)[dst_off] = (uchar)ink_f32_to_f8(kv * kfac);
+        ((device uchar*)v_cache)[dst_off] = (uchar)ink_f32_to_f8(vv * vfac);
+    } else {
+        k_cache[dst_off] = half(kv * kfac);
+        v_cache[dst_off] = half(vv * vfac);
+    }
 }
 
 // ============================================================================
@@ -794,11 +870,12 @@ kernel void ink_relpos_sink_gqa(
     float4 o_acc = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
+    const bool kv_fp8 = (A.kv_fp8 != 0);
 
     for (int k = k_start + int(sg); k < k_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
+        const float4 kv = ink_kv_load4(k_cache, kv_off, int(lane), kv_fp8);
         float sc = simd_sum(dot(qv, kv));
 
         // RelPos bias: coalesced 32-byte L1-hot load from rel_proj_t[dist, 0..15]!
@@ -812,7 +889,7 @@ kernel void ink_relpos_sink_gqa(
         const float p = exp(sc - mn);
         l_sum = l_sum * corr + p;
         m_max = mn;
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 vv = ink_kv_load4(v_cache, kv_off, int(lane), kv_fp8);
         o_acc = o_acc * corr + p * vv;
     }
 
@@ -892,11 +969,12 @@ kernel void ink_relpos_gqa_splitk(
     float4 o0 = float4(0.0f), o1 = float4(0.0f), o2 = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
+    const bool kv_fp8 = (A.kv_fp8 != 0);
     for (int k = p_start + int(sg); k < p_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 kv = ink_kv_load4(k_cache, kv_off, int(lane), kv_fp8);
+        const float4 vv = ink_kv_load4(v_cache, kv_off, int(lane), kv_fp8);
         const int dist = min(qpos - k, A.rel_extent);
         const float rp = (lane < 16) ? float(rel_proj_t[(size_t)dist * 16 + lane]) : 0.0f;
 
@@ -1310,6 +1388,7 @@ kernel void ink_kv_tree_commit_f16(
     constant int& anchor_pos   [[buffer(6)]],
     constant int& is_swa       [[buffer(7)]],
     constant int& kv_stride    [[buffer(8)]],
+    constant int& kv_fp8       [[buffer(9)]],
     uint2 tgp [[threadgroup_position_in_grid]],
     uint tid  [[thread_index_in_threadgroup]]) {
     const int i = int(tgp.x), kh = int(tgp.y);
@@ -1318,8 +1397,13 @@ kernel void ink_kv_tree_commit_f16(
     const int kpos = is_swa ? (pos & 1023) : pos;
     const size_t src_off = ((size_t)node * INK_NKV + kh) * INK_HD + tid;
     const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
-    k_cache[dst_off] = tree_k[src_off];
-    v_cache[dst_off] = tree_v[src_off];
+    if (kv_fp8) {  // tree scratch stays FP16; the main cache page is FP8_E4M3
+        ((device uchar*)k_cache)[dst_off] = (uchar)ink_f32_to_f8(float(tree_k[src_off]));
+        ((device uchar*)v_cache)[dst_off] = (uchar)ink_f32_to_f8(float(tree_v[src_off]));
+    } else {
+        k_cache[dst_off] = tree_k[src_off];
+        v_cache[dst_off] = tree_v[src_off];
+    }
 }
 
 struct InkTreeAttnArgs {
@@ -1330,7 +1414,7 @@ struct InkTreeAttnArgs {
     int swa_win;
     int rel_extent;
     int kv_stride;
-    int pad;
+    int kv_fp8;
     float scale;
     int pad2;
 };
@@ -1384,11 +1468,12 @@ kernel void ink_relpos_tree_gqa_splitk(
     float4 o0 = float4(0.0f), o1 = float4(0.0f), o2 = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)A.slot * A.kv_stride;
+    const bool kv_fp8 = (A.kv_fp8 != 0);
     for (int k = p_start + int(sg); k < p_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 kv = ink_kv_load4(k_cache, kv_off, int(lane), kv_fp8);
+        const float4 vv = ink_kv_load4(v_cache, kv_off, int(lane), kv_fp8);
         const int dist = min(qpos - k, A.rel_extent);
         const float rp = (lane < 16) ? float(rel_proj_t[(size_t)dist * 16 + lane]) : 0.0f;
         {

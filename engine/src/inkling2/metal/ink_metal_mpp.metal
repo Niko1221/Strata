@@ -836,7 +836,16 @@ struct InkMppAttnArgs {
     int rel_extent;
     int kv_stride;
     float scale;
-    int pad;
+    int kv_fp8;
+};
+
+// FP8_E4M3FN -> FP32 (same values as ink_batch.h's portable LUT: 0x7F/0xFF decode to 0)
+static inline float ink_f8_to_f32(uint b) {
+    const uint s = (b >> 7) & 1u, e = (b >> 3) & 15u, m = b & 7u;
+    float v = (e == 0u) ? (float(m) * (1.0f / 512.0f))
+                        : ((1.0f + float(m) * 0.125f) * exp2(float(e) - 7.0f));
+    if ((b & 0x7Fu) == 0x7Fu) v = 0.0f;
+    return s ? -v : v;
 };
 
 // Pre-transpose Q [M, 24, 128] F32 -> Q_h [24, M_pad, 128] half (pre-scaled by 1/sqrt(128))
@@ -932,7 +941,17 @@ kernel void ink_mpp_relpos_gqa_pf(
             if (kpos < k_max) {
                 const int kidx = A.is_swa ? (kpos & 1023) : kpos;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + kc;
-                kv = *((device const uint4*)(k_cache + off));
+                if (A.kv_fp8) {  // 8 bytes -> 8 halves for the cooperative-tensor tile
+                    const device const uchar* c8 = (device const uchar*)k_cache;
+                    const uint2 b8 = *((const device uint2*)(c8 + off));
+                    const half4 h04 = half4(ink_f8_to_f32(b8.x), ink_f8_to_f32(b8.x >> 8),
+                                           ink_f8_to_f32(b8.x >> 16), ink_f8_to_f32(b8.x >> 24));
+                    const half4 h15 = half4(ink_f8_to_f32(b8.y), ink_f8_to_f32(b8.y >> 8),
+                                           ink_f8_to_f32(b8.y >> 16), ink_f8_to_f32(b8.y >> 24));
+                    kv = uint4(as_type<uint2>(h04), as_type<uint2>(h15));
+                } else {
+                    kv = *((device const uint4*)(k_cache + off));
+                }
             }
             *((threadgroup uint4*)(sKV + kr * 128u + kc)) = kv;
         }
@@ -1017,7 +1036,17 @@ kernel void ink_mpp_relpos_gqa_pf(
             if (kpos < k_max) {
                 const int kidx = A.is_swa ? (kpos & 1023) : kpos;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + vc;
-                vv = *((device const uint4*)(v_cache + off));
+                if (A.kv_fp8) {
+                    const device const uchar* c8 = (device const uchar*)v_cache;
+                    const uint2 b8 = *((const device uint2*)(c8 + off));
+                    const half4 h04 = half4(ink_f8_to_f32(b8.x), ink_f8_to_f32(b8.x >> 8),
+                                           ink_f8_to_f32(b8.x >> 16), ink_f8_to_f32(b8.x >> 24));
+                    const half4 h15 = half4(ink_f8_to_f32(b8.y), ink_f8_to_f32(b8.y >> 8),
+                                           ink_f8_to_f32(b8.y >> 16), ink_f8_to_f32(b8.y >> 24));
+                    vv = uint4(as_type<uint2>(h04), as_type<uint2>(h15));
+                } else {
+                    vv = *((device const uint4*)(v_cache + off));
+                }
             }
             *((threadgroup uint4*)(sKV + vr * 128u + vc)) = vv;
         }
