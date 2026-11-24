@@ -460,6 +460,49 @@ ADMIT_MAX_WAIT_S = _timeout_env("STRATA_ADMIT_MAX_WAIT_S", 30.0) or 0.0
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
+# #7060: ENGINE_READY_S (config "engine_ready_s", STRATA_ENGINE_READY_S) is how long a start may go WITHOUT A SIGN OF LIFE, not
+# how long it may take in all: a model read from a slow disk can need much longer than 15 minutes.  A sign of life is a new line in the
+# engine's log or more bytes read from disk by the engine process; each one moves the deadline to ENGINE_READY_S after it.  The whole
+# start ends at READY_CEILING_S (or four windows, whichever is longer) after it began, whatever it prints.
+READY_CEILING_S = 7200.0
+READY_POLL_S = 5.0
+
+
+class ReadyDeadline:
+    """The READY deadline of an engine start (#7060): `window_s` after the start, moved to `window_s` after the latest sign of life.
+    `probe()` returns a tuple of counters that only grow while the engine works (log size, bytes read); any one growing is a sign of life.
+    A probe that fails (psutil missing, the process gone) shows no sign: the deadline stays where it is, as before this existed."""
+
+    def __init__(self, window_s: float, probe, now=time.monotonic, ceiling_s: float = READY_CEILING_S):
+        self.window = float(window_s)
+        self.probe, self.now = probe, now
+        self.start = now()
+        self.deadline = self.start + self.window
+        self.hard = self.start + max(float(ceiling_s), 4.0 * self.window)
+        self.moved = False
+        self.seen = self._look()
+
+    def _look(self):
+        try:
+            return tuple(self.probe())
+        except Exception:  # noqa: BLE001 - a probe that cannot be read is no sign of life
+            return None
+
+    def left(self) -> float:
+        """Seconds until the deadline now (<= 0: it has passed), after looking for a sign of life."""
+        t = self.now()
+        cur = self._look()
+        if cur is not None:
+            if self.seen is not None and any(c > s for c, s in zip(cur, self.seen)):
+                later = min(t + self.window, self.hard)
+                if later > self.deadline:
+                    self.deadline, self.moved = later, True
+            self.seen = cur
+        return self.deadline - t
+
+    def elapsed(self) -> float:
+        return self.now() - self.start
+
 
 # A stalled peer must release the request turn; 0 preserves unbounded socket waits.
 PEER_STALL_S = _timeout_env("STRATA_PEER_STALL_S", 120.0)
@@ -844,15 +887,16 @@ class StrataEngine:
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
         threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True).start()
-        ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
+        ready_window = ENGINE_READY_S                    # (read once: a config's engine_ready_s is applied before this start)
+        ready_deadline = None if ready_window is None else ReadyDeadline(ready_window, self._ready_signs)
         timed_out = False
         while True:
-            left = None if ready_deadline is None else ready_deadline - time.monotonic()
+            left = None if ready_deadline is None else ready_deadline.left()
             if left is not None and left <= 0:
                 timed_out = True
                 break
             try:
-                line = ready_q.get(timeout=left)
+                line = ready_q.get(timeout=left if left is None or ready_window is None else min(left, READY_POLL_S))
             except queue.Empty:
                 continue
             if line is None:
@@ -926,8 +970,13 @@ class StrataEngine:
                 drafting.remember_note(drafting.DIDNT_START)
                 StrataEngine.__init__(self, exe, retry_args, cwd, log, env, lazy, cpus, 0, None, None)
                 return
-            why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
+            why = (f"the engine did not report READY within {ready_window:.0f} s" if timed_out else
                    "the engine exited before it was ready")
+            if timed_out:                               # #7060: the wait counts from the last sign of life (a new line in the log, a read from disk)
+                if ready_deadline.moved:
+                    why += f" of its last sign of life (it ran {ready_deadline.elapsed():.0f} s in all)"
+                why += ("; \"engine_ready_s\" in the run config (seconds, 0 = no limit) or STRATA_ENGINE_READY_S sets how long a "
+                        "start may stay without a sign of life")
             # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
             # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
             note = "" if timed_out else start_exit_note(proc.returncode, exe)
@@ -1186,6 +1235,22 @@ class StrataEngine:
         self.unloaded = True
 
     RESTART_RETRY_S = 15.0   # between the tries of restart(): a dying engine's VRAM may take a while to come back
+
+    def _ready_signs(self) -> tuple[int, int]:
+        """#7060: (size of the engine's log, bytes this engine process has read from disk): both only grow while a start works,
+        so a start that is slow but moving is not ended by the READY deadline.  A part that cannot be read counts as 0."""
+        size = read = 0
+        if self.log_path:
+            try:
+                size = os.path.getsize(self.log_path)
+            except OSError:
+                pass
+        try:
+            import psutil
+            read = psutil.Process(self.proc.pid).io_counters().read_bytes
+        except Exception:  # noqa: BLE001 - psutil missing, the process gone, no permission: the log alone
+            pass
+        return size, read
 
     @staticmethod
     def _ready_pump(proc, out: queue.Queue) -> None:
