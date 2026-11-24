@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 156 folders and 3 loose files, 2280 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 159 folders and 3 loose files, 2304 files in all.
 
 
 ## 2026-09
@@ -177,6 +177,9 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-15](2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-15/) | Community benchmark: Inkling-2-Mini SQ-15 on an RTX 4090 Laptop | 3 |
 | [2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-20](2026-11-24-community-rtx-4090-laptop-inkling-2-mini-sq-20/) | Community benchmark: Inkling-2-Mini SQ-20 on an RTX 4090 Laptop | 3 |
 | [2026-11-24-community-rtx-4090-laptop-qwen38-flash-next-iq3-xxs](2026-11-24-community-rtx-4090-laptop-qwen38-flash-next-iq3-xxs/) | Community benchmark: Qwen3.8-Flash-Next IQ3_XXS on an RTX 4090 Laptop | 3 |
+| [2026-11-24-standard-rtx-4090-laptop-gpu-12b2b815](2026-11-24-standard-rtx-4090-laptop-gpu-12b2b815/) | Strata standard benchmark: NVIDIA GeForce RTX 4090 Laptop GPU | 8 |
+| [2026-11-24-standard-rtx-4090-laptop-gpu-4e6a1123](2026-11-24-standard-rtx-4090-laptop-gpu-4e6a1123/) | Strata standard benchmark: NVIDIA GeForce RTX 4090 Laptop GPU | 8 |
+| [2026-11-24-standard-rtx-4090-laptop-gpu-d5220ae0](2026-11-24-standard-rtx-4090-laptop-gpu-d5220ae0/) | Strata standard benchmark: NVIDIA GeForce RTX 4090 Laptop GPU | 8 |
 
 ## Loose files
 

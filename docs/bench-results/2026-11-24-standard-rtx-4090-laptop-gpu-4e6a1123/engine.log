@@ -1,0 +1,5 @@
+[strata] 2026-11-24 17:26:09 engine started: /home/<user>/.local/share/strata/components/shapes/inkling2/engine/0.1.67-linux-x86_64-cuda-cuda13/strata-inkling --serve --native /home/<user>/models/models/inkling-2-mini/Inkling-2-Mini-SQ-10.strata --max-context 131072 --vram-experts-gb 8.60 --chunk 2048 --draft dspark --draft-beam 1 --draft-adapt
+[InkCUDA] expert codecs (gate_up/down code: count, mean MB): 2/2: 585, 2.18; 3/2: 1814, 2.85; 3/3: 658, 3.18; 15/15: 15, 4.48;
+[InkCUDA] Loaded /home/<user>/models/models/inkling-2-mini/Inkling-2-Mini-SQ-10.strata (SQ-10): trunk=1.87 GB (0.61s), experts=3072 VRAM / 0 host (2.68s, hyb=0, promo=0, pf_buf=0MB), sm120_tc=0, screen=1
+[InkCUDA] Auto Host KV Offload (kv_fmt=0, 5.03 GiB free VRAM): global KV = 76800 VRAM + 54272 mapped host tokens (1696.0 MiB host RAM, max_ctx=131072)
+[InkCUDA] memory: 5342 MiB free after load, runner+KV took 4872 MiB (max_batch=2048), DSpark took 144 MiB, 326 MiB free now

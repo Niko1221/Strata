@@ -20,6 +20,16 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-24: standard, RTX 4090 Laptop, Qwen3.8-Flash-Next IQ3_XXS](bench-results/2026-11-24-standard-rtx-4090-laptop-gpu-d5220ae0/README.md):
+  `strata bench run`, protocol `strata-qwen38-thinking-v1-draft.1`, status **complete**, sanity 12/12.
+  Custom track (Hermes NV16, DFlash2, context 131072). Engine timings: 4K prompt 1600.7 tok/s, 16K prompt 2817.8 tok/s,
+  decode 81.9 / 76.5 / 75.0 tok/s at short / 4K / 16K. Required suite 2 min 4 s after load.
+- [2026-11-24: standard, RTX 4090 Laptop, Inkling-2-Mini SQ-10](bench-results/2026-11-24-standard-rtx-4090-laptop-gpu-4e6a1123/README.md):
+  same protocol, status **nonconforming** (Inkling tokenizer counted the frozen prompts outside 2% of the Qwen targets; no model file hashed). Sanity 12/12.
+  Engine timings: 4K prompt 2602.6 tok/s, 16K prompt 2480.3 tok/s, decode 102.0 / 95.4 / 88.2 tok/s.
+- [2026-11-24: standard, RTX 4090 Laptop, Inkling-2-Mini SQ-15](bench-results/2026-11-24-standard-rtx-4090-laptop-gpu-12b2b815/README.md):
+  same protocol, status **nonconforming** for the same tokenizer and hash reasons. Sanity 12/12.
+  Engine timings: 4K prompt 2195.4 tok/s, 16K prompt 1942.3 tok/s, decode 85.2 / 75.9 / 20.2 tok/s.
 - [2026-11-24: RTX 4090 Laptop 16 GiB, Qwen3.8-Flash-Next IQ3_XXS](bench-results/2026-11-24-community-rtx-4090-laptop-qwen38-flash-next-iq3-xxs/README.md):
   Strata 0.1.67 CUDA 13, context 131072, KV int8, DFlash2. Client-derived rates, one model.
   Baseline short decode median 79.79 tok/s over six runs. A 121530-token prefill moved from
