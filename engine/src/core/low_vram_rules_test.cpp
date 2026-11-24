@@ -33,14 +33,17 @@ int main() {
     CHECK(low_vram_adapt_swaps(12, false, 1400, kTotal) == 12);    // never raises smaller value
     CHECK(low_vram_adapt_swaps(0, false, 1400, kTotal) == 0);
 
-    // 3. Zipf-head profile pinning on tiny caches (< 25% resident)
-    CHECK(low_vram_pin_slots(0, kTotal, nullptr) == 0);
-    CHECK(low_vram_pin_slots(1400, kTotal, nullptr) == 350);       // 25% of 1400
-    CHECK(low_vram_pin_slots(2560, kTotal, nullptr) == 640);       // 25% of 2560
-    CHECK(low_vram_pin_slots(7000, kTotal, nullptr) == 0);         // >= 25% resident: off by default
-    CHECK(low_vram_pin_slots(1400, kTotal, "0") == 0);             // explicit off
-    CHECK(low_vram_pin_slots(1400, kTotal, "0.5") == 700);         // explicit 50%
-    CHECK(low_vram_pin_slots(1400, kTotal, "0.99") == 1050);       // clamped to 75%
+    // 3. Zipf-head profile pinning on tiny caches (< 25% resident), low-VRAM cards only (<= 16 GiB)
+    CHECK(low_vram_pin_slots(0, kTotal, 12 * GiB, nullptr) == 0);
+    CHECK(low_vram_pin_slots(1400, kTotal, 8 * GiB, nullptr) == 350);       // 5.7% (8 GB RTX 3070)
+    CHECK(low_vram_pin_slots(2560, kTotal, 12 * GiB, nullptr) == 640);      // 10.4% (12 GB RTX 4070 Ti / 5070)
+    CHECK(low_vram_pin_slots(4500, kTotal, 16 * GiB, nullptr) == 1125);     // 18.3% (16 GB)
+    CHECK(low_vram_pin_slots(5000, kTotal, 24 * GiB, nullptr) == 0);        // 20.3% on a 24 GB card: off (fights #4870; 4090 UD-Q4_K_XL lost 4.5% decode)
+    CHECK(low_vram_pin_slots(1400, kTotal, 0, nullptr) == 350);             // unknown VRAM: the old fraction-only rule
+    CHECK(low_vram_pin_slots(7000, kTotal, 12 * GiB, nullptr) == 0);        // >= 25% resident: off by default
+    CHECK(low_vram_pin_slots(1400, kTotal, 12 * GiB, "0") == 0);            // explicit off
+    CHECK(low_vram_pin_slots(1400, kTotal, 12 * GiB, "0.5") == 700);        // explicit 50%
+    CHECK(low_vram_pin_slots(1400, kTotal, 12 * GiB, "0.99") == 1050);      // clamped to 75%
 
     // 4. Auto STRATA_L3_PF=1 (<= 13 GiB, > 50% host experts, >= 8 workers)
     CHECK(l3_pf_auto_default(nullptr, 12 * GiB, 2560, kTotal, 9));       // 12 GB + 9 workers: ON

@@ -14882,7 +14882,10 @@ int main(int argc, char** argv) {
         }
         std::vector<uint8_t> pinned_pair;
         if (!profile.empty() && !host_res.empty() && live_gpu_slots > 0 && !all_experts_resident) {
-            const int64_t pin_n = strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs, std::getenv("STRATA_CACHE_PIN_FRAC"));
+            size_t fb_pin = 0, tb_pin = 0;
+            if (cudaMemGetInfo(&fb_pin, &tb_pin) != cudaSuccess) { (void) cudaGetLastError(); tb_pin = 0; }
+            const int64_t pin_n = strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs,
+                                                                   (uint64_t) tb_pin, std::getenv("STRATA_CACHE_PIN_FRAC"));
             if (pin_n > 0) {
                 pinned_pair.assign((size_t) total_expert_pairs, 0);
                 int64_t pinned_ct = 0;
