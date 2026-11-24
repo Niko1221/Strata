@@ -3,9 +3,6 @@
 This page is for people with an Apple Silicon Mac (M1 or newer). Strata runs there on its own Metal engine: the NVIDIA kernels
 are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. Intel Macs cannot run it.
 
-DeepSeek V4.1-Flash runs on a Mac with 64 GB of memory or more, as text only: [DEEPSEEK_MAC.md](DEEPSEEK_MAC.md). It has its
-own engine, separate from the Qwen one described on this page.
-
 > **On this page:** [What you need](#what-you-need) · [Install](#install) · [Defaults](#defaults-and-options) ·
 > [Gyro](#gyro-s-and-gyro-m-agentionais-trellis-experts) · [Measured](#measured-m5-max-128-gb) · [Limits](#limits-this-version) ·
 > [Switches](#switches) · [How it works](#how-it-works) · [History](#history--older-measurements)
@@ -17,7 +14,7 @@ There are two ways in:
 - **The Strata app (`.dmg`) and the Terminal (`strata launch`).** The Metal engine comes ready-made: the `.dmg` has it inside and
   the Terminal fetches it as an engine component. Nothing is built on your Mac and you need no Command Line Tools. If macOS says
   the app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal). How the builds are signed:
-  [packaging/mac/README.md](../packaging/mac/README.md).
+  [packaging/mac/README.md](../tools/packaging/mac/README.md).
 - **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
   (about 1 to 15 minutes).
 
@@ -38,13 +35,13 @@ Intel engines are unchanged.
 
 | Pack | The file the GPU maps | Needs about (with prompt buffers, KV, draft layer) | Recommended from |
 | --- | --- | --- | --- |
-| Q2_0 | 37.6 GB | 46 GB | 64 GB |
-| IQ3_XXS | 47.0 GB | 55 GB | 74 GB (where IQ3_S does not fit) |
-| IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
-| UD-Q4_K_XL (Unsloth; higher quality) | 82.6 GB | 91 GB | 128 GB |
+| Q2_0 | 37.6 GB | 50 GB | 96 GB; streams below that |
+| IQ3_XXS | 47.0 GB | 60 GB | 80 GB (where IQ3_S does not fit) |
+| IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 68 GB | 96 GB |
+| UD-Q4_K_XL (Unsloth; higher quality) | 82.6 GB | 95 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | streams from the SSD on 128 GB | 128 GB, streamed |
-| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that |
-| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that |
+| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the other 28.8 GB is the n-gram table) | 43 GB | 64 GB; streams below that |
+| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 76 GB | 128 GB; streams below that |
 
 - **The n-gram table.** Each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at
   a time and does not count against the memory above.
@@ -54,9 +51,11 @@ Intel engines are unchanged.
 - **Setup recommends and never forces.** It recommends the pack by memory. A bigger pack chosen with `--model` is kept, with a
   warning about what it risks.
 
-### A Mac whose memory cannot hold the pack (32 to 48 GB)
+### A Mac whose memory cannot hold the pack (32 to 64 GB)
 
-The engine streams the experts from the SSD. It decides this itself when the experts are more than 60% of Metal's share.
+The engine streams the experts from the SSD. It decides this itself: it streams when the model's weights plus 12 GiB for
+everything beside them (prompt buffers, conversation memory, the draft layer, macOS) do not fit Metal's share. Setup uses the same
+rule.
 
 - It keeps the most-used experts in an arena and reads the rest as each token needs them, with read-ahead for the next layer's
   likely experts. The arena is Metal's share, or the memory macOS reports as available less what it keeps for macOS (7 GB, or 15%
@@ -70,8 +69,8 @@ The engine streams the experts from the SSD. It decides this itself when the exp
   together, so the SSD reads an expert with one request. On the 32 GB M4 that is about 17% faster decoding and 30% faster prompts
   with the same tokens. Setup writes it only when the disk has room for it plus 10 GB, otherwise it warns, and it does not write
   it on a Mac with 96 GB or more.
-- Setup configures such a Mac without the draft layer (one token per step is faster there). A streaming Mac with 96 GB or more
-  keeps the draft layer and writes `--spec 3`.
+- Setup skips the MTP draft layer on such a Mac. DFlash2 is still available for compatible packs. If neither drafter is
+  available, the model generates one token per step. A streaming Mac with 96 GB or more keeps the MTP layer and writes `--spec 3`.
 - Prompts stream in chunks of 4096 on a streaming Mac with 96 GB or more, and 1024 on a smaller one. `STRATA_METAL_PROMPT_CHUNK=N`
   sets it.
 - The model's file must be on the internal SSD. An external disk is untested and likely much slower.
@@ -92,11 +91,16 @@ What the first run does (each step is skipped when it is already done):
    Python 3.12 (25 MB, pinned by SHA-256) into `.python`. No sudo, no Homebrew.
 2. **Checks your Mac:** the chip, the memory, the macOS version, the Command Line Tools and the free disk.
 3. **Python packages** into `.venv`. CMake and Ninja come from pip too, installed just before the build.
-4. **Builds the engine** (`build-metal/strata`) with Apple's metal-cpp headers (pinned by SHA-256) and llama.cpp's ggml at the
-   commit the PC build pins.
+4. **Builds the engine** (`build-metal/strata`) with Apple's metal-cpp headers (pinned by SHA-256).
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
-6. **Prepares the model:** the pack (seconds) and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that
-   streams, the experts' copy takes the draft layer's place (about 3 minutes on the M4).
+6. **Prepares the model.** Setup makes the pack (seconds) and prepares the MTP draft layer where it fits (about 5 GB of the
+   original checkpoint). A streaming Mac below 96 GB skips MTP and makes the experts' copy (about 3 minutes on the M4).
+   Auto also fetches DFlash2 for compatible Qwen3.8-Flash-Next packs. Q2_0 and IQ3_XXS get the stock drafter (1.2 GB).
+   UD-Q4_K_XL and UD-IQ4_XS-v31 prefer the tuned drafter (0.34 GB from Strata's signed update feed) and can use the stock drafter
+   if the tuned one is unavailable. The tuned drafter uses `--spec 6` and `--draft-conf 0.7`. It is based on
+   incoai/Qwen3.8-Flash-Next-DFlash2 and licensed under Apache-2.0. IQ3_S selects MTP.
+   If DFlash2 is missing, the server uses MTP when it is available. `./setup.sh --setup` can fetch the drafter later.
+   [DFlash2 license notice](../terminal/data/dflash2-tuned/NOTICE.md)
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
 After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC: the OpenAI-compatible
@@ -117,9 +121,9 @@ API on `http://127.0.0.1:8080/v1`, the Anthropic API on `/v1/messages`, and the 
 The app and `strata launch` build nothing. The Metal engine comes ready-made as an engine component, from the update feed or
 inside the app's installer. The model install is `setup.py` in its Control mode (`STRATA_CONTROL_INSTALL=1`). It downloads, or
 uses with `--gguf-dir`, and prepares the model files, and writes a run config whose engine is `component:strata-engine`. It does
-not run `metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags.
+not run `engine/metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags.
 
-The model list and the recommendation judge a Mac by its unified memory with the rules of `strata_control/mac_fit.py`, the module
+The model list and the recommendation judge a Mac by its unified memory with the rules of `terminal/strata_control/mac_fit.py`, the module
 `setup_mac.py` uses too. Q2_0, IQ3_XXS, IQ3_S and the Gyro packs are offered. Unsloth's many-shard files need the source
 installer's repack for now. A pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified
 memory is told the model does not fit.
@@ -136,15 +140,23 @@ JSON +9.3%, agent turn +12.5%; the other sets are not measured),
 and the Q8_0 hyper-connection read. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read. The Mac engine is
 deterministic: two runs give identical numbers.
 
+### Longer context (`--rope-scaling`)
+
+`--rope-scaling linear|yarn` with `--rope-scale`, `--rope-freq-scale` and the `--yarn-*` options changes the RoPE table of the
+attention, as on a PC. Flash-Next is trained to 262,144 tokens: `--context 524288 --rope-scaling yarn --rope-scale 2` gives it
+512K. The table keeps the model file's frequency base, and the engine logs the table it built (`rope scaling yarn in the window
+table: ...`). Without `--rope-scaling` the table is the original one, bit for bit. The DFlash2 drafter keeps its own unscaled
+table: it only proposes tokens, so the scaling changes how many it gets accepted, not the output.
+
 ### Gyro-S and Gyro-M (agentionai's trellis experts)
 
 The Mac engine runs [Gyro](GYRO.md). The routed experts are trellis-coded blocks (ggml types TQ2_T, TQK6, TQK7) in a
-Hadamard-rotated basis, read from the published file unchanged. The kernels are in `metal/kernels/quant.metal`, `moe.metal` and
+Hadamard-rotated basis, read from the published file unchanged. The kernels are in `engine/metal/kernels/quant.metal`, `moe.metal` and
 `moe_mm.metal`. Setup offers Gyro-S and Gyro-M next to the other sizes (`./setup.sh --family gyro --model Gyro-S`), never as the
 default, and says what the choice risks on your Mac's memory. The 28.8 GB n-gram table is inside the file and is read from the SSD
-like every other pack's, so Gyro-S needs 58.5 GB of disk and about 38 GB of memory to stay resident.
+like every other pack's, so Gyro-S needs 58.5 GB of disk and about 43 GB of memory to stay resident.
 
-Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac tested here could hold it. `metal/tests/gyro_parity.sh`
+Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac tested here could hold it. `engine/metal/tests/gyro_parity.sh`
 checks the decoder against the format definition and the expert kernels against a double-precision reference.
 `STRATA_METAL_GYRO_TILES=0` turns off the dense-weight tiles.
 
@@ -209,6 +221,9 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
 
 ## Limits (this version)
 
+The first request after a model loads also waits once while the engine builds its prompt kernels. On one M2 Ultra (a user's report,
+#5369) the first word came after about 20 seconds, 9.2 s of it for the kernels; later requests started in under a second.
+
 - **Images (vision):** on by default. The app and the Terminal use the `strata-vision` that sits beside `strata` in the engine
   package; `./setup.sh` builds it and asks "Should the model also read images?" (default yes). With `--gpu` it reads on the Mac's
   GPU (ggml's Metal backend), without it on the CPU. A Mac always gets the GPU reader, whatever its memory. The footprint is about
@@ -255,7 +270,6 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
 | `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |
 | `STRATA_METAL_FUSE=0`, `STRATA_METAL_LAZY_FOLD=0` | Turn off two decode fusions (same tokens, slower) |
-| `STRATA_METAL_PARTIAL=1`, `STRATA_METAL_ROUTE=1` | Two decode variants that measured no faster. `ROUTE` is also wrong on an M1 Max (stale routing logits) |
 | `STRATA_METAL_PROMPT_EXPERTS=v3` | The M5 layout for the prompt's expert GEMMs. Fails on an M1 Max, so it is off there (default v2) |
 | `STRATA_METAL_STREAM=1` / `=0` | Stream the experts from the SSD even when the pack fits / never (the default decides by size) |
 | `STRATA_METAL_CONTIG=0` | Streaming: read the model file even when the experts' copy is there |
@@ -266,13 +280,25 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2 to 3 GB) |
 | `STRATA_METAL_F16=1` / `=0` | Decode windows of a resident model: the GEMVs of Q2_0, Q3_K-Q6_K and IQ4_XS and the Q2_0 routed experts in fp16. On in the config setup writes for a resident IQ3_S or Q2_0 pack (M5 Max: decode +9 to +15%, top-1 96-97% and mean KL 0.009-0.016 against fp32; the 61-task quality suite passes the same tasks as with it off); `=0` in the config's `env` turns it off. Other sets: off unless set. M1 Max: a 2-token window's GPU time 56-60 -> 40-41 ms, mean KL 0.009 against fp32 |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
+| `STRATA_MACOS_SENSORS=1` | The Monitor's GPU temperature and power without root (see below) |
+
+### Temperature and power in the Monitor
+
+Without a switch the Monitor shows no GPU temperature or power on a Mac: reading them takes root (`powermetrics`).
+`STRATA_MACOS_SENSORS=1` reads them without root, the way the Stats app does: the temperature from the SMC (or the HID
+sensors), the power from IOReport's energy counter. These are macOS's private calls, which Apple does not document and
+can change in any release. A call that goes wrong inside them can stop the server, which is why this is off by default.
+The SMC's temperature keys differ between chips, so the list of keys is a table by chip (M1 to M6 and the A18 Pro,
+with the M4's base chip and its Pro and Max apart). It is copied from the Stats app's own table (commit `032f4a5e4`);
+only the M5 has been run, on an M5 Pro, and its idle readings were also checked on an M5 Max. On another chip a key that is missing is skipped, and a chip with no keys, or none
+that answer, shows the GPU temperature from the HID sensors where it has them, and none where it does not.
 
 ## How it works
 
-The code is in `metal/` (the engine's side in `metal/src/engine`, the kernels in `metal/kernels`).
+The code is in `metal/` (the engine's side in `engine/metal/src/engine`, the kernels in `engine/metal/kernels`).
 
-- **Host code:** the PC host code compiles unchanged for macOS. `metal/include/metal_compat` maps the CUDA runtime calls it makes
-  onto a small Metal runtime (`metal/src/gpu`).
+- **Host code:** the PC host code compiles unchanged for macOS. `engine/metal/include/metal_compat` maps the CUDA runtime calls it makes
+  onto a small Metal runtime (`engine/metal/src/gpu`).
 - **Decode and prompt work** run in Metal kernels: one command buffer per verify window, experts read in place from the mapped
   model file, hyper-connections, GDN state and QSA attention on the GPU, and a whole MTP draft round in one command buffer.
 - **The PC builds are byte-identical** with this code present. Every shared file's change is behind `STRATA_GPU_METAL` or `__APPLE__`.
@@ -315,7 +341,7 @@ so resident packs are limited to 70% of the RAM.
 (ten experts, one token) takes 278 us at 37.5 GB/s; IQ3_XXS takes 333 us and Q2_0 166 us. The trellis decode is limited by latency
 and ALU, not by memory. The prompt kernels run 68 ms a layer against 62 ms for IQ3_XXS at 1,024 tokens.
 
-**Quality against the CUDA engine, Gyro-S file.** `tools/quant_quality.py`, teacher-forced over 4,995 positions, CUDA = RTX 3060.
+**Quality against the CUDA engine, Gyro-S file.** `terminal/tools/quant_quality.py`, teacher-forced over 4,995 positions, CUDA = RTX 3060.
 
 | Reference -> run | top-1 agreement | mean KL | KL p99 | perplexity |
 | --- | --- | --- | --- | --- |

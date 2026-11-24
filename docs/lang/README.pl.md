@@ -1,0 +1,226 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../app/host/public/brand/strata-lockup-dark.svg">
+    <img src="../../app/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+  </picture>
+</p>
+
+<h3 align="center">Uruchom potężną sztuczną inteligencję na własnym komputerze.</h3>
+<p align="center">Rozmawiaj, programuj i pracuj z obrazami — lokalnie.</p>
+
+<p align="center">
+  <a href="#modele">Modele</a> · <a href="#instalacja"><b>Instalacja</b></a> ·
+  <a href="#sprzęt">Sprzęt</a> · <a href="#narzędzia">Narzędzia</a> ·
+  <a href="#pomoc">Pomoc</a> · <a href="#wesprzyj-stratę">Wsparcie</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Pobierz Stratę"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="Licencja MIT"></a>
+  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="Wesprzyj Stratę na GitHub Sponsors"></a>
+  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Wesprzyj Stratę na Buy Me a Coffee"></a>
+</p>
+
+<p align="center"><sub><a href="../../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <b>Polski</b></sub></p>
+
+**Bezpłatna, z otwartym kodem źródłowym i do uruchomienia u siebie.** Używaj Straty na swoim komputerze albo razem z ulubionymi narzędziami do programowania. Konto nie jest potrzebne.
+
+## Modele
+
+Najpierw polecamy **ISTA-DASLab**, potem **Unsloth** i innych dostawców — o ile zgodny model mieści się w pamięci.
+
+<details>
+<summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
+
+| Dostawca | Do wyboru |
+| --- | --- |
+| **ISTA-DASLab · polecany** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](../MODELS.md#coder) do programowania. |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
+| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Zużywa mniej pamięci, ale działa wolniej. |
+| **Inne opcje** | [Swift 1.5](../MODELS.md#swift-15), [NVFP4](../NVFP4.md), [OrcaRouter](../ORCA.md) |
+
+[Porównaj rozmiary, wymagania pamięciowe i zgodność](../MODELS.md).
+
+</details>
+
+<details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pakiet | Twój RAM | Karta graficzna |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 lub 16 GiB |
+| **SQ-96** | 96 GiB | 8 lub 12 GiB |
+| **SQ-128** | 128 GiB | 8 lub 12 GiB |
+
+Liczba w nazwie oznacza ilość pamięci RAM, dla której przygotowano pakiet.
+
+[Pakiety Hy4-Flash na Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
+<summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
+
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. To obecnie udokumentowane pakiety dla tego modelu.
+
+[Przewodnik po modelu i zgodność](../QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Dostawca | Do wyboru |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 jest przeznaczony dla karty graficznej 24 GiB, SQ-15 dla 16 GiB, a SQ-10 dla 12 GiB. Na start wystarczy już karta 4 GiB.
+
+[Pakiety Strata na Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Pliki GGUF Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
+
+</details>
+
+<a id="the-other-sizes"></a>
+
+Nie wiesz, co się zmieści? [Wybierz model do swojego komputera](../MODELS.md#pick-by-memory).
+
+## Instalacja
+
+<a id="option-a-the-strata-app"></a>
+
+### Aplikacja na komputer
+
+**[Pobierz Stratę dla Windows, Linuxa lub Maca →](https://github.com/Niko1221/Strata/releases/latest)**
+
+Zainstaluj aplikację, wybierz model i zacznij rozmawiać. Dla każdego systemu jest jeden instalator. Przy pierwszym
+uruchomieniu aplikacja pobiera silnik dla twojej karty graficznej. [Pomoc z instalatorem](../INSTALL.md#the-app).
+
+<sub>Pliki: `Strata-0.2.21-windows-x64-setup.exe` · `Strata-0.2.21-linux-x86_64.AppImage` · `Strata-0.2.21-macos-arm64.dmg`</sub>
+
+<p align="center">
+  <img src="../media/app-chat.png" width="900" alt="Aplikacja Strata na komputer: czat i podgląd kodu na żywo obok siebie">
+  <br><sub>Czat, pliki i podgląd na żywo w jednym oknie.</sub>
+</p>
+
+<a id="option-b-the-terminal-one-line"></a>
+
+### Aplikacja Terminal
+
+Wolisz terminal? Zainstaluj Stratę, a potem uruchom **`strata launch`**.
+
+<details open>
+<summary><b>Polecenia instalacji</b></summary>
+
+**Linux / Mac**
+
+```sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+
+**Windows PowerShell**
+
+```powershell
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+```
+
+W Windows otwórz potem nowe okno terminala. Następnie:
+
+```sh
+strata launch
+```
+
+Postępuj zgodnie z podpowiedziami, aby pobrać i uruchomić model. [Przewodnik po Terminalu](../TERMINAL_LAUNCH.md).
+
+</details>
+
+<p align="center">
+  <img src="../media/terminal-monitor.png" width="900" alt="Aplikacja Terminal Straty pokazująca aktywność modelu, szybkość, pamięć i ostatnie zapytania">
+  <br><sub>Obserwuj model i sprzęt w trakcie pracy.</sub>
+</p>
+
+<a id="build-from-source"></a>
+
+[Budowanie ze źródeł](../SOURCE_INSTALL.md) · [Docker](../DOCKER.md) · [Pełny przewodnik instalacji](../INSTALL.md)
+
+<a id="what-you-need"></a>
+
+## Sprzęt
+
+| Obsługiwany sprzęt | Przewodnik |
+| --- | --- |
+| **NVIDIA GeForce RTX serii 20 / 30 / 40 / 50** | [Konfiguracja NVIDIA](../INSTALL.md#what-you-need) |
+| **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [Konfiguracja AMD](../AMD_HIP.md) |
+| **AMD Radeon RX 6800 / 6900 · eksperymentalnie** | [Konfiguracja RX 6000](../AMD_HIP.md#rdna2-gfx1030) |
+| **Intel Arc · Linux** | [Konfiguracja Intel](../INTEL_ARC.md) |
+| **Apple Silicon · M1 lub nowszy** | [Konfiguracja Mac](../MAC.md) |
+| **AMD Ryzen AI Max · Strix Halo** | [Konfiguracja Strix Halo](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [Konfiguracja DGX Spark](../DGX_SPARK_LINUX.md) |
+
+<a id="using-it"></a>
+
+## Narzędzia
+
+**Claude Code · Codex CLI · OpenCode · oh-my-pi · pi.dev · Hermes Agent · OpenClaw** i inne — przez API zgodne z OpenAI i Anthropic.
+
+Uruchom **`strata connect`**, aby zobaczyć instrukcję konfiguracji dla swojego narzędzia. [Przewodnik po połączeniach](../TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
+
+<a id="guides"></a>
+<a id="how-fast-is-it"></a>
+<a id="how-does-it-work"></a>
+<a id="something-went-wrong"></a>
+
+## Pomoc
+
+[Wszystkie przewodniki](..) · [Rozwiązywanie problemów](../TROUBLESHOOTING.md) · [Zgłoś błąd](https://github.com/Niko1221/Strata/issues/new/choose) ·
+[Testy wydajności](../COMMUNITY_BENCHMARKS.md) · [Jak to działa](../HOW_IT_WORKS.md) · [Współtworzenie](../../.github/CONTRIBUTING.md)
+
+## Sponsorzy Straty
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/linger-logo-white.svg"><img src="../media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
+
+## Wesprzyj Stratę
+
+**Pomóż zachować lokalną sztuczną inteligencję otwartą dla wszystkich.** Sponsoring na GitHubie lub kawa pomaga finansować rozwój i testy na większej liczbie sprzętu.
+
+<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: wesprzyj Stratę" height="48"></a>
+<a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: wesprzyj Stratę" height="48"></a>
+
+### Wierni wspierający
+
+Dziękujemy wszystkim, którzy wspierają Stratę.
+
+<!-- supporters:start (generated from the public GitHub sponsors: one row per level, the biggest supporters first and largest; private sponsors are not listed) -->
+<a href="https://github.com/codeconduit-official"><img src="https://images.weserv.nl/?url=github.com/codeconduit-official.png&w=240&h=240&fit=cover&mask=circle&output=png" width="120" height="120" alt="codeconduit-official" title="codeconduit-official"></a>
+
+<a href="https://github.com/kod88vn"><img src="https://images.weserv.nl/?url=github.com/kod88vn.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/router0mail"><img src="https://images.weserv.nl/?url=github.com/router0mail.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="router0mail" title="router0mail"></a>
+<a href="https://github.com/kingdonb"><img src="https://images.weserv.nl/?url=github.com/kingdonb.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="kingdonb" title="kingdonb"></a>
+<a href="https://github.com/Daisame"><img src="https://images.weserv.nl/?url=github.com/Daisame.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="Daisame" title="Daisame"></a>
+
+<a href="https://github.com/ryan4yin"><img src="https://images.weserv.nl/?url=github.com/ryan4yin.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://images.weserv.nl/?url=github.com/themactep.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://images.weserv.nl/?url=github.com/macintog.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://images.weserv.nl/?url=github.com/bisonbet.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://images.weserv.nl/?url=github.com/vizv.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="vizv" title="vizv"></a>
+<a href="https://github.com/seoulworker"><img src="https://images.weserv.nl/?url=github.com/seoulworker.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jaceknoga"><img src="https://images.weserv.nl/?url=github.com/jaceknoga.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="jaceknoga" title="jaceknoga"></a>
+<a href="https://github.com/jackyini"><img src="https://images.weserv.nl/?url=github.com/jackyini.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/moruku36"><img src="https://images.weserv.nl/?url=github.com/moruku36.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="moruku36" title="moruku36"></a>
+<a href="https://github.com/hrkgk"><img src="https://images.weserv.nl/?url=github.com/hrkgk.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="hrkgk" title="hrkgk"></a>
+<!-- supporters:end -->
+
+Wszyscy wspierający i jak wesprzeć Stratę: [SUPPORTERS.md](../../SUPPORTERS.md)
+
+[Licencja MIT](../../LICENSE) · [Podziękowania i licencje modeli](../HOW_IT_WORKS.md#credits) · [Prywatność](../SAFETY.md)
+
+<a id="option-c-let-your-ai-set-it-up"></a>
+
+<sub>Dla narzędzi AI i automatycznych czytników: <a href="../../AGENTS.md">dokumentacja techniczna</a> · <a href="../AI_SETUP.md">instrukcja instalacji</a>.</sub>
+
+**Sponsoring, partnerstwa sprzętowe i współpraca:** [niko.veit@outlook.com](mailto:niko.veit@outlook.com).

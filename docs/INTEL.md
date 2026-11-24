@@ -5,10 +5,10 @@ port. For the released Linux engine package, start with [INTEL_ARC.md](INTEL_ARC
 
 Strata's engine is CUDA. On an Intel Arc it runs as Strata's own engine ported to SYCL (`sycl/`), behind the same server:
 OpenAI and Anthropic APIs, streaming, tool calls, MCP and the web app are unchanged. Everything Intel-specific lives in `sycl/`;
-no shared upstream file is changed. `sycl/setup_intel.py` and `sycl/serve/server_intel.py` wrap upstream's `setup.py` and
-`serve/server.py` from outside. llama.cpp's SYCL backend runs the same GGUF at about a third of the speed.
+no shared upstream file is changed. `engine/sycl/setup_intel.py` and `engine/sycl/serve/server_intel.py` wrap upstream's `setup.py` and
+`terminal/serve/server.py` from outside. llama.cpp's SYCL backend runs the same GGUF at about a third of the speed.
 
-DeepSeek V4.1-Flash does not run on Intel. Pictures are on by default ([below](#pictures-on-an-arc)).
+Pictures are on by default ([below](#pictures-on-an-arc)).
 
 ## Quick start
 
@@ -19,24 +19,24 @@ On Ubuntu 24.04 or newer, with Intel's GPU driver installed (`ls /dev/dri` shows
 sudo apt install docker.io git
 sudo usermod -aG docker,render $USER     # log out and in; `docker ps` must work without sudo
 cd Strata
-docker build --pull -t strata-sycl-dev sycl/tools                 # once, about 6 minutes, 13 GB
+docker build --pull -t strata-sycl-dev engine/sycl/tools                 # once, about 6 minutes, 13 GB
 # build the engine: see "How to build it", then
 ./setup.sh --backend sycl [setup's options, e.g. --model IQ3_S --context 32768 --port 8085]
 ```
 
-`setup.sh` makes its own Python environment in `.venv`. Do not run `python3 sycl/setup_intel.py` yourself: Ubuntu's system
+`setup.sh` makes its own Python environment in `.venv`. Do not run `python3 engine/sycl/setup_intel.py` yourself: Ubuntu's system
 Python refuses it (`externally-managed-environment`). `./setup.sh --backend sycl` is the one command for the first install and
 every later start. Then `run-<model>.sh` starts the model; the first start of a 30 GB model takes about two minutes.
 
 ## Setup
 
-`sycl/setup_intel.py` imports upstream's `setup.py` and replaces the Intel steps. The model choice, download, pack, tokenizer,
+`engine/sycl/setup_intel.py` imports upstream's `setup.py` and replaces the Intel steps. The model choice, download, pack, tokenizer,
 MTP draft layer and the context and KV questions are setup's own.
 
 | Part | What changes on an Arc |
 | --- | --- |
 | GPU check | The Arc is found in sysfs (vendor 8086 under `xe` or `i915`) and offered through setup's AMD path (it builds locally and has no images). |
-| Engine | Uses the SYCL build (`build-sycl-aot/strata` or `build-sycl/strata`, run in the `strata-sycl-dev` image by `sycl/serve/strata-sycl.sh`). |
+| Engine | Uses the SYCL build (`build-sycl-aot/strata` or `build-sycl/strata`, run in the `strata-sycl-dev` image by `engine/sycl/serve/strata-sycl.sh`). |
 | RAM rule | Does not apply on an `xe` card: the port streams the experts from the GGUF into VRAM (`--stream-experts`), so RAM only decides KV streaming. `--check` lists what fits by VRAM. |
 | Config | Container paths and `"backend": "sycl"`. VRAM reserve 1,024 MiB up to 32K context and 2,048 MiB above, 300 MiB on a card under 12 GB. A `--vram-reserve-mib N` you give is kept. KV streaming (`--kv-resident 32768`) is on from 64K when the RAM holds the KV. |
 | Fit rule | A model that does not fit the card at the default context gets a context down the ladder 32K, 16K, 8K, a smaller prompt chunk and a lower reserve until it does. Setup prints one plain line per change. |
@@ -58,7 +58,7 @@ llama.cpp SYCL image), so the PC needs no oneAPI. From the checkout (the folder 
 
 ```sh
 cd Strata
-docker build --pull -t strata-sycl-dev sycl/tools     # once: about 6 minutes, a 13 GB image
+docker build --pull -t strata-sycl-dev engine/sycl/tools     # once: about 6 minutes, a 13 GB image
 H=$(basename "$PWD")
 ```
 
@@ -67,7 +67,7 @@ Ahead-of-time code, no compile at the first start:
 
 ```sh
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e AOT=bmg-g31 -e REPO=/work/$H \
-    -e BUILD_DIR=/work/$H/build-sycl-aot strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+    -e BUILD_DIR=/work/$H/build-sycl-aot strata-sycl-dev "cd /work/$H && bash engine/sycl/tools/build.sh strata"
 ```
 
 **Arc A-series** (Alchemist: A750, A770, A580, A380): no `AOT=`. The code is compiled from SPIR-V at the first start (JIT, about
@@ -75,11 +75,11 @@ a minute). Nobody has run an AOT build for these cards.
 
 ```sh
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
-    -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+    -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash engine/sycl/tools/build.sh strata"
 ```
 
 The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. Setup finds `build-sycl-aot/strata` or
-`build-sycl/strata`. Run the `docker build` again after pulling an update that changes `sycl/tools/Dockerfile`, and the
+`build-sycl/strata`. Run the `docker build` again after pulling an update that changes `engine/sycl/tools/Dockerfile`, and the
 `docker run` after every engine update (setup says when the engine is older than it needs).
 
 | `build.sh` variable | Effect |
@@ -101,7 +101,7 @@ A greedy test run, inside the `strata-sycl-dev` image, AOT build in `build-sycl-
 ```sh
 STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1 \
 build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
-    --expert-profile data/expert-profile-coder.bin --expert-cache auto --stream-experts \
+    --expert-profile terminal/data/expert-profile-coder.bin --expert-cache auto --stream-experts \
     --prefill auto --spec 4 --spec-min-p 0.5 --max-context 8192 --tokens <ids> --max-new 64 --greedy
 ```
 
@@ -115,13 +115,13 @@ build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
 With `--tokens-file` instead of `--tokens` for long prompts (80K ids exceed Linux's single-argument limit). With a native pack
 `--prefill-until N` skips the token loop, so compare output tokens between paths, never only timings.
 
-Serve the port with `serve/server.py --engine strata` and `sycl/serve/strata-sycl.sh` as the `exe`, which starts the binary inside
+Serve the port with `terminal/serve/server.py --engine strata` and `engine/sycl/serve/strata-sycl.sh` as the `exe`, which starts the binary inside
 the oneAPI runtime image with the serve pipes attached. Paths in the config's `args` are the container's. A config:
 
 ```json
 {"engine": "strata", "exe": "<repo>/sycl/serve/strata-sycl.sh",
  "args": ["--pack", "/work/pack", "--native", "<shard 1>", "--ple-gguf", "<shard 2>",
-          "--expert-profile", "data/expert-profile-coder.bin", "--expert-cache", "auto", "--stream-experts",
+          "--expert-profile", "terminal/data/expert-profile-coder.bin", "--expert-cache", "auto", "--stream-experts",
           "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/work/mtp/rt",
           "--max-context", "32768", "--kv", "int8", "--vram-reserve-mib", "1024"],
  "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.05}}
@@ -149,6 +149,13 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 - **Bounded spins.** A device spin that never sees its flag makes the `xe` driver time out the queue and reset the GT, and the
   card can stay wedged until a reboot. Every spin is capped. The cap is the build option `STRATA_SYCL_SPIN_MAX` (2,000,000
   reads, a few seconds, unless the build is an AOT build for a `bmg` card, which keeps 20,000).
+- **Root GPU monitoring and `preempt_timeout_us` (`xe`, #6445).** On Linux with the `xe` driver, querying the card as root
+  (for example `sudo xpu-smi` from a fan/temperature logger or dashboard) submits a render job that forces running compute
+  kernels to yield within `preempt_timeout_us` (default `640000`, 640 ms). If a long prefill or verify kernel cannot yield
+  in time, GuC resets the compute engine (`Engine reset: engine_class=ccs`) and Level Zero returns
+  `UR_RESULT_ERROR_DEVICE_LOST`. Run `xpu-smi` unprivileged (or stop root GPU polling while Strata is running), and
+  optionally raise the compute preemption timeout before starting the engine:
+  `echo 10000000 > /sys/class/drm/cardN/device/tile0/gt0/engines/ccs/preempt_timeout_us`.
 - **JIT builds** add `-ze-opt-greater-than-4GB-buffer-required` so kernels keep 64-bit addresses past 4 GiB into an allocation.
   oneMKL's own precompiled kernels do not get it; the GEMM stages an operand past 4 GiB (`STRATA_SYCL_GEMM_STAGE=1` forces
   that on Battlemage).
@@ -156,10 +163,16 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
   memory. Every allocation of 32 MiB or more goes through `strata::malloc_device_guarded`, which checks the range and allocates
   again behind a spacer until it is clean (a warning names each retry; under 0.5 s at startup; `STRATA_ARENA_ALIAS_CHECK=0`
   skips it). `STRATA_VERIFY_ALL_SLOTS=1` reads every filled cache slot back and compares it with the GGUF.
-- **Monitor tab.** `server_intel.py` plugs `sycl/serve/xe_telemetry.py` into the Monitor (temperature, power, PCIe link from
-  sysfs). Load and VRAM come from `/run/gpustat.json`, written by a small root sampler (`sycl/tools/gpustat.py`, installed with
-  `gpustat.service`), because `xe` reports them per client in `/proc/*/fdinfo`, which only root can read. A run config may name
-  a `model_switcher`; the web app's header then gets a Model menu.
+- **Monitor tab.** `server_intel.py` plugs the shared Intel reader (`terminal/serve/telemetry.py`) into the Monitor. Temperature, power and
+  the PCIe link come from sysfs. Load and VRAM work without root: load is the GPU busy time of the engine's own processes
+  (`/proc/<pid>/fdinfo`, readable by the user who started them), the VRAM total comes from Level Zero sysman (`libze_loader.so.1`),
+  and the VRAM in use from sysman on `xe` and from the engine's own fdinfo memory on `i915`. An Intel GPU built into the
+  processor (Level Zero's integrated flag) has no VRAM: its total is the RAM (`MemTotal`) and its use the fdinfo memory in
+  `gtt` and `system` of the GPU clients this user can see (on a laptop, the desktop's too). The server's free-memory checks (`min_free_vram_mib`, the room for a GPU picture reader) count
+  `MemAvailable` plus `GPUReclaim` from `/proc/meminfo` there. The root sampler
+  (`engine/sycl/tools/gpustat.py`, `gpustat.service`) is optional: when it runs, its `/run/gpustat.json` is used first, and it also sees
+  other users' processes. PCIe traffic needs Intel PMT, which is root-only unless the host grants it; without it the Monitor leaves
+  that reading empty. A run config may name a `model_switcher`; the web app's header then gets a Model menu.
 - **Logprobs.** `/v1/chat/completions` takes `"logprobs": true` and `"top_logprobs": 0..20` through `server_intel.py`, streamed
   or not. Not on `/v1/completions` or the Anthropic endpoint.
 
@@ -198,8 +211,13 @@ moves about 26 GB; bigger chunks read faster.
   cache holds every expert, else 0.
 - `STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM (`strata-sycl.sh` sets it). Without it the
   host/GPU handshake is not visible across the bus on `xe` and the logits turn NaN a few tokens in.
-- On `xe`, setup writes `data/expert-profile-sycl.bin`, a ranking built from the routing of 45 varied prompts, so the cache
-  holds the experts a chat, code or non-English prompt uses (`tools/make_profile_mix.py`, `tools/collect_profile_traces.py`).
+- **`STRATA_VERIFY_NO_HOST=1` and the host arena refuse each other (#4698).** With the switch on and no `--stream-experts`, the experts the
+  VRAM cache does not hold sit in an ordinary pageable RAM arena that the device plan cannot read, and nothing else answers for them: a
+  reply came out as `!` x 256 on an Arc Pro B70. The engine now stops at the start with `REFUSED: STRATA_VERIFY_NO_HOST=1 with the host
+  expert arena`. Use `--stream-experts`, or `STRATA_VERIFY_NO_HOST=0` on a card that runs the arena (an `i915` card). A cache that holds
+  every expert never reads the arena and is not refused.
+- On `xe`, setup writes `terminal/data/expert-profile-sycl.bin`, a ranking built from the routing of 45 varied prompts, so the cache
+  holds the experts a chat, code or non-English prompt uses (`terminal/tools/make_profile_mix.py`, `terminal/tools/collect_profile_traces.py`).
   An `i915` card keeps the shipped profile.
 - The prompt's expert copies run on the card's copy engine on Battlemage (`STRATA_COPY_ENGINE=1` forces it elsewhere, `=0`
   turns it off). The experts in the last 10% of the cache slots are also mirrored so that lent slots refill by DMA
@@ -222,8 +240,9 @@ moves about 26 GB; bigger chunks read faster.
 Draft length (200 tokens, `--spec-min-p 0.5`): `--spec 6` against `--spec 4` is +6.5% on code and -1.5% on prose, so the setup
 default (4, 0.5) stays. A `--prefill 8192` chunk is not bit-identical to 4096 (first-token KL 1.1e-2 at 16K, top-1 the same).
 
-**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture) the
-engine computes the prompt's routed experts with ESIMD kernels that decode the quantized weights in registers into the s8 DPAS B
+**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture; also
+an Xe3 GPU, see `STRATA_INTEL_GEN`) the engine computes the prompt's routed experts with ESIMD kernels that decode the
+quantized weights in registers into the s8 DPAS B
 operand and multiply them by q8_1 activations. Covered: gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0. Other formats keep
 the FP16 path, as does every other GPU. `STRATA_PREFILL_MMQ` unset is `auto`, which times both chains at the first layer of each
 format and takes int8 below the measured crossover (130-250 rows per expert); `=0` turns it off, `=1` forces it. Activations are
@@ -294,15 +313,38 @@ The Battlemage AOT build compiles with the trellis kernels and was not run.
 Decode is bound by the CPU pool and the PCIe link (10.4 GB/s), not by the card's kernels. `--prefill 1024` gave +13% decode and
 -24% prompt speed; the default stays `--prefill auto`.
 
+### Repeatable answers on an Alchemist card (Inkling 2 Mini)
+
+On an Arc A-series card (Alchemist, DG2: A380, A580, A750, A770), Intel's oneMKL matrix multiply, which the Inkling 2 Mini engine
+uses to read the prompt, gives last-bit differences between runs. Send the same prompt twice and the numbers behind the first answer
+token can differ in the last digits, so an answer can vary slightly from run to run. The model still answers correctly: first
+chats, a needle in a 32,000-token prompt and 9 parallel requests were right on an A750.
+
+For results that repeat, turn the XMX matrix path off:
+
+```sh
+STRATA_SYCL_NO_XMX=1        # the older name INK_SYCL_NO_XMX=1 works too
+```
+
+The price is prompt-reading speed: about 60% of it (45 tokens a second down to 17 on an A750 with Inkling-2-Mini UD-IQ1_S, four
+alternating runs, spread 0.1). Reading the answer out (decode) is unchanged at 2.1 tokens a second. The default stays XMX on, because
+most people want the speed.
+
+The Arc Pro B70 (Battlemage) repeats with XMX on: five runs of the same 64-token prompt gave one result with UD-Q4_K_XL and with SQ-20.
+AMD and Apple Metal repeat too.
+
+Also on an 8 GB card: the engine plans the memory for the `--parallel` and `--max-context` you ask for before it allocates, and if they
+do not fit it stops at start and names the largest `--parallel` that does (an A750 with UD-IQ1_S at 4,096 tokens: 9, not 32).
+
 ## Pictures on an Arc
 
 <a id="pictures-on-an-arc-2026-10-19-branch-f-021-arcvis"></a>
 Pictures follow the rule of every other card ([MODELS.md](MODELS.md#the-versions)): the picture reader runs on the CPU under 24 GB
-of VRAM and on the card from 24 GB. `strata_control/vision_reader.py` is the one place for that rule. On an Arc, pictures are on by
+of VRAM and on the card from 24 GB. `terminal/strata_control/vision_reader.py` is the one place for that rule. On an Arc, pictures are on by
 default with the CPU reader, a B-series card included. An Arc of 24 GB or more also keeps the CPU reader; `--vision gpu` asks for
 the GPU reader.
 
-- **CPU reader:** `strata-vision` (llama.cpp's mtmd). Setup compiles it into `engine-sycl/`, the server runs it on the host, and
+- **CPU reader:** `strata-vision` (Strata's own reader). Setup compiles it into `engine-sycl/`, the server runs it on the host, and
   the engine in the container reads the embeddings from the host's `/dev/shm`, which `strata-sycl.sh` shares
   (`STRATA_SYCL_SHM=0` keeps a private one).
 - **SYCL reader:** `strata-vision-sycl`, the same program on llama.cpp's SYCL backend. `setup --backend sycl --vision gpu`
@@ -328,18 +370,20 @@ and text requests after the pictures all answered, with no GPU fault in the kern
 
 ## The SYCL port (`sycl/`)
 
-**Layout.** `sycl/src` and `sycl/include` mirror the tree and hold only the files the port changes; `sycl/CMakeLists.txt` takes every
+**Layout.** `engine/sycl/src` and `engine/sycl/include` mirror the tree and hold only the files the port changes; `engine/sycl/CMakeLists.txt` takes every
 other source from the original location. `sycl/include/dpct/` is the vendored SYCLomatic helper library.
+
+**Battlemage GDN prefill.** On Level Zero Battlemage, the 128-wide GDN recurrence with 16 key heads and 48 value heads pairs successive inputs from 128 tokens. From 512 rows, eligible GDN layers also share projection weights across four tokens, fuse convolution with Q/K normalization, and combine residual writeback with RMSNorm. The projection requires 48 outputs, 2,560 input columns, output stride 96 and a multiple of four rows. The residual uses aligned FP32 buffers and the supported four-stream BF16 layout. Other shapes retain their ordinary paths. Explicit `STRATA_GDN_CONV_SERIAL` and `STRATA_GDN_CONVL2` settings take precedence for convolution. The recurrence override below controls the recurrence only.
 
 **How it is made, so it can be redone.**
 
-1. `sycl/tools/Dockerfile` is the dev image: the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3), ninja, and the CUDA 12.8
-   headers that `sycl/tools/get-cuda-headers.sh` pulls from NVIDIA's pip wheels (dpct parses CUDA; it needs headers, not the toolkit).
-2. `sycl/tools/migrate.sh` writes a compilation database for the CUDA-touching translation units and runs dpct over them.
-3. `sycl/tools/fixups.py` fixes what dpct got wrong, as an idempotent script with a reason per item. Examples: CUDA's null stream
+1. `engine/sycl/tools/Dockerfile` is the dev image: the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3), ninja, and the CUDA 12.8
+   headers that `engine/sycl/tools/get-cuda-headers.sh` pulls from NVIDIA's pip wheels (dpct parses CUDA; it needs headers, not the toolkit).
+2. `engine/sycl/tools/migrate.sh` writes a compilation database for the CUDA-touching translation units and runs dpct over them.
+3. `engine/sycl/tools/fixups.py` fixes what dpct got wrong, as an idempotent script with a reason per item. Examples: CUDA's null stream
    becomes the default stream (every stream cast goes through `strata::q_of()`), `__ldg` and `__fadd_rn` translations that lost
    their meaning, ggml lookup tables as plain `static const` arrays.
-4. `sycl/tools/build.sh` configures and builds with icpx inside the image. Two compiler flags are load-bearing:
+4. `engine/sycl/tools/build.sh` configures and builds with icpx inside the image. Two compiler flags are load-bearing:
    `-fp-model=precise` (icpx defaults to a fast model) and `-cl-fp32-correctly-rounded-divide-sqrt` for the device compiler. The
    Arc's fp32 divide is not correctly rounded by default, and Strata's quantizers are byte-exact against ggml through `amax / 127`.
 
@@ -351,22 +395,22 @@ other source from the original location. `sycl/include/dpct/` is the vendored SY
 - Synchronous copies: `cudaMemcpy` blocks, dpct's default-queue `memcpy` did not wait.
 - Stager and PLE waits: no host thread waits on a queue's event under the Level Zero v2 adapter; the copy queue writes a sequence
   number into page-locked host memory and the stager polls it.
-- Profiling: `sycl/tools/Dockerfile.unitrace` builds the dev image with Intel's unitrace; `unitrace -d` around the engine plus
+- Profiling: `engine/sycl/tools/Dockerfile.unitrace` builds the dev image with Intel's unitrace; `unitrace -d` around the engine plus
   `sycl/rank_kernels.py` gives device time per kernel.
 
 **Keeping up with upstream.** A merge of upstream `main` leaves the copies in `sycl/` behind wherever upstream touched a file they
 mirror. They are refreshed by re-migration:
 
-1. Merge upstream. No shared file should conflict. Check that `sycl/setup_intel.py --check` and
-   `sycl/serve/server_intel.py --engine mock` still run against the new `setup.py` and `server.py`.
+1. Merge upstream. No shared file should conflict. Check that `engine/sycl/setup_intel.py --check` and
+   `engine/sycl/serve/server_intel.py --engine mock` still run against the new `setup.py` and `server.py`.
 2. Migrate the old upstream tree with `migrate.sh` into `sycl-base` and the merged tree into `sycl-new`.
-3. Run `sycl/tools/normalize.sh <dir> <commit>` on both (dpct's file names, unchanged files, message serials, then `fixups.py`).
+3. Run `engine/sycl/tools/normalize.sh <dir> <commit>` on both (dpct's file names, unchanged files, message serials, then `fixups.py`).
 4. For every file present in both: `git merge-file sycl/F sycl-base/F sycl-new/F`. Copies dpct never produced (`verify.cpp`,
-   `mtp.cpp`, `remote_experts.cpp`) take upstream's diff by hand; new parity tests are copied in and listed in `sycl/CMakeLists.txt`.
+   `mtp.cpp`, `remote_experts.cpp`) take upstream's diff by hand; new parity tests are copied in and listed in `engine/sycl/CMakeLists.txt`.
 5. A fixup whose pattern upstream changed shows up as a compile error; extend the fixup, re-run it, rebuild. Run a symbol audit
    (count the port's feature identifiers before and after).
 
-`sycl/tools/merge_upstream.py` ports open upstream PRs ahead of upstream the same way.
+`engine/sycl/tools/merge_upstream.py` ports open upstream PRs ahead of upstream the same way.
 
 **Not ported.** Three kernels carry inline PTX (`mma.sync`, `ldmatrix`, `cp.async`): `qsa_prompt_attn`, `qsa_select`'s block
 scores and `native_qsa_score`. The SYCL build takes the "older card" fallback the CUDA build uses below sm_80.
@@ -375,6 +419,21 @@ prefill path (`moe_mmq.cu`) is not built. `--peer-device` (a second GPU as an ex
 message. The sm_90 thread-block-cluster sampler and QSA top-k have no SYCL counterpart. Images on the llama.cpp config are not wired;
 on the SYCL port they are ([Pictures](#pictures-on-an-arc)).
 
+## Routed expert prefill on Battlemage
+
+The SYCL engine selects these paths automatically on a Level Zero Battlemage GPU when the request qualifies.
+
+| Setting | Automatic behavior and how to disable it |
+| --- | --- |
+| `STRATA_SYCL_BMG_ROUTED_EXPERTS` | Group routed rows, dequantization and expert projections. Where available, TLA kernels fuse gate/up and SwiGLU or project directly from the packed expert weights. Set to `0` to use the previous expert path and disable the window. |
+| `STRATA_SYCL_BMG_EXPERT_WINDOW` | With routed experts and the TLA expert build enabled, share compressed weights across adjacent eligible chunks. Set to `0` to process one chunk at a time while keeping eligible grouped projections. Checkpoints can split a window. Set `STRATA_TRACE=1` to log the actual chunk lengths. |
+
+A single unbatched run can select one Battlemage GPU even when other GPUs are visible. The paired walk requires 48 native expert layers, 512 experts with top-10 routing, 2,560 input columns, 640 feed-forward columns, and an 8,192-token chunk plan. It serves a streamed model whose expert cache does not hold all experts. Eligible layers use IQ2_XXS, IQ2_S or IQ1_M gate/up and Q2_0 down. A second chunk needs at least 4,096 rows. Shorter tails run individually.
+
+For a portable or Battlemage AOT build with Level Zero, `-DSTRATA_SYCL_TLA_EXPERT_GU=AUTO` (default) uses local sycl-tla headers from `STRATA_SYCL_TLA_DIR` or `engine/third_party/sycl-tla`. Use `ON` to require the kernels at configure time or `OFF` to omit them even with the headers present. This build option is independent of prompt attention. The row-count rules for combining gate/up and down GEMMs were checked with icpx 2026.1.1 and oneMKL 2026.1.0. When changing oneMKL, rerun the oneMKL split/merged, direct and gate/up byte-parity tests against the installed library and check windowed generations against the unmodified engine.
+
+The paired walk can borrow fewer expert-cache slots. For full host-mirror coverage, set `STRATA_LEND_MIRROR` to cover the loan reported at startup.
+
 ## Switch reference
 
 All are environment variables for the engine. Put them in the config's `"env"` block. Defaults are for the current engine.
@@ -382,14 +441,19 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | Switch | Default | Effect |
 | --- | --- | --- |
 | `STRATA_VERIFY_NO_HOST` | 1 (`strata-sycl.sh`); 0 on `i915` | See above |
-| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB. On an integrated GPU: none with `--expert-cache auto`, the pool's rest less `--vram-reserve-mib` with a cache size you give | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_UMA` | From the device | `1` / `0`: plan the GPU as one that shares the system's RAM (an integrated GPU), or as a card. Linux. See [INTEL_ARC.md](INTEL_ARC.md#integrated-arc-gpus-the-b390-panther-lake) |
+| `STRATA_UMA_HEADROOM_GIB` | 6 | On such a GPU, the GiB of RAM the engine leaves free when it sizes its cache |
 | `STRATA_PF_XMX` | 2 on Alchemist | Grouped XMX expert launch; `0` off, `1` dequantize first |
+| `STRATA_SYCL_NO_XMX` | Off (XMX on) | Inkling 2 Mini engine: `1` turns the oneMKL XMX matrix path off. On an Alchemist card this makes prompt reading repeatable between runs, at about 60% of the prompt speed ([above](#repeatable-answers-on-an-alchemist-card-inkling-2-mini)). `INK_SYCL_NO_XMX=1` is the older name |
 | `STRATA_GDN_XE` | On for Alchemist | Sub-group GDN recurrence |
+| `STRATA_SYCL_GDN_PREFILL_REG_QK` | Automatic on Level Zero Battlemage for the 128-wide, 16-key/48-value-head recurrence at 128 or more tokens | Load two consecutive inputs into subgroup registers and update the FP32 state in token order. Unset enables automatic selection. A value beginning with `1` requests the register kernel on supported inputs. Other explicit values, including `0`, an empty string, `on` and `true`, select the original column kernel. |
 | `STRATA_COPY_ENGINE` | On for Battlemage | Expert copies on the copy engine |
+| `STRATA_INTEL_GEN` | From the device | `battlemage`, `alchemist` or `unknown`: the generation whose kernels and defaults the GPU gets. An Xe3 GPU (Panther Lake: the Arc B390) is classed with Battlemage; `unknown` gives it the generic kernels. |
 | `STRATA_PREFILL_MMQ` | `auto` on Battlemage | Fused int8 prompt experts |
 | `STRATA_PREFILL_STREAM_ALL` | On when VRAM holds more than 90% of the (layer, expert) pairs | Copy every expert the cache does not hold, layer by layer; `=0` / `=1` force it |
 | `STRATA_PREFILL_FIRST` | 256 if the cache holds every expert, else 0 | Tokens in the short first prompt chunk |
-| `STRATA_LEND_MIRROR` | On | Mirror the experts in the last 10% of cache slots; `=0` off |
+| `STRATA_LEND_MIRROR` | On; off on an integrated GPU, where an automatic cache also needs `STRATA_MIRROR_MIB` for it | Mirror the experts in the last 10% of cache slots; `=0` off, `=N` the last N slots |
 | `STRATA_VERIFY_LEAN` | On | Decode graph without unanswered nodes; `=0` off |
 | `STRATA_FILL_SERIAL=1` | Off | The old serial expert-cache fill (the pipelined fill is the default) |
 | `STRATA_MMVQ_A2=0`, `STRATA_MMVQ_WIDE_32=0` | On | Restore the older matvec kernels |
@@ -512,7 +576,7 @@ last step on the XMX kernel, `ple_parity` and `native_expert_parity` need model 
 the wrong shard for layers past a shard boundary (NaN logits from layer 13 on, Swift 1.5). IQ2_XS products were garbage because of
 a type pun the SYCL compiler does not honour. A prompt that borrowed cache slots hung in its first chunk (stager deadlock under
 Level Zero v2). An A750 prompt of 2,744 tokens hung (direct copy out of pageable memory; regression test
-`sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
+`engine/sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
 An A770 JIT build misread memory past 4 GiB into an allocation. The xe driver aliased pages in a 22 GiB arena (NaN at layer 4).
 
 ### Mixed-IQ3 decode kernels for Battlemage (PR #4185)
@@ -522,7 +586,7 @@ Packed Q2 / IQ4 lookup / IQ3_S sign arithmetic (the build option) and fourteen d
 +9.7% on a 4K prompt and +11.1% on a free-form answer against the build without them, same generated tokens, same logprobs to six
 decimals. Prompt speed is unchanged.
 
-* `STRATA_SYCL_IQ_DECODE_FAST` (CMake, default ON; `IQ_DECODE_FAST=OFF` for `sycl/tools/build.sh` and `packaging/build_sycl_linux.sh`):
+* `STRATA_SYCL_IQ_DECODE_FAST` (CMake, default ON; `IQ_DECODE_FAST=OFF` for `engine/sycl/tools/build.sh` and `tools/packaging/build_sycl_linux.sh`):
   integer arithmetic with the same results as the helpers it replaces. It is the largest part of the gain (+5.9% alone).
 * Runtime controls. Unset: on for a Battlemage device, off for every other device (Arc A-series keeps the earlier kernels).
   `STRATA_<name>=0` turns a control off, `=1` turns it on whatever the device. Restart after changing one.
@@ -544,6 +608,5 @@ decimals. Prompt speed is unchanged.
 | `STRATA_Q6_SHAPE_GRF` | no | Large GRF for bounded Q6_K projection shapes |
 | `STRATA_GDN_QK_REG` | no | Register-broadcast QK for supported Battlemage GDN geometry |
 
-The eight "no" controls measured neutral or slightly slower on that configuration (single-control table in
-`phaseA-tests/pr-priorities/RESULTS-INTEL.md`); they stay available for other models and cards. Unsupported layouts retain their
+The eight "no" controls measured neutral or slightly slower on that configuration (an internal measurement; the single-control table is not published); they stay available for other models and cards. Unsupported layouts retain their
 existing paths. Explicit projection overrides take precedence over shape selection.

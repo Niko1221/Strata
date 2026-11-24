@@ -38,7 +38,22 @@ shared document. The checkpoint at its end is pinned: never evicted, kept in the
 Copy-on-write K/V pages across `--batch` slots are NOT built: each slot keeps its own K/V (3.06 GiB at 262K, about 12 GiB
 at 1M), and admitting a branch copies the prefix K/V (3 s at 262K). The pinned prefix removes the re-read, not the copy.
 
-`tools/research_run.py` runs a document and a question list against a server with and without the field.
+`terminal/tools/research_run.py` runs a document and a question list against a server with and without the field.
+
+### Inkling CUDA shared instructions (opt-in)
+
+The Inkling CUDA backend accepts `strata_prefix` and keeps one shared-boundary checkpoint per slot alongside the
+prompt-end checkpoint. Start the server with `STRATA_INKLING_SHARED_PREFIX=1` to pin leading `system`/`developer`
+messages (including rendered tools) automatically when the engine advertises `shared_prefix=1`. Automatic boundaries
+round down to whole prefill chunks so uncontended single-slot reads keep the same batch shapes; under concurrent
+multi-slot batching, `pin` still splits at the boundary so the slot can warm. Explicit `strata_prefix` boundaries are
+not rounded.
+
+Reuse is slot-local and requires identical tokens plus intact global KV in that slot. Resets, restarts, or another
+prompt overwriting that prefix clear reuse. There is no cross-slot copy or conversation parking. Images skip shared
+reuse; CUDA snapshots require at most eight slots and no layer split; failed checkpoints fall back to prefill. The
+extra checkpoint stores recurrent and sliding-window state in host RAM without duplicating global KV. Use
+`terminal/tools/check_inkling_prefix.py --help` for the direct GPU check.
 
 ## R3: expert slots against K/V blocks (P100, IQ2_XS)
 
