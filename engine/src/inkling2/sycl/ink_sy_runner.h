@@ -23,6 +23,7 @@
 #include "ink_sy_xmx.h"
 #include "ink_sy_common.h"
 #include "ink_sy_dspark.h"
+#include "ink_sy_fit.h"
 #include "ink_sy_hybrid.h"
 #include "ink_sy_ops.h"
 #include "ink_sy_vision.h"
@@ -249,7 +250,7 @@ struct InkSyRunner {
         size_t kv_tot = 0, sc_tot = 0;
         for (int v = 0; v < c.n_visits; ++v) {
             const int ip = c.phys_for_visit(v);
-            const int stride = c.is_swa[ip] ? c.swa_win : max_ctx;
+            const int stride = c.is_swa[ip] ? swa_kv_stride(c.swa_win, max_batch, max_ctx) : max_ctx;
             visit_kv_stride[v] = stride;
             const size_t kve = (size_t)max_slots * stride * c.n_kv * c.head_dim;
             kv_k[v] = dalloc<half>(kve); kv_v[v] = dalloc<half>(kve);
