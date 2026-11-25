@@ -32,9 +32,10 @@ if(STRATA_ENABLE_SYCL)
   return()
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_symbols.cmake)   # -DSTRATA_KEEP_SYMBOLS=ON: host debug information, same machine code (release scripts keep the symbol files)
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
-if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
+if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT STRATA_KEEP_SYMBOLS)   # (STRATA_KEEP_SYMBOLS has its own /Z7 + /DEBUG, cmake/strata_symbols.cmake)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zi>)
   add_link_options(/DEBUG /OPT:REF /OPT:ICF)
 endif()

@@ -11,6 +11,7 @@ else()
   set(_ink_engine_root "${CMAKE_SOURCE_DIR}")
   enable_language(C)
 endif()
+include(${_ink_engine_root}/cmake/strata_symbols.cmake)   # -DSTRATA_KEEP_SYMBOLS=ON: host debug information, same machine code (the release scripts keep the symbol files)
 
 # Vendored ZSTD decompressor (zero external libzstd dependency on Win/Linux/macOS)
 set(_zstd_dir "${_ink_engine_root}/third_party/zstd-dec")
