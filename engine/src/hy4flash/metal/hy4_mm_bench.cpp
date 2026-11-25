@@ -19,7 +19,8 @@ int main(int argc, char** argv) {
     int lib = cx.compile_try({argc > 1 ? argv[1] : "hy4_mpp.metal"}, "#define NO_GGML_COMMON 1\n", false, &why);
     if (lib < 0) { printf("compile failed: %s\n", why.c_str()); return 1; }
     struct Shape { int M, N, K; const char* what; };
-    const Shape shapes[] = {{512, 16384, 1024, "q_b swa (512 tok)"}, {512, 16384, 3072, "gate swa"}, {512, 3072, 16384, "o_proj swa"}, {512, 3072, 1536, "shared down"}, {128, 16384, 3072, "gate swa (128 tok)"}, {2048, 16384, 3072, "gate swa (2048 tok)"}};
+    const Shape shapes[] = {{512, 16384, 1024, "q_b swa (512 tok)"}, {512, 16384, 3072, "gate swa"}, {512, 3072, 16384, "o_proj swa"}, {512, 3072, 1536, "shared down"}, {128, 16384, 3072, "gate swa (128 tok)"}, {2048, 16384, 3072, "gate swa (2048 tok)"},
+                              {8192, 3072, 8192, "o_proj (8192 tok)"}, {8192, 8192, 3072, "linear_gate (8192 tok)"}, {8192, 1024, 8192, "q_b (8192 tok)"}, {8192, 3072, 16384, "o_proj K16k (8192 tok)"}, {4096, 3072, 16384, "o_proj K16k (4096 tok)"}, {2048, 3072, 16384, "o_proj K16k (2048 tok)"}, {1024, 3072, 16384, "o_proj K16k (1024 tok)"}};
     std::mt19937 rng(3);
     std::normal_distribution<float> nd(0.f, 1.f);
     for (const Shape& s : shapes) {
