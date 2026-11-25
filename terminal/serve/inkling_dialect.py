@@ -124,7 +124,10 @@ class InklingDialect:
     def __init__(self, stream_think: bool | None = None):
         # Opt-in thinking (STRATA_INKLING_EFFORT): stream <|content_thinking|> as reasoning instead of hiding it.
         self.stream_think = thinking_enabled() if stream_think is None else bool(stream_think)
-        self.state = "idle"          # idle | header | think | think_end | text | text_end | tool_json | tool_text
+        # idle | header | think | think_end | text | text_end | tool_json | tool_text. With thinking opted in the prompt
+        # already ends at <|message_model|> (finish_prompt), so the reply starts inside a turn header: a model that skips
+        # <|content_thinking|> and writes `NAME<|content_invoke_tool_json|>{...}` directly must still parse as a tool call.
+        self.state = "header" if self.stream_think else "idle"
         self.buf = ""
         self.header_acc = ""
         self.tool_acc = ""

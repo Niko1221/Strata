@@ -114,6 +114,21 @@ class TestInklingDialect(unittest.TestCase):
         p_cut = frontend.InklingOutputParser()
         evs = p_cut.feed("<|message_model|><|content_thinking|>Working step by step") + p_cut.finish("length")
         self.assertEqual("".join(e.text for e in evs if e.kind == "reasoning"), "Working step by step")
+        # The prompt ends at <|message_model|>, so a reply that skips thinking starts with the tool-name header: it is
+        # still a tool call (it leaked as `write_file<|content_invoke_tool_json|>{...}` text and ended agent turns)
+        d = inkling_dialect.InklingDialect()
+        out = (d.feed_token("write_file", is_special=False)
+               + d.feed_token("<|content_invoke_tool_json|>", is_special=True)
+               + d.feed_token('{"name":"write_file","args":{"path":"a.txt","content":"hola"}}', is_special=False)
+               + d.feed_token("<|end_message|>", is_special=True) + d.feed_channels("", final=True))
+        text = "".join(c for _, c in out)
+        self.assertEqual(d.calls, 1)
+        self.assertIn("<tool_call>", text)
+        self.assertNotIn("<|content_invoke_tool_json|>", text)
+        # ...and a reply that skips both the thinking and the <|content_text|> tag still reaches the user as text
+        d = inkling_dialect.InklingDialect()
+        out = d.feed_token("391 es el resultado.\n", is_special=False) + d.feed_channels("", final=True)
+        self.assertEqual("".join(c for k, c in out if k == "content"), "391 es el resultado.\n")
 
     def test_chat_template_empty_kwargs_forces_effort_zero_and_caps_no_reasoning(self):
         import tempfile
