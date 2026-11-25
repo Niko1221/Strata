@@ -1,0 +1,43 @@
+{
+ "exe": "<lab>/build-906/strata",
+ "args": [
+  "--pack",
+  "<lab>/packs/ud_iq4_xs",
+  "--native",
+  "<lab>/models/Qwen3.8-Flash-Next-GGUF__UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+  "--ple-gguf",
+  "<lab>/models/Qwen3.8-Flash-Next-GGUF__UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
+  "--expert-profile",
+  "<lab>/src/terminal/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "4096",
+  "--mtp",
+  "<lab>/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--vram-reserve-mib",
+  "1024",
+  "--spec",
+  "3",
+  "--spec-min-p",
+  "0.5",
+  "--resident-budget-gib",
+  "44"
+ ],
+ "cwd": "<lab>",
+ "tokenizer": "<lab>/packs/ud_iq4_xs/tokenizer",
+ "model_name": "qwen3.8-flash-next",
+ "log": "<lab>/runs/q4final/engine.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "host": "127.0.0.1",
+ "api_key": "",
+ "port": 8090
+}

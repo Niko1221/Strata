@@ -1,0 +1,57 @@
+{
+ "note": "Supplementary measurements, NOT part of the standard-v1 protocol run. Same machine, engine and quant; community protocol (benchmark_mi50.py) and needle_bench.py.",
+ "config_131k": {
+  "decode_tok_s": {
+   "4096": 43.94,
+   "32768": 44.34,
+   "120000": 36.29
+  },
+  "prefill_tok_s": {
+   "4096": 375.9,
+   "32768": 360.6,
+   "120000": 336.7
+  },
+  "runs": {
+   "4096": 3,
+   "32768": 2,
+   "120000": 1
+  }
+ },
+ "needle_107568_tokens": {
+  "depths": [
+   10,
+   50,
+   90
+  ],
+  "found": "3/3",
+  "engine": "0.1.65"
+ },
+ "config_256k": {
+  "max_context": 262144,
+  "kv_resident_cells": 4096,
+  "decode_tok_s": {
+   "240000": 35.63
+  },
+  "prefill_tok_s": {
+   "240000": 310.1
+  },
+  "ttft_s_240k": 774.1,
+  "needle_203262_tokens": {
+   "depths": [
+    50,
+    90
+   ],
+   "found": "2/2"
+  }
+ },
+ "vision": {
+  "enabled_in_separate_config": true,
+  "reader": "strata-vision-hip (gfx906)",
+  "ocr_exact": true,
+  "wall_s": {
+   "900x500_png": 9.7,
+   "450x250_png": 2.3
+  },
+  "decode_cost_at_32k": 0.1
+ }
+}
