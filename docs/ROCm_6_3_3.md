@@ -54,19 +54,29 @@ The previous revision of this report documented the 0.1.45 base (`477ac13c`) in 
 
 Of that tree's engine fixes, 0.2.16/0.2.17 absorbed the shared `alignas(16)` class (#4151, fixed upstream as `804003950`), the f16-range reset check (#4152, `04dd856ea`), and setup's gfx906 recognition (#4153). qwen3.6 left the gfx906 build after 0.1.51, which retired the rest.
 
-## 4. Cross-validation on three architectures
+## 4. Cross-validation on three systems
 
-The compat work behind this report was built and smoke-run on three different architectures, so the gfx906 result is not a single-machine curiosity. Those three legs were built from the branch carrying the gfx900/gfx906 fixes at `75718ba21` (`d46f5f268` plus seven commits). The numbers in §2 are from `main` @ `2af30ccaa` on gfx906, which is five commits later plus the #7088 mapping.
+The work behind this report was built and run on three systems with three different GPUs, so the gfx906 numbers are not a single-machine result. All three legs come from the same branch commit, `75718ba21` (`d46f5f268` plus seven commits), built by three toolchains: clang 18 with ROCm 6.3.3 for the two HIP targets, and nvcc with CUDA 12.8 for sm_70. The numbers in §2 are from `main` @ `2af30ccaa` on gfx906, five commits later plus the #7088 mapping.
 
-| card | arch | build | what ran |
+| | 2x Instinct MI25 (gfx900) | 2x Instinct MI50 (gfx906) | Tesla V100 (sm_70) |
 | --- | --- | --- | --- |
-| 2x Instinct MI25 | gfx900 | 172/172 | inkling lane runs; the code object disassembles to 0 matrix-core and 0 dot-product instructions, so the scalar fallback is the code that ran |
-| 2x Instinct MI50 | gfx906 | 178/178 | inkling gives identical greedy sequences across processes; Hy4-Flash produces coherent prose (2.34 tok/s on one card) with `hy4_no_wmma()` true |
-| Tesla V100 | sm_70 | 169/169 | Qwen3.6 lane runs, coherent: 1,301.7 tok/s prefill, 88.6 tok/s decode; `--families` lists both qwen4exp and qwen35moe |
+| **Build** | 172/172, `strata 0.1.67` | 178/178, `strata 0.1.67` | 169/169 with `-DSTRATA_EXPERIMENTAL_SM60=ON`, CUDA 12.x |
+| **Device self-test** | `OK`, 64 MiB arena, over-allocation refused | `OK`, over-allocation refused | `OK` |
+| **`--families`** | `qwen4exp` | `qwen4exp` | `qwen4exp qwen35moe` |
+| **Qwen3.8-Flash-Next** | PASS, 33.0 prefill / 17.4 decode tok/s, 28/40 drafts | PASS, see §2 (17.3 single, 23.0 split) | not run on this leg |
+| **Qwen3.6-35B-A3B** | refused by design (excluded under `STRATA_HIP_GFX906`) | refused by design | PASS, coherent: 1,301.7 prefill / 88.6 decode tok/s |
+| **Inkling-2-Mini SQ-10** | PASS, 27.5 prefill / 14.6 decode tok/s, deterministic | PASS, 224 prefill / 19.5 decode tok/s, deterministic | not built on this leg |
+| **Inkling vision** | PASS, reads a synthetic image | PASS, prompt expands 32 to 175 tokens (143 image rows), ~18.8 tok/s | not run |
+| **Hy4-Flash** | PASS, 4.3-4.8 tok/s across two cards | PASS, coherent prose, 2.34 tok/s on one card, 67 % VRAM expert hit rate | compiles, sm_70 cubin emitted, never loaded |
+| **Hy4 vision** | PASS | PASS, 231 image rows encoded in 0.23 s, 33.7 tok/s prefill, `fdot2` path taken | not run |
 
-Two things this established that the gfx906 build alone could not. The CUDA build graph is undisturbed — both model families are present on sm_70, where Qwen3.6 is native and no `STRATA_HIP_GFX906` exclusion applies. And on gfx900 the scalar fallback is not simply available but is the code that executes, checked by disassembly rather than assumed.
+Two invariants were checked rather than assumed, and they are the reason this table is worth having:
 
-A pre-sm_75 CUDA build of this tree needs `-DSTRATA_EXPERIMENTAL_SM60=ON` and a CUDA 12.x toolkit; CUDA 13 dropped sm_70 and fails the compiler test at `compute_70`. That is a property of the tree, not of this branch: a control build of stock `d46f5f268` fails identically.
+**Determinism across architectures.** Two processes run back to back produced byte-identical 24-token greedy sequences on gfx900 and again on gfx906, with only the timing line moving. The Inkling pack was the same file on both boxes (9.8 GB, sha256 `ac4d452a...065934`), so this is the same bytes on different silicon rather than two similar packs.
+
+**The scalar fallback is the code that runs, not code that exists.** On gfx900 the extracted device code object disassembles to **zero** `v_mfma_*` and zero `v_dot2`/`v_dot4` instructions, with 6,070 `v_fma_f32`. The compat fallback is therefore what executed, which is the claim a compile-time switch alone cannot make.
+
+What this does not cover: Inkling was never built for CUDA (the lane is not in the sm_70 task line), Hy4 was compiled but never loaded on CUDA, the sm_70 leg is a single card with no layer split, and both vision runs are on the AMD arches only. A pre-sm_75 CUDA build of this tree needs `-DSTRATA_EXPERIMENTAL_SM60=ON` and a CUDA 12.x toolkit; CUDA 13 dropped sm_70 and fails the compiler test at `compute_70`. That is a property of the tree rather than of this branch — a control build of stock `d46f5f268` fails identically.
 
 ## 5. Not tested
 
