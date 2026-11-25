@@ -1,0 +1,41 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"read","20260927","passed","True","True","1","1","1","0","0","0","","2","5.11","","MARKER-A46FA8E4B990C13CFE860773","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-read.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"create","20260927","passed","True","True","2","2","1","0","0","0","","3","5.87","","Created `created.txt` containing exactly `created-A46FA8E4B990C13CFE860773` with no trailing newline, verified by reading it back. No other files were changed.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-create.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"edit","20260927","passed","True","True","7","7","1","3","2","0","","7","23.726","","Done. `settings.json` now reads:
+
+```json
+{
+  ""theme"": ""dark"",
+  ""fontSize"": 14,
+  ""keep"": ""unchanged""
+}
+```
+
+Only the single token `light` → `dark` was replaced; indentation, key order, values, and the trailing newline are unchanged (verified by re-reading the file).
+
+One note from the workspace: running the provided `.\verify.ps1` returned `FAIL: delayMs must equal 25`. That check refers to a separate file, `app.json`, which currently has `""delayMs"": 9` — unrelated to the theme edit you asked for. I left it untouched per your ""change only theme / preserve every other byte"" instruction. Let me know if you want `app.json` updated to `25` as well.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-edit.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"search-fetch","20260927","passed","True","True","2","2","1","0","0","0","","3","6.812","","The current release handbook specifies the following:
+
+- **Release channel:** `stable-A46FA8E4B9`
+- **Source URL:** https://fixture.invalid/handbook/release
+
+The page notes that this handbook supersedes the archived version (https://fixture.invalid/archive/release).","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-search-fetch.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"powershell","20260927","passed","True","True","1","1","1","0","0","0","","2","4.234","","The sum of `numbers.txt` is **221**.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-powershell.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"recovery","20260927","passed","True","True","2","2","1","1","1","0","","3","5.905","","The file `missing.txt` was not found. Following the recovery path in the tool error, I read `recovered.txt`, which contains the exact marker:
+
+**RECOVER-A46FA8E4B990C13CFE860773**","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-recovery.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",
+"workflow","20260927","passed","True","True","6","6","1","1","1","0","","7","12.893","","Done. `app.json` now reads:
+
+```json
+{
+  ""delayMs"": 25,
+  ""retryCount"": 3,
+  ""name"": ""fixture-app""
+}
+```
+
+Steps taken:
+1. Changed only `delayMs` from `9` → `25` (all other bytes untouched).
+2. Ran `.\verify.ps1` → `FAIL: retryCount must equal 3`.
+3. Made the minimal fix: `retryCount` `1` → `3`.
+4. Reran `.\verify.ps1` → **PASS** (exit code 0). The verifier and all other content were left unmodified.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-tuned\20261120-091643-89b171c8\00-Strata-UD-IQ2_XS-tuned-256k\01-workflow.jsonl","Strata-UD-IQ2_XS-tuned-256k","http://127.0.0.1:8080","1",

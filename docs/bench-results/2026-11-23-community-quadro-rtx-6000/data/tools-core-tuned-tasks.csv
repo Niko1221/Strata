@@ -1,0 +1,43 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"read","20260927","passed","True","True","1","1","1","0","0","0","","2","4.309","","MARKER-A46FA8E4B990C13CFE860773","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-read.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"create","20260927","passed","True","True","2","2","1","0","0","0","","3","5.08","","Created `created.txt` containing exactly `created-A46FA8E4B990C13CFE860773` with no trailing newline, verified by reading it back. No other files were changed.","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-create.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"edit","20260927","passed","True","True","6","6","1","1","1","0","","7","27.145","","Done. `settings.json` now reads:
+
+```json
+{
+  ""theme"": ""dark"",
+  ""fontSize"": 14,
+  ""keep"": ""unchanged""
+}
+```
+
+- Read the file, then made a single targeted replacement of `""theme"": ""light""` → `""theme"": ""dark""`.
+- Re-read to confirm: 2-space indentation, key order, `fontSize: 14`, `keep: ""unchanged""`, and the trailing newline are all unchanged — only the theme value differs.
+
+One note for your awareness: I ran the provided read-only verifier (`.\verify.ps1`) and it returned `FAIL: delayMs must equal 25`. That check inspects a **different file**, `app.json` (which currently has `delayMs: 9`, `retryCount: 1`, `name: ""fixture-app""`), and has nothing to do with the theme edit. Since it's unrelated content, I left `app.json` untouched — let me know if you want those values updated to `25`/`3`.","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-edit.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"search-fetch","20260927","passed","True","True","2","2","1","0","0","0","","3","8.152","","**Release channel:** `stable-A46FA8E4B9`
+
+**Source:** [Current release handbook](https://fixture.invalid/handbook/release)
+
+The fixture search returned two handbooks — ""Current release handbook"" and ""Archived release handbook."" The current page explicitly states that its approved release channel is `stable-A46FA8E4B9` and that it supersedes the archived handbook, so the archived entry was not used.","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-search-fetch.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"powershell","20260927","passed","True","True","1","1","1","0","0","0","","2","3.452","","The sum of `numbers.txt` is **221**.","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-powershell.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"recovery","20260927","passed","True","True","2","2","1","1","1","0","","3","5.994","","`missing.txt` was not found. Following the recovery path in the tool error, I read `recovered.txt` instead (I did not create `missing.txt`).
+
+The exact marker is:
+
+**`RECOVER-A46FA8E4B990C13CFE860773`**","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-recovery.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"workflow","20260927","passed","True","True","6","6","1","1","1","0","","7","16.775","","Done.
+
+- **app.json**: `delayMs` changed from `9` → `25` (only that value; formatting/bytes otherwise untouched).
+- **First verifier run**: `FAIL: retryCount must equal 3` → minimal follow-up fix set `retryCount` from `1` → `3`.
+- **Second verifier run**: `PASS` (exit code 0).
+
+Final file:
+```json
+{
+  ""delayMs"": 25,
+  ""retryCount"": 3,
+  ""name"": ""fixture-app""
+}
+```
+`verify.ps1` and all other content were left unmodified.","c:\Users\USER\Documents\Projects\Strata\results\tools-core-3200\20261120-154225-3661cc0d\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-workflow.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",

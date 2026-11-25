@@ -1,0 +1,40 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"read","20260927","passed","True","True","1","1","1","0","0","0","","2","5.47","","MARKER-A46FA8E4B990C13CFE860773","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-read.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"create","20260927","passed","True","True","2","2","1","0","0","0","","3","6.683","","Created `created.txt` containing exactly `created-A46FA8E4B990C13CFE860773` with no trailing newline. Verified by reading the file back; no other files were changed.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-create.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"edit","20260927","passed","True","True","3","3","1","0","0","0","","4","9.149","","Done. I read `settings.json` and made a single targeted replacement of `""theme"": ""light""` → `""theme"": ""dark""`.
+
+Verification (re-read after edit) confirms the file is byte-identical apart from that one value:
+
+```json
+{
+  ""theme"": ""dark"",
+  ""fontSize"": 14,
+  ""keep"": ""unchanged""
+}
+```
+
+Indentation (2 spaces), key order, the `fontSize`/`keep` values, and the trailing newline are all preserved.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-edit.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"search-fetch","20260927","passed","True","True","2","2","1","0","0","0","","3","8.424","","**Release channel:** `stable-A46FA8E4B9`
+
+**Source:** [Current release handbook](https://fixture.invalid/handbook/release)
+
+The page states: ""The approved release channel is stable-A46FA8E4B9. This supersedes the archived handbook."" (The other search hit, `https://fixture.invalid/archive/release`, is the superseded archived version and was not used.)","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-search-fetch.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"powershell","20260927","passed","True","True","1","1","1","0","0","0","","2","4.071","","The sum of `numbers.txt` is **221**.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-powershell.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"recovery","20260927","passed","True","True","2","2","1","1","1","0","","3","5.795","","The file `missing.txt` was not found. Following the recovery path in the tool error, I read `recovered.txt`, which contains the exact marker:
+
+**RECOVER-A46FA8E4B990C13CFE860773**","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-recovery.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"workflow","20260927","passed","True","True","6","6","1","1","1","0","","7","16.157","","Done. Verifier now reports **PASS**.
+
+Changes made to `app.json` (only these two values; all other bytes untouched):
+1. `""delayMs"": 9` → `""delayMs"": 25` (as instructed)
+2. First verifier run failed with `FAIL: retryCount must equal 3`, so the minimal additional fix was `""retryCount"": 1` → `""retryCount"": 3`
+
+Final file:
+```json
+{
+  ""delayMs"": 25,
+  ""retryCount"": 3,
+  ""name"": ""fixture-app""
+}
+```
+`verify.ps1` was not modified.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core\20261120-073954-bd812fff\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-workflow.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
