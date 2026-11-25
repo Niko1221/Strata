@@ -98,7 +98,7 @@ RUN set -e; \
       cp /stage/BUILD.json /stage-inkling/BUILD.json; \
       python3 tools/packaging/collect_libs.py --binary "$ink_bin" --search /usr/local/cuda/lib64 --out /stage-inkling --also 'libcublasLt.so*'; \
       python3 tools/packaging/package_engine.py --src /stage-inkling --backend cuda --shape inkling2 --version "$ver" --out /shapes/inkling2/engine $archs --arch "compute_$last" \
-          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt; \
+          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt --include 'licenses/*'; \
     fi; \
     for d in /engine/*/ /shapes/*/engine/*/; do \
       [ -d "$d" ] || continue; \
