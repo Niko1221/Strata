@@ -79,6 +79,39 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(prompt_workspace_growth PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
 
+# ---- the hy4-flash engine ------------------------------------------------------------------------------------------
+# Its own target beside the Qwen and DeepSeek engines, on mtl_rt and the hy4-flash host code of ../src that does not use
+# CUDA.  Deliberately NOT linked against strata_metal_host: that library pulls in core/device.cu and some forty other
+# files through include/metal_compat, none of which this engine calls.  And deliberately NOT placed in src/engine/,
+# whose *.cpp are collected with file(GLOB) into both existing engines - a file dropped there would be linked into
+# them.  Every source is named, so a new one has to be added here on purpose.
+set(STRATA_HY4_FLASH_METAL_HOST_SOURCES
+  ${STRATA_ROOT}/src/hy4flash_gguf/geometry.cpp ${STRATA_ROOT}/src/hy4flash_gguf/engram.cpp
+  ${STRATA_ROOT}/src/hy4flash_gguf/engram_io.cpp ${STRATA_ROOT}/src/hy4flash_gguf/sampler.cpp
+  ${STRATA_ROOT}/src/kernels/ngram.cpp ${STRATA_ROOT}/src/ngram/ple_reader.cpp
+  ${STRATA_ROOT}/src/platform/direct_file.cpp ${STRATA_ROOT}/src/platform/memory.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/engine/stream.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/dispatch.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/model.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/experts.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/engram.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/forward.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/dump.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/mtp.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/prefill_snap.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/serve.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/vision.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/vis_tower.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/vis_pos.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/vis_bundle.cpp)
+add_library(strata_hy4_flash_metal_host STATIC ${STRATA_HY4_FLASH_METAL_HOST_SOURCES})
+target_include_directories(strata_hy4_flash_metal_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/engine)
+# The MSL the engine compiles at run time: msl/hy4_flash_kernels.h reads STRATA_METAL_HY4_FLASH_KERNELS, else this.
+target_compile_definitions(strata_hy4_flash_metal_host PUBLIC
+  STRATA_METAL_HY4_FLASH_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/msl")
+target_include_directories(strata_hy4_flash_metal_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/msl)
+target_compile_options(strata_hy4_flash_metal_host PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations)
+target_link_libraries(strata_hy4_flash_metal_host PUBLIC mtl_rt)
+
+add_executable(strata_hy4_flash_metal ${CMAKE_CURRENT_SOURCE_DIR}/src/hy4flash_gguf/main.cpp)
+target_link_libraries(strata_hy4_flash_metal PRIVATE strata_hy4_flash_metal_host)
+
 # ---- the device runtime and the engine (mac-design) ---------------------------------------------------------------
 set(METAL_CPP_DIR "" CACHE PATH "metal-cpp headers (https://developer.apple.com/metal/cpp/), e.g. metal-cpp_26")
 if(NOT EXISTS "${METAL_CPP_DIR}/Metal/Metal.hpp")
@@ -174,7 +207,13 @@ target_compile_definitions(strata_metal_kernels PRIVATE
 target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp)
-target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
+# The hy4-flash family switch in generate.cpp is build-guarded; defining this takes it off the refusal path and
+# onto src/hy4flash_gguf/serve.cpp's request loop.  `strata --families` stays silent about hy_v4_flash until
+# STRATA_HY4_FLASH_RUNS is defined as well: setup and the launch catalog read that list to decide what a person
+# may download.
+target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels
+                      strata_hy4_flash_metal_host)
+target_compile_definitions(strata PRIVATE STRATA_HAVE_HY4_FLASH=1)
 # the decode window on its own (probe/window_probe.cpp): the engine's process state without the engine, for looking at a Metal fault
 add_executable(window_probe probe/window_probe.cpp)
 target_link_libraries(window_probe PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
