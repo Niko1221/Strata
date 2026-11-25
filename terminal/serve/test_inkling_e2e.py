@@ -337,6 +337,81 @@ def _build_mini_inkling_strata(out_path: Path, vision_path: Path) -> None:
 
 
 class TestInklingServing(unittest.TestCase):
+    def test_sycl_swa_logits_ignore_later_rows_after_wrap(self):
+        """Run with STRATA_INKLING_BIN and STRATA_INKLING_SYCL_TEST_MODEL (native SQ-20)."""
+        exe = _find_inkling_exe()
+        model = os.environ.get("STRATA_INKLING_SYCL_TEST_MODEL")
+        if not exe or not model:
+            self.skipTest("requires the SYCL engine and STRATA_INKLING_SYCL_TEST_MODEL")
+
+        # Five 256-row batches fill the 1,024-token window and wrap the KV ring.
+        # The first row of the final eight-row batch must be independent of its suffix.
+        query = 1280
+        prefix = [100 + p % 700 for p in range(query + 1)]
+        rows = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "logits.bin"
+            for suffix in ([10] * 7, [900 + p for p in range(7)]):
+                ids = prefix + suffix
+                result = subprocess.run(
+                    [str(exe), "--native", model, "--dump-ref", str(dump),
+                     "--prompt-ids", ",".join(map(str, ids)), "--chunk", "256",
+                     "--max-context", "1536", "--draft", "off"],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn("backend=sycl", result.stdout)
+                with dump.open("rb") as f:
+                    count, vocab = struct.unpack("<ii", f.read(8))
+                    self.assertEqual(count, len(ids))
+                    self.assertGreater(vocab, 0)
+                    f.seek(8 + 4 * count + 4 * query * vocab)
+                    row = f.read(4 * vocab)
+                    self.assertEqual(len(row), 4 * vocab)
+                    rows.append(row)
+        self.assertTrue(rows[0] == rows[1], "future tokens changed the target logits")
+
+    def test_sycl_dspark_screened_paths_match_target(self):
+        """Exercise the actual greedy tree and the penalized linear fallback on native SQ-20."""
+        exe = _find_inkling_exe()
+        model = os.environ.get("STRATA_INKLING_SYCL_TEST_MODEL")
+        if not exe or not model:
+            self.skipTest("requires the SYCL engine and STRATA_INKLING_SYCL_TEST_MODEL")
+
+        # Fixed SQ-20 chat tokens for a scene about restoring a synthesizer.
+        # This prompt exercises accepted siblings in the greedy B70 regression.
+        prompt = [200002, 200004, 34182, 279, 154554, 150628, 25, 220, 15, 200010,
+                  200000, 200004, 3711, 149878, 150317, 160841, 150081, 150103, 150110,
+                  78360, 172883, 279, 149878, 220, 68602, 15, 82, 185760, 45054, 149894,
+                  149878, 154005, 88, 175652, 13, 151860, 220, 39133, 784, 168194, 149880,
+                  160550, 177315, 26, 151016, 149922, 150957, 220, 74092, 151555, 13,
+                  200010, 200001, 200004]
+        for penalty in ("", " penalty_repeat=1.1"):
+            with self.subTest(penalty=penalty):
+                # Drafting off, the default tree and, for the greedy case, the four-way tree without the
+                # Battlemage drafting kernels, which accepts non-first children on this prompt.
+                arms = [("off", {}), ("dspark", {})] + ([] if penalty else [("dspark", {"INK_SYCL_BMG_DSPARK": "0"})])
+                replies, logs = [], []
+                for draft, extra in arms:
+                    result = subprocess.run(
+                        [str(exe), "--serve", "--native", model, "--parallel", "1",
+                         "--chunk", "256", "--max-context", "512", "--draft", draft],
+                        input=f"GEN 256 temperature=0{penalty} {','.join(map(str, prompt))}\nQUIT\n",
+                        capture_output=True, text=True, check=True, timeout=240,
+                        env=dict(os.environ, INK_SYCL_DSPARK_TREE="1", INK_SYCL_DSPARK_TREE_TRACE="1", **extra),
+                    )
+                    ids = [int(line.split()[1]) for line in result.stdout.splitlines() if line.startswith("T ")]
+                    self.assertEqual(len(ids), 256)
+                    replies.append(ids)
+                    logs.append(result.stderr)
+                for reply in replies[1:]:
+                    self.assertEqual(replies[0], reply)
+                if penalty:
+                    self.assertIn("[ink_sycl] adaptive chain pos=", logs[1])
+                    self.assertNotIn("[ink_sycl] tree pos=", logs[1])
+                else:
+                    self.assertIn("[ink_sycl] tree pos=", logs[1])
+                    self.assertRegex(logs[2], r"sibling_hits=[1-9]")
+
     def test_shape_engine_registration(self):
         self.assertEqual(shape_engine.INKLING_SHAPE, "inkling2")
         self.assertTrue(shape_engine.exe_name("inkling2").startswith("strata-inkling"))

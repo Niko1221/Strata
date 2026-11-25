@@ -165,6 +165,34 @@ inline void k_sk_to_f16_rows_sg16(const uint8_t* W, int n0, int nc, int K, half*
 // 2. Fast Vectorized SG16 Dequant-to-FP16 Kernels for MoE Experts (By-Value!)
 // ============================================================================
 
+// Each lane expands one SF4 scale block. The two panels fit together in
+// the existing oneMKL weight scratch and stay live through both GEMMs.
+inline sycl::event k_unpack_sf4_expert_panels(InkSyExpertDev expert, half* weights, sycl::queue& queue = Q()) {
+    constexpr int gate_weights = 2304 * 2304;
+    constexpr int down_weights = 2304 * 1152;
+    constexpr int blocks = (gate_weights + down_weights) / 16;
+    return queue.parallel_for(sycl::nd_range<1>{blocks, 256},
+                     [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int block = it.get_global_id(0);
+        const bool down = block >= gate_weights / 16;
+        const int index = down ? block - gate_weights / 16 : block;
+        const uint8_t* bytes = expert.body_ptr + (down ? expert.dn_off : 16);
+        const uint8_t* scales = bytes + (down ? down_weights : gate_weights) / 2;
+        const float* hdr = reinterpret_cast<const float*>(expert.body_ptr);
+        const float outer = down ? hdr[2] / hdr[3] : hdr[0] / hdr[1];
+        const float scale = e4m3_to_f32(scales[index]) * outer;
+        const auto codes = *reinterpret_cast<const sycl::vec<uint8_t, 8>*>(bytes + index * 8);
+        sycl::vec<uint32_t, 8> pairs;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint32_t lo = sycl::bit_cast<uint16_t>(half(e2m1_lut(codes[j] & 15) * scale));
+            const uint32_t hi = sycl::bit_cast<uint16_t>(half(e2m1_lut(codes[j] >> 4) * scale));
+            pairs[j] = lo | (hi << 16);
+        }
+        *reinterpret_cast<sycl::vec<uint32_t, 8>*>(weights + 16 * block) = pairs;
+    });
+}
+
 // Dequant expert w13 [2304, 2304] -> half (row 2r = gate, 2r+1 = up), 128-bit coalesced vector stores!
 inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
     Q().parallel_for(NR(144, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
@@ -262,8 +290,8 @@ inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
 }
 
 // Dequant expert w2 [2304, 1152] -> half (handles SF4, MX8, and paired 2-row S_K SB_0..SB_8!), 128-bit stores!
-inline void k_dequant_moe_dn_f16_sg16(InkSyExpertDev ed, half* w_f16) {
-    Q().parallel_for(NR(72, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+inline sycl::event k_dequant_moe_dn_f16_sg16(InkSyExpertDev ed, half* w_f16, sycl::queue& queue = Q()) {
+    return queue.parallel_for(NR(72, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4;
         const int lane = (int)it.get_local_id(0) & 15;
         const int rp = (int)it.get_group(0) * 16 + sg;
@@ -386,8 +414,19 @@ inline void k_moe_gather_f16_sg16(const float* x_in, const int* pair_list, int o
     });
 }
 
-inline void k_moe_situ_invsq_f16_sg16(InkSyExpertDev ed, const float* y_gu, int n, half* h_f16) {
-    Q().parallel_for(NR(n, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+inline void k_moe_gather_vector_f16_sg16(const float* input, const int* pairs, int rows, half* out) {
+    constexpr int width = 2304, threads = 64, values = 4;
+    Q().parallel_for(NR(rows, threads), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const size_t row = it.get_group(0), source = size_t(pairs[row] >> 3) * width;
+        for (int col = values * it.get_local_id(0); col < width; col += values * threads) {
+            const auto block = reinterpret_cast<const sycl::vec<float, values>*>(input + source + col)->convert<half>();
+            *reinterpret_cast<sycl::vec<half, values>*>(out + row * width + col) = block;
+        }
+    });
+}
+
+inline sycl::event k_moe_situ_invsq_f16_sg16(InkSyExpertDev ed, const float* y_gu, int n, half* h_f16, sycl::queue& queue = Q()) {
+    return queue.parallel_for(NR(n, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int i = (int)it.get_group(0), tid = (int)it.get_local_id(0);
         const uint8_t* body = ed.body_ptr;
         const bool is_sk_dn = (ed.dn_code != FMT_SF4 && ed.dn_code != FMT_MX8 && ed.dn_code != FMT_GGUF_RAW);
@@ -416,29 +455,41 @@ inline sycl::event k_moe_scatter_w_sg16(const float* y_dn, const float* topk_w, 
 // ============================================================================
 
 #ifdef INK_SYCL_USE_ONEMKL
-inline bool ink_xmx_linear_bf16(const uint16_t* W, int N, int K, const float* X, float* Y, int M) {
-    if (!xmx_enabled() || M < 16) return false;
+inline bool ink_xmx_linear_bf16_packed(const uint16_t* W, int N, int K, const half* X, float* Y,
+                                        int M, int tile_rows) {
     auto& sc = xmx_scratch();
     sc.ensure_w((size_t)std::min<int64_t>((int64_t)N * K, 8388608));
-    sc.ensure_x((size_t)M * K);
-    k_f32_to_f16_sg16(X, sc.x_f16, (size_t)M * K);
     int n_step = (int)std::min<size_t>((size_t)N, sc.w_cap / (size_t)K);
     if (n_step >= 64) n_step &= ~63;
     if (n_step <= 0) return false;
     for (int n0 = 0; n0 < N; n0 += n_step) {
         const int nc = std::min(n_step, N - n0);
         k_bf16_to_f16_rows_sg16(W, n0, nc, K, sc.w_f16);
-        oneapi::mkl::blas::row_major::gemm(
-            Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-            (std::int64_t)M, (std::int64_t)nc, (std::int64_t)K,
-            1.0f, sc.x_f16, (std::int64_t)K,
-            sc.w_f16, (std::int64_t)K,
-            0.0f, Y + n0, (std::int64_t)N);
+        for (int row = 0; row < M; row += tile_rows) {
+            const int rows = std::min(tile_rows, M - row);
+            oneapi::mkl::blas::row_major::gemm(
+                Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+                (std::int64_t)rows, (std::int64_t)nc, (std::int64_t)K,
+                1.0f, X + size_t(row) * K, (std::int64_t)K,
+                sc.w_f16, (std::int64_t)K,
+                0.0f, Y + size_t(row) * N + n0, (std::int64_t)N);
+        }
     }
     return true;
 }
 
-inline bool ink_xmx_linear_q8row(const uint8_t* W, int N, int K, const float* X, float* Y, int M, int N_total) {
+inline bool ink_xmx_linear_bf16(const uint16_t* W, int N, int K, const float* X, float* Y, int M, int tile_rows = 0) {
+    if (tile_rows <= 0) tile_rows = M;
+    if (!xmx_enabled() || M < 16) return false;
+    auto& sc = xmx_scratch();
+    sc.ensure_w((size_t)std::min<int64_t>((int64_t)N * K, 8388608));
+    sc.ensure_x((size_t)M * K);
+    k_f32_to_f16_sg16(X, sc.x_f16, (size_t)M * K);
+    return ink_xmx_linear_bf16_packed(W, N, K, sc.x_f16, Y, M, tile_rows);
+}
+
+inline bool ink_xmx_linear_q8row(const uint8_t* W, int N, int K, const float* X, float* Y, int M, int N_total, int tile_rows = 0) {
+    if (tile_rows <= 0) tile_rows = M;
     if (!xmx_enabled() || M < 16) return false;
     auto& sc = xmx_scratch();
     sc.ensure_w((size_t)std::min<int64_t>((int64_t)N * K, 8388608));
@@ -450,18 +501,22 @@ inline bool ink_xmx_linear_q8row(const uint8_t* W, int N, int K, const float* X,
     for (int n0 = 0; n0 < N; n0 += n_step) {
         const int nc = std::min(n_step, N - n0);
         k_q8row_to_f16_rows_sg16(W, n0, nc, K, N_total, sc.w_f16);
-        oneapi::mkl::blas::row_major::gemm(
-            Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-            (std::int64_t)M, (std::int64_t)nc, (std::int64_t)K,
-            1.0f, sc.x_f16, (std::int64_t)K,
-            sc.w_f16, (std::int64_t)K,
-            0.0f, Y + n0, (std::int64_t)N);
+        for (int row = 0; row < M; row += tile_rows) {
+            const int rows = std::min(tile_rows, M - row);
+            oneapi::mkl::blas::row_major::gemm(
+                Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+                (std::int64_t)rows, (std::int64_t)nc, (std::int64_t)K,
+                1.0f, sc.x_f16 + size_t(row) * K, (std::int64_t)K,
+                sc.w_f16, (std::int64_t)K,
+                0.0f, Y + size_t(row) * N + n0, (std::int64_t)N);
+        }
     }
     return true;
 }
 
 template <int F>
-inline bool ink_xmx_linear_sk(const uint8_t* W, int N, int K, const float* X, float* Y, int M) {
+inline bool ink_xmx_linear_sk(const uint8_t* W, int N, int K, const float* X, float* Y, int M, int tile_rows = 0) {
+    if (tile_rows <= 0) tile_rows = M;
     if (!xmx_enabled() || M < 16 || (K & 255)) return false;
     auto& sc = xmx_scratch();
     sc.ensure_w((size_t)std::min<int64_t>((int64_t)N * K, 8388608));
@@ -473,50 +528,109 @@ inline bool ink_xmx_linear_sk(const uint8_t* W, int N, int K, const float* X, fl
     for (int n0 = 0; n0 < N; n0 += n_step) {
         const int nc = std::min(n_step, N - n0);
         k_sk_to_f16_rows_sg16<F>(W, n0, nc, K, sc.w_f16);
-        oneapi::mkl::blas::row_major::gemm(
-            Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-            (std::int64_t)M, (std::int64_t)nc, (std::int64_t)K,
-            1.0f, sc.x_f16, (std::int64_t)K,
-            sc.w_f16, (std::int64_t)K,
-            0.0f, Y + n0, (std::int64_t)N);
+        for (int row = 0; row < M; row += tile_rows) {
+            const int rows = std::min(tile_rows, M - row);
+            oneapi::mkl::blas::row_major::gemm(
+                Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+                (std::int64_t)rows, (std::int64_t)nc, (std::int64_t)K,
+                1.0f, sc.x_f16 + size_t(row) * K, (std::int64_t)K,
+                sc.w_f16, (std::int64_t)K,
+                0.0f, Y + size_t(row) * N + n0, (std::int64_t)N);
+        }
     }
     return true;
 }
 
-// Evaluate ONE MoE expert on Intel XMX (oneMKL FP16 DPAS) by-value (zero host-to-device metadata copy!)
+// The DSpark block has eight rows of already quantized activations. The
+// signed dot accumulates in S32 and applies the same per-row FP32 scales as DP4A.
+inline void ink_xmx_dspark_q8(const uint8_t* weights, int n, int k, const int8_t* x,
+                             const float* x_scale, float* out, int32_t* dots, const int32_t* zero) {
+    const auto* codes = reinterpret_cast<const int8_t*>(weights + size_t(n) * sizeof(float));
+    const auto* w_scale = reinterpret_cast<const float*>(weights);
+    oneapi::mkl::blas::row_major::gemm_bias(
+        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans, oneapi::mkl::offset::fix,
+        8, n, k, 1.0f, x, k, int8_t(0), codes, k, int8_t(0), 0.0f, dots, n, zero);
+    Q().parallel_for(NR((8 * n + 255) / 256, 256), [=](sycl::nd_item<1> it) {
+        const int i = it.get_global_id(0);
+        if (i < 8 * n) out[i] = float(dots[i]) * (w_scale[i % n] * x_scale[i / n]);
+    });
+}
+
+// A prefill tile retains its projection shapes even when several tiles are
+// scheduled together. The weight scratch can stay live across those GEMMs.
+inline sycl::event ink_xmx_expand_expert(InkSyExpertDev expert) {
+    constexpr size_t gate_elements = 2304ul * 2304;
+    auto& scratch = xmx_scratch();
+    scratch.ensure_w(gate_elements + 2304ul * 1152);
+    if (expert.gu_code == FMT_SF4 && expert.dn_code == FMT_SF4)
+        return k_unpack_sf4_expert_panels(expert, scratch.w_f16);
+    k_dequant_moe_gu_f16_sg16(expert, scratch.w_f16);
+    return k_dequant_moe_dn_f16_sg16(expert, scratch.w_f16 + gate_elements);
+}
+
+inline sycl::event ink_xmx_moe_gate(const half* x, int n, float* projected, sycl::queue& queue = Q()) {
+    const auto& scratch = xmx_scratch();
+    return oneapi::mkl::blas::row_major::gemm(
+        queue, oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)2304,
+        1.0f, x, (std::int64_t)2304, scratch.w_f16, (std::int64_t)2304,
+        0.0f, projected, (std::int64_t)2304);
+}
+
+inline void ink_xmx_moe_gate_up(InkSyExpertDev ed, const half* x, int n, half* hidden) {
+    auto& scratch = xmx_scratch();
+    scratch.ensure_moe(n);
+    ink_xmx_moe_gate(x, n, scratch.y_gu);
+    k_moe_situ_invsq_f16_sg16(ed, scratch.y_gu, n, hidden);
+}
+
+inline sycl::event ink_xmx_moe_down(const half* hidden, int n, const half* weights, float* y, sycl::queue& queue = Q()) {
+    return oneapi::mkl::blas::row_major::gemm(
+        queue, oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)1152,
+        1.0f, hidden, (std::int64_t)1152, weights, (std::int64_t)1152, 0.0f, y, (std::int64_t)2304);
+}
+
+// x and y may be slices of a layer-wide packing or per-expert scratch.
+inline void ink_xmx_moe_project(InkSyExpertDev ed, const half* x, int n, float* y,
+                                 bool fuse_sf4_panels = false, bool expanded = false) {
+    auto& sc = xmx_scratch();
+    sc.ensure_w(2304ul * 2304ul);
+    sc.ensure_moe(n);
+    half* down_weights = sc.w_f16;
+    constexpr size_t gate_elements = 2304ul * 2304;
+    if (expanded) {
+        down_weights += gate_elements;
+    } else if (fuse_sf4_panels && ed.gu_code == FMT_SF4 && ed.dn_code == FMT_SF4 &&
+        sc.w_cap >= gate_elements + 2304ul * 1152 && reinterpret_cast<uintptr_t>(sc.w_f16) % 32 == 0) {
+        k_unpack_sf4_expert_panels(ed, sc.w_f16);
+        down_weights += gate_elements;
+    } else {
+        k_dequant_moe_gu_f16_sg16(ed, sc.w_f16);
+    }
+    ink_xmx_moe_gate_up(ed, x, n, sc.h_f16);
+    if (down_weights == sc.w_f16) k_dequant_moe_dn_f16_sg16(ed, sc.w_f16);
+    ink_xmx_moe_down(sc.h_f16, n, down_weights, y);
+}
+
 inline bool ink_xmx_moe_single(
     InkSyExpertDev ed, const float* x_in, const float* topk_w,
     const int* pair_list, int off, int n, float* y_pairs, sycl::event* out_ev = nullptr) {
     if (!xmx_enabled() || n < xmx_moe_min_n()) return false;
     auto& sc = xmx_scratch();
-    sc.ensure_w(2304ul * 2304ul);
     sc.ensure_x((size_t)n * 2304);
     sc.ensure_moe(n);
-
     k_moe_gather_f16_sg16(x_in, pair_list, off, n, sc.x_f16);
-    k_dequant_moe_gu_f16_sg16(ed, sc.w_f16);
-    oneapi::mkl::blas::row_major::gemm(
-        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)2304,
-        1.0f, sc.x_f16, (std::int64_t)2304,
-        sc.w_f16, (std::int64_t)2304,
-        0.0f, sc.y_gu, (std::int64_t)2304);
-    k_moe_situ_invsq_f16_sg16(ed, sc.y_gu, n, sc.h_f16);
-    k_dequant_moe_dn_f16_sg16(ed, sc.w_f16);
-    oneapi::mkl::blas::row_major::gemm(
-        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)1152,
-        1.0f, sc.h_f16, (std::int64_t)1152,
-        sc.w_f16, (std::int64_t)1152,
-        0.0f, sc.y_dn, (std::int64_t)2304);
+    ink_xmx_moe_project(ed, sc.x_f16, n, sc.y_dn);
     sycl::event ev = k_moe_scatter_w_sg16(sc.y_dn, topk_w, pair_list, off, n, y_pairs);
     if (out_ev) *out_ev = ev;
     return true;
 }
 #else
-inline bool ink_xmx_linear_bf16(const uint16_t*, int, int, const float*, float*, int) { return false; }
-inline bool ink_xmx_linear_q8row(const uint8_t*, int, int, const float*, float*, int, int) { return false; }
-template <int F> inline bool ink_xmx_linear_sk(const uint8_t*, int, int, const float*, float*, int) { return false; }
+inline bool ink_xmx_linear_bf16(const uint16_t*, int, int, const float*, float*, int, int = 0) { return false; }
+inline bool ink_xmx_linear_q8row(const uint8_t*, int, int, const float*, float*, int, int, int = 0) { return false; }
+template <int F> inline bool ink_xmx_linear_sk(const uint8_t*, int, int, const float*, float*, int, int = 0) { return false; }
+inline void ink_xmx_moe_project(InkSyExpertDev, const half*, int, float*, bool = false) {}
 inline bool ink_xmx_moe_single(InkSyExpertDev, const float*, const float*, const int*, int, int, float*, sycl::event* = nullptr) { return false; }
 #endif
 

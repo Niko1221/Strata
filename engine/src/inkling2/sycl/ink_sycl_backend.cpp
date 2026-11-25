@@ -190,11 +190,21 @@ public:
     int dspark_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft,
                      int32_t* out_draft_ids, std::string& /*err*/) override {
         if (!runner_.use_dspark || max_draft <= 0) return 0;
+        if (runner_.beam_enabled && slot == 0)
+            return runner_.dspark_adaptive_chain(anchor_tok,anchor_pos,max_draft,out_draft_ids);
         int tmp[7]{};
         int n = runner_.dspark_draft_block8(slot, anchor_tok, anchor_pos, tmp);
         int ret = std::min(n, max_draft);
         for (int i = 0; i < ret; ++i) out_draft_ids[i] = tmp[i];
         return ret;
+    }
+
+    int dspark_spec_step_greedy(int slot, int32_t anchor, int pos, int limit, int32_t* emitted, int* drafted,
+                                std::string& err) override {
+        if (slot != 0) return 0;
+        const int n = runner_.dspark_tree_step(anchor, pos, limit, emitted, drafted);
+        if (n < 0) err = "SYCL DSpark tree verification failed";
+        return n;
     }
 
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
