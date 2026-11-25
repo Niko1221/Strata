@@ -484,6 +484,10 @@ bool load(const std::string& path, Model& m, std::string& err) {
         err = "this reference path is for Qwen3.6-35B-A3B (qwen35moe) only";
         return false;
     }
+    if (gm.meta().get("memt.version")) {
+        err = "MemT memory is present but this reference path does not execute it";
+        return false;
+    }
     size_t checked = 0;
     if (!strata::core::check_gguf_layout(gm, m.g, err, &checked)) return false;
     const std::string p = "qwen35moe.";

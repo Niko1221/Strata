@@ -244,9 +244,10 @@ inline std::vector<TensorWant> global_tensors(const ModelGeometry& g) {
 /// Whether the family's table names every blk.* tensor its files carry (then an unnamed one is an error).
 inline bool layout_table_complete(const ModelGeometry& g) { return g.family == strata::ModelFamily::Qwen35Moe; }
 
-/// Checks the model `m` (all shards) against the layout table of `g`.  `checked` counts the tensors found.
-inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g, std::string& err,
-                              size_t* checked = nullptr) {
+/// Extra tensors use their full GGUF names.
+inline bool check_gguf_layout_with_extra_tensors(const strata::GgufModel& m, const ModelGeometry& g,
+                                                 const std::vector<TensorWant>& extra_tensors,
+                                                 std::string& err, size_t* checked = nullptr) {
     std::set<std::string> named;
     size_t n = 0;
     auto check = [&](const std::string& name, const std::vector<int64_t>& shape) {
@@ -278,6 +279,8 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
     for (int64_t l = 0; l < g.n_layers + g.n_mtp_layers; ++l)
         for (const TensorWant& w : layer_tensors(g, l))
             if (!check("blk." + std::to_string(l) + "." + w.name, w.shape)) return false;
+    for (const TensorWant& w : extra_tensors)
+        if (!check(w.name, w.shape)) return false;
     if (layout_table_complete(g)) {
         for (size_t s = 0; s < m.size(); ++s)
             for (const strata::TensorInfo& t : m.shard(s).tensors())
@@ -288,6 +291,12 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
     }
     if (checked) *checked = n;
     return true;
+}
+
+/// Checks the model `m` (all shards) against the layout table of `g`.  `checked` counts the tensors found.
+inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g, std::string& err,
+                              size_t* checked = nullptr) {
+    return check_gguf_layout_with_extra_tensors(m, g, {}, err, checked);
 }
 
 }  // namespace strata::core

@@ -149,6 +149,7 @@ from serve.server_parts.core import (  # noqa: F401  (moved unchanged, file spli
     prompt_tokens_seen,
     request_stats,
     request_timings,
+    resolve_save_dir,
     slot_filename_problem,
     slot_save_dir,
     stop_strings,
@@ -779,6 +780,7 @@ class StrataEngine:
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_hold = False            # the engine takes GEN hold=N:ID (READY <ctx> ... hold)
         self.can_hold_batch = False      # ... and its --batch slots end at the hold too, BDONE hold (READY ... holdb)
+        self.memt = False
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -860,13 +862,14 @@ class StrataEngine:
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                    self.info[k] = int(v) if k != "memt_identity" and v.lstrip("-").isdigit() else v
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
                 self.can_hold = "hold" in f[2:]
                 self.can_hold_batch = "holdb" in f[2:]
+                self.memt = "memt" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1236,7 +1239,10 @@ class StrataEngine:
             if "slot_cv" in self.__dict__:
                 with self.slot_cv:               # #1012: wake the requests that waited through it: they go on with the
                     self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
-        self.info = {**info, **self.info}
+        fresh = self.info
+        self.info = {**info, **fresh}
+        if "memt_identity" not in fresh:
+            self.info.pop("memt_identity", None)
 
     def _parse_done(self, line):
         f = line.split()
@@ -2895,14 +2901,7 @@ class StrataEngine:
         want = "SAVED" if action == "save" else "RESTORED"
 
         def out_of_step(line: str) -> EngineDied:
-            self.ended = True                               # not alive from now: the next request restarts it
-            try:
-                self.proc.kill()
-                self.proc.wait(timeout=20)
-            except (OSError, AttributeError, subprocess.TimeoutExpired):
-                pass
-            return EngineDied(f"the engine answered a session {action} with {line.strip()[:200]!r}; "
-                              "the server ended the engine")
+            return self._out_of_step(line, f"a session {action}")
 
         def count(s: str) -> int:
             if not s.isdigit():                             # no sign, no blank, no fraction
@@ -2969,6 +2968,95 @@ class StrataEngine:
                 heard = time.monotonic()
                 continue
             raise out_of_step(line)
+
+    def _out_of_step(self, line: str, what: str) -> EngineDied:
+        self.end_for_restart()
+        return EngineDied(f"the engine answered {what} with {line.strip()[:200]!r}; the server ended the engine")
+
+    def memt_commit(self, ids) -> dict:
+        """`MEMCOMMIT <ids>` between requests: -> {"tokens", "ms"}; ValueError on a refusal, EngineDied/EngineSilent when it ended."""
+        with self._exclusive_control():
+            return self._memt_commit(ids)
+
+    def _memt_commit(self, ids) -> dict:
+        ids = [int(t) for t in ids]
+        if not ids:
+            raise ValueError("a memory commit needs at least one token")
+        command = "MEMCOMMIT " + ",".join(str(t) for t in ids)
+        return self._memt_exchange(command, "a MemT commit", expected_tokens=len(ids))
+
+    def memt_reset(self) -> None:
+        with self._exclusive_control():
+            self._memt_exchange("MEMRESET", "a MemT reset")
+
+    def memt_snapshot(self, path: str, overwrite: bool = False) -> None:
+        with self._exclusive_control():
+            self._memt_exchange("MEMSNAP %s %s%s" % (path, self._memt_identity(), " overwrite" if overwrite else ""),
+                                "a MemT snapshot")
+
+    def memt_load(self, path: str) -> None:
+        with self._exclusive_control():
+            self._memt_exchange("MEMLOAD %s %s" % (path, self._memt_identity()), "a MemT load")
+
+    def _memt_identity(self) -> str:
+        identity = self.info.get("memt_identity")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("this model file carries no memt.identity (the converter writes it when the checkpoint "
+                             "has the chat template and tokenizer.json the identity hashes)")
+        if any(c.isspace() for c in identity):
+            raise ValueError("the MemT identity cannot carry whitespace")
+        return identity
+
+    def _memt_exchange(self, command: str, what: str, expected_tokens: int | None = None) -> dict:
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        try:
+            self.proc.stdin.write(command + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError, AttributeError):
+            raise self._engine_died() from None
+        op = command.split(" ", 1)[0]
+        silence = float(self.silence_s or 0)
+        heard = time.monotonic()
+        last_progress = 0
+        while True:
+            left = silence - (time.monotonic() - heard) if silence > 0 else None
+            try:
+                if left is not None and left <= 0:
+                    raise queue.Empty
+                answer = self.lines.get(timeout=left)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {silence:.0f} s during {what}") from None
+            if answer is None:
+                raise self._engine_died()
+            fields = answer.split()
+            head = fields[0] if fields else ""
+            if head in ("INFO", "WARN"):
+                heard = time.monotonic()
+                continue
+            if head == "ERR":
+                raise ValueError(answer[4:].strip() or f"the engine refused {what}")
+            if expected_tokens is None:
+                if fields == [op, "OK"]:
+                    return {}
+            elif head == "MEMCHUNK" and len(fields) == 3:
+                try:
+                    done, total = map(int, fields[1:])
+                except ValueError:
+                    raise self._out_of_step(answer, what) from None
+                if total == expected_tokens and last_progress <= done <= total:
+                    last_progress = done
+                    heard = time.monotonic()
+                    continue
+            elif head == "MEMDONE" and len(fields) == 4:
+                try:
+                    done, total = map(int, fields[1:3])
+                    ms = float(fields[3])
+                except ValueError:
+                    raise self._out_of_step(answer, what) from None
+                if done == total == expected_tokens and math.isfinite(ms) and ms >= 0:
+                    return {"tokens": done, "ms": ms}
+            raise self._out_of_step(answer, what)
 
     def close(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
@@ -4171,6 +4259,16 @@ def refuse_for_split(engine, req: dict) -> None:
         raise ValueError("logprobs: not supported by the all-cards split engine; start with --split-engine off")
 
 
+class MemtHistory:
+    def __init__(self, engine_generation: int | None, committed_tokens: list[int] | None = None,
+                 prefix_unknown: bool = False):
+        self.engine_generation = engine_generation
+        self.committed_tokens = [] if committed_tokens is None else committed_tokens
+        self.prefix_unknown = prefix_unknown
+        self.stale = False
+        self.sealed_note = False
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4197,6 +4295,7 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.memt_save_path = None                    # --memt-save-path: POST /v1/memt save/load (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         self.key_limits = None                         # #5004 (the config's "api_keys"): KeyLimits when some keys
@@ -4277,6 +4376,12 @@ class Service:
         self.vision_no_shrink_said = False
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
+        self.memt_writes = True
+        self.memt_history: dict[Engine, MemtHistory] = {}
+        self.memt_batch_note = False
+        self.memt_split_note = False
+        self.memt_locks = collections.defaultdict(threading.Lock)
+        self.memt_locks_guard = threading.Lock()
         self.reasoning_budget_configured = False         # the config named reasoning_budget_tokens (0 included): no family default
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
@@ -4513,6 +4618,162 @@ class Service:
                          "timings": {"save_ms": r["ms"]}}
         return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
                      "timings": {"restore_ms": r["ms"]}}
+
+    def memt_control(self, action: str, filename=None, overwrite: bool = False) -> tuple[int, dict]:
+        """POST /v1/memt: the memory state itself (status / reset / save / load) and its file in memt_save_path."""
+        def error(code, message):
+            return code, {"error": {"code": code, "message": message,
+                                    "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if action not in ("status", "reset", "save", "load"):
+            return error(400, "action must be status, reset, save or load")
+        if getattr(self.engine, "engines", None) or getattr(self.engine, "prefill", None):
+            return error(501, "MemT snapshots are not available with replicas or a split pair: every engine process "
+                              "has a memory of its own")
+        eng = self.engine
+        if action == "status":
+            history = self.memt_history.get(eng)
+            loaded = self.loaded()
+            if not loaded or (history and history.engine_generation != getattr(eng, "gen", None)):
+                history = None
+            return 200, {"memt": bool(getattr(eng, "memt", False)) if loaded else None, "loaded": loaded,
+                         "identity": getattr(eng, "info", {}).get("memt_identity"),
+                         "dir": self.memt_save_path, "held_tokens": len(history.committed_tokens) if history else 0,
+                         "sealed": history.prefix_unknown if history else False}
+        if not self.loaded():
+            return error(503, "the model is not loaded")
+        if not getattr(eng, "memt", False):
+            return error(501, "this model has no MemT memory (the file carries no memt.version)")
+        if action in ("save", "load") and not self.memt_save_path:
+            return error(501, "MemT snapshots are disabled (start the server with --memt-save-path DIR)")
+        if getattr(eng, "batch", 0):
+            return error(501, "MemT snapshots are not available with parallel requests (\"parallel\" / --batch): "
+                              "a snapshot needs the engine idle")
+        path = sidecar = None
+        if action in ("save", "load"):
+            why = slot_filename_problem(filename)
+            if why:
+                return error(400, f"file {why}")
+            if not filename.endswith(".safetensors"):
+                return error(400, "file must end in .safetensors")
+            path = os.path.join(self.memt_save_path, filename)
+            sidecar = path + ".json"
+            if any(c.isspace() for c in path):
+                return error(400, "the MemT control lines cannot carry whitespace in a path; use a directory without "
+                                  "spaces")
+            if os.path.dirname(os.path.realpath(path)) != os.path.realpath(self.memt_save_path):
+                return error(400, "the snapshot must stay inside the snapshot directory")
+            if os.path.islink(sidecar):
+                return error(400, f"{filename}.json must not be a symlink")
+            if action == "load":
+                if not os.path.isfile(path) or os.path.islink(path):
+                    return error(404, f"no saved memory named {filename}")
+            elif os.path.lexists(path) and not overwrite:
+                return error(409, f"{filename} exists; send overwrite: true to replace it")
+        self.last_request_at = time.time()
+        with self.status_lock:
+            self.status["queued"] += 1
+        waiting = True
+        held = []
+        prefix_saved = False
+        try:
+            with self.fifo:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+                waiting = False
+                if not self.loaded():
+                    return error(503, "the model is not loaded")
+                with self.status_lock:
+                    self.status.update(busy=True, phase="reading the memory" if action == "save" else
+                                       "writing the memory" if action == "load" else "clearing the memory",
+                                       started=time.time(), first_token=None, prompt_tokens=None,
+                                       generated=None, max_tokens=None)
+                try:
+                    with self._memt_engine_lock(eng):
+                        history = self.memt_history.get(eng)
+                        live = history is not None and history.engine_generation == getattr(eng, "gen", None)
+                        held = list(history.committed_tokens) if live else []
+                        if action == "reset":
+                            eng.memt_reset()
+                            self.memt_history[eng] = MemtHistory(getattr(eng, "gen", None))
+                        elif action == "save":
+                            if os.path.lexists(path) and not overwrite:
+                                return error(409, f"{filename} exists; send overwrite: true to replace it")
+                            eng.memt_snapshot(path, overwrite)
+                            prefix_saved = self._memt_write_sidecar(sidecar, eng, held,
+                                                                    bool(live and history.prefix_unknown),
+                                                                    self._memt_digest(path))
+                        else:
+                            digest = self._memt_digest(path)
+                            eng.memt_load(path)
+                            held, prefix_unknown = self._memt_sidecar(sidecar, eng, digest)
+                            self.memt_history[eng] = MemtHistory(getattr(eng, "gen", None), held, prefix_unknown)
+                except ValueError as e:
+                    text = str(e)
+                    code = 409 if "already exists" in text else 500 if text.startswith("cannot ") else 400
+                    return error(code, text)
+                finally:
+                    with self.status_lock:
+                        self.status["busy"] = False
+                    self.last_request_at = time.time()
+        finally:
+            if waiting:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+        if action == "reset":
+            return 200, {"status": "reset", "held_tokens": 0}
+        if action == "save":
+            return 200, {"status": "saved", "file": filename, "held_tokens": len(held), "prefix_saved": prefix_saved}
+        return 200, {"status": "loaded", "file": filename, "held_tokens": len(held)}
+
+    @staticmethod
+    def _memt_digest(path: str) -> str | None:
+        """SHA-256 of a snapshot file: binds the sidecar to the bytes beside it."""
+        h = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+        except OSError:
+            return None
+        return h.hexdigest()
+
+    @staticmethod
+    def _memt_write_sidecar(path: str, engine, tokens: list[int], prefix_unknown: bool, digest: str | None) -> bool:
+        if digest is None:
+            return False
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                                             prefix=".memt-", delete=False) as out:
+                temporary = out.name
+                json.dump({"identity": engine.info.get("memt_identity"), "held": tokens,
+                           "sealed": prefix_unknown, "sha256": digest}, out)
+            os.replace(temporary, path)
+            temporary = None
+            return True
+        except OSError as e:
+            print(f"[strata] the MemT snapshot was written; its token sidecar was not: {e}", flush=True)
+            return False
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary)
+
+    @staticmethod
+    def _memt_sidecar(path: str, eng, digest) -> tuple[list, bool]:
+        """(tokens, sealed) from the JSON beside a snapshot, when it names this model and these exact bytes."""
+        try:
+            saved = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return [], True
+        if not isinstance(saved, dict) or saved.get("identity") != getattr(eng, "info", {}).get("memt_identity"):
+            return [], True
+        if not digest or saved.get("sha256") != digest:
+            return [], True
+        held = saved.get("held")
+        if not isinstance(held, list) or not all(type(t) is int for t in held):
+            return [], True
+        return held, saved.get("sealed") is True
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -5866,6 +6127,138 @@ class Service:
             if ka is not None:
                 ka.release()
 
+    @staticmethod
+    def _memt_tool_turn(hold, parser) -> bool:
+        """A reply that ended in a tool call, or may still be finished into one by parser.finish()."""
+        if hold.calls or getattr(parser, "pending", None) or getattr(parser, "scall", None) is not None:
+            return True
+        return getattr(parser, "state", None) in ("call", "invoke", "rcall")
+
+    def _memt_engine_lock(self, engine):
+        with self.memt_locks_guard:
+            return self.memt_locks[engine]
+
+    def _memt_write_turn(self, prompt_ids, output_ids) -> None:
+        engine = self.engine
+        if not self.memt_writes or not getattr(engine, "memt", False):
+            return
+        request_engine = getattr(engine, "current", None) or engine
+        if getattr(request_engine, "prefill", None):
+            if not self.memt_split_note:
+                self.memt_split_note = True
+                print("[strata] MemT memory: reads are on; a split pair's turns are not written - a commit needs one "
+                      "engine that holds the whole memory", flush=True)
+            return
+        if getattr(request_engine, "batch", 0):
+            if not self.memt_batch_note:
+                self.memt_batch_note = True
+                print("[strata] MemT memory: reads are on; turns served by this engine are not written - it runs "
+                      "requests together (several slots), and a commit needs the engine idle", flush=True)
+            return
+        with self._memt_engine_lock(request_engine):
+            try:
+                self._memt_turn(engine, request_engine, prompt_ids, output_ids)
+            except Exception as error:
+                print(f"[strata] the MemT memory was not written: {error}", flush=True)
+
+    def _memt_prefix_end(self, held: list[int], incoming: list[int]) -> int | None:
+        if incoming[:len(held)] == held:
+            return len(held)
+
+        assistant = self.tok.encode("<|im_start|>assistant\n", parse_special=True)
+        opening = self.tok.encode("<think>", parse_special=True)
+        closing = self.tok.encode(THINK_END, parse_special=True)
+        message_end = self.tok.encode(IM_END, parse_special=True)
+        if not assistant or len(message_end) != 1:
+            return None
+
+        def visible(tokens):
+            if len(opening) != 1 or len(closing) != 1:
+                return tokens, range(1, len(tokens) + 1)
+            content, offsets = [], []
+            i = 0
+            while i < len(tokens):
+                if (tokens[i] == opening[0] and i >= len(assistant)
+                        and tokens[i - len(assistant):i] == assistant):
+                    end = tokens.index(message_end[0], i + 1) if message_end[0] in tokens[i + 1:] else len(tokens)
+                    try:
+                        after = tokens.index(closing[0], i + 1, end) + 1
+                    except ValueError:
+                        pass
+                    else:
+                        while after < end and self.tok.decode([tokens[after]]).isspace():
+                            after += 1
+                        i = after
+                        continue
+                content.append(tokens[i])
+                i += 1
+                offsets.append(i)
+            return content, offsets
+
+        previous, _ = visible(held)
+        current, offsets = visible(incoming)
+        if previous and current[:len(previous)] == previous:
+            return offsets[len(previous) - 1]
+        if not previous or previous[-1] not in self.stop_ids:
+            return None
+        # The chat template trims the completed assistant reply and ends it with IM_END.
+        for start in range(len(previous) - len(assistant) - 1, -1, -1):
+            body = start + len(assistant)
+            if previous[start:body] != assistant:
+                continue
+            if previous[:body] != current[:body] or message_end[0] in previous[body:-1]:
+                return None
+            try:
+                end = current.index(message_end[0], body)
+            except ValueError:
+                return None
+            if self.tok.decode(previous[body:-1]).strip() == self.tok.decode(current[body:end]):
+                return offsets[end]
+            break
+        return None
+
+    def _memt_turn(self, engine, request_engine, prompt_ids, output_ids) -> None:
+        engine_generation = getattr(request_engine, "gen", None)
+        history = self.memt_history.get(request_engine)
+        if history is None or history.engine_generation != engine_generation:
+            history = self.memt_history[request_engine] = MemtHistory(engine_generation)
+        if history.prefix_unknown:
+            if not history.sealed_note:
+                history.sealed_note = True
+                print("[strata] the MemT memory's token prefix is unknown; turns are not written until a reset",
+                      flush=True)
+            return
+        prompt_ids = [int(t) for t in prompt_ids]
+        prefix_end = self._memt_prefix_end(history.committed_tokens, prompt_ids)
+        if prefix_end is None:
+            if not history.stale:
+                history.stale = True
+                print("[strata] the MemT memory is not extended by this turn: its prompt does not begin with the "
+                      "tokens the memory holds (another conversation, an edited history, or a client that does not "
+                      "send back what the model wrote); the memory stays as it is", flush=True)
+            return
+        turn_ids = prompt_ids + [int(t) for t in output_ids]
+        new_ids = turn_ids[prefix_end:]
+        if not new_ids:
+            return
+        try:
+            done = engine.memt_commit(new_ids)
+        except EngineDied as e:
+            self.memt_history.pop(request_engine, None)
+            print(f"[strata] the MemT memory was not written: {e}", flush=True)
+            return
+        except ValueError as e:
+            print(f"[strata] the MemT memory did not take this turn: {e}", flush=True)
+            return
+        except Exception as error:
+            history.prefix_unknown = True
+            print(f"[strata] the MemT commit result is unknown: {error}", flush=True)
+            return
+        history.committed_tokens = turn_ids
+        history.stale = False
+        print(f"[strata] MemT memory: {done['tokens']} tokens written in {done['ms']:.0f} ms ({len(turn_ids)} held)",
+              flush=True)
+
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
              declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
@@ -6415,6 +6808,12 @@ class Service:
                               f"{run_len} times in a row: ended as \"length\" (repeat_stop_tokens in "
                               "strata-<model>.json; 0 turns this off). If a new request with a short prompt does the "
                               "same, restart the server and report it (#606)", flush=True)
+                    # only a completed reply, of text the next prompt will hold, not a tool turn
+                    if (self.memt_writes and getattr(self.engine, "memt", False) and not emb
+                            and finish == "stop" and not cancel.is_set() and markup_retried is None
+                            and not (stops is not None and stops.hit is not None)
+                            and not self._memt_tool_turn(hold, parser)):
+                        self._memt_write_turn(ids, raw_ids)
                 except GpuBusy:
                     # #3040 (PR #5044's approach): a batch engine can use up its BGEN retries before it has admitted this
                     # request.  The monitor keeps an error row, but it is not a completed generation: no prompt tokens
@@ -7839,6 +8238,18 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
+                if path == "/v1/memt":                       # the memory state itself: status / reset / save / load
+                    if not self._own_page("the MemT memory can be read or changed"):
+                        return
+                    action = req.get("action")
+                    overwrite = req.get("overwrite")
+                    if not isinstance(action, str):
+                        raise ValueError("action: status, reset, save or load")
+                    if overwrite is not None and not isinstance(overwrite, bool):
+                        raise ValueError("overwrite: true or false")
+                    code, body = svc.memt_control(action, req.get("file"), bool(overwrite))
+                    self._json(code, body)
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     check_model = getattr(svc, "check_model", None)
                     if callable(check_model):
@@ -9227,6 +9638,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
+    ap.add_argument("--memt-save-path", default=None, metavar="DIR",
+                    help="enable POST /v1/memt {\"action\": \"save\"|\"load\", \"file\": NAME}: a MemT-1.0 memory "
+                         "snapshot, to or from DIR/NAME (also \"memt_save_path\" in the config)")
     ap.add_argument("--replicas", type=int, default=None, metavar="N",
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
@@ -9522,6 +9936,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise SystemExit(f"[strata] config \"inkling_thinking_budget\" must be a whole number of tokens (0: none), not {v!r}")
         svc.inkling_thinking_budget = v
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.memt_writes = cfg.get("memt_writes") is not False
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
@@ -9634,6 +10049,17 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    if a.memt_save_path or cfg.get("memt_save_path"):
+        try:
+            value = a.memt_save_path or cfg["memt_save_path"]
+            base = None if a.memt_save_path else cfg.get("cwd")
+            svc.memt_save_path = resolve_save_dir(value, base, "memt_save_path")
+        except (ValueError, OSError) as e:
+            raise SystemExit(f"[strata] {e}")
+        if any(c.isspace() for c in svc.memt_save_path):
+            raise SystemExit("[strata] memt_save_path cannot carry whitespace: the engine's MemT control lines split "
+                             "on it")
+        print(f"[strata] MemT snapshots on: {svc.memt_save_path} (POST /v1/memt save/load)", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")

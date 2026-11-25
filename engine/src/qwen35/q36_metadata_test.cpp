@@ -5,13 +5,16 @@
 #include "strata/core/family_layout.hpp"
 #include "strata/qwen35/context_fit.hpp"
 #include "strata/qwen35/hybrid_fit.hpp"
+#include "strata/qwen35/memt_model.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -49,6 +52,7 @@ struct Kv {
     uint32_t type = 8;   // 4 u32, 5 i32, 8 string, 9 array
     std::string s;
     uint64_t u = 0;
+    double f = 0;
     uint32_t elem = 4;   // 4 u32, 5 i32, 8 string
     std::vector<uint64_t> arr;
     std::vector<std::string> sarr;
@@ -56,6 +60,7 @@ struct Kv {
 
 Kv kv_str(const std::string& k, const std::string& v) { Kv r; r.key = k; r.type = 8; r.s = v; return r; }
 Kv kv_u32(const std::string& k, uint64_t v) { Kv r; r.key = k; r.type = 4; r.u = v; return r; }
+Kv kv_f32(const std::string& k, double v) { Kv r; r.key = k; r.type = 6; r.f = v; return r; }
 Kv kv_u32_arr(const std::string& k, std::vector<uint64_t> v) {
     Kv r; r.key = k; r.type = 9; r.elem = 4; r.arr = std::move(v); return r;
 }
@@ -83,6 +88,9 @@ void write_gguf(const fs::path& path, const std::vector<Kv>& kvs) {
             puts(k.s);
         } else if (k.type == 4 || k.type == 5) {
             put32((uint32_t) k.u);
+        } else if (k.type == 6) {
+            const float x = (float) k.f;
+            put(&x, 4);
         } else if (k.type == 9 && (k.elem == 4 || k.elem == 5)) {
             put32(k.elem);
             put64(k.arr.size());
@@ -143,6 +151,9 @@ int main() {
         std::string err;
         check(strata::core::geometry_from_gguf(f, g, top_k, err), "scalar KV=2 geometry reads: " + err);
         check(g.n_head_kv == 2 && g.n_layers == 40 && g.n_mtp_layers == 1 && top_k == 8, "scalar KV=2 geometry values");
+        std::optional<strata::qwen35::MemtConfig> memt{std::in_place};
+        check(strata::qwen35::read_memt_config(f, g, memt, err) && !memt,
+              "ordinary Qwen3.6 metadata does not enable MemT");
     }
 
     // 2. Per-layer array [0, 0, 0, 2] x 10 (Ollama-converted MoE-only GGUF: block_count=40, feed_forward_length=0, no nextn)
@@ -295,6 +306,153 @@ int main() {
         const strata::qwen35::HybridPlan p1024 = strata::qwen35::hybrid_plan(in);
         check(p1024.fits && !p1024.dropped_staging && p1024.staging == in.staging_full,
               "#6425 Q8_0 with --prefill 1024 keeps streamed staging cleanly");
+    }
+
+    // 12. MemT-1.0 memory: memt.version + sizes select the six blk.<i>.memt.*
+    // tensors on the full-attention layers; a size that contradicts the
+    // backbone is refused.
+    {
+        auto memt_keys = [](uint64_t heads, uint64_t head_dim = 256,
+                            uint64_t rank = 256, uint64_t version = 1) {
+            std::vector<Kv> kvs = base_qwen35moe(
+                40, kv_u32("qwen35moe.attention.head_count_kv", 2), false, 0, false);
+            kvs.push_back(kv_u32("memt.version", version));
+            kvs.push_back(kv_u32("memt.head_count", heads));
+            kvs.push_back(kv_u32("memt.head_dim", head_dim));
+            kvs.push_back(kv_u32("memt.gate_rank", rank));
+            kvs.push_back(kv_u32("memt.chunk_tokens", 2048));
+            kvs.push_back(kv_f32("memt.output_gate_softcap_limit", 2.0));
+            kvs.push_back(kv_f32("memt.rms_norm_epsilon", 1e-6));
+            kvs.push_back(kv_u32("memt.full_attention_interval", 4));
+            kvs.push_back(kv_u32_arr("memt.memory_layers",
+                                     {3, 7, 11, 15, 19, 23, 27, 31, 35, 39}));
+            return kvs;
+        };
+        write_gguf(d.path / "memt.gguf", memt_keys(16));
+        strata::GgufFile f((d.path / "memt.gguf").string());
+        strata::core::ModelGeometry g;
+        int64_t top_k = 0;
+        std::string err;
+        check(strata::core::geometry_from_gguf(f, g, top_k, err), "MemT backbone geometry reads");
+        std::optional<strata::qwen35::MemtConfig> memt;
+        const auto read_config = [&](const strata::GgufFile& meta) {
+            return strata::qwen35::read_memt_config(meta, g, memt, err);
+        };
+        check(read_config(f) && memt &&
+                  memt->heads == 16 && memt->head_dim == 256 && memt->gate_rank == 256 &&
+                  memt->softcap == 2.0 && std::fabs(memt->rms_eps - 1e-6) < 1e-12,
+              "memt metadata reads: " + err);
+        bool found = false;
+        if (memt)
+            for (const auto& item : strata::qwen35::memt_tensors(g, *memt))
+                found |= item.name == "blk.3.memt.in_proj.weight";
+        check(found, "memt layout entry on a full-attention layer");
+        {
+            std::vector<Kv> named = memt_keys(16);
+            named.push_back(kv_str("memt.identity", std::string(64, 'a')));
+            write_gguf(d.path / "memt_id.gguf", named);
+            strata::GgufFile fid((d.path / "memt_id.gguf").string());
+            check(read_config(fid) && memt && memt->snapshot_identity == std::string(64, 'a'),
+                  "memt.identity reads: " + err);
+            std::vector<Kv> spaced = memt_keys(16);
+            spaced.push_back(kv_str("memt.identity", "a b"));
+            write_gguf(d.path / "memt_id_bad.gguf", spaced);
+            strata::GgufFile fb((d.path / "memt_id_bad.gguf").string());
+            check(!read_config(fb),
+                  "a memt.identity with a space is refused");
+            std::vector<Kv> blank = memt_keys(16);
+            blank.push_back(kv_str("memt.identity", ""));
+            write_gguf(d.path / "memt_id_empty.gguf", blank);
+            strata::GgufFile fblank((d.path / "memt_id_empty.gguf").string());
+            check(!read_config(fblank),
+                  "an empty memt.identity is refused");
+            std::vector<Kv> odd = memt_keys(16);
+            odd.push_back(kv_str("memt.identity", std::string(64, 'g')));
+            write_gguf(d.path / "memt_id_odd.gguf", odd);
+            strata::GgufFile fodd((d.path / "memt_id_odd.gguf").string());
+            check(!read_config(fodd),
+                  "a memt.identity that is not hex is refused");
+        }
+
+        write_gguf(d.path / "memt_bad.gguf", memt_keys(15));
+        strata::GgufFile bad((d.path / "memt_bad.gguf").string());
+        {
+            std::vector<Kv> soft = memt_keys(16);
+            soft.pop_back();  // memory_layers
+            soft.pop_back();  // full_attention_interval
+            soft.pop_back();  // rms_norm_epsilon
+            soft.pop_back();  // output_gate_softcap_limit
+            soft.push_back(kv_f32("memt.output_gate_softcap_limit", std::nan("")));
+            write_gguf(d.path / "memt_nan.gguf", soft);
+            strata::GgufFile fn((d.path / "memt_nan.gguf").string());
+            check(!read_config(fn), "a non-finite memt softcap is refused");
+        }
+        {
+            std::vector<Kv> soft = memt_keys(16);
+            soft.pop_back();  // memory_layers
+            soft.pop_back();  // full_attention_interval
+            soft.pop_back();  // rms_norm_epsilon
+            soft.push_back(kv_f32("memt.rms_norm_epsilon", 0.0));
+            write_gguf(d.path / "memt_eps.gguf", soft);
+            strata::GgufFile fe((d.path / "memt_eps.gguf").string());
+            check(!read_config(fe),
+                  "memt.rms_norm_epsilon <= 0 is refused");
+        }
+        check(!read_config(bad),
+              "memt.head_count != attention.head_count is refused");
+        write_gguf(d.path / "memt_v2.gguf", memt_keys(16, 256, 256, 2));
+        strata::GgufFile v2((d.path / "memt_v2.gguf").string());
+        check(!read_config(v2),
+              "memt.version != 1 is refused");
+        write_gguf(d.path / "memt_dim.gguf", memt_keys(16, 128));
+        strata::GgufFile dim((d.path / "memt_dim.gguf").string());
+        check(!read_config(dim),
+              "memt.head_dim != attention.key_length is refused");
+        write_gguf(d.path / "memt_rank.gguf", memt_keys(16, 256, 128));
+        strata::GgufFile rank((d.path / "memt_rank.gguf").string());
+        check(!read_config(rank),
+              "memt.gate_rank != attention.key_length is refused");
+        {
+            std::vector<Kv> missing = base_qwen35moe(
+                40, kv_u32("qwen35moe.attention.head_count_kv", 2), false, 0, false);
+            missing.push_back(kv_u32("memt.version", 1));
+            missing.push_back(kv_u32("memt.head_count", 16));
+            write_gguf(d.path / "memt_missing.gguf", missing);
+            strata::GgufFile f2((d.path / "memt_missing.gguf").string());
+            check(!read_config(f2),
+                  "a missing memt size is refused");
+        }
+        // A full_attention_interval that disagrees with the backbone splits
+        // memory from attention and is refused.
+        {
+            std::vector<Kv> interval = memt_keys(16);
+            interval.pop_back();  // memory_layers
+            interval.pop_back();  // full_attention_interval
+            interval.push_back(kv_u32("memt.full_attention_interval", 8));
+            write_gguf(d.path / "memt_interval.gguf", interval);
+            strata::GgufFile fi((d.path / "memt_interval.gguf").string());
+            check(!read_config(fi),
+                  "memt.full_attention_interval != the backbone interval is refused");
+        }
+        // The layer list must name every full-attention layer, in order.
+        {
+            std::vector<Kv> layers = memt_keys(16);
+            layers.pop_back();
+            layers.push_back(kv_u32_arr("memt.memory_layers",
+                                        {3, 7, 11, 15, 19, 23, 27, 31, 35, 38}));
+            write_gguf(d.path / "memt_layers.gguf", layers);
+            strata::GgufFile fl((d.path / "memt_layers.gguf").string());
+            check(!read_config(fl),
+                  "a memt.memory_layers entry that is not a full-attention layer is refused");
+            std::vector<Kv> short_list = memt_keys(16);
+            short_list.pop_back();
+            short_list.push_back(kv_u32_arr("memt.memory_layers",
+                                            {3, 7, 11, 15, 19, 23, 27, 31, 35}));
+            write_gguf(d.path / "memt_short_layers.gguf", short_list);
+            strata::GgufFile fs((d.path / "memt_short_layers.gguf").string());
+            check(!read_config(fs),
+                  "a memt.memory_layers list shorter than the full-attention layers is refused");
+        }
     }
 
     if (g_fail) {

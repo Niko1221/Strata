@@ -5,9 +5,9 @@ with the plain "not supported" words before anything is set up.
 * routed experts (``*_exps``): gate and up the same type, that type one the grouped expert kernels take for gate/up (STRATA_GU_FMTS) and the
   down projection one they take for down (STRATA_D_FMTS), in the release build (STRATA_Q6K_EXPERTS=ON: packaging/build_*.sh) - the loader's
   native_expert_supported (src/kernels/cuda/iq_kernels.cu);
-* the matrices it loads with mat() (attention, the shared expert, the GDN projections, the MTP block's eh_proj, output): a type the native
+* the matrices it loads with mat() (attention, the shared expert, the GDN projections, the MTP block's eh_proj, MemT input, output): a type the native
   MMVQ takes (native_mmvq_supported, src/kernels/cuda/native_mmvq.cu);
-* the vectors it loads with f32() (norms, router, the GDN state parameters, the MTP norms): F32, F16, BF16 or Q8_0 (upload_f32);
+* the tensors it loads with f32() (norms, router, GDN parameters, MTP norms, MemT gates and norms): the types accepted by upload_f32;
 * token_embd: any type with a known block geometry (row_bytes).
 
 The prompt path's fused, int8 and FP16 kernels are chosen per type at run time and fall back to these, so they refuse no file; a tensor
@@ -25,9 +25,10 @@ MATRIX = frozenset({2, 6, 7, 8, 11, 12, 13, 14, 20, 23, 42, 16, 17, 18, 21, 22, 
 VECTOR = frozenset({0, 1, 30, 8, 11, 12, 13, 14, 23})                                                                              # upload_f32: F32 F16 BF16 Q8_0, Q3_K-Q6_K, IQ4_XS
 
 _VECTOR_NAMES = re.compile(r"(attn_norm|post_attention_norm|ssm_alpha|ssm_beta|ssm_dt|ssm_a|ssm_conv1d|ssm_norm|attn_q_norm|attn_k_norm|"
-                           r"ffn_gate_inp|ffn_gate_inp_shexp|nextn\.enorm|nextn\.hnorm|nextn\.shared_head_norm)(\.weight|\.bias)?$")
+                           r"ffn_gate_inp|ffn_gate_inp_shexp|nextn\.enorm|nextn\.hnorm|nextn\.shared_head_norm)(\.weight|\.bias)?$|"
+                           r"memt\.(f_down\.weight|g_down\.weight|o_norm\.weight|decay_scale_log|decay_bias)$")
 _MATRIX_NAMES = re.compile(r"(attn_qkv|attn_gate|ssm_out|attn_q|attn_k|attn_v|attn_output|ffn_gate_shexp|ffn_up_shexp|ffn_down_shexp|"
-                           r"nextn\.eh_proj)\.weight$")
+                           r"nextn\.eh_proj|memt\.in_proj)\.weight$")
 
 
 def kind_of(name: str) -> str:
