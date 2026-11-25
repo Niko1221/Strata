@@ -1,0 +1,18 @@
+{
+  "vp01": "Download {0}",
+  "vp02": "Richiede {0} di memoria",
+  "vp04": "Ci sta",
+  "vp05": "Ci sta con streaming SSD",
+  "vp06": "Non ci sta",
+  "vp07": "Mostra dettagli",
+  "vp08": "Nascondi dettagli",
+  "vp09": "{0} RAM + VRAM",
+  "vp10": "Chiudi anteprima",
+  "vp11": "Libera ora",
+  "vp12": "{0} liberi",
+  "vp13": "{0}: {1} liberi su {2}",
+  "vp14": "Occupa circa",
+  "vp15": "Nulla. Entra in memoria.",
+  "vp16": "Lettura dall'SSD ora: {0}",
+  "vp17": "Questa versione occuperebbe circa {0} di memoria grafica e {1} di RAM."
+}

@@ -1,0 +1,8 @@
+{
+  "r3_01": "Richiede un aggiornamento del motore",
+  "r3_02": "potrebbe essere più lento",
+  "r3_03": "Un contesto così ampio richiede circa {0} GB di memoria grafica e lascia poco spazio al modello su questa scheda. Strata proverà ad avviarlo; se non parte, scegli un contesto più breve.",
+  "r3_04": "Al lavoro · {0}",
+  "r3_05": "{0} chat attive",
+  "r3_06": "{0} righe"
+}

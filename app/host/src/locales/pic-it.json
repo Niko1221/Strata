@@ -1,0 +1,18 @@
+{
+  "pic01": "Download dei file per le immagini (0,9 GB, una sola volta)…",
+  "pic02": "Verifica dei file per le immagini…",
+  "pic03": "Nessuna connessione internet: il modello viene caricato senza lettura delle immagini. Ricaricalo quando sei online.",
+  "pic04": "Spazio libero su disco insufficiente per i file delle immagini: il modello viene caricato senza lettura delle immagini.",
+  "pic05": "Impossibile scaricare i file delle immagini: il modello viene caricato senza lettura delle immagini. Riprova più tardi.",
+  "pic06": "I file delle immagini mancano: il modello viene caricato senza lettura delle immagini.",
+  "pic07": "Download dei file per le immagini",
+  "pic08": "I file per le immagini sono pronti.",
+  "pic09": "Nessuna connessione internet: impossibile scaricare i file delle immagini ora.",
+  "pic10": "Spazio libero su disco insufficiente per i file delle immagini (circa 1 GB).",
+  "pic11": "Impossibile scaricare i file delle immagini. Riprova: il download riprende da dove si è interrotto.",
+  "pic12": "I file delle immagini scaricati non hanno superato il controllo di sicurezza e sono stati eliminati. Riprova.",
+  "pic13": "Impossibile scaricare i file delle immagini. Riprova.",
+  "pic14": "File per le immagini pronti",
+  "pic15": "Ricarica il modello per leggere le immagini.",
+  "pic16": "La lettura delle immagini è pronta."
+}

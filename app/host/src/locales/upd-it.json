@@ -1,0 +1,19 @@
+{
+  "upd01": "Per aggiornare il motore, Strata deve arrestare il modello caricato: {0}.",
+  "upd02": "Il nuovo motore viene scaricato prima, mentre il modello continua a rispondere. Poi il modello si arresta (le risposte in corso terminano prima), il motore viene aggiornato e puoi riavviare il modello con le stesse impostazioni. Modelli e impostazioni restano salvati.",
+  "upd03": "Arresta e aggiorna",
+  "upd04": "Preparazione del nuovo motore. {0} continua a funzionare finché non è pronto.",
+  "upd05": "Arresto di {0}. Le risposte in corso terminano prima.",
+  "upd06": "{0} è stato arrestato. Aggiornamento del motore…",
+  "upd07": "Aggiornamento del motore",
+  "upd08": "Il motore è stato aggiornato",
+  "upd09": "Il motore non è stato aggiornato",
+  "upd10": "Il motore è stato aggiornato. Riavviare {0} con le stesse impostazioni?",
+  "upd11": "L'aggiornamento non è riuscito. Il vecchio motore è intatto e continua a funzionare. Riavviare {0} su quello?",
+  "upd12": "Non ora",
+  "upd13": "Avvio di {0}. Il caricamento può richiedere alcuni minuti.",
+  "upd14": "Riavvio di {0}",
+  "upd15": "Il modello non si è riavviato",
+  "upd16": "Puoi ricaricarlo da Modelli.",
+  "upd17": "È in esecuzione un modello non avviato da questa app, quindi non è stato modificato nulla. Arrestalo e riprova ad aggiornare il motore."
+}
