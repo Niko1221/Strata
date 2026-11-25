@@ -4293,6 +4293,10 @@ class Service:
             self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
         except ValueError:
             self.inkling_thinking_budget = None
+        # #7133: a thinking budget a CLIENT asks for (Anthropic budget_tokens, reasoning_budget_tokens and its aliases) is capped at the default budget of the level it
+        # maps to, so Claude Code's 31,999 is 8,192 (high), not minutes of hidden thinking.  STRATA_INKLING_BUDGET_CAP=0 / the config's inkling_budget_cap false: the full budget.
+        self.inkling_budget_cap = os.environ.get("STRATA_INKLING_BUDGET_CAP", "").strip().lower() not in ("0", "false", "no", "off")
+        self.inkling_budget_cap_said = False          # the line that says a client's budget was lowered is printed once
         self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
         self.inkling_image_max_px = 0                 # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
@@ -4733,7 +4737,7 @@ class Service:
                 word = None
         return INKLING_BUDGET_BY_EFFORT.get(word or inkling_dialect.normalize_effort(None), INKLING_BUDGET_BY_EFFORT["low"])
 
-    def reasoning_budget(self, req) -> int | None:
+    def reasoning_budget(self, req, announce: bool = False) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
         llama.cpp reads it, `thinking_budget_tokens`; or vLLM's `thinking_token_budget`, or Qwen's `thinking_budget`: the
         three names pi's thinkingTokenBudgetField can send), else the config's.  The request's own `reasoning_budget_tokens`
@@ -4744,6 +4748,7 @@ class Service:
         for alias in ("thinking_token_budget", "thinking_budget", "thinking_budget_tokens"):
             if value is None:                            # a null does not hide the other names
                 value = req.get(alias)
+        from_client = value is not None
         if value is None:
             value = self.reasoning_budget_tokens
             if not value and not self.reasoning_budget_configured and getattr(self, "inkling", False):
@@ -4752,6 +4757,14 @@ class Service:
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
+        if from_client and value > 0 and getattr(self, "inkling", False) and getattr(self, "inkling_budget_cap", True):
+            cap = self.inkling_default_budget(req.get("strata_effort"))          # #7133: a client may lower the level's budget, not raise it (0: no default, so no cap)
+            if cap and value > cap:
+                if announce and not self.inkling_budget_cap_said:
+                    self.inkling_budget_cap_said = True
+                    print(f"[strata] a client asked for a thinking budget of {value} tokens; Inkling thinks at most {cap} at this level "
+                          "(inkling_budget_cap false in the run config, or STRATA_INKLING_BUDGET_CAP=0, keeps what the client asks for)", flush=True)
+                value = cap
         return value if value > 0 else None
 
     def _release_orphan_encoder(self) -> bool:
@@ -6019,7 +6032,7 @@ class Service:
         # #6734: Inkling-2-Mini writes hidden thinking whatever the request asks for (even with its effort at "none"), so its budget
         # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
         think_budget = thinking or self.inkling
-        budget = self.reasoning_budget(sampling) if think_budget else None
+        budget = self.reasoning_budget(sampling, announce=True) if think_budget else None
         room_cap = INKLING_ROOM_MIN_CAP if self.inkling else ANSWER_ROOM_MIN_CAP     # Inkling: whatever max_tokens, the answer keeps its share
         if think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
@@ -9697,6 +9710,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise SystemExit(f"[strata] config \"inkling_thinking_budget\" must be a whole number of tokens (0: none), not {v!r}")
         svc.inkling_thinking_budget = v
+    if cfg.get("inkling_budget_cap") is not None:          # #7133: false = a client's thinking budget is used as asked (else capped at its level's default); STRATA_INKLING_BUDGET_CAP=0 does the same
+        if not isinstance(cfg["inkling_budget_cap"], bool):
+            raise SystemExit(f"[strata] config \"inkling_budget_cap\" must be true or false, not {cfg['inkling_budget_cap']!r}")
+        svc.inkling_budget_cap = cfg["inkling_budget_cap"]
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
