@@ -48,6 +48,7 @@ import * as models from './models.mjs';
 import * as engine from './engine.mjs';
 import * as monitor from './monitor.mjs';
 import * as serving from './serving.mjs';
+import { createRequestGuard } from './request-guard.mjs';
 import * as store from './store.mjs';
 import { createChatStore, drainChatStore, storeFailure, validChatId } from './chat-store.mjs';
 import { busyHelper, createHelperRecords, recordFor, validHelperId } from './chat-helper-records.mjs';
@@ -1005,15 +1006,18 @@ await cloudflare.inspect();
 
 /* --------------------------------------------------------------- routing --- */
 
+const guard = createRequestGuard({ port: PORT, bind: HOST });
 const server = http.createServer(async (req, res) => {
   const url = requestUrl(req);
   if (!url) return badRequest(res);   // #4397: a bad Host or request target is a 400, never an unhandled rejection
   const path = url.pathname;
   const method = req.method ?? 'GET';
 
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-strata-client');
-  res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  // #7130: who may use this listener from a browser (request-guard.mjs): this PC's own names as Host, the host's own page as Origin, the page's
+  // token on every change, and CORS for /v1 only. A preflight is answered only when its page is allowed to send the request that follows.
+  for (const [name, value] of Object.entries(guard.cors(req, path))) res.setHeader(name, value);
+  const refused = guard.refusal(req, path, method);
+  if (refused) return error(res, refused.status, refused.message, { code: refused.code });
   if (method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -1021,10 +1025,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (path.startsWith('/api/') && req.headers.origin) {
-      const origin = new URL(req.headers.origin);
-      if (!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) return error(res, 403, 'Open the local Strata app to use host controls.');
-    }
     if (path.startsWith('/api/')) {
       const modelOperation = !['GET', 'OPTIONS'].includes(method) && /^\/api\/(models|local-models|runtime|image-models|engine|native)(\/|$)/.test(path) && !['/api/runtime/plan', '/api/engine/validate', '/api/local-models/inspect'].includes(path);
       if (modelOperation) modelOperations++;
@@ -2548,6 +2548,14 @@ async function staticFile(req, res, path) {
     file = index;
   }
 
+  if (basename(file) === 'index.html') {
+    // #7130: the page carries this launch's token (only for the host's own page) and may not be framed by another site (a click on a framed page).
+    const html = readFileSync(file, 'utf8');
+    const body = Buffer.from(guard.mayHaveToken(req) ? guard.inject(html) : html, 'utf8');
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-length': body.length, 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'" });
+    res.end(req.method === 'HEAD' ? undefined : body);
+    return;
+  }
   const type = MIME[extname(file)] ?? 'application/octet-stream';
   const size=statSync(file).size;
   const headers={'content-type':type,'cache-control':file.endsWith('index.html')?'no-store':'public, max-age=3600','accept-ranges':'bytes'};
