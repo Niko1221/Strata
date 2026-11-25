@@ -59,6 +59,8 @@ class TestInklingUnslothDirectCatalog(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("STRATA_INKLING_SOURCE", None)
             os.environ.pop("STRATA_INKLING_GGUF_SOURCE", None)
+            os.environ.pop("STRATA_SOURCE", None)
+            os.environ.pop("MODELSCOPE_ENDPOINT", None)
             s_strata = inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata")
             s_gguf = inkling_family.sources_for("Inkling-2-Mini-UD-Q2_K_XL.gguf")
             s_dspark = inkling_family.sources_for(inkling_family.DSPARK_GGUF_FILE)
@@ -70,6 +72,26 @@ class TestInklingUnslothDirectCatalog(unittest.TestCase):
         with mock.patch.dict(os.environ, {"STRATA_INKLING_SOURCE": "http://127.0.0.1:19999/mirror"}, clear=False):
             self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-UD-IQ1_S.gguf")[0]["base"], "http://127.0.0.1:19999/mirror")
             self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata")[0]["base"], "http://127.0.0.1:19999/mirror")
+
+    def test_source_modelscope_routes_inkling_files_to_modelscope(self):
+        ms = {"STRATA_SOURCE": "modelscope"}
+        strata = "https://www.modelscope.cn/models/strata-engine/Inkling-2-Mini-Strata/resolve/master"
+        gguf = "https://www.modelscope.cn/models/unsloth/Inkling-2-Mini-GGUF/resolve/master"
+        self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata", env=ms)[0]["base"], strata)
+        self.assertEqual(inkling_family.sources_for("tokenizer.json", env=ms)[0]["base"], strata)
+        self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-UD-Q4_K_XL.gguf", env=ms)[0]["base"], gguf)
+
+        # A local mirror still wins; ModelScope is the next source, not a replacement for it.
+        mirror = {"STRATA_SOURCE": "modelscope", "STRATA_INKLING_SOURCE": "http://127.0.0.1:19999/mirror"}
+        self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata", env=mirror)[0]["base"], "http://127.0.0.1:19999/mirror")
+        self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata", env=mirror)[1]["base"], strata)
+
+        # Without the switch the shipped Hugging Face source stays first.
+        hf = {"STRATA_SOURCE": "huggingface"}
+        self.assertIn("huggingface.co/strata-engine/Inkling-2-Mini-Strata", inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata", env=hf)[0]["base"])
+        endpoint = {"STRATA_SOURCE": "ms", "MODELSCOPE_ENDPOINT": "https://ms.example/"}
+        self.assertEqual(inkling_family.sources_for("Inkling-2-Mini-SQ-10.strata", env=endpoint)[0]["base"],
+                         "https://ms.example/models/strata-engine/Inkling-2-Mini-Strata/resolve/master")
 
     def test_files_of_gguf_includes_dspark_and_vision(self):
         files = inkling_family.files_of("UD-Q2_K_XL", vision=True, dspark=True)
