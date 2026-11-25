@@ -299,6 +299,14 @@ the two `FileVersion`s; replacing the System32 copy with the driver's needs an a
 `TrustedInstaller` and usually mapped by Intel Graphics Software, so it has to be renamed aside rather than
 overwritten. `sycl-ls` stops crashing with the driver's loader in place.
 
+**Ship Intel's oneAPI runtime DLLs; a self-built SYCL runtime is not a drop-in.** A report on PR #3607 (Arc Pro B60
+24 GB and a GPU-less Windows VM) built intel/llvm v7.2.0's Windows SYCL runtime (`sycl9.dll` plus the UR adapters)
+from the same sources as their cross-built compiler. It loads standalone and `sycl-ls` finds the OpenCL CPU device
+through it, but beside `strata.exe` the engine dies at startup with `0xC0000142` because `mkl_sycl_blas.6.dll` fails
+to initialize (LoadLibrary error 1114) - the same without a GPU, so Level Zero is not the deciding factor. With Intel's
+genuine oneAPI 2026.2 runtime DLLs beside the same binary, it runs. While oneMKL is in the link, the package needs
+Intel's redistributable runtime; setup copies it.
+
 Re-checked after merging upstream's 291 commits (0.2.2, engine 0.1.47) on 2026-10-21: the build is clean again (234
 targets, 51 executables, upstream's new `tq_sycl_parity` among them and passing on the B70), `positioned_file_test`
 passes, 30 of 31 model-free parity tests pass, and the tuned figures above come from that engine. The default
