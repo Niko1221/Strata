@@ -243,6 +243,19 @@ class FitStart(unittest.TestCase):
         args2 = [("2048" if a == "auto" else a) for a in self.ARGS]
         self.assertEqual(V.fit_start(self.cfg(), list(args2), 8192, "sycl")[0][args2.index("--prefill") + 1], "2048")
 
+    def test_a_chunk_the_fit_planned_is_written_even_when_the_start_had_no_prefill(self):
+        # A start with no --prefill runs the engine's own chunk.  The fit planned a smaller one and said so in its note,
+        # but wrote it only when the flag was already in the arguments: the note promised a chunk the engine never saw,
+        # and the reserve floor the plan picked was sized for that chunk (the OOM the fit exists to prevent could still
+        # happen).  Fit.prefill is documented as "a new chunk size to write", so the flag is added here.
+        i = self.ARGS.index("--prefill")
+        bare = self.ARGS[:i] + self.ARGS[i + 2:]
+        args, par, note = V.fit_start(self.cfg(), list(bare), 8192, "sycl")
+        self.assertIn("chunks of 1024", note)                                  # what the note claims
+        self.assertIn("--prefill", args)                                       # ...is now in the arguments
+        self.assertEqual(args[args.index("--prefill") + 1], "1024")
+        self.assertEqual(args[:len(bare)], bare)                               # the person's own arguments are untouched
+
     def test_a_12gb_card_at_128k_with_streamed_kv_is_unchanged(self):
         a = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_S-00001-of-00002.gguf", "--max-context", "131072", "--kv", "int8", "--kv-resident", "32768",
              "--vram-reserve-mib", "700"]
