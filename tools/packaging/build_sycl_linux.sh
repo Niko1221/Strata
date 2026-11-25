@@ -48,7 +48,7 @@ override=${STRATA_GGML_DIR:-${LLAMA_CPP:-}}
 [ -z "$override" ] || ggml="-DSTRATA_GGML_DIR=$override"
 # shellcheck disable=SC2086
 cmake -S engine/sycl -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
-    -DSTRATA_SYCL_PARITY=OFF -DSTRATA_SYCL_IQ_DECODE_FAST=${IQ_DECODE_FAST:-ON} ${aot:+"-DSTRATA_SYCL_AOT=$aot"} $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake   # STRATA_CMAKE_EXTRA: e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp
+    -DSTRATA_SYCL_PARITY=OFF -DSTRATA_SYCL_IQ_DECODE_FAST=${IQ_DECODE_FAST:-ON} ${aot:+"-DSTRATA_SYCL_AOT=$aot"} "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--build-id=sha1" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake   # STRATA_CMAKE_EXTRA: e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp
 cmake --build "$build" --target strata -j "$jobs"
 
 ver=$(sed -n 's/^[[:space:]]*project([^)]*VERSION[[:space:]]*\([0-9][0-9.]*\).*/\1/p' engine/CMakeLists.txt | head -1)
