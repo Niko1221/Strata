@@ -29,7 +29,7 @@ MpiRuntime::~MpiRuntime() {
 }
 
 [[noreturn]] void MpiRuntime::fail(const std::string& message) {
-    std::fprintf(stderr, "tensor parallel rank %d: %s\n", rank_, message.c_str());
+    std::fprintf(stderr, "distributed rank %d: %s\n", rank_, message.c_str());
     std::fflush(stderr);
     MPI_Abort(MPI_COMM_WORLD, 1);
     std::abort();
@@ -42,14 +42,17 @@ void MpiRuntime::check(int result, const char* operation) {
     fail(std::string(operation) + ": " + std::string(message, length));
 }
 
-void MpiRuntime::wait(MPI_Request& request, const char* operation, bool idle) {
-    const auto deadline = std::chrono::steady_clock::now() + timeout_;
+void MpiRuntime::wait(MPI_Request& request, const char* operation, bool idle, bool short_poll) {
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + timeout_;
     for (;;) {
         int completed = 0;
         check(MPI_Test(&request, &completed, MPI_STATUS_IGNORE), operation);
         if (completed) return;
-        if (!idle && std::chrono::steady_clock::now() >= deadline) fail(std::string(operation) + ": timeout");
-        std::this_thread::sleep_for(idle ? std::chrono::microseconds(1000) : std::chrono::microseconds(50));
+        const auto now = std::chrono::steady_clock::now();
+        if (!idle && now >= deadline) fail(std::string(operation) + ": timeout");
+        if (short_poll && now - start < std::chrono::milliseconds(2)) std::this_thread::yield();
+        else std::this_thread::sleep_for(idle ? std::chrono::microseconds(1000) : std::chrono::microseconds(50));
     }
 }
 
@@ -58,6 +61,13 @@ void MpiRuntime::broadcast(std::span<std::byte> bytes) {
     MPI_Request request;
     check(MPI_Ibcast(bytes.data(), int(bytes.size()), MPI_BYTE, 0, MPI_COMM_WORLD, &request), "MPI bootstrap broadcast");
     wait(request, "MPI bootstrap broadcast");
+}
+
+void MpiRuntime::broadcast_control(std::span<uint32_t> words) {
+    if (words.empty() || words.size() > 16) fail("control message must contain 1..16 words");
+    MPI_Request request;
+    check(MPI_Ibcast(words.data(), int(words.size()), MPI_UINT32_T, 0, MPI_COMM_WORLD, &request), "MPI control");
+    wait(request, "MPI control", rank_ != 0, true);
 }
 
 std::string MpiRuntime::command(const std::string& rank_zero_text) {

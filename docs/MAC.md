@@ -28,7 +28,12 @@ Intel engines are unchanged.
 ## What you need
 
 - **An Apple Silicon Mac (M1 or newer).**
-- **macOS 15 or newer.** The engine keeps its buffers resident through a residency set, which macOS 15 introduced.
+- **macOS 15 or newer.** macOS 15 is supported. The engine keeps its buffers resident through a residency set, which macOS 15
+  introduced. The fast prompt kernels use Metal's MetalPerformancePrimitives, which only macOS 26 ships. **On macOS 15 the Qwen engine
+  reads prompts more slowly (about 10x on our measurement: 635 against 60 tokens a second) because that macOS 26 feature is off.**
+  Strata starts the engine with the prompt read through the decode windows instead (see [Limits](#limits-this-version)); the measured
+  generation speed is the same with and without it. This has not been run on a Mac with macOS 15: it was checked on macOS 27 by
+  confirming that the engine then compiles none of those kernels. (On macOS 14 only a source build starts.)
 - **For a source build only:** Command Line Tools (`xcode-select --install`).
 - **Enough unified memory for the pack.** The GPU maps the model's main file and keeps it in memory while the model runs. Metal
   lets one program keep about 3/4 of the memory resident (107.5 GB of 128 GB on the M5 Max).
@@ -238,6 +243,14 @@ The first request after a model loads also waits once while the engine builds it
   | 260 tokens (640x400) | 0.45 s | 50.7 s |
   | 972 tokens (1600x1200) | 2.4 s | 194 s |
 
+- **macOS 15 (below macOS 26): the prompt is slower.** The prompt kernels need MetalPerformancePrimitives (macOS 26), and the engine
+  ends at start when they do not compile (#7082, #3915). Strata therefore adds `STRATA_METAL_PROMPT=window`,
+  `STRATA_METAL_PROMPT_GEMM=0` and `COOP_K4=0` to the engine's environment on macOS below 26 (for each one you have not set), says so
+  in one line at the start, and reads the prompt through the decode windows. A user of an M1 Max measured 8.1 tokens a second of
+  generation on macOS 15 with these settings (#3915). On macOS 27, on an M5 Max, Q2_0, the same engine with and without them
+  generated at the same speed (20.7 against 20.8 tokens a second, 5 interleaved pairs, resident; 14.0 against 14.1 streaming, 3 pairs;
+  another user's work shared that GPU) and read a 1,970-token prompt at 60 tokens a second instead of 635 (46 against 643 streaming).
+  Set your own value of any of the three to keep it. Not tested on a Mac with macOS 15.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
   be set, but it is not measured.
 - **Several requests at once.** `--parallel N` keeps N sequences side by side in the engine, each with its own running state and K/V (0.65 GB each at a 36,864-token context). Measured on an M5 Max with IQ3_S, the MTP draft layer and `--spec 2`, N requests of 150 tokens sent at the same time, tokens a second over all of them: 1 request 85, 2 requests 95 to 102, 3 requests 115, 4 requests 119 to 125. One request alone decodes at 96 to 100; with 2, 3 and 4 at once each decodes at 53 to 61, 41 to 48 and 32 to 40. The engine uses 8.3, 12.0, 14.0 and 16.0 GB for 1 to 4.
@@ -265,7 +278,9 @@ For testing. All are off unless set; the defaults are described above.
 | Variable | Effect |
 | --- | --- |
 | `STRATA_HC_Q8=0` | The BF16 hyper-connection read (exact) instead of Q8_0 |
-| `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (slow, exact fallback; about 190 tok/s) |
+| `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (slow, exact fallback; about 190 tok/s in an earlier measurement, 58 to 61 on an M5 Max shared with another user in the macOS 15 check). Set by Strata on macOS below 26 |
+| `STRATA_METAL_PROMPT_GEMM=0` | A streaming Mac: no prompt GEMM kernels (they need macOS 26). Set by Strata on macOS below 26 |
+| `COOP_K4=0` | Skip the matrix-layout probe (it compiles a macOS 26 kernel); the M4 tile choice is used. Set by Strata on macOS below 26 |
 | `STRATA_METAL_PROMPT_CHUNK=N` | Prompt chunk size (default 2048 resident; see streaming above) |
 | `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
 | `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |

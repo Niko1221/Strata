@@ -1,0 +1,9 @@
+{
+ "note": "Hugging Face repository for Tencent Hy4-Flash (.strata v1.0). Overridden by STRATA_HY4_SOURCE or config key hy4_source.",
+ "sources": [
+  {
+   "kind": "http",
+   "base": "https://huggingface.co/strata-engine/Hy4-Flash-Strata/resolve/main"
+  }
+ ]
+}

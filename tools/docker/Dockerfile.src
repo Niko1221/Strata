@@ -38,6 +38,8 @@ WORKDIR /src
 COPY . .
 ARG CUDA_ARCHITECTURES="75;80;86;89;120"
 ARG BUILD_VISION=1
+ARG BUILD_HY4=1
+ARG BUILD_INKLING=1
 ARG ENGINE_VERSION=
 RUN python3 -m venv /venv && /venv/bin/pip install --no-cache-dir -r terminal/requirements.txt -r terminal/requirements-build.txt
 # ggml comes from the vendored engine/third_party/strata-ggml; strata-vision is Strata's own reader (terminal/tools/vision/own): nothing is downloaded
@@ -45,11 +47,15 @@ RUN set -e; \
     real=""; for a in $(echo "$CUDA_ARCHITECTURES" | tr ';,' '  '); do real="$real;${a}-real"; done; real=${real#;}; \
     last=$(echo "$CUDA_ARCHITECTURES" | tr ';,' '  ' | awk '{print $NF}'); \
     sm60=OFF; for a in $(echo "$CUDA_ARCHITECTURES" | tr ';,' '  '); do if [ "$a" -lt 75 ]; then sm60=ON; fi; done; \
+    hy4=OFF; [ "$BUILD_HY4" = "1" ] && hy4=ON || true; \
+    ink=OFF; [ "$BUILD_INKLING" = "1" ] && ink=ON || true; \
     /venv/bin/cmake -G Ninja -S engine -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
-        -DSTRATA_EXPERIMENTAL_SM60=$sm60 \
+        -DSTRATA_EXPERIMENTAL_SM60=$sm60 -DSTRATA_BUILD_HY4=$hy4 -DSTRATA_BUILD_INKLING=$ink \
         -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON \
         "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"; \
     . tools/packaging/engine_targets.sh; targets=$(engine_targets /venv/bin/cmake build); \
+    [ "$BUILD_HY4" = "1" ] && targets="$targets strata-hy4" || true; \
+    [ "$BUILD_INKLING" = "1" ] && targets="$targets strata-inkling" || true; \
     /venv/bin/cmake --build build --target $targets -j "$(nproc)"; \
     if [ "$BUILD_VISION" = "1" ]; then \
       /venv/bin/cmake -G Ninja -S terminal/tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
@@ -57,7 +63,7 @@ RUN set -e; \
       /venv/bin/cmake --build build-vision --target strata-vision -j "$(nproc)"; \
     fi
 RUN set -e; \
-    mkdir -p /stage /engine; \
+    mkdir -p /stage /engine /shapes; \
     cp build/strata /stage/; \
     [ -f build/libstrata_kq.so ] && cp build/libstrata_kq.so /stage/ || true; \
     [ -f build-vision/bin/strata-vision ] && cp build-vision/bin/strata-vision /stage/ || true; \
@@ -72,7 +78,33 @@ RUN set -e; \
     python3 tools/packaging/package_engine.py --src /stage --backend cuda --version "$ver" --out /engine $archs --arch "compute_$last" \
         --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt --include 'libstrata_kq*' \
         --include strata-vision; \
-    for d in /engine/*/; do python3 tools/packaging/package_engine.py --verify "$d"; python3 tools/packaging/binary_deps.py "$d"; done
+    if [ "$BUILD_HY4" = "1" ]; then \
+      hy4_bin=""; \
+      if [ -f build/strata-hy4 ]; then hy4_bin=build/strata-hy4; elif [ -f build/src/hy4flash/strata-hy4 ]; then hy4_bin=build/src/hy4flash/strata-hy4; fi; \
+      [ -n "$hy4_bin" ] || { echo "BUILD_HY4=1 but strata-hy4 was not built"; exit 1; }; \
+      mkdir -p /stage-hy4 /shapes/hy4/engine; \
+      cp "$hy4_bin" /stage-hy4/strata-hy4; \
+      cp /stage/BUILD.json /stage-hy4/BUILD.json; \
+      python3 tools/packaging/collect_libs.py --binary "$hy4_bin" --search /usr/local/cuda/lib64 --out /stage-hy4 --also 'libcublasLt.so*'; \
+      python3 tools/packaging/package_engine.py --src /stage-hy4 --backend cuda --shape hy4 --version "$ver" --out /shapes/hy4/engine $archs --arch "compute_$last" \
+          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt; \
+    fi; \
+    if [ "$BUILD_INKLING" = "1" ]; then \
+      ink_bin=""; \
+      if [ -f build/src/inkling2/strata-inkling ]; then ink_bin=build/src/inkling2/strata-inkling; elif [ -f build/strata-inkling ]; then ink_bin=build/strata-inkling; fi; \
+      [ -n "$ink_bin" ] || { echo "BUILD_INKLING=1 but strata-inkling was not built"; exit 1; }; \
+      mkdir -p /stage-inkling /shapes/inkling2/engine; \
+      cp "$ink_bin" /stage-inkling/strata-inkling; \
+      cp /stage/BUILD.json /stage-inkling/BUILD.json; \
+      python3 tools/packaging/collect_libs.py --binary "$ink_bin" --search /usr/local/cuda/lib64 --out /stage-inkling --also 'libcublasLt.so*'; \
+      python3 tools/packaging/package_engine.py --src /stage-inkling --backend cuda --shape inkling2 --version "$ver" --out /shapes/inkling2/engine $archs --arch "compute_$last" \
+          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt; \
+    fi; \
+    for d in /engine/*/ /shapes/*/engine/*/; do \
+      [ -d "$d" ] || continue; \
+      python3 tools/packaging/package_engine.py --verify "$d"; \
+      python3 tools/packaging/binary_deps.py "$d"; \
+    done
 
 # ---- 2. the Terminal (the release archive, built here)
 FROM ${RUNTIME_BASE} AS terminal
@@ -98,9 +130,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini ca-certifi
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 COPY --from=terminal /opt/strata/terminal /opt/strata/terminal
 COPY --from=engine-build /engine/ /opt/strata/components/engine/
+COPY --from=engine-build /shapes/ /opt/strata/components/shapes/
 COPY tools/docker/entrypoint.sh tools/docker/healthcheck.sh /opt/strata/
 COPY tools/docker/strata-wrapper.sh /usr/local/bin/strata
 RUN chmod 0755 /opt/strata/entrypoint.sh /opt/strata/healthcheck.sh /usr/local/bin/strata
+RUN set -e; \
+    for d in /opt/strata/components/engine/*/ /opt/strata/components/shapes/*/engine/*/; do \
+      [ -d "$d" ] || continue; \
+      miss=$(find "$d" -type f \( -name 'strata*' -o -name '*.so' -o -name '*.so.*' \) ! -name '*.json' ! -name '*.txt' | while read -r f; do \
+               head -c4 "$f" | grep -q ELF || continue; \
+               LD_LIBRARY_PATH="$d" ldd "$f" 2>/dev/null | grep 'not found' | grep -v -E 'libcuda\.so|libnvidia|libnvcuvid' | sed "s|^|$(basename "$f"): |"; \
+             done | sort -u); \
+      if [ -n "$miss" ]; then echo "MISSING LIBRARIES in $d"; echo "$miss"; exit 1; fi; \
+      echo "libraries of $d resolve inside this image"; \
+    done
 ENV STRATA_COMPONENTS_DIR=/opt/strata/components STRATA_INSTALL_DIR=/data/install XDG_STATE_HOME=/data/state \
     XDG_CONFIG_HOME=/data/config HOME=/data/home PORT=8080 LANG=C.UTF-8 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 STRATA_IN_DOCKER=1 \
     NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility

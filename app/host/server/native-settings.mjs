@@ -22,6 +22,7 @@ export const NATIVE_FIELDS=[
  {id:'split_skip_if_fits',label:'Use one GPU when the model fits',group:'GPU & memory',type:'boolean'},
  {id:'vram_elastic',label:'Elastic GPU expert cache',group:'GPU & memory',type:'boolean'},
  {id:'vram_reserve_mib',label:'GPU memory for other apps (MiB)',group:'GPU & memory',type:'number',min:0,max:131072,hint:'Applied as --vram-reserve-mib when loading.'},
+ {id:'prompt_cache_spread',label:'Spread prompt cache checkpoints',group:'GPU & memory',type:'boolean',hint:'Keeps conversation cache checkpoints spaced back through the chat instead of only the latest turns. Uses the same RAM and speeds up agent compaction on hybrid models. Default is on in the desktop app.'},
  {id:'vision_tokens',label:'Maximum image tokens',group:'Image reading',type:'number',min:1,max:16384},
  {id:'vision_min_tokens',label:'Minimum image tokens',group:'Image reading',type:'number',min:0,max:16384},
  {id:'mcp_timeout_s',label:'Tool timeout (seconds)',group:'Tools',type:'number',min:1,max:3600},
@@ -58,6 +59,7 @@ const smallNvidia=gpus=>(gpus??[]).some(g=>{
 const radeon9000=gpus=>(gpus??[]).some(g=>(!g.vendor||g.vendor==='amd')&&(GFX12.test(String(g.arch??''))||(!g.arch&&RADEON_9000.test(String(g.name??'')))));
 export function speedSwitchApplies(id,{deepseek=false,backend=null,gpus=[],arch=null,vision=false}={}){
  if(deepseek)return false;                                              // a DeepSeek settings file (no longer run): no switch
+ if(arch==='hy4flash'||arch==='inkling2_loop')return false;              // Hy4-Flash & Inkling-2-Mini read none of these Qwen environment switches
  if(id==='faster_long_prompts')return !arch&&(backend==='cuda'||backend==='hip');
  if(id==='faster_12gb_nvidia')return !arch&&backend==='cuda'&&smallNvidia(gpus);   // the engine's routing needs the Flash-Next shape (512 experts, top-10) and a CUDA build
  if(id==='route_tail_skip')return backend==='cuda'||(backend==='hip'&&radeon9000(gpus));   // the engine reads STRATA_ROUTE_TAIL_SKIP on CUDA and gfx1200/gfx1201 only
@@ -96,6 +98,14 @@ export function withoutDraftLayer(args){
  for(let i=0;i<list.length;i++){const a=list[i];if(a==='--batch-mtp')continue;if(a==='--mtp'||a==='--spec-min-p'){if(i+1<list.length&&!list[i+1].startsWith('--'))i++;continue;}out.push(a);}
  return out;
 }
+/** Add or remove --prompt-cache-spread in an engine args array without duplicating it (#6469). */
+export function withPromptCacheSpread(args){
+ const list=(args??[]).map(String);
+ return list.includes('--prompt-cache-spread')?list:[...list,'--prompt-cache-spread'];
+}
+export function withoutPromptCacheSpread(args){
+ return (args??[]).map(String).filter(a=>a!=='--prompt-cache-spread');
+}
 export function validateNativeSettings(values){
  if(!values||typeof values!=='object'||Array.isArray(values))throw new Error('Native settings must be an object.');
  const result={};
@@ -109,7 +119,7 @@ export function validateNativeSettings(values){
   if(field.type==='number'&&(!Number.isFinite(value)||value<field.min||value>field.max||!Number.isInteger(value)))throw new Error(`${field.label}: choose a whole number from ${field.min} to ${field.max}.`);
   if(field.type==='boolean'&&typeof value!=='boolean')throw new Error(`${field.label}: choose on or off.`);
   if(field.type==='string'&&(typeof value!=='string'||value.length>256))throw new Error(`${field.label}: enter at most 256 characters.`);
-  if(field.type==='enum'&&!field.choices.includes(value))throw new Error(`${field.label}: choose a supported option.`);
+  if(field.type==='enum'&&!(key==='drafting'&&(value==='dfly2'||value==='dspark'))&&!field.choices.includes(value))throw new Error(`${field.label}: choose a supported option.`);
   if(field.type==='array'&&(!Array.isArray(value)||value.length>24||value.some(v=>typeof v!=='string'||!v.trim()||v.length>80)||new Set(value).size!==value.length))throw new Error('Choose distinct model aliases, up to 80 characters each.');
   if(key==='layer_split'&&value!=='auto'){const points=value.split(',').map(Number);if(!points.length||points.some((n,i)=>!Number.isInteger(n)||n<1||n>=48||(i>0&&n<=points[i-1])))throw new Error('Layer split points must increase from 1 to 47, for example 16,32.');}
   result[key]=value;
@@ -138,4 +148,8 @@ export function validateMcpServers(servers,previous={}){
 
 const sensitive=name=>/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name);
 export function publicNativeEnv(env){return Object.fromEntries(Object.entries(env).filter(([name])=>ENV_FLAG.test(name)).map(([name,value])=>[name,sensitive(name)?MASK:value]));}
+/** #6772: the env a panel saves, as a change to what is in the file NOW. `panel` is what the form holds, `base` what it loaded, `current` the file's env: an entry the form added or
+ *  changed is written, one it removed is removed, and everything else - an entry added to the file by hand while the panel was open - stays. Returns the public (masked) shape
+ *  that restoreNativeEnv takes. */
+export function mergeEnvChanges(panel,base,current){const out=publicNativeEnv(current??{});for(const [name,value] of Object.entries(panel??{}))if(base?.[name]!==value)out[name]=value;for(const name of Object.keys(base??{}))if(!(name in (panel??{})))delete out[name];return out;}
 export function restoreNativeEnv(env,previous={}){const result=Object.fromEntries(Object.entries(previous).filter(([name])=>!ENV_FLAG.test(name)));for(const [name,value] of Object.entries(env)){if(value===MASK){if(previous[name]===undefined)throw new Error(`Enter a new value for ${name}.`);result[name]=previous[name];}else result[name]=value;}return result;}

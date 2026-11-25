@@ -20,6 +20,8 @@
 // ldmatrix.  The products are mma.sync m16n8k32 (m16n8k16 for the formats with a scale per 16 values); the epilogues
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/prefill/moe_mmq.hpp"
+#include "strata/prefill/nvfp4_prefill_mode.hpp"
 #include "strata/prefill/pf_fused_override.hpp"
 #include "strata/prefill/fused_tile_rule.hpp"
 #include "strata/prefill/fused_tq_default.hpp"
@@ -53,6 +55,12 @@
 #include <cstring>
 #include <mutex>
 #include <type_traits>
+
+#if !defined(STRATA_FUSED_DECODE_ONLY) && !defined(STRATA_FUSED_GEO_N_EMBD)
+namespace strata::prefill::fp4_tc {
+bool available();
+}  // namespace strata::prefill::fp4_tc
+#endif
 
 namespace strata::prefill::fused {
 namespace {
@@ -208,27 +216,31 @@ Tables tables(void* scratch, int n_expert) {
 
 // ---- activations in natural order: one warp per 64 values
 __global__ void quant_act_nat_kernel(const float* __restrict__ x, int64_t nblk, uint8_t* __restrict__ xa) {
-    const int64_t w = (int64_t) blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     const int lane = threadIdx.x & 31;
-    if (w >= nblk) return;
-    const float v0 = x[w * 64 + lane], v1 = x[w * 64 + 32 + lane];
-    float a0 = fabsf(v0), a1 = fabsf(v1);
+    const int64_t warps_per_blk = (int64_t) (blockDim.x / 32);
+    const int64_t stride = (int64_t) gridDim.x * warps_per_blk;
+    for (int64_t w = (int64_t) blockIdx.x * warps_per_blk + threadIdx.x / 32; w < nblk; w += stride) {
+        const float r0 = x[w * 64 + lane], r1 = x[w * 64 + 32 + lane];
+        const float v0 = isfinite(r0) ? r0 : 0.0f, v1 = isfinite(r1) ? r1 : 0.0f;
+        float a0 = fabsf(v0), a1 = fabsf(v1);
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        a0 = fmaxf(a0, __shfl_xor_sync(0xffffffffu, a0, o));
-        a1 = fmaxf(a1, __shfl_xor_sync(0xffffffffu, a1, o));
-    }
-    uint8_t* out = xa + w * AB;
-    const int c0 = a0 > 0.0f ? __float2int_rn(v0 * (127.0f / a0)) : 0, c1 = a1 > 0.0f ? __float2int_rn(v1 * (127.0f / a1)) : 0;
-    out[lane] = (uint8_t) (int8_t) c0;
-    out[32 + lane] = (uint8_t) (int8_t) c1;
-    int s0 = c0, s1 = c1;   // the codes' sums per 32 values (the formats with a minimum read them)
+        for (int o = 16; o > 0; o >>= 1) {
+            a0 = fmaxf(a0, __shfl_xor_sync(0xffffffffu, a0, o));
+            a1 = fmaxf(a1, __shfl_xor_sync(0xffffffffu, a1, o));
+        }
+        uint8_t* out = xa + w * AB;
+        const int c0 = (a0 > 0.0f && isfinite(a0)) ? max(-127, min(127, __float2int_rn(v0 * (127.0f / a0)))) : 0;
+        const int c1 = (a1 > 0.0f && isfinite(a1)) ? max(-127, min(127, __float2int_rn(v1 * (127.0f / a1)))) : 0;
+        out[lane] = (uint8_t) (int8_t) c0;
+        out[32 + lane] = (uint8_t) (int8_t) c1;
+        int s0 = c0, s1 = c1;   // the codes' sums per 32 values (the formats with a minimum read them)
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        s0 += __shfl_xor_sync(0xffffffffu, s0, o);
-        s1 += __shfl_xor_sync(0xffffffffu, s1, o);
+        for (int o = 16; o > 0; o >>= 1) {
+            s0 += __shfl_xor_sync(0xffffffffu, s0, o);
+            s1 += __shfl_xor_sync(0xffffffffu, s1, o);
+        }
+        if (lane == 0) *(float4*) (out + 64) = make_float4(isfinite(a0) ? a0 / 127.0f : 0.0f, isfinite(a1) ? a1 / 127.0f : 0.0f, (float) s0, (float) s1);
     }
-    if (lane == 0) *(float4*) (out + 64) = make_float4(a0 / 127.0f, a1 / 127.0f, (float) s0, (float) s1);
 }
 
 // (STRATA_PF_FUSED_TQ=1: CUDA sm_80+, HIP gfx12, wave32) the block-Hadamard rotation of a Hadamard-folded expert's input (include/strata/kernels/cpu/hadamard.hpp):
@@ -267,30 +279,37 @@ __global__ void hadamard128_kernel(float* __restrict__ x, int64_t nblk, int cols
 __global__ void rot_quant_h_kernel(const float* __restrict__ hf, const int32_t* __restrict__ off, int e0, int e1, int64_t n,
                                    const float* __restrict__ signs, uint8_t* __restrict__ ha) {
     constexpr int BLK = D_ROWS_K / 128;   // Hadamard blocks a row (5 for n_ff 640)
-    const int64_t w = (int64_t) blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     const int lane = threadIdx.x & 31;
-    if (w >= n * BLK) return;
-    const int64_t row = w / BLK;
-    const int b = (int) (w % BLK);
-    if (row < off[e0] || row >= off[e1]) return;
-    const float* p = hf + row * D_ROWS_N + 128 * b;
-    float v[4];
+    const int64_t warps_per_blk = (int64_t) (blockDim.x / 32);
+    const int64_t stride = (int64_t) gridDim.x * warps_per_blk;
+    const int64_t total = n * BLK;
+    for (int64_t w = (int64_t) blockIdx.x * warps_per_blk + threadIdx.x / 32; w < total; w += stride) {
+        const int64_t row = w / BLK;
+        const int b = (int) (w % BLK);
+        if (row < off[e0] || row >= off[e1]) continue;
+        const float* p = hf + row * D_ROWS_N + 128 * b;
+        float v[4];
 #pragma unroll
-    for (int k = 0; k < 4; ++k) v[k] = p[32 * k + lane] * (signs ? signs[128 * b + 32 * k + lane] : 1.0f);
-    fwht128_warp(v, lane);
+        for (int k = 0; k < 4; ++k) {
+            const float rv = p[32 * k + lane] * (signs ? signs[128 * b + 32 * k + lane] : 1.0f);
+            v[k] = isfinite(rv) ? rv : 0.0f;
+        }
+        fwht128_warp(v, lane);
 #pragma unroll
-    for (int k = 0; k < 4; ++k) {   // value 128 b + 32 k + lane: AB block (128 b + 32 k) / 64, half k & 1
-        float am = fabsf(v[k]);
+        for (int k = 0; k < 4; ++k) {   // value 128 b + 32 k + lane: AB block (128 b + 32 k) / 64, half k & 1
+            const float vk = isfinite(v[k]) ? v[k] : 0.0f;
+            float am = fabsf(vk);
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
-        const int code = am > 0.0f ? __float2int_rn(v[k] * (127.0f / am)) : 0;
-        int cs = code;
+            for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
+            const int code = (am > 0.0f && isfinite(am)) ? max(-127, min(127, __float2int_rn(vk * (127.0f / am)))) : 0;
+            int cs = code;
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) cs += __shfl_xor_sync(0xffffffffu, cs, o);
-        uint8_t* o = ha + row * H_ROW_BYTES + ((128 * b + 32 * k) / 64) * AB;
-        const int hh = k & 1;
-        o[32 * hh + lane] = (uint8_t) (int8_t) code;
-        if (lane == 0) { *(float*) (o + 64 + 4 * hh) = am / 127.0f; *(float*) (o + 72 + 4 * hh) = (float) cs; }
+            for (int o = 16; o > 0; o >>= 1) cs += __shfl_xor_sync(0xffffffffu, cs, o);
+            uint8_t* o = ha + row * H_ROW_BYTES + ((128 * b + 32 * k) / 64) * AB;
+            const int hh = k & 1;
+            o[32 * hh + lane] = (uint8_t) (int8_t) code;
+            if (lane == 0) { *(float*) (o + 64 + 4 * hh) = isfinite(am) ? am / 127.0f : 0.0f; *(float*) (o + 72 + 4 * hh) = (float) cs; }
+        }
     }
 }
 
@@ -1301,12 +1320,13 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                     for (int i = 0; i < 4; ++i) {
                         float gt = acc[i][n][c], up = acc[i][n][2 + c];
                         if constexpr (WT == T_NVFP4) { gt *= t_gate; up *= t_up; }   // (the expert's s_gate / s_up)
-                        h[i] = gt / (1.0f + __expf(-gt)) * up;
+                        const float hv = gt / (1.0f + __expf(-gt)) * up;
+                        h[i] = isfinite(hv) ? hv : 0.0f;
                         am = fmaxf(am, fabsf(h[i]));
                     }
 #pragma unroll
                     for (int o = 4; o < 32; o <<= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
-                    const float inv = am > 0.0f ? 127.0f / am : 0.0f;
+                    const float inv = (am > 0.0f && isfinite(am)) ? 127.0f / am : 0.0f;
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if constexpr (is_tq(WT)) {
                         // (CUDA, STRATA_PF_FUSED_TQ=1, a Hadamard-folded down: set_down_rotation) H as FP32, n_ff values at the start of the row's
@@ -1785,6 +1805,13 @@ __device__ __forceinline__ void nw_barrier() {
     __builtin_amdgcn_s_waitcnt(0x7 | (0x3f << 10));   // gfx11 simm16: expcnt [2:0], lgkmcnt [9:4], vmcnt [15:10]: lgkmcnt(0) only
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#elif STRATA_NAT_W12
+    // #6515: gfx12 runs in WGP mode too; write the explicit LDS wait (s_wait_dscnt 0x0) with local workgroup fences
+    // so stage weight stores are ordered before the barrier without global_inv scope:SCOPE_SE.
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+    asm volatile("s_wait_dscnt 0x0" ::: "memory");
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
 #else
     __syncthreads();
 #endif
@@ -2075,6 +2102,426 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
 #endif
 }
 
+// STRATA_PF_F16=2 (gfx1100..gfx1151): 128-token pair FP16 WMMA kernel (native_h11p_kernel, MIT, ported from Strata-rdna3).
+// Decodes each 64-value K stage once for 128 routed tokens (halving VALU decode/FLOP), stages B[128][72] in LDS, skips empty
+// 16-token columns (STRATA_NH_COLSKIP), uses FP16 IQ codebooks + 128-byte nibble sign-bit masks (STRATA_NH_HGRID -> 3 blocks/WGP),
+// and writes FP16 H directly from accumulators plus FP16 down rows when DM16=true (moe_combine16).
+#ifndef STRATA_NH_COLSKIP
+#define STRATA_NH_COLSKIP 1
+#endif
+#ifndef STRATA_NH_Q2FAST
+#define STRATA_NH_Q2FAST 1
+#endif
+#ifndef STRATA_NH_HGRID
+#define STRATA_NH_HGRID 1
+#endif
+#ifndef STRATA_NH_WPE
+#define STRATA_NH_WPE 1
+#endif
+typedef _Float16 nh_h16 __attribute__((ext_vector_type(16)));
+typedef _Float16 nh_h2 __attribute__((ext_vector_type(2)));
+typedef float nh_f8 __attribute__((ext_vector_type(8)));
+constexpr int HLD = 72;   // 64 halves + 8 pad for bank-conflict-free 32B loads
+__device__ __forceinline__ nh_f8 nh_wmma(nh_h16 a, nh_h16 b, nh_f8 c) {
+#if STRATA_NAT_W11
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    (void) a; (void) b;
+    __builtin_trap();
+    return c;
+#endif
+}
+__device__ __forceinline__ uint32_t nh_pack(float a, float b) {
+    const nh_h2 v = {(_Float16) a, (_Float16) b};
+    return __builtin_bit_cast(uint32_t, v);
+}
+__device__ __forceinline__ nh_h16 nh_ld(const _Float16* p) {
+    const uint4* q = reinterpret_cast<const uint4*>(p);
+    const uint4 a = q[0], b = q[1];
+    struct { uint4 x, y; } t{a, b};
+    return __builtin_bit_cast(nh_h16, t);
+}
+
+template <int T, bool SS = false>
+__device__ __forceinline__ void nh_put_fast(const uint32_t (&w)[raw_words(T)], const uint8_t* grid, const uint4* sgn,
+                                            uint32_t (&hw)[16]) {
+    const nh_h2 z2 = {(_Float16) 0.0f, (_Float16) 0.0f};
+    if constexpr (T == T_Q2_0) {
+        const _Float16 d = (_Float16) half_at(w[2]);
+        const nh_h2 s2 = {d, d};
+        const nh_h2 k256 = {(_Float16) 0.00390625f, (_Float16) 0.00390625f}, m5 = {(_Float16) -5.0f, (_Float16) -5.0f};
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const uint32_t x = w[h];
+            const uint32_t A = (x & 0x03030303u) | 0x64646464u, B = ((x >> 2) & 0x03030303u) | 0x64646464u;
+            const uint32_t C = ((x >> 4) & 0x03030303u) | 0x64646464u, D = ((x >> 6) & 0x03030303u) | 0x64646464u;
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                const uint32_t sel = 0x0Cu | ((uint32_t) b << 8) | (0x0Cu << 16) | ((uint32_t) (4 + b) << 24);
+                const nh_h2 p0 = __builtin_bit_cast(nh_h2, __builtin_amdgcn_perm(B, A, sel));
+                const nh_h2 p1 = __builtin_bit_cast(nh_h2, __builtin_amdgcn_perm(D, C, sel));
+                const nh_h2 q0 = p0 * k256 + m5, q1 = p1 * k256 + m5;
+                hw[8 * h + 2 * b] = __builtin_bit_cast(uint32_t, q0 * s2 + z2);
+                hw[8 * h + 2 * b + 1] = __builtin_bit_cast(uint32_t, q1 * s2 + z2);
+            }
+        }
+    } else {
+        float s0, s1;
+        uint32_t gi[8], si[4];
+        if constexpr (T == T_IQ2_XXS) {
+#pragma unroll
+            for (int l = 0; l < 4; ++l) { gi[l] = (w[0] >> (8 * l)) & 255; si[l] = (w[1] >> (7 * l)) & 127; }
+            s0 = s1 = half_at(w[2]) * (float) ((w[1] >> 27) | 1) * 0.125f;
+        } else if constexpr (T == T_IQ2_XS) {
+#pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                const uint32_t c = (w[l >> 1] >> (16 * (l & 1))) & 0xFFFF;
+                gi[l] = c & 511; si[l] = (c >> 9) & 127;
+            }
+            const float d = half_at(w[2]);
+            const uint32_t sc = w[2] >> 16;
+            s0 = d * (float) (2 * (sc & 15) + 1) * 0.125f;
+            s1 = d * (float) (2 * ((sc >> 4) & 15) + 1) * 0.125f;
+        } else if constexpr (T == T_IQ2_S) {
+            const uint32_t qh = (w[2] >> 16) & 255;
+#pragma unroll
+            for (int l = 0; l < 4; ++l) { gi[l] = ((w[0] >> (8 * l)) & 255) | ((qh << (8 - 2 * l)) & 0x300); si[l] = (w[1] >> (8 * l)) & 255; }
+            const float d = half_at(w[2]);
+            const uint32_t sc = w[2] >> 24;
+            s0 = d * (float) (2 * (sc & 15) + 1) * 0.125f;
+            s1 = d * (float) (2 * (sc >> 4) + 1) * 0.125f;
+        } else if constexpr (T == T_IQ3_XXS) {
+#pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                gi[2 * l] = (w[l >> 1] >> (16 * (l & 1))) & 255; gi[2 * l + 1] = (w[l >> 1] >> (16 * (l & 1) + 8)) & 255;
+                si[l] = (w[2] >> (7 * l)) & 127;
+            }
+            s0 = s1 = half_at(w[3]) * (float) (2 * (w[2] >> 28) + 1) * 0.25f;
+        } else {   // IQ3_S
+            const uint32_t qh = (w[3] >> 16) & 255;
+#pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                gi[2 * l] = ((w[l >> 1] >> (16 * (l & 1))) & 255) | ((qh << (8 - 2 * l)) & 256);
+                gi[2 * l + 1] = ((w[l >> 1] >> (16 * (l & 1) + 8)) & 255) | ((qh << (7 - 2 * l)) & 256);
+                si[l] = (w[2] >> (8 * l)) & 255;
+            }
+            s0 = s1 = half_at(w[3]) * (float) (1 + 2 * (w[3] >> 24));
+        }
+        const nh_h2 sa = {(_Float16) s0, (_Float16) s0}, sb = {(_Float16) s1, (_Float16) s1};
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            uint32_t g[4];
+            if constexpr (T == T_IQ3_XXS || T == T_IQ3_S) {
+                const uint2 a = ((const uint2*) grid)[gi[2 * l]], b = ((const uint2*) grid)[gi[2 * l + 1]];
+                g[0] = a.x; g[1] = a.y; g[2] = b.x; g[3] = b.y;
+            } else {
+                const uint4 a = ((const uint4*) grid)[gi[l]];
+                g[0] = a.x; g[1] = a.y; g[2] = a.z; g[3] = a.w;
+            }
+            uint4 sg;
+            if constexpr (SS) {
+                const uint2 a = reinterpret_cast<const uint2*>(sgn)[si[l] & 15], b = reinterpret_cast<const uint2*>(sgn)[si[l] >> 4];
+                sg = make_uint4(a.x, a.y, b.x, b.y);
+            } else {
+                sg = sgn[si[l]];
+            }
+            const nh_h2 sc = (per16(T) && l >= 2) ? sb : sa;
+            hw[4 * l + 0] = __builtin_bit_cast(uint32_t, __builtin_bit_cast(nh_h2, g[0] ^ sg.x) * sc + z2);
+            hw[4 * l + 1] = __builtin_bit_cast(uint32_t, __builtin_bit_cast(nh_h2, g[1] ^ sg.y) * sc + z2);
+            hw[4 * l + 2] = __builtin_bit_cast(uint32_t, __builtin_bit_cast(nh_h2, g[2] ^ sg.z) * sc + z2);
+            hw[4 * l + 3] = __builtin_bit_cast(uint32_t, __builtin_bit_cast(nh_h2, g[3] ^ sg.w) * sc + z2);
+        }
+    }
+}
+
+__host__ __device__ constexpr int nh_wpe(int t, bool gu) {
+    return STRATA_NH_WPE && !gu && t == T_Q2_0 ? 6 : 1;
+}
+
+template <int WT, bool GU, bool D16 = false>
+__global__ void __launch_bounds__(NW_THREADS) __attribute__((amdgpu_waves_per_eu(nh_wpe(WT, GU))))
+native_h11p_kernel(const Batch b, const NativeGeom geo, const Tables tb, const _Float16* __restrict__ act,
+                   const int32_t* __restrict__ src, _Float16* __restrict__ out, float* __restrict__ dm) {
+#if STRATA_NAT_W11
+    constexpr int KD = GU ? GU_ROWS_K : D_ROWS_K;
+    constexpr int NS = KD / 64;
+    constexpr int NFB = (GU ? GU_ROWS_N : D_ROWS_N) / NW_ROWS;
+    constexpr int BS = block_bytes(WT);
+    constexpr bool K16 = per16(WT);
+    constexpr int GB = grid_bytes(WT) > 0 ? grid_bytes(WT) : 16;
+    constexpr int TP = 2 * kTileRows;
+    constexpr int NTH = NW_THREADS;
+    __shared__ __align__(32) _Float16 smem[(NW_ROWS + TP) * HLD];
+    _Float16(*wt)[HLD] = reinterpret_cast<_Float16(*)[HLD]>(smem);
+    _Float16(*bt)[HLD] = reinterpret_cast<_Float16(*)[HLD]>(smem + NW_ROWS * HLD);
+    constexpr bool HG = STRATA_NH_HGRID && grid_bytes(WT) > 0;
+    __shared__ __align__(16) uint8_t sgrid[HG ? 2 * GB : GB];
+    constexpr bool SS = HG && sign_entries(WT) == 256;
+    constexpr int SGN = SS ? 8 : (WT == T_IQ2_XXS || WT == T_IQ2_XS || WT == T_IQ2_S || WT == T_IQ3_XXS || WT == T_IQ3_S)
+                            ? sign_entries(WT) : 1;
+    __shared__ __align__(16) uint4 ssign[SGN];
+    __shared__ int srow[TP];
+    __shared__ int spp[kMaxBatch + 1];
+    const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5;
+    const int wm = wave & 3, wn = wave >> 2, l16 = lane & 15, hi = lane >> 4;
+    if constexpr (grid_bytes(WT) > 0) {
+        const uint32_t* gs = (const uint32_t*) grid_src<WT>();
+        if constexpr (HG) {
+            for (int i = tid; i < grid_bytes(WT) / 4; i += NTH) {
+                const uint32_t g = gs[i];
+                const nh_h2 lo = {(_Float16) (float) (g & 255), (_Float16) (float) ((g >> 8) & 255)};
+                const nh_h2 hi2 = {(_Float16) (float) ((g >> 16) & 255), (_Float16) (float) (g >> 24)};
+                ((uint2*) sgrid)[i] = make_uint2(__builtin_bit_cast(uint32_t, lo), __builtin_bit_cast(uint32_t, hi2));
+            }
+        } else {
+            for (int i = tid; i < grid_bytes(WT) / 4; i += NTH) ((uint32_t*) sgrid)[i] = gs[i];
+        }
+    }
+    if constexpr (SGN > 1) {
+        if constexpr (SS) {
+            uint2* t = reinterpret_cast<uint2*>(ssign);
+            for (int i = tid; i < 16; i += NTH)
+                t[i] = make_uint2((i & 1) * 0x8000u | ((i >> 1) & 1) * 0x80000000u, ((i >> 2) & 1) * 0x8000u | ((i >> 3) & 1) * 0x80000000u);
+        } else if constexpr (HG) {
+            for (int i = tid; i < SGN; i += NTH) {
+                uint32_t bb = (uint32_t) i;
+                if (SGN == 128) bb ^= (__popc(bb) & 1) << 7;
+                uint32_t m[4];
+#pragma unroll
+                for (int p = 0; p < 4; ++p) m[p] = ((bb >> (2 * p)) & 1) * 0x8000u | ((bb >> (2 * p + 1)) & 1) * 0x80000000u;
+                ssign[i] = make_uint4(m[0], m[1], m[2], m[3]);
+            }
+        } else {
+            for (int i = tid; i < SGN; i += NTH) ssign[i] = sign_entry(i, SGN == 128);
+        }
+    }
+    const int ne = b.e1 - b.e0;
+    if (tid < ne) spp[tid + 1] = (tb.ts[b.e0 + tid + 1] - tb.ts[b.e0 + tid] + 1) >> 1;
+    nw_barrier();
+    if (tid == 0) {
+        spp[0] = 0;
+        for (int i = 1; i <= ne; ++i) spp[i] += spp[i - 1];
+    }
+    uint32_t kv[4] = {0, 0, 0, 0};
+    if constexpr (WT == T_IQ4_XS || WT == T_IQ4_NL) {
+#pragma unroll
+        for (int k = 0; k < 16; ++k) kv[k >> 2] |= (uint32_t) (uint8_t) kvalues_iq4nl[k] << (8 * (k & 3));
+    }
+    if constexpr (WT == T_NVFP4) {
+#pragma unroll
+        for (int k = 0; k < 16; ++k) kv[k >> 2] |= (uint32_t) (uint8_t) kvalues_fp4[k] << (8 * (k & 3));
+    }
+    nw_barrier();
+    const int ur = tid >> 1, uj = tid & 1;
+    const int nwork = spp[ne] * NFB;
+    constexpr bool GU256 = GU && WT != T_Q2_0 && WT != T_Q8_0 && WT != T_NVFP4;
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int p = w / NFB, fb = w % NFB;
+        int lo = 0, hi2 = ne - 1;
+        while (lo < hi2) {
+            const int mid = (lo + hi2 + 1) >> 1;
+            if (spp[mid] <= p) lo = mid; else hi2 = mid - 1;
+        }
+        const int t = tb.ts[b.e0 + lo] + 2 * (p - spp[lo]);
+        const int2 tl = tb.tiles[t];
+        const int e = tl.x, row0 = tl.y, nrows = min(TP, tb.off[e + 1] - row0);
+        const uint8_t* blob = b.blob[e - b.e0];
+        float t_gate = 1.0f, t_up = 1.0f, t_down = 1.0f;
+        if constexpr (WT == T_NVFP4) {
+            const uint8_t* tlp = blob + geo.down_off + geo.d_row * (size_t) D_ROWS_N;
+            if constexpr (GU) { t_gate = __uint_as_float(ld32(tlp)); t_up = __uint_as_float(ld32(tlp + 4)); }
+            else t_down = __uint_as_float(ld32(tlp + 8));
+        }
+        const int rbase = fb * NW_ROWS;
+        const uint8_t* wrow = GU ? blob + ((ur & 1) ? geo.up_off : 0) + (size_t) (fb * (NW_ROWS / 2) + (ur >> 1)) * geo.gu_row
+                                 : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
+        auto unit = [&](int s) -> const uint8_t* {
+            if (GU256) return wrow + (s >> 2) * BS;
+            return (WT == T_IQ4_NL || WT == T_Q5_0 || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+        };
+        auto sub = [&](int s) { return GU256 ? 2 * (s & 3) + uj : uj; };
+        auto put = [&](const uint32_t (&raw)[raw_words(WT)]) {
+            if constexpr (HG || (STRATA_NH_Q2FAST && WT == T_Q2_0)) {
+                uint32_t hw[16];
+                nh_put_fast<WT, SS>(raw, sgrid, ssign, hw);
+                uint4* d = reinterpret_cast<uint4*>(&wt[ur][32 * uj]);
+#pragma unroll
+                for (int k = 0; k < 4; ++k) d[k] = make_uint4(hw[4 * k], hw[4 * k + 1], hw[4 * k + 2], hw[4 * k + 3]);
+                return;
+            }
+            uint32_t q[8];
+            float s0, s1;
+            convert<WT>(raw, sgrid, kv, q, s0, s1, ssign);
+            const nh_h2 sa = {(_Float16) s0, (_Float16) s0};
+            const nh_h2 sb = {(_Float16) (K16 ? s1 : s0), (_Float16) (K16 ? s1 : s0)};
+            const _Float16 mh = (_Float16) (has_min(WT) ? s1 : 0.0f);
+            const nh_h2 mn2 = {mh, mh};
+            const nh_h2 off = {(_Float16) -1152.0f, (_Float16) -1152.0f};
+            uint32_t hw[16];
+#pragma unroll
+            for (int k = 0; k < 8; ++k) {
+                const uint32_t u = q[k] ^ 0x80808080u;
+                const uint32_t lo_p = __builtin_amdgcn_perm(0x64646464u, u, 0x07010700u);
+                const uint32_t hi_p = __builtin_amdgcn_perm(0x64646464u, u, 0x07030702u);
+                const nh_h2 sc = (K16 && k >= 4) ? sb : sa;
+                const nh_h2 a0 = __builtin_bit_cast(nh_h2, lo_p) + off, a1 = __builtin_bit_cast(nh_h2, hi_p) + off;
+                hw[2 * k] = __builtin_bit_cast(uint32_t, a0 * sc + mn2);
+                hw[2 * k + 1] = __builtin_bit_cast(uint32_t, a1 * sc + mn2);
+            }
+            uint4* d = reinterpret_cast<uint4*>(&wt[ur][32 * uj]);
+#pragma unroll
+            for (int k = 0; k < 4; ++k) d[k] = make_uint4(hw[4 * k], hw[4 * k + 1], hw[4 * k + 2], hw[4 * k + 3]);
+        };
+        nw_barrier();
+        if (tid < TP) {
+            const int r = row0 + min(tid, nrows - 1);
+            srow[tid] = GU ? src[r] : r;
+        }
+        uint32_t raw[raw_words(WT)] = {};
+        load_unit<WT>(unit(0), sub(0), raw);
+        nw_barrier();
+        const uint4* bsrc = reinterpret_cast<const uint4*>(act + (size_t) srow[ur] * KD + 32 * uj);
+        uint4 b0 = bsrc[0], b1 = bsrc[1], b2 = bsrc[2], b3 = bsrc[3];
+        uint4* bdst = reinterpret_cast<uint4*>(&bt[ur][32 * uj]);
+        put(raw);
+        bdst[0] = b0; bdst[1] = b1; bdst[2] = b2; bdst[3] = b3;
+        if (NS > 1) {
+            load_unit<WT>(unit(1), sub(1), raw);
+            b0 = bsrc[8]; b1 = bsrc[9]; b2 = bsrc[10]; b3 = bsrc[11];
+        }
+        const bool on = 64 * wn < nrows;
+        nh_f8 acc[2][4];
+#pragma unroll
+        for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+            for (int nt = 0; nt < 4; ++nt) acc[mt][nt] = nh_f8{0, 0, 0, 0, 0, 0, 0, 0};
+#pragma unroll 1
+        for (int s = 0; s < NS; ++s) {
+            nw_barrier();
+            if (on) {
+#if STRATA_NH_COLSKIP
+                const int ncol = min(4, (nrows - 64 * wn + 15) >> 4);
+                if (ncol == 4) {
+#endif
+#pragma unroll
+                for (int q = 0; q < 4; ++q) {
+                    const nh_h16 B0 = nh_ld(&bt[64 * wn + l16][16 * q]), B1 = nh_ld(&bt[64 * wn + 16 + l16][16 * q]);
+                    const nh_h16 B2 = nh_ld(&bt[64 * wn + 32 + l16][16 * q]), B3 = nh_ld(&bt[64 * wn + 48 + l16][16 * q]);
+                    const nh_h16 A0 = nh_ld(&wt[32 * wm + l16][16 * q]), A1 = nh_ld(&wt[32 * wm + 16 + l16][16 * q]);
+                    acc[0][0] = nh_wmma(A0, B0, acc[0][0]);
+                    acc[0][1] = nh_wmma(A0, B1, acc[0][1]);
+                    acc[0][2] = nh_wmma(A0, B2, acc[0][2]);
+                    acc[0][3] = nh_wmma(A0, B3, acc[0][3]);
+                    acc[1][0] = nh_wmma(A1, B0, acc[1][0]);
+                    acc[1][1] = nh_wmma(A1, B1, acc[1][1]);
+                    acc[1][2] = nh_wmma(A1, B2, acc[1][2]);
+                    acc[1][3] = nh_wmma(A1, B3, acc[1][3]);
+                }
+#if STRATA_NH_COLSKIP
+                } else {
+#pragma unroll
+                    for (int q = 0; q < 4; ++q) {
+                        const nh_h16 A0 = nh_ld(&wt[32 * wm + l16][16 * q]), A1 = nh_ld(&wt[32 * wm + 16 + l16][16 * q]);
+#pragma unroll
+                        for (int nt = 0; nt < 3; ++nt) {
+                            if (nt < ncol) {
+                                const nh_h16 Bn = nh_ld(&bt[64 * wn + 16 * nt + l16][16 * q]);
+                                acc[0][nt] = nh_wmma(A0, Bn, acc[0][nt]);
+                                acc[1][nt] = nh_wmma(A1, Bn, acc[1][nt]);
+                            }
+                        }
+                    }
+                }
+#endif
+            }
+            if (s + 1 < NS) {
+                nw_barrier();
+                put(raw);
+                bdst[0] = b0; bdst[1] = b1; bdst[2] = b2; bdst[3] = b3;
+                if (s + 2 < NS) {
+                    load_unit<WT>(unit(s + 2), sub(s + 2), raw);
+                    b0 = bsrc[8 * (s + 2)]; b1 = bsrc[8 * (s + 2) + 1]; b2 = bsrc[8 * (s + 2) + 2]; b3 = bsrc[8 * (s + 2) + 3];
+                }
+            }
+        }
+        if constexpr (GU) {
+            if (on) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                    for (int nt = 0; nt < 4; ++nt) {
+                        float hv[8];
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            float up = __int_as_float(__builtin_amdgcn_permlanex16(
+                                __float_as_int(acc[mt][nt][i]), __float_as_int(acc[mt][nt][i]), 0x76543210u, 0xfedcba98u, false, false));
+                            float gt = acc[mt][nt][i];
+                            if constexpr (WT == T_NVFP4) { gt *= t_gate; up *= t_up; }
+                            hv[i] = gt / (1.0f + __expf(-gt)) * up;
+                        }
+                        const int r = 64 * wn + 16 * nt + l16;
+                        if (hi == 0 && r < nrows) {
+                            uint32_t hw[4];
+#pragma unroll
+                            for (int j = 0; j < 4; ++j)
+                                hw[j] = nh_pack(fminf(fmaxf(hv[2 * j], -65504.0f), 65504.0f),
+                                                fminf(fmaxf(hv[2 * j + 1], -65504.0f), 65504.0f));
+                            *reinterpret_cast<uint4*>(out + (size_t) (row0 + r) * kMoeFF + fb * 64 + 16 * wm + 8 * mt) =
+                                make_uint4(hw[0], hw[1], hw[2], hw[3]);
+                        }
+                    }
+            }
+        } else {
+            if (on) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                    for (int nt = 0; nt < 4; ++nt) {
+                        const int r = 64 * wn + 16 * nt + l16;
+                        if (r < nrows) {
+                            if constexpr (D16) {
+                                _Float16* d16p = reinterpret_cast<_Float16*>(dm) + (size_t) (row0 + r) * kMoeEmbd + rbase + 32 * wm + 16 * mt + hi;
+#pragma unroll
+                                for (int i = 0; i < 8; ++i) {
+                                    float v = acc[mt][nt][i];
+                                    if constexpr (WT == T_NVFP4) v *= t_down;
+                                    d16p[2 * i] = (_Float16) fminf(fmaxf(v, -65504.0f), 65504.0f);
+                                }
+                            } else {
+                                float* d = dm + (size_t) (row0 + r) * kMoeEmbd + rbase + 32 * wm + 16 * mt + hi;
+#pragma unroll
+                                for (int i = 0; i < 8; ++i) {
+                                    float v = acc[mt][nt][i];
+                                    if constexpr (WT == T_NVFP4) v *= t_down;
+                                    d[2 * i] = v;
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+    }
+#else
+    (void) b; (void) geo; (void) tb; (void) act; (void) src; (void) out; (void) dm;
+    __builtin_trap();
+#endif
+}
+
+template <int T, bool GU, bool D16 = false>
+int nh_blocks_wgp() {
+    static const int v = [] {
+        hipFuncAttributes fa{};
+        if (hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(native_h11p_kernel<T, GU, D16>)) != hipSuccess || fa.numRegs <= 0) {
+            (void) hipGetLastError();
+            return 2;
+        }
+        const int lds = std::max<int>(1, (int) fa.sharedSizeBytes);
+        const int waves = std::min(16, 1536 / ((fa.numRegs + 23) / 24 * 24));
+        return std::max(1, std::min({3, 131072 / lds, waves / 2}));
+    }();
+    return v;
+}
+
 // STRATA_PF_F16=1 (gfx11): the other native formats on the F16 matrix cores - moe_f16_common.cuh's work item,
 // staged activations and epilogues.  load_unit / convert decode each sub-block once into the weight tile in LDS (int8
 // codes, the scales as half2), and each wave turns its own 16 rows into F16 before its products.  Gate/up rows 0..63
@@ -2209,6 +2656,7 @@ unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 struct DevInfo {
     bool done = false, ok = false;
     bool g1151 = false; // gfx1151 (Strix Halo): Q8_0 down layers on the F16 kernel by default (q8d_f16_default)
+    bool g11_wmma = false; // gfx1100..gfx1151 (incl. gfx1103 780M & gfx1150 Strix Point): RDNA3/3.5 matrix-core targets
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
     bool g11 = false;   // gfx1100 / gfx1101 / gfx1102 (RDNA3 cards): the trellis pairs by fused_tq_hip::g11_on (#6067)
     bool g1103 = false; // the Radeon 780M: the trellis pairs only with STRATA_PF_TQ_G11=1 (fused_tq_hip::g1103_on)
@@ -2415,8 +2863,8 @@ const DevInfo& dev_info() {
         const bool props = cudaGetDeviceProperties(&prop, dev) == cudaSuccess;
         d.w12 = props && strata::kernels::gfx_arch_is_gfx12_wmma(prop.gcnArchName);
         d.g1151 = props && strata::kernels::gfx_arch_is_gfx1151(prop.gcnArchName);
-        d.g11 = props && (strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx1100") || strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx1101") ||
-                          strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx1102"));
+        d.g11_wmma = props && strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName);
+        d.g11 = props && strata::kernels::gfx_arch_is_discrete_rdna3(prop.gcnArchName);
         d.g1103 = props && strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx1103");
         // the arch lists of STRATA_NAT_W11 / STRATA_NAT_W12 (gfx_arch.hpp: never a prefix - another gfx11 / gfx12 part
         // has the trapping body, which hipFuncGetAttributes and the occupancy query still accept).  And the body this
@@ -2626,6 +3074,7 @@ bool gu_covered(int t) {
            || ((t == T_TQK6 || t == T_TQ2_T) && tq_hip_device(dev_info()))   // STRATA_PF_FUSED_TQ=1 on gfx12; gfx1151 by fused_tq_hip.hpp
            || (t == T_Q8_0 && dev_info().w12 && q8gu_hip_requested())   // STRATA_PF_FUSED_Q8GU=1 on gfx12
            || (t == T_Q6_K && dev_info().w12 && q6k_hip_requested())    // STRATA_PF_FUSED_Q6K=1 on gfx12
+           || (t == T_NVFP4 && dev_info().g11_wmma && !dev_info().w12 && h11p_wanted())   // gfx11 WMMA (STRATA_PF_F16=2): native_h11p_kernel<T_NVFP4>
 #endif
         ;
 }
@@ -2645,7 +3094,11 @@ bool d_covered(int t) {
 // gfx1151, eng034 with STRATA_PF_F16=1, which also covers these layers; A/B in phaseA-tests/strix-u).  STRATA_PF_Q8D_F16=0 turns it off.
 bool q8d_f16_default(const DevInfo& d) {
 #if defined(__HIPCC__)
-    if (d.w12 || !d.g1151) return false;
+    if (d.w12 || !(d.g1151 || d.g11)) return false;
+    if (d.g11) {
+        const char* off11 = std::getenv("STRATA_GFX11_DEFAULTS");
+        if (off11 != nullptr && off11[0] == '0') return false;
+    }
     static const bool off = [] { const char* v = std::getenv("STRATA_PF_Q8D_F16"); return v != nullptr && v[0] == '0'; }();
     return !off;
 #else
@@ -2668,7 +3121,10 @@ bool q50_on(const DevInfo& d) {
     static const int env = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0); }();
     if (env >= 0) return env == 1;
     if (d.w12) return strata::core::kGfx12PromptDefaultsOn;   // gfx12: on by default under Linux, opt-in under Windows
-    if (d.g11) return false;   // gfx1100 - gfx1102 (#5980): the F16 kernel gfx1151 uses, as an opt-in only (STRATA_PF_FUSED_Q50=1, with STRATA_PF_F16=1)
+    if (d.g11) {
+        const char* off11 = std::getenv("STRATA_GFX11_DEFAULTS");
+        return !(off11 != nullptr && off11[0] == '0');
+    }
 #if defined(_WIN32)
     const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
     return !(off != nullptr && off[0] == '0');
@@ -2751,6 +3207,7 @@ bool d_covered_on(int t, const DevInfo& d) {
     if (t == T_Q8_0 && !d.w12 && (f16::requested() || q8d_f16_default(d))) return true;
     if (t == T_Q8_0 && d.w12 && (q8d_hip_requested() || q8gu_hip_requested() || q6k_hip_requested())) return true;   // (behind an i-quant gate/up with Q8D, a Q8_0 one with Q8GU, a Q6_K one with Q6K: native_supported)
     if (t == T_TQK7 || t == T_TQ2_T) return tq_hip_device(d);   // STRATA_PF_FUSED_TQ=1 on gfx12, gfx1151 by fused_tq_hip.hpp (behind a trellis gate/up only: native_supported)
+    if (t == T_NVFP4) return d.g11_wmma && !d.w12 && h11p_wanted();   // gfx11 WMMA (STRATA_PF_F16=2): behind an NVFP4 gate/up only (native_supported)
 #else
     if (t == T_Q5_0) return d.q50;   // STRATA_PF_FUSED_Q50=1 and its kernels set up (dev_info)
     if (t == T_Q5_1) return d.kq;    // STRATA_PF_FUSED_KQ=1 (behind a K-quant gate/up only: native_supported)
@@ -3010,9 +3467,26 @@ bool native_supported(int gu_type, int d_type) {
     // path, w4a4 for Blackwell's FP4 MMA: both stay as they are).  The kernels' arithmetic is MMQ's w4a8 class (int8 products, FP32 scales, the weight_scale_2 values on the FP32 products).
     // Not with the NT = 256 / warp-specialized opt-ins (no NVFP4 form of theirs).
     if (gu_type == T_NVFP4 || d_type == T_NVFP4) {
-        static const bool mode_ok = [] { const char* v = std::getenv("STRATA_PREFILL_NVFP4"); return v == nullptr || v[0] == '\0' || std::strcmp(v, "w4a8") == 0; }();
+#if !defined(STRATA_FUSED_GEO_N_EMBD)
+        const bool fp4_avail = strata::prefill::fp4_tc::available();
+#else
+        constexpr bool fp4_avail = false;
+#endif
+        bool degraded = false;
+        const bool mode_ok = strata::prefill::nvfp4_fused_covers(std::getenv("STRATA_PREFILL_NVFP4"), fp4_avail,
+                                                                 strata::prefill::mmq::built(), &degraded);
+        if (degraded) {
+            static bool said_deg = false;
+            if (!said_deg) {
+                said_deg = true;
+                std::fprintf(stderr, "strata: STRATA_PREFILL_NVFP4=w4a4 requested, but native Blackwell FP4 tensor-core "
+                                     "prompt kernels are not active on this device/build; staying on fused W4A8 tensor "
+                                     "cores instead of falling back to FP16 cuBLAS\n");
+            }
+        }
         const DevInfo& d = dev_info();
-        return gu_type == T_NVFP4 && d_type == T_NVFP4 && env_set == 1 && mode_ok && d.ok && d.nvfp4 && !d.t75 && d.occ_nt <= 0 && !d.ws;
+        const bool dev_covers = fp4_avail || (d.ok && d.nvfp4);
+        return gu_type == T_NVFP4 && d_type == T_NVFP4 && env_set == 1 && mode_ok && dev_covers && !d.t75 && d.occ_nt <= 0 && !d.ws;
     }
     if (d_type == T_Q8_0 && gu_type != T_Q4_K && gu_type != T_Q5_K) {
         const DevInfo& d = dev_info();
@@ -3078,6 +3552,12 @@ bool native_supported(int gu_type, int d_type) {
         const DevInfo& d = dev_info();
         return d_type == T_Q8_0 && d.ok && d.w12 && q6k_hip_requested();
     }
+    // NVFP4 / NVFP4 pair on gfx11 WMMA (STRATA_PF_F16=2): native_h11p_kernel<T_NVFP4> (applies per-expert s_gate/s_up/s_down tail in FP32 epilogue).
+    if (gu_type == T_NVFP4 || d_type == T_NVFP4) {
+        static const bool mode_ok = [] { const char* v = std::getenv("STRATA_PREFILL_NVFP4"); return v == nullptr || v[0] == '\0' || std::strcmp(v, "w4a8") == 0; }();
+        const DevInfo& d = dev_info();
+        return gu_type == T_NVFP4 && d_type == T_NVFP4 && mode_ok && d.ok && d.g11_wmma && !d.w12 && h11p_wanted();
+    }
 #endif
     // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there.
     // AMD-Q (owner decision 10-31): the IQ2_S and IQ4_XS gate/up layers too (the IQ3_S pack's 21 layers that kept MMQ), Linux only like the Q2_0 entry.
@@ -3133,7 +3613,7 @@ bool p1a_wanted() {
 #if defined(__HIPCC__)
     static const bool on = [] {
         const char* v = std::getenv("STRATA_PF_P1A");
-        return v != nullptr && v[0] == '1' && v[1] == '\0' && dev_info().g1151;
+        return v != nullptr && v[0] == '1' && v[1] == '\0' && dev_info().g11_wmma;
     }();
     return on;
 #else
@@ -3148,12 +3628,37 @@ bool p1a_wanted() {
     return false;   // (the P1A kernels run on gfx1151 only: p1a_wanted)
 #endif
 }
+bool h11p_wanted() {
+#if defined(__HIPCC__)
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PF_F16");
+        return v != nullptr && v[0] == '2' && dev_info().g11_wmma && !dev_info().w12;
+    }();
+    return on;
+#else
+    return false;
+#endif
+}
+bool h11p_takes_pair(int gu_type, int d_type) {
+#if defined(__HIPCC__)
+    if (!h11p_wanted()) return false;
+    if (gu_type == T_NVFP4 && d_type == T_NVFP4) return true;
+    const bool gu_ok = gu_type == T_IQ2_XXS || gu_type == T_IQ2_XS || gu_type == T_IQ2_S ||
+                       gu_type == T_IQ3_XXS || gu_type == T_IQ3_S || gu_type == T_IQ4_XS ||
+                       gu_type == T_Q2_0 || gu_type == T_Q4_K || gu_type == T_Q5_K;
+    const bool d_ok = d_type == T_Q2_0 || d_type == T_IQ4_NL || d_type == T_Q5_0 || d_type == T_Q5_1 || d_type == T_Q8_0;
+    return gu_ok && d_ok;
+#else
+    (void) gu_type; (void) d_type;
+    return false;
+#endif
+}
 void p1a_input(const void* x16, size_t h_bytes) {
 #if defined(__HIPCC__)
-    g_p1a_x16 = p1a_wanted() ? x16 : nullptr;
+    g_p1a_x16 = (p1a_wanted() || h11p_wanted()) ? x16 : nullptr;
     g_p1a_h_bytes = g_p1a_x16 != nullptr ? h_bytes : 0;
 #else
-    (void) x16; (void) h_bytes;   // (g_p1a_x16 / g_p1a_h_bytes are read in the HIP-only P1A launch only)
+    (void) x16; (void) h_bytes;
 #endif
 }
 bool p1a_used() { return g_p1a_used; }
@@ -3198,14 +3703,52 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
 #if defined(__HIPCC__)
     {
         const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
-        // STRATA_PF_P1A=1 (gfx1151; p1a_input set only then): gate/up and down on moe_p1a.cu's kernels, H as FP16 in `ha`, the down rows as FP16 in `dm`
-        if (g_p1a_x16 != nullptr && g_dm16_want && !g_rot_on && d.g1151 && p1a::takes(g.gu_type, g.d_type, p1a_l2()) && tiles <= 65535 &&
+        // STRATA_PF_P1A=1 (gfx11 WMMA; p1a_input set only then): gate/up and down on moe_p1a.cu's kernels, H as FP16 in `ha`, the down rows as FP16 in `dm`
+        if (g_p1a_x16 != nullptr && g_dm16_want && !g_rot_on && d.g11_wmma && p1a::takes(g.gu_type, g.d_type, p1a_l2()) && tiles <= 65535 &&
             (size_t) n * kMoeFF * 2 <= g_p1a_h_bytes) {
             p1a::gate_up(b, g, tb.ts, tb.tiles, tb.off, tiles, g_p1a_x16, src, ha, s);
             p1a::down(b, g, tb.ts, tb.tiles, tb.off, tiles, ha, dm, s);
             g_dm16_used = true;
             g_p1a_used = true;
             ck(cudaGetLastError(), "experts_native (P1A)");
+            return;
+        }
+        // STRATA_PF_F16=2 (gfx11 WMMA): 128-token pair FP16 WMMA kernel (native_h11p_kernel) on FP16 layer input (m.mixed_h)
+        // with empty-column skip, 128B nibble sign LUT (3 blocks/WGP), and optional FP16 down output (moe_combine16).
+        if (h11p_wanted() && g_p1a_x16 != nullptr && !g_rot_on && d.g11_wmma && h11p_takes_pair(g.gu_type, g.d_type) &&
+            (size_t) n * kMoeFF * 2 <= g_p1a_h_bytes) {
+            const int64_t gp_gu_items = (tiles / 2 + (b.e1 - b.e0)) * (GU_ROWS_N / NW_ROWS);
+            const int64_t gp_d_items = (tiles / 2 + (b.e1 - b.e0)) * (D_ROWS_N / NW_ROWS);
+            const _Float16* x16 = (const _Float16*) g_p1a_x16;
+            _Float16* h16 = (_Float16*) ha;
+            const bool d16_h = g_dm16_want;
+            g_dm16_used = d16_h;
+#define STRATA_NH_GU(T) native_h11p_kernel<T, true, false><<<(unsigned) std::min<int64_t>(gp_gu_items, (int64_t) d.sms * nh_blocks_wgp<T, true, false>()), NW_THREADS, 0, s>>>(b, g, tb, x16, src, h16, nullptr)
+            switch (g.gu_type) {
+                case T_IQ2_XXS: STRATA_NH_GU(T_IQ2_XXS); break;
+                case T_IQ2_XS: STRATA_NH_GU(T_IQ2_XS); break;
+                case T_IQ2_S: STRATA_NH_GU(T_IQ2_S); break;
+                case T_IQ3_XXS: STRATA_NH_GU(T_IQ3_XXS); break;
+                case T_IQ3_S: STRATA_NH_GU(T_IQ3_S); break;
+                case T_Q2_0: STRATA_NH_GU(T_Q2_0); break;
+                case T_Q4_K: STRATA_NH_GU(T_Q4_K); break;
+                case T_Q5_K: STRATA_NH_GU(T_Q5_K); break;
+                case T_NVFP4: STRATA_NH_GU(T_NVFP4); break;
+                default: STRATA_NH_GU(T_IQ4_XS); break;
+            }
+#undef STRATA_NH_GU
+#define STRATA_NH_D(T) do { \
+    if (d16_h) native_h11p_kernel<T, false, true><<<(unsigned) std::min<int64_t>(gp_d_items, (int64_t) d.sms * nh_blocks_wgp<T, false, true>()), NW_THREADS, 0, s>>>(b, g, tb, h16, src, nullptr, dm); \
+    else native_h11p_kernel<T, false, false><<<(unsigned) std::min<int64_t>(gp_d_items, (int64_t) d.sms * nh_blocks_wgp<T, false, false>()), NW_THREADS, 0, s>>>(b, g, tb, h16, src, nullptr, dm); \
+} while (0)
+            if (g.d_type == T_Q2_0) STRATA_NH_D(T_Q2_0);
+            else if (g.d_type == T_Q5_0) STRATA_NH_D(T_Q5_0);
+            else if (g.d_type == T_Q5_1) STRATA_NH_D(T_Q5_1);
+            else if (g.d_type == T_Q8_0) STRATA_NH_D(T_Q8_0);
+            else if (g.d_type == T_NVFP4) STRATA_NH_D(T_NVFP4);
+            else STRATA_NH_D(T_IQ4_NL);
+#undef STRATA_NH_D
+            ck(cudaGetLastError(), "experts_native (h11p)");
             return;
         }
         // W (X1): LDS alias of the H tile + waves_per_eu(8) (192 VGPRs) + 4 blocks per WGP, only for the types whose

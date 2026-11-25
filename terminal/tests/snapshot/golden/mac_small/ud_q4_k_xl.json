@@ -59,7 +59,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "24"
+     "24",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -93,6 +94,7 @@
      "int8",
      "--resident-budget-gib",
      "24",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -197,7 +199,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "24"
+     "24",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -235,6 +238,7 @@
      "int8",
      "--resident-budget-gib",
      "24",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -323,7 +327,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "24"
+     "24",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -362,6 +367,7 @@
      "int8",
      "--resident-budget-gib",
      "24",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",

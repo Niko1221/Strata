@@ -24,10 +24,12 @@
 // SOFTWARE.
 
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/dense_i8_tc.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/core/emulate.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/dispatch_stats.hpp"
@@ -54,6 +56,12 @@
 #include <vector>
 
 namespace strata::kernels {
+
+bool rdna_q6k_enabled();
+bool rdna_q6k_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+bool rdna_kq_mmvq(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+bool rdna_q80_wmma_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+
 namespace {
 
 constexpr int QK = 256;
@@ -360,12 +368,20 @@ __global__ void native_q2_0_mmvq_kernel(const Q20Block* __restrict__ w,
 }
 
 // Q3_K's 110-byte stride gives alternate blocks only two-byte alignment.
-// Preserve the pinned helper's pair of 16-bit loads and little-endian combine.
+// #6526: on RDNA4 (gfx1200/gfx1201), __builtin_memcpy preserves align-2 semantics while letting AMDGPU lower
+// unaligned 32-bit global loads directly instead of two 16-bit loads + shift + OR. Older targets and CUDA keep
+// the pinned pair of 16-bit loads and little-endian combine.
 __device__ __forceinline__ int load_int_b2(const void* ptr, int i32) {
+#if defined(__HIPCC__) && (defined(__gfx1200__) || defined(__gfx1201__))
+    int value;
+    __builtin_memcpy(&value, static_cast<const uint16_t*>(ptr) + 2 * i32, sizeof(int));
+    return value;
+#else
     const auto* x = static_cast<const uint16_t*>(ptr);
     int value = x[2 * i32] << 0;
     value |= x[2 * i32 + 1] << 16;
     return value;
+#endif
 }
 
 __device__ __forceinline__ float q3_q8_dot_impl(int vl, int vh, const int* __restrict__ u,
@@ -454,7 +470,7 @@ __device__ __align__(4) int8_t iq4nl_values[16] = {
 };
 
 __device__ __forceinline__ int2 iq4_table_lookup(int q4) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
     // AMD: llama.cpp's HIP lookup (see iq_kernels.cu get_int_from_table_16): 4 v_perm_b32 per 8 values
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(iq4nl_values);
     const uint32_t q_even = (uint32_t) q4, q_odd = (uint32_t) q4 >> 4;
@@ -653,9 +669,8 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
     }
     return d * sumf;
 }
-#if !defined(__HIPCC__)   // CUDA only: the native_mmvq_il_pf_kernel family below (itself CUDA only) is the only user
-// q6_q8_dot_impl with the two scales already in registers (the interleaved kernels' hoisted loads, P1): the same
-// expression in the same order
+// q6_q8_dot_impl with the two scales already in registers (#6526: shared by Q6KTraits on CUDA & HIP and by
+// CUDA's interleaved kernels): the same expression in the same order
 __device__ __forceinline__ float q6_q8_dot_sc(int vl, int vh, const int* __restrict__ u, int sc0, int sc1, float d,
                                             const float* __restrict__ d8) {
     float sumf = 0.0f;
@@ -670,6 +685,7 @@ __device__ __forceinline__ float q6_q8_dot_sc(int vl, int vh, const int* __restr
     }
     return d * sumf;
 }
+#if !defined(__HIPCC__)   // CUDA only: the native_mmvq_il_pf_kernel family below (itself CUDA only) is the only user
 
 // P1: loads the compiler may not sink into a later branch (it moved the Q6_K scale and d loads of the hoisted group
 // into the dot sections, where each one is a dependent L1 round trip); the same ld.global.nc the __restrict__ loads use
@@ -1045,7 +1061,7 @@ struct Q6KTraits {
     [[maybe_unused]] static constexpr int TYPE = 14;   // ggml type
     static constexpr int DIV = 256, T = 32, KBY = 8, BPI = WARPS * WARP / 32;
     __device__ static int kqs(int tid) { return tid % 32; }
-    struct W { int vl, vh; float d; const int8_t* scales; int bq8_offset; };
+    struct W { int vl, vh, sc0, sc1; float d; int bq8_offset; };
     __device__ static W load(const Block* __restrict__ w, int iqs) {
         W r;
         r.bq8_offset = 4 * (iqs / 16) + (iqs % 16) / 8;
@@ -1053,7 +1069,8 @@ struct Q6KTraits {
         const int vh_shift = 2 * ((iqs % 16) / 8);
         r.vl = load_int_b2(w->ql, iqs);
         r.vh = load_int_b2(w->qh, 8 * (iqs / 16) + iqs % 8) >> vh_shift;
-        r.scales = w->scales + scale_offset;
+        r.sc0 = w->scales[scale_offset];
+        r.sc1 = w->scales[scale_offset + 4];
         r.d = w->d;
         return r;
     }
@@ -1065,7 +1082,7 @@ struct Q6KTraits {
             u[i] = reinterpret_cast<const int*>(x[r.bq8_offset + 2 * i].qs)[iqs % 8];
             d8[i] = __low2float(x[r.bq8_offset + 2 * i].ds);
         }
-        return q6_q8_dot_impl(r.vl, r.vh, u, r.scales, r.d, d8);
+        return q6_q8_dot_sc(r.vl, r.vh, u, r.sc0, r.sc1, r.d, d8);
     }
 };
 struct IQ4XSTraits {
@@ -1414,8 +1431,8 @@ template<> struct B6X<Q6KTraits> {
         W r;
         r.vl = t.vl;
         r.vh = t.vh;
-        r.sc[0] = t.scales[0];
-        r.sc[1] = t.scales[4];
+        r.sc[0] = t.sc0;
+        r.sc[1] = t.sc1;
         r.d = t.d;
         return r;
     }
@@ -1538,7 +1555,9 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
     if constexpr (!B6X<F>::ok) {
         return false;
     } else {
-        if (b6_rows_mode() <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
+        // b6_rows_mode() > 0 takes precedence over s26_tsum_on() on B6 formats so STRATA_TSUM=1 stays active on
+        // HC Q8 (fused_gr.cu), BF16, and non-B6 MMVQ formats.
+        if (b6_rows_mode() <= 0 || !g_multi_exact || n_in / F::DIV < 1) return false;
         const int rows = b6_rows_mode() == 1 ? 2 : b6_rows_mode();
         const dim3 threads(WARP, WARPS);
         if (rows == 2)
@@ -1551,11 +1570,118 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
     }
 }
 
+#if !defined(__HIPCC__)
+// ---- STRATA_Q8_V70=1 (opt-in, Volta sm_70 only): the dense Q8_0 GEMV of 2..4 columns with its block loop unrolled.
+// The default multi-column kernel (native_mmvq_multi_kernel<SmallTraits<Q80Block, 8>, NCOLS, WARPS, 2>) walks a row's
+// blocks in a loop whose trip count is only known at run time, so a thread has one block of weights in flight at a time;
+// with the 34-byte blocks (16-bit loads) a V100 reads Flash-Next's 6144 -> 2560 projections (ssm_out, attn_output) at
+// 540-570 GB/s for 3 columns.  Here the trip count NIT = n_in / 1024 is a template parameter and every iteration's
+// weights are loaded (F::load) before the first dot.  Each thread keeps the default kernel's blocks (kbx = tid / 4 +
+// 32 it, the same two ints), adds F::apply's values in the same order per (column, row), and the cross-warp sum and xor
+// tree are the default's, so every output is bitwise the default kernel's (and so a single-column call's).
+// Taken for 2..4 columns, n_in a multiple of 1024 (2..8 x 1024) and an even n_out, not with STRATA_TSUM (another
+// reduction; STRATA_B6_MMVQ_ROWS has no Q8_0 kernel, b6_launch declines it first).  Device code for sm_70 only (an
+// empty kernel elsewhere, never launched: q8_v70_on asks for compute capability 7.0).
+template<typename F, int NCOLS, int NIT>
+__launch_bounds__(WARPS * WARP, 4)
+__global__ void q8_v70_kernel(const typename F::Block* __restrict__ w, const Q81Block* __restrict__ x, float* __restrict__ y,
+                              int n_in, int n_out) {
+    static_assert(F::BPI == 32 && F::T == 4, "the Q8_0 traits' thread layout");
+    static_assert(NCOLS >= 2 && NCOLS <= 4 && NIT >= 2 && NIT <= 8, "q8_v70_launch's instantiations");
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 700
+    (void) w; (void) x; (void) y; (void) n_in; (void) n_out;
+#else
+    constexpr int ROWS = 2;
+    const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
+    const int row0 = ROWS * int(blockIdx.x);
+    const int blocks_per_row = n_in / F::DIV;
+    const int x_stride = n_in / Q8K;
+    const int kqs = F::kqs(tid);
+    typename F::W wv[NIT][ROWS];
+#pragma unroll
+    for (int it = 0; it < NIT; ++it)
+#pragma unroll
+        for (int i = 0; i < ROWS; ++i)
+            wv[it][i] = F::load(w + std::size_t(row0 + i) * blocks_per_row + tid / F::T + it * F::BPI, kqs);
+    float tmp[NCOLS][ROWS] = {};
+#pragma unroll
+    for (int it = 0; it < NIT; ++it) {
+        const int kby = (tid / F::T + it * F::BPI) * F::KBY;
+#pragma unroll
+        for (int i = 0; i < ROWS; ++i)
+#pragma unroll
+            for (int j = 0; j < NCOLS; ++j) tmp[j][i] += F::apply(wv[it][i], x + std::size_t(j) * x_stride + kby, kqs);
+    }
+    __shared__ float partial[WARPS - 1][NCOLS][ROWS][WARP];
+    if (threadIdx.y > 0) {
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][j][i][threadIdx.x] = tmp[j][i];
+    }
+    __syncthreads();
+    if (threadIdx.y > 0) return;
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j) {
+#pragma unroll
+        for (int i = 0; i < ROWS; ++i) {
+#pragma unroll
+            for (int l = 0; l < WARPS - 1; ++l) tmp[j][i] += partial[l][j][i][threadIdx.x];
+            tmp[j][i] = warp_sum(tmp[j][i]);
+            if (threadIdx.x == i && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = tmp[j][i];
+        }
+    }
+#endif
+}
+bool q8_v70_on() {
+    static const bool env = [] { const char* v = std::getenv("STRATA_Q8_V70"); return v != nullptr && std::atoi(v) != 0; }();
+    if (!env) return false;
+    static int per_dev[16];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) { cudaGetLastError(); return false; }
+    if (!per_dev[dev]) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = ok && maj == 7 && mnr == 0 ? 2 : 1;
+        if (per_dev[dev] == 2) std::fprintf(stderr, "strata: STRATA_Q8_V70=1: the unrolled Q8_0 GEMV for 2-4 columns on CUDA%d "
+                                                    "(bitwise the default kernel)\n", dev);
+    }
+    return per_dev[dev] == 2;
+}
+template<typename F, int NCOLS>
+bool q8_v70_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in, int n_out, cudaStream_t s) {
+    if constexpr (!std::is_same_v<F, SmallTraits<Q80Block, 8>> || NCOLS < 2 || NCOLS > 4) {
+        (void) w; (void) x; (void) y; (void) n_in; (void) n_out; (void) s;
+        return false;
+    } else {
+        if (!g_multi_exact || s26_tsum_on() || n_in % 1024 != 0 || n_out % 2 != 0) return false;
+        const int nit = n_in / 1024;
+        if (nit < 2 || nit > 8 || !q8_v70_on()) return false;
+        const dim3 threads(WARP, WARPS), blocks(unsigned(n_out / 2));
+        switch (nit) {
+        case 2: q8_v70_kernel<F, NCOLS, 2><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 3: q8_v70_kernel<F, NCOLS, 3><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 4: q8_v70_kernel<F, NCOLS, 4><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 5: q8_v70_kernel<F, NCOLS, 5><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 6: q8_v70_kernel<F, NCOLS, 6><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 7: q8_v70_kernel<F, NCOLS, 7><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        case 8: q8_v70_kernel<F, NCOLS, 8><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out); break;
+        default: return false;
+        }
+        return true;
+    }
+}
+#endif
 template<typename F, int NCOLS>
 void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     if (b6_launch<F, NCOLS>(w, x, y, n_in, n_out, s)) return;   // STRATA_B6_MMVQ_ROWS
+#if !defined(__HIPCC__)
+    if (q8_v70_launch<F, NCOLS>(w, x, y, n_in, n_out, s)) return;   // STRATA_Q8_V70 (Volta)
+#endif
     if (!g_multi_exact) {
         constexpr int NW = NCOLS <= 4 ? 4 : 2;
         const unsigned blocks = unsigned((std::size_t(n_out) + 1) / 2);
@@ -1588,6 +1714,22 @@ template<typename F>
 void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                   void* stream) {
     const auto s = static_cast<cudaStream_t>(stream);
+    // Avoid instantiating NCOLS=9..16 (which spill registers in b6_mmvq_rows_kernel / native_mmvq_multi_kernel).
+    // Supported dense formats (Q8_0, Q4_K, Q5_K, Q6_K, IQ4_XS) already run single-pass ncols=9..16 in dense_i8_tc_mmvq;
+    // any remaining fallback splits ncols > 8 into <= 8-column chunks (2..8 here, or single-column if rem == 1).
+    if (ncols > 8) {
+        const std::size_t x_col_bytes = std::size_t(n_in / 32) * sizeof(Q81Block);
+        const auto* xb = static_cast<const uint8_t*>(x_q8_1);
+        int c0 = 0;
+        while (c0 < ncols) {
+            int rem = ncols - c0;
+            int chunk = rem > 8 ? (rem == 9 ? 5 : 8) : rem;
+            launch_multi<F>(weights, xb + std::size_t(c0) * x_col_bytes, y + std::size_t(c0) * std::size_t(n_out),
+                            n_in, n_out, chunk, stream);
+            c0 += chunk;
+        }
+        return;
+    }
     switch (ncols) {
         case 2: launch_multi_n<F, 2>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 3: launch_multi_n<F, 3>(weights, x_q8_1, y, n_in, n_out, s); break;
@@ -1596,18 +1738,6 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
         case 6: launch_multi_n<F, 6>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 7: launch_multi_n<F, 7>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 8: launch_multi_n<F, 8>(weights, x_q8_1, y, n_in, n_out, s); break;
-#if STRATA_VERIFY_MAX_T > 8
-        case 9: launch_multi_n<F, 9>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 10: launch_multi_n<F, 10>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 11: launch_multi_n<F, 11>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 12: launch_multi_n<F, 12>(weights, x_q8_1, y, n_in, n_out, s); break;
-#if STRATA_VERIFY_MAX_T > 12
-        case 13: launch_multi_n<F, 13>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 14: launch_multi_n<F, 14>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 15: launch_multi_n<F, 15>(weights, x_q8_1, y, n_in, n_out, s); break;
-        case 16: launch_multi_n<F, 16>(weights, x_q8_1, y, n_in, n_out, s); break;
-#endif
-#endif
         default: throw std::invalid_argument("native MMVQ multi-column launch requires 2 <= ncols <= MAX_NCOLS");
     }
 }
@@ -1955,7 +2085,7 @@ struct IlQ6K {
         for (int c = 0; c < NC; ++c) {
             const int uc[2] = {u[0][c], u[1][c]};
             const float dc[2] = {d8[0][c], d8[1][c]};
-            out[c] = q6_q8_dot_impl(r.vl, r.vh, uc, r.scales, r.d, dc);
+            out[c] = q6_q8_dot_sc(r.vl, r.vh, uc, r.sc0, r.sc1, r.d, dc);
         }
     }
     // P1: the two scale bytes loaded with the rest (F::W keeps a pointer into the block, which would put their loads
@@ -2505,6 +2635,27 @@ bool q8_sm60_on() {
     return on;
 #endif
 }
+bool q8_inplace_on() {
+#if defined(__HIPCC__)
+    return false;
+#else
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_Q8_INPLACE");
+        const bool yes = v && v[0] == '1' && v[1] == '\0';
+        if (yes) std::fprintf(stderr, "strata q8 inplace: eligible dense Q8_0 matrices packed in-place (+0 MiB VRAM)\n");
+        return yes;
+    }();
+    return on;
+#endif
+}
+int q8_inplace_min_out() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_Q8_INPLACE_MIN_OUT");
+        const int n = e ? std::atoi(e) : 0;
+        return n >= 1 ? n : 640;
+    }();
+    return v;
+}
 #if !defined(__HIPCC__)
 #include "q8_sm60.cuh"
 #endif
@@ -2616,7 +2767,7 @@ bool q8_packed_shape(int n_in, int n_out) {   // the shapes native_q8_0_packed_k
 bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     auto& registry = q8_packed_registry();
 #if !defined(__HIPCC__)
-    if (q8_sm60_on() && !registry.empty()) {
+    if ((q8_sm60_on() || q8_inplace_on()) && !registry.empty()) {
         const auto found = registry.find(weights);
         if (found != registry.end() && found->second.n_in == n_in && found->second.n_out == n_out) {
             validate_pointer(x_q8_1);
@@ -2634,6 +2785,11 @@ bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
             if (all) {
                 launch_check();
                 return true;
+            }
+            if (static_cast<const void*>(found->second.qs) == weights) {
+                std::fprintf(stderr, "strata q8 inplace: q8sm60 declined in-place tensor (%d x %d, ncols=%d)\n",
+                             n_out, n_in, ncols);
+                std::abort();
             }
             // a shape the Pascal kernel declines: the exact packed kernel only where it was measured, else the GGUF layout
             if (!q8_packed_shape(n_in, n_out)) return false;
@@ -2834,7 +2990,39 @@ bool native_q8_0_packed_enabled() {
 
 bool native_q8_0_packed_eligible(int n_in, int n_out) {
     if (q8_sm60_on()) return n_in >= 128 && n_in % 32 == 0 && n_out > 0;   // the Pascal kernel takes any of them
+    if (q8_inplace_on() && native_q8_0_inplace_eligible(n_in, n_out)) return true;
     return q8_packed_shape(n_in, n_out);
+}
+
+bool native_q8_0_inplace_enabled() {
+#if defined(__HIPCC__)
+    return false;
+#else
+    return q8_inplace_on();
+#endif
+}
+
+bool native_q8_0_inplace_eligible(int n_in, int n_out) {
+#if defined(__HIPCC__)
+    (void) n_in; (void) n_out;
+    return false;
+#else
+    return n_in >= 128 && n_in % 32 == 0 && n_out >= q8_inplace_min_out() &&
+           q8sm60::smem_bytes(q8sm60::MAX_COLS, n_in) <= q8sm60::device_max_smem();
+#endif
+}
+
+bool native_q8_0_packed_lookup(const void* gguf_weights, const int8_t** qs, const void** d_half,
+                               int* n_in, int* n_out) {
+    auto& reg = q8_packed_registry();
+    if (reg.empty() || !gguf_weights) return false;
+    const auto it = reg.find(gguf_weights);
+    if (it == reg.end()) return false;
+    if (qs) *qs = it->second.qs;
+    if (d_half) *d_half = it->second.d;
+    if (n_in) *n_in = it->second.n_in;
+    if (n_out) *n_out = it->second.n_out;
+    return true;
 }
 
 namespace {
@@ -3128,6 +3316,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (rdna_kq_mmvq(13, weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(Q5KTraits)
     if (ncols > 1) {
         launch_multi<Q5KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -3334,6 +3523,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (rdna_kq_mmvq(23, weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(IQ4XSTraits)
     if (ncols > 1) {
         launch_multi<IQ4XSTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -3374,6 +3564,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (rdna_kq_mmvq(12, weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(Q4KTraits)
     if (ncols > 1) {
         launch_multi<Q4KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -3415,6 +3606,7 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (rdna_q6k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(Q6KTraits)
     if (ncols > 1) {
         launch_multi<Q6KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -3507,11 +3699,24 @@ bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void*
 void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream) {
     if (q8_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q8_PACKED=1 tensors
+    if (ncols >= 8 && rdna_q80_wmma_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     small_mmvq<Q80Block, 8>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 
 void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,
                       float* y, int n_in, int n_out, int ncols, void* stream) {
+    if (!q8_packed_registry().empty() && q8_packed_registry().count(weights)) {
+        validate_shape(n_in, ncols, 32);
+        if (n_out <= 0) throw std::invalid_argument("native MMVQ requires n_out > 0");
+        validate_pointer(weights);
+        validate_pointer(x);
+        validate_pointer(scratch_q8_1);
+        validate_pointer(y);
+        validate_stream(stream);
+        native_quantize_q8_1(x, scratch_q8_1, n_in, ncols, stream);
+        native_q8_0_mmvq(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
+        return;
+    }
     small_f32<Q80Block, 8>(weights, x, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
@@ -3559,8 +3764,26 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
     return row_bytes * std::size_t(n_out);
 }
 
+static int dense_i8_tc_min_t() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_DENSE_I8_TC_MIN_T");
+        return (e != nullptr && e[0] != '\0') ? std::max(1, std::atoi(e)) : 9;
+    }();
+    return v;
+}
+
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream) {
+    // Clean-room MIT coalesced INT8 Tensor Core path (sm_80+: RTX 3090 & RTX 5090):
+    // Evaluates T >= min_t (default 3; STRATA_DENSE_I8_TC=0 disables; STRATA_DENSE_I8_TC_MIN_T overrides)
+    // up to T=16 in a single coalesced smem-staged weight pass using mma.m16n8k32/k16.
+    if (n_out >= 1024 && ncols >= dense_i8_tc_min_t() && ncols <= 16 &&
+        dense_i8_tc_type_ok(ggml_type) && dense_i8_tc_decode_enabled()) {
+        if (dense_i8_tc_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream)) {
+            strata::dispatch::kernel(strata::dispatch::kDense, 30, ggml_type, n_in, n_out, ncols);
+            return;
+        }
+    }
     // more columns than one launch takes: ceil(ncols / MAX_NCOLS) passes over the same weights.  Every column of a
     // multi-column pass is bitwise the single-column result (bench/micro/native_mmvq_multi.cpp), so the split changes no
     // arithmetic.  Column j starts at activation block j * (n_in / Q8K) and writes y + j * n_out.  (Never reached by a
@@ -3587,7 +3810,10 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     case 14: native_q6_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 23: native_iq4_xs_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 42: native_q2_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 16: case 17: case 18: case 21: case 22: case 29:
+    case 21:
+        if (rdna_kq_mmvq(21, weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); break; }
+        iq_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 16: case 17: case 18: case 22: case 29:
         iq_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     default: throw std::invalid_argument("unsupported native MMVQ GGML type");
     }
@@ -3650,14 +3876,14 @@ constexpr IlRows kIlRowsShared[] = {   // sm_86 + sm_120, and the fallback for e
 // `mmvq_il_parity --bench --emit-table` on the card (docs/MMVQ_IL_TABLE.md), paste the printed block as a
 // `constexpr IlRows kIlRows_<cc>[]` and add {<cc>, kIlRows_<cc>, sizeof(kIlRows_<cc>) / sizeof(IlRows)} below.  Each choice
 // is bitwise the same output, so a table is only speed.  Without a rebuild: STRATA_MMVQ_IL_ROWS (see il_env_rows).
-// Volta (sm_70): read off mmvq_il_parity --bench on a V100-SXM2-32GB (two runs, mean), the same rule - per cell the
-// rows count whose every measured shape takes at least 3% off native_mmvq's time (e.g. the Q5_K head at 3 columns
-// 1094 -> 821 us, Q6_K 12288 rows 68.9 -> 47.9 us), else 0; unmeasured classes take a neighbour's value (PR 1401)
+// Volta (sm_70): read off mmvq_il_parity --bench on a V100-SXM2-32GB (two runs, mean) and re-verified on a
+// V100-SXM2-16GB (200W/1020MHz, two runs agree; Q3_K added), the same 3% rule. Bitwise equal to native_mmvq.
 constexpr IlRows kIlRows_70[] = {
     {23, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 4, 2, 2, 2}}},   // IQ4_XS
-    {12, {{0, 2, 2, 4, 4}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
-    {13, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 1, 2, 2, 2}}},   // Q5_K
-    {14, {{0, 1, 1, 1, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 4, 2}}},   // Q6_K
+    {12, {{0, 2, 4, 4, 4}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 2, 2, 4, 2}, {0, 2, 2, 2, 2}, {0, 1, 1, 2, 2}}},   // Q5_K
+    {14, {{0, 1, 1, 1, 2}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{0, 1, 2, 2, 2}, {0, 1, 2, 2, 2}, {0, 1, 1, 2, 2}}},   // Q3_K
 };
 // Pascal (sm_60), read off mmvq_il_parity --bench --emit-table on a Tesla P100-PCIE-16GB (three runs, identical
 // tables), the same 3% rule.  Pascal has no dp4a (strata_dp4a: four vmad), so the kernels are compute-bound and more rows a
@@ -3735,6 +3961,14 @@ constexpr IlPf kIlPf_80[] = {
 constexpr IlPf58 kIlPf58_80[] = {   // (rows 4 runs as 2 at 5+ columns, so the emitted 0x34 cells are written 0x32)
     {14, {{0x31, 0x42, 0x32, 0x32, 0x32}, {0x31, 0x31, 0x32, 0x32, 0x32}, {0x31, 0x31, 0x02, 0x32, 0x02}, {0x31, 0x31, 0x31, 0x31, 0x31}}},   // Q6_K
 };
+// Volta (sm_70): V100-SXM2-16GB (200W/1020MHz), mmvq_il_parity --bench --emit-table --pf 0,3,4; cells take pf3/pf4 where
+// it beats both native_mmvq and pf0, else pf0 (0x02). Opt-in via STRATA_MMVQ_IL_PF=1 (+ STRATA_SM70_TABLE=1).
+constexpr IlPf kIlPf_70[] = {
+    {14, {{0x31, 0x32, 0x32, 0x32, 0x32}, {0x31, 0x31, 0x02, 0x02, 0x02}, {0x31, 0x32, 0x41, 0x41, 0x41}}},   // Q6_K
+};
+constexpr IlPf58 kIlPf58_70[] = {
+    {14, {{0x31, 0x32, 0x02, 0x02, 0x02}, {0x31, 0x32, 0x02, 0x02, 0x02}, {0x00, 0x02, 0x02, 0x02, 0x02}, {0x31, 0x31, 0x31, 0x02, 0x02}}},   // Q6_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -3765,8 +3999,16 @@ constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
     {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
     {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
 };
+constexpr IlRows58 kIlRows58_70[] = {   // V100-SXM2-16GB (200W/1020MHz, two runs agree; rows 4 runs as 2 at 5+ cols)
+    {23, {{0, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 1, 2, 2, 2}, {0, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 1, 2, 2, 2}, {0, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{0, 1, 2, 1, 1}, {1, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {1, 2, 1, 1, 1}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
+    {70, kIlRows58_70, sizeof(kIlRows58_70) / sizeof(IlRows58)},
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
@@ -3792,8 +4034,15 @@ constexpr Il1Rows kIl1Rows_80[] = {   // CMP 170HX, as kIlRows_80
     {13, {0, 0, 0, 4, 1}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+constexpr Il1Rows kIl1Rows_70[] = {   // V100-SXM2-16GB (200W/1020MHz, two runs agree)
+    {23, {1, 0, 4, 1, 1}},   // IQ4_XS
+    {12, {0, 0, 4, 2, 2}},   // Q4_K
+    {13, {0, 0, 4, 4, 4}},   // Q5_K
+    {11, {0, 2, 2, 2, 2}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {70, kIl1Rows_70, sizeof(kIl1Rows_70) / sizeof(Il1Rows)},
     {80, kIl1Rows_80, sizeof(kIl1Rows_80) / sizeof(Il1Rows)},
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
@@ -3916,14 +4165,19 @@ int il_cc() {
 }
 int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
 int il_pf_table(int type, int ncols, int n_out) {
-    if (il_cc() != 80 || ncols < 2 || ncols > 8) return 0;   // only the CMP 170HX measured one
+    const int cc = il_cc();
+    if ((cc != 80 && cc != 70) || ncols < 2 || ncols > 8) return 0;   // CMP 170HX (sm_80) and V100 (sm_70)
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
     if (ncols <= 4) {
-        for (const IlPf& t : kIlPf_80)
-            if (t.type == type) return t.v[ncols - 2][cls];
+        const IlPf* tbl = cc == 70 ? kIlPf_70 : kIlPf_80;
+        const size_t n = cc == 70 ? sizeof(kIlPf_70) / sizeof(IlPf) : sizeof(kIlPf_80) / sizeof(IlPf);
+        for (size_t i = 0; i < n; ++i)
+            if (tbl[i].type == type) return tbl[i].v[ncols - 2][cls];
     } else {
-        for (const IlPf58& t : kIlPf58_80)
-            if (t.type == type) return t.v[ncols - 5][cls];
+        const IlPf58* tbl = cc == 70 ? kIlPf58_70 : kIlPf58_80;
+        const size_t n = cc == 70 ? sizeof(kIlPf58_70) / sizeof(IlPf58) : sizeof(kIlPf58_80) / sizeof(IlPf58);
+        for (size_t i = 0; i < n; ++i)
+            if (tbl[i].type == type) return tbl[i].v[ncols - 5][cls];
     }
     return 0;
 }
@@ -3963,6 +4217,12 @@ bool il_arch_ok() {
 
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
+    // When coalesced INT8 Tensor Core dense GEMM covers this shape (T >= min_t, n_out >= 1024), decline native_mmvq_il
+    // so callers skip the redundant q8_1_interleave launch and dispatch straight into dense_i8_tc_mmvq via native_mmvq.
+    if (g_tune_rows == 0 && n_out >= 1024 && ncols >= dense_i8_tc_min_t() &&
+        dense_i8_tc_type_ok(ggml_type) && dense_i8_tc_decode_enabled()) {
+        return false;
+    }
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
            (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
 }

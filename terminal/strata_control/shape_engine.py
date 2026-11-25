@@ -21,6 +21,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -56,6 +58,8 @@ WORDS = {
     # setup.py (the [X] / [ok] marks are setup's)
     "setup_failed": "the engine for {model} could not be installed",
     "setup_failed_hint": "See the line above. Nothing was downloaded for the model. Run this again when the update feed has it.",
+    # #7119: the app shows only the stopping line and its hint, never the lines before it, so "See the line above" pointed at nothing. The hint carries the reason itself.
+    "setup_failed_why": "{why} Nothing was downloaded for the model. Run this again when the update feed has it.",
     "setup_ok": "engine for {model}: {version} in {folder}",
     "setup_skip": "no engine for {model} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched",
     "update_label": "Model engine",
@@ -83,7 +87,9 @@ def valid(shape) -> bool:
 
 
 def component_id(shape: str) -> str:
-    """``q4_lite`` -> ``strata-q4-lite``."""
+    """``q4_lite`` -> ``strata-q4-lite``; ``inkling2`` -> ``strata-inkling``."""
+    if shape == INKLING_SHAPE:
+        return "strata-inkling"
     return "strata-" + str(shape).replace("_", "-")
 
 
@@ -91,6 +97,8 @@ def shape_of_component(component: str) -> str | None:
     """``strata-q4-lite`` -> ``q4_lite``; None for anything that is not a shape's component (``strata-engine`` included)."""
     if not isinstance(component, str) or not component.startswith("strata-"):
         return None
+    if component == "strata-inkling":
+        return INKLING_SHAPE
     shape = component[len("strata-"):].replace("-", "_")
     return shape if valid(shape) and component_id(shape) == component else None
 
@@ -113,8 +121,23 @@ def reference(shape: str) -> str:
     return ec.REFERENCE_PREFIX + component_id(shape)
 
 
-def exe_name() -> str:
-    return "strata.exe" if os.name == "nt" else "strata"
+#: The engines of Tencent Hy4-Flash and Thinking Machines Inkling-2-Mini are "shapes" in this module's sense (each is its own component next to the Strata engine, fetched
+#: through the signed feed, named by the run config's exe "component:strata-hy4" / "component:strata-inkling") but not a compile of the Qwen Strata engine: each has its own
+#: program (`strata-hy4`, `strata-inkling`) and no Qwen geometry, so it identifies itself with `--version` / `--info`.
+HY4_SHAPE = "hy4"
+INKLING_SHAPE = "inkling2"
+CUSTOM_SHAPES = frozenset({HY4_SHAPE, INKLING_SHAPE})
+
+
+def exe_name(shape: str | None = None, *, target: str | None = None) -> str:
+    if shape == HY4_SHAPE:
+        base = "strata-hy4"
+    elif shape == INKLING_SHAPE:
+        base = "strata-inkling"
+    else:
+        base = "strata"
+    win = target.startswith("windows") if target else (os.name == "nt")
+    return base + (".exe" if win else "")
 
 
 # ---------------------------------------------------------------------------------------------- where, what is installed
@@ -199,7 +222,7 @@ def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> 
     the signed manifest says is refused here, not at its first load, and so is one that cannot answer the flag (NO_SHAPE_ANSWER, owner 11-09)."""
     import subprocess
     env = dict(os.environ)
-    var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+    var = "PATH" if sys.platform == "win32" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
     dirs = [d for d in ec.package_lib_dirs(Path(exe).parent) if Path(d).is_dir()]
     if dirs:
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
@@ -211,7 +234,15 @@ def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> 
     if done.returncode != 0 or not first.startswith("strata"):
         tail = ((done.stderr or "").strip().splitlines() or [first or f"exit {done.returncode}"])[-1]
         return False, tail[:160]
-    if shape:
+    if shape == HY4_SHAPE:
+        # Hy4-Flash's engine has no geometry: `strata-hy4 --version` named it ("strata-hy4 <version>") and that is the whole check
+        if not first.startswith("strata-hy4"):
+            return False, NO_SHAPE_ANSWER
+    elif shape == INKLING_SHAPE:
+        # Inkling-2-Mini's engine has no Qwen geometry: `strata-inkling --version` names it ("strata-inkling <version>")
+        if not first.startswith("strata-inkling"):
+            return False, NO_SHAPE_ANSWER
+    elif shape:
         ok, why = check_geometry(exe, shape, env, timeout)
         if not ok:
             return False, why
@@ -294,9 +325,9 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)
         updater._move_dir(folder, target)
         if os.name != "nt":
-            (target / exe_name()).chmod(0o755)
+            (target / exe_name(shape)).chmod(0o755)
         ctx.say("test", f"Test-starting the engine for {name} {pkg.version}", component=comp)
-        ok, why = _test_start(target / exe_name(), shape=shape)
+        ok, why = _test_start(target / exe_name(shape), shape=shape)
         if not ok:
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)         # (never an older one)
             refused = updater.UpdateError(WORDS["start_failed"].format(model=name, version=pkg.version, why=why), 6)
@@ -311,6 +342,57 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
     finally:
         if stage_root is not None:
             shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
+
+
+def hand_install_note(shape: str, components: Path | None = None) -> str:
+    """#7119: why a package somebody unpacked by hand is not used, in one plain sentence ("" when there is nothing of the kind). The right place is
+    ``<components>/shapes/<shape>/engine/<package>/`` with ``engine-component.json`` directly inside the package folder. Three mistakes are named: a
+    package folder with an unreadable manifest, the files one folder too deep, and a shape engine in the Strata engine's own folder. Reads folder names and
+    ``engine-component.json`` only (nothing is hashed, nothing is changed)."""
+    import json
+    comp = component_id(shape)
+    components = Path(components) if components else ec.components_dir()
+    place = ec.engine_dir(root(shape, components))
+    right = f"{place}{os.sep}<package folder>{os.sep}"
+    notes: list[str] = []
+    try:
+        entries = sorted(item for item in place.iterdir() if item.is_dir() and not item.name.startswith("."))[:64]
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            ec.read_manifest(entry, comp)
+            continue
+        except ec.ComponentProblem as exc:
+            problem = str(exc)
+        deeper = None
+        try:
+            deeper = next((sub for sub in sorted(entry.iterdir()) if sub.is_dir() and (sub / ec.MANIFEST).is_file()), None)
+        except OSError:
+            pass
+        if deeper is not None and not (entry / ec.MANIFEST).is_file():
+            notes.append(f"the package in {entry.name} is one folder too deep: move {deeper.name} up so that {ec.MANIFEST} is directly inside a folder of {place}")
+        else:
+            notes.append(f"the package folder {entry.name} cannot be used ({problem})")
+    strata = ec.engine_dir(components)
+    try:
+        wrong = sorted(item for item in strata.iterdir() if item.is_dir() and not item.name.startswith("."))[:64]
+    except OSError:
+        wrong = []
+    for entry in wrong:
+        try:
+            data = json.loads((entry / ec.MANIFEST).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("id") == comp:
+            notes.append(f"the engine for this model is in the Strata engine's folder ({entry.name}): move it to {place}")
+    if not notes:
+        return ""
+    return "A package unpacked by hand: " + "; ".join(notes[:3]) + f". The right place is {right}."
+
+
+LOCK_WAIT_S = 120.0
+LOCK_POLL_S = 1.0
 
 
 def ensure(shape: str, source: str, *, components: Path | None = None, hardware: dict | None = None, emit: Callable[[str], None] = print, cancel=None,
@@ -332,18 +414,28 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
                           automatic=bool(automatic and have),
                           emit=lambda event: emit(event["message"]) if event.get("event") == "phase" and event.get("message") and event.get("phase") != "feed" else None)
     try:
-        with updater.update_lock(components):
-            state = updater.State(components)
+        deadline = time.monotonic() + (0.0 if automatic else LOCK_WAIT_S)
+        while True:
             try:
-                feed = updater.open_feed(ctx, state)
-            except feedmod.FeedError as exc:
-                if have:                                          # offline with an engine installed: the engine runs, nothing to say
-                    return find(shape, components, full=False, title=title).exe
-                emit(WORDS["fetch_failed"].format(model=name, why=exc))
-                return None
-            state.save()
-            result = update_one(ctx, feed, shape, title=title)
-            state.save()
+                with updater.update_lock(components):
+                    state = updater.State(components)
+                    try:
+                        feed = updater.open_feed(ctx, state)
+                    except feedmod.FeedError as exc:
+                        if have:                                          # offline with an engine installed: the engine runs, nothing to say
+                            return find(shape, components, full=False, title=title).exe
+                        emit(WORDS["fetch_failed"].format(model=name, why=exc))
+                        return None
+                    state.save()
+                    result = update_one(ctx, feed, shape, title=title)
+                    state.save()
+                break
+            except updater.UpdateError as exc:
+                if automatic or exc.exit_code != 7 or time.monotonic() >= deadline:
+                    raise
+                if cancel is not None and (cancel.is_set() if hasattr(cancel, "is_set") else cancel()):
+                    raise
+                time.sleep(min(LOCK_POLL_S, max(0.0, deadline - time.monotonic())))
     except Exception as exc:                                      # noqa: BLE001 - with an engine installed, a check for a newer one never stops a launch
         if not isinstance(exc, (updater.UpdateError, feedmod.FeedError, signing.SignatureError, acquisition.AcquisitionRefused, OSError)) and not have:
             raise

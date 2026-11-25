@@ -139,7 +139,9 @@ def check(manifest):
             # A release that builds no engine (0.2.15: Control 0.1.61, the 0.1.60 engines of v0.2.14 carried by absolute url) names the release
             # it takes them from in "engines_from"; then Control may be ahead of the engines, and the engine packages at engine_version must be
             # in the asset list (the packages the feed offers).
-            carried = bool(manifest.get("engines_from")) and manifest["engines_from"] != manifest["tag"] \
+            # "engines_from" may be the release's own tag: a Control-only update (0.2.21.1: Control 0.1.68, the 0.1.67 engines of v0.2.21, whose
+            # release stays the one the feed points at) adds Control packages to that release and builds no engine.
+            carried = bool(manifest.get("engines_from")) \
                 and _vkey(manifest["control_version"]) > _vkey(want) \
                 and any(a.startswith("strata-engine-%s-" % want) for a in manifest["assets"])
             if found != manifest["control_version"] or not (found == want or found.startswith(want + ".") or carried):

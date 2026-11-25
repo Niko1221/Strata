@@ -150,7 +150,7 @@ class FetchDrafter(unittest.TestCase):
 class Wiring(unittest.TestCase):
     def test_step_6_drops_to_the_mtp_layer_when_the_drafter_cannot_be_had(self):
         text = (ROOT / "setup.py").read_text(encoding="utf-8")
-        auto = text.index("auto_drafter(a, family, fam, model, hip, gpu, mtp_have)")
+        auto = text.index("auto_drafter(a, family, fam, model, hip, gpu, mtp_have, canonical=q2_avx)")
         self.assertLess(text.index("mtp_have = find_in(roots"), auto)
         self.assertLess(auto, text.index("mtp_fetch = 5.2 if"))                                      # before the disk-room estimate
         fetch = text.index("fetch_dflash2_drafter(data, fam, model, hip, gpu)")

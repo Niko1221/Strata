@@ -56,6 +56,30 @@ void collectives(strata::tp::NcclSession& session, cudaStream_t stream) {
     }
 }
 
+void expert_exchange(strata::tp::NcclSession& session, cudaStream_t stream) {
+    if (session.size() != 2) return;
+    for (const size_t rows : {size_t(1), size_t(8), size_t(512)}) {
+        const size_t count = rows * 1536;
+        Device input(count), partial(count);
+        std::vector<float> host(count), expected(count);
+        for (size_t i = 0; i < count; ++i) {
+            expected[i] = float(i % 135);
+            host[i] = session.rank() == 0 ? expected[i] : -1.f;
+        }
+        check(cudaMemcpyAsync(input.data, host.data(), count * sizeof(float), cudaMemcpyHostToDevice, stream));
+        session.broadcast_bytes(input.data, count * sizeof(float), stream);
+        if (session.rank() == 1) {
+            session.send(input.data, count, 0, stream);
+        } else {
+            session.receive(partial.data, count, 1, stream);
+        }
+        auto* source = session.rank() == 0 ? partial.data : input.data;
+        check(cudaMemcpyAsync(host.data(), source, count * sizeof(float), cudaMemcpyDeviceToHost, stream));
+        session.synchronize(stream);
+        equal(host, expected);
+    }
+}
+
 void exchange(strata::tp::NcclSession& session, cudaStream_t stream, bool captured) {
     constexpr size_t count = 2560, offset = 2, stride = count + 5;
     Device input(stride * session.size()), output(stride * session.size());
@@ -124,6 +148,7 @@ int main(int argc, char** argv) try {
             strata::tp::NcclSession session(runtime, std::chrono::seconds(30));
             Stream stream;
             collectives(session, stream.value);
+            expert_exchange(session, stream.value);
             graph_replay(session, stream.value);
             exchange(session, stream.value, false);
             exchange(session, stream.value, true);

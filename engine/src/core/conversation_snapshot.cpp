@@ -5,8 +5,11 @@
 #include "conversation_trace.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +17,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 namespace strata::core {
 namespace {
@@ -265,6 +270,126 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
 }
+
+// STRATA_PARK_HOST_MEMCPY=1 (opt-in, default OFF): for kv_mode != 0 (streamed/draft-ring K/V whose parts 0..3 live
+// in pinned host memory st.host.*), use resize_for_overwrite() and multi-threaded host std::memcpy instead of
+// zero-filling resize() plus per-segment synchronous CUDA/WDDM copy calls.
+bool park_host_memcpy_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PARK_HOST_MEMCPY");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
+}
+
+int park_copy_threads() {
+    static const int n = [] {
+        const char* v = std::getenv("STRATA_PARK_COPY_THREADS");
+        const int parsed = v != nullptr ? std::atoi(v) : 8;
+        return std::max(1, std::min(16, parsed > 0 ? parsed : 8));
+    }();
+    return n;
+}
+
+struct HostCopySpan {
+    uint8_t* dst;
+    const uint8_t* src;
+    size_t n;
+};
+
+// Persistent worker pool for parallel host-to-host K/V copies (leaked intentionally on process exit so Windows CRT
+// teardown never deadlocks on parked threads; 0% CPU while idle).
+class HostCopyPool {
+public:
+    explicit HostCopyPool(int total_threads) : n_workers_(std::max(0, total_threads - 1)) {
+        workers_.reserve((size_t) n_workers_);
+        for (int i = 0; i < n_workers_; ++i) {
+            workers_.emplace_back([this] {
+                conversation_detail::background_thread_placement();
+                uint64_t seen = 0;
+                for (;;) {
+                    const std::vector<HostCopySpan>* tasks = nullptr;
+                    {
+                        std::unique_lock<std::mutex> lk(mu_);
+                        cv_start_.wait(lk, [&] { return gen_ != seen; });
+                        seen = gen_;
+                        tasks = cur_tasks_;
+                    }
+                    if (tasks != nullptr) drain(*tasks);
+                    if (remaining_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        cv_done_.notify_one();
+                    }
+                }
+            });
+        }
+    }
+
+    void run(const std::vector<HostCopySpan>& tasks) {
+        if (tasks.empty()) return;
+        if (n_workers_ <= 0 || tasks.size() <= 1) {
+            for (const auto& t : tasks) {
+                std::memcpy(t.dst, t.src, t.n);
+                core::progress_beat();
+            }
+            return;
+        }
+        std::lock_guard<std::mutex> run_lk(run_mu_);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            cur_tasks_ = &tasks;
+            next_idx_.store(0, std::memory_order_relaxed);
+            remaining_.store(n_workers_, std::memory_order_release);
+            ++gen_;
+        }
+        cv_start_.notify_all();
+        drain(tasks);
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_done_.wait(lk, [&] { return remaining_.load(std::memory_order_acquire) == 0; });
+        cur_tasks_ = nullptr;
+    }
+
+private:
+    void drain(const std::vector<HostCopySpan>& tasks) {
+        const size_t total = tasks.size();
+        for (;;) {
+            const size_t idx = next_idx_.fetch_add(1, std::memory_order_relaxed);
+            if (idx >= total) return;
+            const HostCopySpan& t = tasks[idx];
+            std::memcpy(t.dst, t.src, t.n);
+            core::progress_beat();
+        }
+    }
+
+    int n_workers_ = 0;
+    std::mutex run_mu_;
+    std::mutex mu_;
+    std::condition_variable cv_start_;
+    std::condition_variable cv_done_;
+    uint64_t gen_ = 0;
+    const std::vector<HostCopySpan>* cur_tasks_ = nullptr;
+    std::atomic<size_t> next_idx_{0};
+    std::atomic<int> remaining_{0};
+    std::vector<std::thread> workers_;
+};
+
+void parallel_host_memcpy(const std::vector<HostCopySpan>& spans) {
+    if (spans.empty()) return;
+    static HostCopyPool* pool = new HostCopyPool(park_copy_threads());
+    constexpr size_t kChunk = (size_t) 4 << 20;   // 4 MiB sub-spans for even thread load balancing
+    std::vector<HostCopySpan> chunks;
+    chunks.reserve(spans.size() * 2);
+    for (const auto& s : spans) {
+        if (s.n == 0) continue;
+        size_t off = 0;
+        while (off < s.n) {
+            const size_t piece = std::min(kChunk, s.n - off);
+            chunks.push_back({s.dst + off, s.src + off, piece});
+            off += piece;
+        }
+    }
+    pool->run(chunks);
+}
 } // namespace
 
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
@@ -313,12 +438,31 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     // STRATA_PARK_VRAM_MIB: this layer's parts go into the park's slot under a fresh tag (0: no slot this park)
     image.dev_tag = park_async().slot != nullptr ? vram_kv().next_tag++ : 0;
+    const bool fast_host = park_host_memcpy_on() && st.kv_mode != 0;
+    std::vector<HostCopySpan> host_spans;
     for (size_t i = 0; i < dst.size(); ++i) {
         // Recopy the partial page and the indexer's moving spare row. Completed
         // pages/rows strictly before the first rewritten token remain identical.
         const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
                                   : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
+        if (fast_host && i < 4) {
+            if (sizes[i] > keep && src[i] == nullptr) { error = "conversation snapshot: missing state buffer"; return false; }
+            const bool trace = park_trace_on();
+            const auto t1 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const long rf0 = trace ? conversation_trace::thread_minflt() : 0;
+            dst[i]->resize_for_overwrite(sizes[i]);
+            if (trace) {
+                kv_save_trace().resize += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+                kv_save_trace().resize_faults += conversation_trace::thread_minflt() - rf0;
+            }
+            if (sizes[i] > keep && !dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
+                    host_spans.push_back({p, static_cast<const uint8_t*>(src[i]) + at, n});
+                    return true;
+                })) return false;
+            if (reused_bytes) *reused_bytes += keep;
+            continue;
+        }
         {   // STRATA_PARK_VRAM_MIB: with a slot, the whole part goes device to device into it (a restore of this image
             // reads it from there) and the host buffer gets only the bytes past the kept prefix, read from the slot on
             // the background thread; a part the slot cannot take is copied synchronously - never through the stage,
@@ -380,6 +524,13 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         }
         if (!copied) return false;
         if (reused_bytes) *reused_bytes += keep;
+    }
+    if (!host_spans.empty()) {
+        const bool trace = park_trace_on();
+        const auto tc0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        parallel_host_memcpy(host_spans);
+        if (trace)
+            kv_save_trace().copy += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
     }
     return true;
 }
@@ -526,6 +677,21 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
             if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) return false;
         return refresh_residency(st, g, upto, error);
     }
+    if (park_host_memcpy_on() && st.kv_mode != 0) {
+        std::vector<HostCopySpan> host_spans;
+        for (size_t i = 0; i < 4; ++i) {
+            if (src[i]->size() > 0 && !dst[i]) { error = "conversation snapshot: missing state buffer"; return false; }
+            if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                    host_spans.push_back({static_cast<uint8_t*>(dst[i]) + at, p, n});
+                    return true;
+                })) return false;
+        }
+        parallel_host_memcpy(host_spans);
+        if (!src[4]->visit(0, src[4]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(static_cast<uint8_t*>(dst[4]) + at, p, n, error);
+            })) return false;
+        return refresh_residency(st, g, upto, error);
+    }
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
@@ -557,6 +723,21 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
             if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) return false;
         return refresh_residency(st, g, upto, error);
     }
+    if (park_host_memcpy_on() && st.kv_mode != 0) {
+        std::vector<HostCopySpan> host_spans;
+        for (size_t i = 0; i < 4; ++i) {
+            if (sizes[i] > 0 && !dst[i]) { error = "conversation snapshot: missing state buffer"; return false; }
+            if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
+                    host_spans.push_back({static_cast<uint8_t*>(dst[i]) + at, p, n});
+                    return true;
+                })) return false;
+        }
+        parallel_host_memcpy(host_spans);
+        if (!src[4]->visit(0, sizes[4], [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(static_cast<uint8_t*>(dst[4]) + at, p, n, error);
+            })) return false;
+        return refresh_residency(st, g, upto, error);
+    }
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
@@ -570,6 +751,247 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
     if (!layout(st, g, upto, index, l, error)) return false;
     sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     return true;
+}
+
+namespace {
+std::array<ConversationBuffer*, 5> swap_buffers(ConversationKv& kv) {
+    return {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+}
+
+bool swap_range(const void* p, size_t n) {
+    const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+    return n == 0 || (p != nullptr && n <= UINTPTR_MAX - a);
+}
+
+bool swap_overlap(const void* a, size_t an, const void* b, size_t bn) {
+    if (!an || !bn) return false;
+    const uintptr_t x = reinterpret_cast<uintptr_t>(a), y = reinterpret_cast<uintptr_t>(b);
+    return x < y + bn && y < x + an;
+}
+
+// Check full allocated segment capacities, not merely the currently used bytes.
+// Device aliases are compared in their own address space; they may have the
+// same numeric value as their corresponding CPU mapping on a UVA platform.
+bool swap_ranges_valid(const ConversationSwapPlan& plan, const uint8_t* scratch, size_t scratch_bytes,
+                       std::string& error) {
+    auto bad = [&] { error = "conversation swap: overlapping or invalid address range"; return false; };
+    if (scratch_bytes && !swap_range(scratch, scratch_bytes)) return bad();
+    for (size_t l = 0; l < plan.layers.size(); ++l) {
+        const auto& x = plan.layers[l];
+        const auto xd = pools(*x.state);
+        for (size_t p = 0; p < 5; ++p) {
+            const size_t n = std::max(x.active_bytes[p], x.incoming_bytes[p]);
+            if (!swap_range(xd[p], n) || (p < 4 && !swap_range(x.active[p], n))) return bad();
+            if (scratch_bytes && (swap_overlap(xd[p], n, scratch, scratch_bytes) ||
+                                  (p < 4 && swap_overlap(x.active[p], n, scratch, scratch_bytes)))) return bad();
+            for (size_t m = 0; m < plan.layers.size(); ++m) {
+                const auto& y = plan.layers[m];
+                const auto yd = pools(*y.state);
+                for (size_t q = 0; q < 5; ++q) {
+                    const size_t z = std::max(y.active_bytes[q], y.incoming_bytes[q]);
+                    if ((l != m || p != q) && swap_overlap(xd[p], n, yd[q], z)) return bad();
+                    if (p < 4 && q < 4 && (l != m || p != q) &&
+                        swap_overlap(x.active[p], n, y.active[q], z)) return bad();
+                    if (p < 4 && q == 4 && swap_overlap(x.active[p], n, yd[q], z)) return bad();
+                }
+            }
+        }
+    }
+    // Include the new outgoing pooled buffers as well as every incoming part.
+    for (size_t l = 0; l < plan.layers.size(); ++l) {
+        const auto xb = swap_buffers(*plan.layers[l].image);
+        for (size_t p = 0; p < 6; ++p) {
+            const ConversationBuffer& a = p == 5 ? plan.layers[l].pooled : *xb[p];
+            if (!a.visit_allocations([&](const uint8_t* ap, size_t an, size_t ai) {
+                strata::core::progress_beat();
+                if (!swap_range(ap, an) || swap_overlap(ap, an, scratch, scratch_bytes)) return false;
+                for (size_t m = 0; m < plan.layers.size(); ++m) {
+                    const auto& y = plan.layers[m];
+                    const auto yd = pools(*y.state);
+                    const auto yb = swap_buffers(*y.image);
+                    for (size_t q = 0; q < 5; ++q) {
+                        const size_t n = std::max(y.active_bytes[q], y.incoming_bytes[q]);
+                        if (swap_overlap(ap, an, yd[q], n) ||
+                            (q < 4 && swap_overlap(ap, an, y.active[q], n))) return false;
+                    }
+                    for (size_t q = 0; q < 6; ++q) {
+                        const ConversationBuffer& b = q == 5 ? y.pooled : *yb[q];
+                        if (!b.visit_allocations([&](const uint8_t* bp, size_t bn, size_t bi) {
+                            if (!swap_range(bp, bn)) return false;
+                            return (l == m && p == q && ai == bi) || !swap_overlap(ap, an, bp, bn);
+                        })) return false;
+                    }
+                }
+                return true;
+            })) return bad();
+        }
+    }
+    return true;
+}
+} // namespace
+
+bool conversation_kv_swap_prepare(ConversationSwapPlan& plan, SavedConversation& incoming,
+                                  const SessionState& ss, const ModelGeometry& g,
+                                  const QsaState* draft, int64_t active_tokens, std::string& error) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+    (void) plan; (void) incoming; (void) ss; (void) g; (void) draft; (void) active_tokens;
+    error = "conversation swap: host mapping is not verified on this backend";
+    return false;
+#else
+    const size_t main_layers = (size_t) std::max<int64_t>(ss.qsa_alloc, 0);
+    if (!main_layers || incoming.kv.size() != main_layers + (draft ? 1 : 0)) {
+        error = "conversation swap: incompatible layer count";
+        return false;
+    }
+    plan.layers.clear();
+    plan.layers.reserve(incoming.kv.size());
+    const int64_t incoming_tokens = (int64_t) incoming.live.ids.size();
+    for (size_t j = 0; j < incoming.kv.size(); ++j) {
+        const bool index = j < main_layers;
+        const QsaState& st = index ? ss.qsa_states[(size_t) ss.qsa_ord0 + j] : *draft;
+        ConversationKv& image = incoming.kv[j];
+        Layout a{}, b{};
+        if ((index && st.kv_mode != 1) || (!index && st.kv_mode != 1 && st.kv_mode != 2) ||
+            image.dev_tag || image.pending || !st.host_cpu_base || !st.host_device_base || !st.host_allocation_bytes ||
+            !layout(st, g, active_tokens, index, a, error) || !valid(st, a, active_tokens, error) ||
+            !layout(st, g, incoming_tokens, index, b, error) || !valid(st, b, incoming_tokens, error) ||
+            !conversation_kv_validate(image, st, g, incoming_tokens, index, error)) {
+            if (error.empty()) error = "conversation swap: unsupported host K/V";
+            return false;
+        }
+        ConversationKvSwapLayer layer;
+        layer.state = &st;
+        layer.image = &image;
+        layer.active_bytes = {a.data, a.value_data, a.scales, a.value_scales, a.pooled};
+        layer.incoming_bytes = {b.data, b.value_data, b.scales, b.value_scales, b.pooled};
+        if (index && (st.idx_pooled != st.idx_pooled_allocation ||
+                      std::max(a.pooled, b.pooled) > st.idx_pooled_allocation_bytes ||
+                      !swap_range(st.idx_pooled_allocation, st.idx_pooled_allocation_bytes))) {
+            error = "conversation swap: device index outside its allocation";
+            return false;
+        }
+        layer.format = a.format; layer.cells = a.cells; layer.pooled_rows = a.pooled_rows; layer.page_size = a.page_size;
+        const auto aliases = pools(st);
+        const uintptr_t cpu = reinterpret_cast<uintptr_t>(st.host_cpu_base);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(st.host_device_base);
+        if (!swap_range(st.host_cpu_base, st.host_allocation_bytes) ||
+            !swap_range(st.host_device_base, st.host_allocation_bytes)) {
+            error = "conversation swap: invalid mapped allocation";
+            return false;
+        }
+        for (size_t i = 0; i < 4; ++i) {
+            const size_t n = std::max(layer.active_bytes[i], layer.incoming_bytes[i]);
+            if (!n) continue;
+            const uintptr_t alias = reinterpret_cast<uintptr_t>(aliases[i]);
+            if (alias < base || alias - base > st.host_allocation_bytes ||
+                n > st.host_allocation_bytes - (alias - base)) {
+                error = "conversation swap: host alias outside its allocation";
+                return false;
+            }
+            layer.active[i] = reinterpret_cast<uint8_t*>(cpu + (alias - base));
+        }
+        plan.layers.push_back(std::move(layer));
+    }
+    return swap_ranges_valid(plan, nullptr, 0, error);
+#endif
+}
+
+bool conversation_kv_swap_reserve(ConversationSwapPlan& plan, uint8_t* scratch, size_t block_bytes,
+                                  bool& transfer_failed, std::string& error) {
+    transfer_failed = false;
+    if (!scratch || !block_bytes) { error = "conversation swap: no scratch block"; return false; }
+    plan.final_additional_bytes = block_bytes;
+    for (auto& layer : plan.layers) {
+        const auto buffers = swap_buffers(*layer.image);
+        for (size_t i = 0; i < 4; ++i) {
+            ConversationBuffer& buffer = *buffers[i];
+            const size_t old_size = buffer.size(), old_bytes = buffer.bytes();
+            const size_t target = std::max(layer.active_bytes[i], layer.incoming_bytes[i]);
+            size_t old_capacity = 0;
+            if (target > old_size && !buffer.visit_allocations([&](const uint8_t*, size_t n, size_t) {
+                    return conversation_detail::add(old_capacity, n);
+                })) {
+                error = "conversation swap: growth capacity overflow";
+                return false;
+            }
+            buffer.resize_for_overwrite(target);
+            const size_t new_bytes = buffer.bytes();
+            // Existing spare capacity may not have been touched by B. Charge it
+            // when A grows into it, as well as every newly reserved allocation.
+            if (new_bytes < old_bytes || (target > old_size && old_capacity < old_size) ||
+                !conversation_detail::add(plan.final_additional_bytes, new_bytes - old_bytes) ||
+                (target > old_size && !conversation_detail::add(plan.final_additional_bytes, old_capacity - old_size))) {
+                error = "conversation swap: growth byte count overflow";
+                return false;
+            }
+        }
+        layer.pooled.resize_for_overwrite(layer.active_bytes[4]);
+        // The subsequent synchronous transfer populates pooled.size() bytes.
+        // Its unused capacity and directory need not have been resident.
+        if (layer.pooled.bytes() < layer.pooled.size() ||
+            !conversation_detail::add(plan.final_additional_bytes, layer.pooled.bytes() - layer.pooled.size())) {
+            error = "conversation swap: index capacity overflow";
+            return false;
+        }
+    }
+    if (!swap_ranges_valid(plan, scratch, block_bytes, error)) return false;
+    // Save the outgoing device index, including its moving spare row, before
+    // restoring any of the incoming pooled rows or checkpoint state.
+    for (auto& layer : plan.layers) {
+        const void* source = pools(*layer.state)[4];
+        if (!layer.pooled.visit(0, layer.pooled.size(), [&](uint8_t* p, size_t n, size_t at) {
+                return transfer(p, source ? static_cast<const uint8_t*>(source) + at : nullptr, n, error);
+            })) {
+            transfer_failed = true;
+            return false;
+        }
+    }
+    return true;
+}
+
+void conversation_kv_swap_rollback(ConversationSwapPlan& plan) {
+    for (auto& layer : plan.layers) {
+        const auto buffers = swap_buffers(*layer.image);
+        for (size_t i = 0; i < 4; ++i) buffers[i]->resize_for_overwrite(layer.incoming_bytes[i]);
+    }
+}
+
+bool conversation_kv_swap_exchange(ConversationSwapPlan& plan, const ModelGeometry& g,
+                                   int64_t incoming_tokens, uint8_t* scratch, size_t block_bytes,
+                                   bool& written, std::string& error) {
+    for (auto& layer : plan.layers) {
+        const auto buffers = swap_buffers(*layer.image);
+        for (size_t i = 0; i < 4; ++i) {
+            if (!conversation_buffer_exchange(*buffers[i], layer.active[i], layer.active_bytes[i],
+                                              layer.incoming_bytes[i], scratch, block_bytes, written)) {
+                error = "conversation swap: host exchange failed";
+                return false;
+            }
+        }
+    }
+    // The device index is not a CPU mapping. Restore it using the existing
+    // transfer path, then invalidate streaming slots or refill the draft ring.
+    for (auto& layer : plan.layers) {
+        void* target = pools(*layer.state)[4];
+        if (!layer.image->pooled.visit(0, layer.incoming_bytes[4], [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(target ? static_cast<uint8_t*>(target) + at : nullptr, p, n, error);
+            }) || !refresh_residency(*layer.state, g, incoming_tokens, error)) return false;
+    }
+    return true;
+}
+
+void conversation_kv_swap_publish(ConversationSwapPlan& plan, SavedConversation& incoming,
+                                 SavedConversation& outgoing, const ModelGeometry& g) {
+    for (auto& layer : plan.layers) {
+        auto& kv = *layer.image;
+        const auto buffers = swap_buffers(kv);
+        for (size_t i = 0; i < 4; ++i) buffers[i]->resize_for_overwrite(layer.active_bytes[i]);
+        kv.pooled = std::move(layer.pooled);
+        kv.format = layer.format; kv.cells = layer.cells; kv.heads = g.n_head_kv; kv.head_dim = g.head_dim;
+        kv.page_size = layer.page_size; kv.pooled_rows = layer.pooled_rows; kv.idx_dim = g.idx_key_dim;
+        kv.dev_tag = 0;
+    }
+    outgoing.kv = std::move(incoming.kv);
 }
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,

@@ -13,6 +13,10 @@ int main(int argc, char** argv) try {
     if (runtime.rank() == 0) for (size_t i = 0; i < id.size(); ++i) id[i] = std::byte(i);
     runtime.broadcast(id);
     for (size_t i = 0; i < id.size(); ++i) if (id[i] != std::byte(i)) throw std::runtime_error("bootstrap ID changed");
+    std::array<uint32_t, 3> work{};
+    if (runtime.rank() == 0) work = {2, 41, 512};
+    runtime.broadcast_control(work);
+    if (work != std::array<uint32_t, 3>{2, 41, 512}) throw std::runtime_error("control message changed");
     if (runtime.minimum(uint64_t(runtime.rank() * 7 + 5)) != 5) throw std::runtime_error("minimum did not include every rank");
     std::vector<int> sizes(runtime.size());
     for (int r = 0; r < runtime.size(); ++r) sizes[r] = r + 1;

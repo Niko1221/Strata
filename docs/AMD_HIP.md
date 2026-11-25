@@ -46,7 +46,7 @@ Strix Point (890M / 880M, gfx1150) and Krackan (860M / 840M, gfx1152) are named 
 ## Ready-made packages
 
 The Terminal one-liner and `strata update` pick the package whose GPU code covers the card. The app installer
-(`Strata-0.2.17-windows-x64-setup.exe`, `Strata-0.2.17-linux-x86_64.AppImage`) has no engine inside: on its first start the app
+(`Strata-0.2.22-windows-x64-setup.exe`, `Strata-0.2.22-linux-x86_64.AppImage`) has no engine inside: on its first start the app
 downloads the matching package for the card. You can also press **Update engine** in Settings (or run `strata update`).
 
 | Package (variant) | OS | GPU code inside | ROCm |
@@ -101,7 +101,7 @@ prompt-speed run with `on` and `off` from an RX 7000 or Strix Halo card.
 | Step | What setup does |
 | --- | --- |
 | Detection | Finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not supported (Strix Halo has its own page). |
-| ROCm | Uses a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS when present. Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
+| ROCm | Uses a system ROCm 7 with hipcc and hipBLAS when present: `/opt/rocm` (or `$ROCM_PATH`) as AMD installs it, or the layout a distribution's packages use, where hipcc is in `<prefix>/bin`, the libraries in `<prefix>/lib64` or a multiarch folder and the headers in `<prefix>/include` (Fedora, Arch, Debian). Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
 | Engine | Compiles it for the card's architecture (10-20 minutes, once; again when you pick another architecture). Needs a C++ compiler and git (`sudo apt install build-essential git`). |
 | Tuning table | Uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the architecture and the installed hipBLASLt version. Otherwise it says so and uses plain hipBLAS. On gfx103x the same role falls to a rocBLAS table. |
 | Pictures | On by default. CPU reader under 24 GB of VRAM, GPU reader from 24 GB; `--vision gpu` / `--vision cpu` switch it. If the GPU reader cannot start, the CPU reader is used. |
@@ -128,7 +128,7 @@ reused. The Monitor shows the card's load, VRAM, temperature and power from Linu
 
 ## Windows
 
-Install the [app](INSTALL.md) (`Strata-0.2.17-windows-x64-setup.exe` from the
+Install the [app](INSTALL.md) (`Strata-0.2.22-windows-x64-setup.exe` from the
 [release page](https://github.com/Niko1221/Strata/releases/latest); it downloads the engine for the card), or
 install the [Terminal](INSTALL.md#the-terminal) and run `strata launch`. You need Windows 10 or 11 (64-bit), a supported card
 and a current AMD driver. No ROCm or HIP SDK, no compiler, no admin rights. `START-HERE.bat --backend hip` is a
@@ -212,6 +212,12 @@ ctest --test-dir build-hip --output-on-failure --timeout 60 -E '^(ple_parity|pla
 ```
 
 `ple_parity` needs an external model fixture. `platform_memory_test` needs a memlock limit above the shell's default.
+
+### Hy4-Flash: experts on multiple AMD GPUs
+
+`strata-hy4 --gpus 0,1` (or `--gpus 2` / `--devices 0,1`) distributes routed experts across all selected AMD GPUs by default (`HY4_HIP_PEERS=1`). When PCIe peer access (`hipDeviceCanAccessPeer`) is available, partial activations transfer directly with `hipMemcpyPeerAsync`; when peer access is unavailable (or disabled with `HY4_PEER_NO_P2P=1`), the runner falls back automatically to async pinned host bounce buffers.
+
+Each peer card reserves workspace memory sized automatically for the active prefill chunk (`Tc`); set `HY4_PEER_RESERVE_MB` to override the per-peer reserve explicitly.
 
 ## Model and serving configuration
 
@@ -681,15 +687,15 @@ builds make that identity easy to mistake, see below - so calibrate it on the ca
 
 ```sh
 cmake --build build-hip --target tune_rocblas
-LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 8 token buckets, about 5 min
+LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 12 token buckets, about 15 min
 ```
 
-The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 8192 (`--case
+The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 16384 (`--case
 T,N,K,ldy` adds a shape, `--tokens` changes the buckets), checks the fastest against the default's output, and writes one row
 per shape and bucket: the winning solution where it beats the default by `--min-gain` (1.05), `default` otherwise. The header
 names the architecture and version (`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e`). Save it as
 `tools/hip/<arch>-rocblas-<version>.txt` (trailing dots dropped) for setup, or point `STRATA_ROCBLAS_TUNING` at the file.
-`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape and a `tuned_launches=... fallbacks=...` summary at exit. A
+`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape (or `default kernel; no row for T=... N=... K=... ldy=...`) and a `tuned_launches=... fallbacks=...` summary at exit; a read at the prompt lengths you use lists every (T, N, K, ldy) the engine calls, which is the way to check that a table covers them (a row matches N, K and ldy exactly; T goes to the nearest bucket). A
 solution rocBLAS refuses at run time falls back to the default kernel for that call, and after three refusals for good.
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
 

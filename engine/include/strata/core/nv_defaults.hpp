@@ -7,6 +7,7 @@
 // on a card (STRATA_EXCHANGE_ROTATE, STRATA_PCIE_BALANCE, STRATA_QSA_WARP, ...) are not in any table.
 //
 //   STRATA_SM86_PERF=0   turns the sm_86 table off (cards of compute capability 8.6: RTX 3050-3090, RTX A2000-A6000)
+//   STRATA_SM70_PERF=0   turns the sm_70 table off (Volta: Tesla V100 / Titan V / Quadro GV100; also off under STRATA_DEFAULTS=026)
 //   STRATA_SM60_PERF=0   turns the sm_60 table off (Pascal GP100: Tesla P100)
 //   STRATA_SM121_PERF=0  turns the sm_121 table off (GB10: NVIDIA DGX Spark; new in 0.2.7.1, also off under STRATA_DEFAULTS=026).  Its
 //                        switches are measured speed settings, not bit-exact ones: the fused prompt kernels and the FP4-activation NVFP4
@@ -23,11 +24,14 @@
 
 namespace strata::core {
 
-/// STRATA_ADAPT_FETCH=2 as a default (0.2.17, owner yes 11-19; BW-9 on 2x RTX 5060 Ti 16 GB, phaseA-tests/bw/RESULTS-BW-F.md): compute
-/// capability 12.x cards with at most this much VRAM (RTX 5050 / 5060 / 5060 Ti / 5070 / 5070 Ti / 5080 and the laptop parts).  A card with more
-/// VRAM keeps it opt-in.  The switch is read once per process and only a one-card run uses it (a layer split, helper cards, a peer tier, --batch
-/// and the other cases the start-up line names turn it off), so the card that decides is the engine's main one (STRATA_PRIMARY_DEVICE).
+/// STRATA_ADAPT_FETCH=2 as a default (0.2.17, owner yes 11-19; BW-9 on 2x RTX 5060 Ti 16 GB, phaseA-tests/bw/RESULTS-BW-F.md;
+/// 0.2.20 extended to <= 13 GiB sm_86/sm_89 consumer cards: RTX 3060/3060 Ti/3070/3080, RTX 4060/4060 Ti 8G/4070/4070 Ti):
+/// compute capability 12.x cards with at most kAdaptFetchMaxVramBytes (16 GiB), or sm_86/sm_89 cards with at most
+/// kAdaptFetchLowVramBytes (13 GiB). A card with more VRAM keeps it opt-in. The switch is read once per process and only a
+/// one-card run uses it (a layer split, helper cards, a peer tier, --batch, resident RAM mode and the other cases the start-up
+/// line names turn it off), so the card that decides is the engine's main one (STRATA_PRIMARY_DEVICE).
 constexpr uint64_t kAdaptFetchMaxVramBytes = 16ull << 30;
+constexpr uint64_t kAdaptFetchLowVramBytes = 13ull << 30;
 /// Whether STRATA_ADAPT_FETCH=2 is the default of a card with compute capability major.minor (raw) and `vram_bytes` of memory
 /// (cudaDeviceProp::totalGlobalMem; 0 = unknown, which is no).  Not about the environment: the off switches are in nv_default_env.
 bool adapt_fetch_default_card(int major, int minor, uint64_t vram_bytes);
@@ -48,6 +52,26 @@ std::vector<std::string> apply_nv_defaults(int major, int minor, uint64_t main_v
 /// (Inline, so a build that does not link nv_defaults.cpp - Metal, SYCL - still compiles the engine's lines: it reads false there.)
 inline bool& adapt_fetch_default_flag() { static bool v = false; return v; }
 inline bool adapt_fetch_is_default() { return adapt_fetch_default_flag(); }
+
+/// Whether apply_nv_defaults put STRATA_GDN_SPLIT in the environment (the sm_70 table), as opposed to the user's own setting.
+inline bool& gdn_split_default_flag() { static bool v = false; return v; }
+inline bool gdn_split_is_default() { return gdn_split_default_flag(); }
+
+/// #6747: STRATA_GDN_SPLIT=1 keeps kVerifyMaxT token rows per thread and has no batched commit, so a window past kVerifyMaxT tokens
+/// (the 12-token --lookup-max-t default of the 8-row build) cannot use it: the first such window ended the engine with
+/// "gdn_step_norm_multi: invalid arguments" on a V100 default build.  The rule, once the lookup window is known:
+///   - the switch is off, or the window fits (lookup_max_t <= verify_max_t): nothing to do;
+///   - the switch is the table's default: drop the switch (the wide window stays, as it was before the sm_70 table existed);
+///   - the user set the switch: keep it and clamp the lookup window to verify_max_t (a warning, never an exit).
+struct GdnSplitWindowFix {
+    bool drop_default_split;
+    int lookup_max_t;
+};
+inline GdnSplitWindowFix gdn_split_window_fix(bool split_on, bool split_from_default, int lookup_max_t, int verify_max_t) {
+    if (!split_on || lookup_max_t <= verify_max_t) return {false, lookup_max_t};
+    if (split_from_default) return {true, lookup_max_t};
+    return {false, verify_max_t};
+}
 
 }  // namespace strata::core
 

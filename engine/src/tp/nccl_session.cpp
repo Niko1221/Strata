@@ -62,6 +62,18 @@ void NcclSession::sum(float* data, size_t count, cudaStream_t stream) {
     if (size_ > 1) ready(ncclAllReduce(data, data, count, ncclFloat, ncclSum, comm_, stream), "NCCL sum");
 }
 
+void NcclSession::broadcast_bytes(void* data, size_t bytes, cudaStream_t stream) {
+    if (size_ > 1) ready(ncclBroadcast(data, data, bytes, ncclUint8, 0, comm_, stream), "NCCL broadcast");
+}
+
+void NcclSession::send(const float* data, size_t count, int peer, cudaStream_t stream) {
+    ready(ncclSend(data, count, ncclFloat, peer, comm_, stream), "NCCL send");
+}
+
+void NcclSession::receive(float* data, size_t count, int peer, cudaStream_t stream) {
+    ready(ncclRecv(data, count, ncclFloat, peer, comm_, stream), "NCCL receive");
+}
+
 void NcclSession::gather(const float* input, float* output, size_t count, cudaStream_t stream) {
     if (!input || !output || !count) throw std::runtime_error("TP gather requires nonempty device buffers");
     if (size_ == 1) {

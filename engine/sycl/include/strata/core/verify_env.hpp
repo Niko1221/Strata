@@ -18,4 +18,14 @@ inline bool no_host_wants_device_plan(const char* no_host, const char* device_pl
     return nh && device_plan == nullptr;
 }
 
+/// #4698: the combination to refuse at the start.  With STRATA_VERIFY_NO_HOST on (set, not empty, not "0") the host never serves a layer, and the device plan
+/// reads every routed expert from VRAM or from a USM mirror (--stream-experts).  A host arena (no --stream-experts) is ordinary pageable memory on SYCL
+/// (PinnedArena::register_slices registers nothing): the experts the VRAM cache does not hold have no answer, and a reply came out as '!' x 256 (Arc Pro B70,
+/// #4698) or the window hung.  True when NO_HOST is on, the experts come from the host arena, and the VRAM cache holds fewer than all of them.  With every
+/// expert in VRAM the arena is never read, so nothing is refused.  A pure function: no queue, no GPU.
+inline bool arena_refuses_no_host(const char* no_host, bool host_arena, long long experts_total, long long experts_in_vram) {
+    const bool nh = no_host != nullptr && no_host[0] != '\0' && std::strcmp(no_host, "0") != 0;
+    return nh && host_arena && experts_in_vram < experts_total;
+}
+
 }  // namespace strata

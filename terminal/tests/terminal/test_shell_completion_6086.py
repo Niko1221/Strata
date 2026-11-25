@@ -31,6 +31,20 @@ def _run(shell: str) -> str:
     return out.getvalue()
 
 
+def _working_bash() -> str | None:
+    b = shutil.which("bash")
+    if not b:
+        return None
+    try:
+        r = subprocess.run([b, "-c", "exit 0"], capture_output=True, timeout=15)
+        return b if r.returncode == 0 else None
+    except OSError:
+        return None
+
+
+_BASH = _working_bash()
+
+
 def _bash_complete(script: str, words: list[str]) -> list[str]:
     """What bash offers after `words` (the last one is the word being completed)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -38,7 +52,7 @@ def _bash_complete(script: str, words: list[str]) -> list[str]:
         f.write_text(script, encoding="utf-8", newline="\n")
         quoted = " ".join("'" + w + "'" for w in words)
         cmd = f"source '{f.as_posix()}'; COMP_WORDS=({quoted}); COMP_CWORD={len(words) - 1}; _strata; printf '%s\\n' \"${{COMPREPLY[@]}}\""
-        r = subprocess.run([shutil.which("bash"), "-c", cmd], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([_BASH, "-c", cmd], capture_output=True, text=True, timeout=30)
         assert r.returncode == 0, r.stderr
         return r.stdout.split()
 
@@ -74,13 +88,13 @@ class ShellCompletion(unittest.TestCase):
                 r = subprocess.run([binary, "-n", str(f)], capture_output=True, text=True, timeout=30)
             self.assertEqual(r.returncode, 0, f"{shell}: {r.stderr}")
 
-    @unittest.skipUnless(shutil.which("bash"), "no bash on this machine")
+    @unittest.skipUnless(_BASH, "no working bash on this machine")
     def test_bash_offers_commands_sub_commands_options_and_choices(self):
         script = _run("bash")
         with tempfile.TemporaryDirectory() as tmp:
             f = Path(tmp) / "strata.bash"
             f.write_text(script, encoding="utf-8", newline="\n")
-            syntax = subprocess.run([shutil.which("bash"), "-n", f.as_posix()], capture_output=True, text=True)
+            syntax = subprocess.run([_BASH, "-n", f.as_posix()], capture_output=True, text=True)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         top = _bash_complete(script, ["strata", ""])
         for command in ("launch", "models", "profile", "complete", "bench"):
