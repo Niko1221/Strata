@@ -67,7 +67,7 @@ import { selectSkills, withSkills, historyWithSkills } from './skill-selection.m
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
 import { prepareOversized } from './oversize.mjs';
-import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
+import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, fileResponseHeaders, createAttachments, withAttachments } from './chat-files.mjs';
 import { createUserRules, rulesFile } from './user-rules.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates, engineFirstRun } from './updates.mjs';
@@ -1476,7 +1476,7 @@ async function api(req, res, path, method, url) {
   if (dropGet && method === 'GET') {
     const file = nativeDrops.take(dropGet[1]);
     if (!file) return error(res, 404, 'That file is no longer available. Drop it again.');
-    res.writeHead(200, { 'content-type': file.type, 'content-length': file.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(file.bytes); return undefined;
+    res.writeHead(200, fileResponseHeaders(file.type, file.bytes.length)); res.end(file.bytes); return undefined;
   }
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
@@ -1897,7 +1897,7 @@ async function api(req, res, path, method, url) {
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   if (path === '/api/files/raw' && method === 'GET') {
-    try { const f = rawFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
+    try { const f = rawFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, fileResponseHeaders(f.mime, f.bytes.length)); res.end(f.bytes); return undefined; }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   /* A message too large for the model's window, made small enough to send: its text as a file in the chat's folder, or a shortened preview (oversize.mjs). */
