@@ -73,6 +73,13 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-23: RTX 5090 32 GB, Core Ultra 9 285K, 60.9 GiB RAM](bench-results/2026-11-23-community-rtx-5090-ud-iq3-xxs-0166/README.md):
+  engine 0.1.66 release tarball on terminal v0.2.20, UD-IQ3_XXS + DFlash2 (`--spec 8 --draft-conf 0.5`),
+  262,144-token context, `--kv int8 --mmap-experts --kv-resident 32768`; **confirms the `STRATA_HC_Q8=0`
+  workaround for the sm_120 warm-up crash (#6712 / #6704 / #6767) on a desktop 5090** and quantifies its cost
+  against engine 0.1.62 on the same machine: fresh-prompt prefill at 32K and below drops 35-61% (the disabled
+  fused-Q8 path), while decode at 4-32K rises +24 to +81%. Agent session: 70.6% cache hit, 5 re-read tokens
+  per session, decode median 195 tok/s. Includes a long-context stbench matrix (1K-262K) as a companion file.
 
 ## Run the standard benchmark
 
