@@ -27,7 +27,8 @@ const request = {
 
 async function server(t, reply = (body, res) => {
   const input = JSON.parse(body.messages[1].content);
-  const picked = input.excerpts.find(item => item.text.includes('FINAL_TEST_EVIDENCE')) ?? input.excerpts[0];
+  const picked = input.excerpts.find(item => item.role.startsWith('tool result') && item.text.includes('FINAL_TEST_EVIDENCE: 12 passed.'))
+    ?? input.excerpts[0];
   res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify([picked.id]) } }] }));
 }) {
   const calls = [];
@@ -146,7 +147,8 @@ test('the real Harness lands the selected evidence through /compact and reuses i
   const worker = await startScriptedWorker({ window, charsPerToken: 3, chunkDelayMs: 1 });
   const dir = mkdtempSync(join(tmpdir(), 'strata-optimizer-harness-'));
   writeFileSync(join(dir, 'report.txt'), 'FINAL_TEST_EVIDENCE: 12 passed.\n' + 'routine output\n'.repeat(400));
-  let selected = config;
+  // Keep the unit tests' short timeout, but give the real subprocess round trip the normal budget.
+  let selected = { ...config, timeoutMs: 15_000 };
   const logs = [];
   const bridge = createAgentBridge({
     dataDir: dir, contextOptimizer: () => selected, connections: () => [], log: line => logs.push(line),
@@ -155,27 +157,40 @@ test('the real Harness lands the selected evidence through /compact and reuses i
   t.after(async () => { await bridge.close(); await worker.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); });
   const send = async (message, compact = false) => {
     const frames = [];
-    await bridge[compact ? 'compactCommand' : 'runTurn']({ chatId: 'test', message, workspacePath: dir, mode: 'plan', onFrame: frame => frames.push(frame) });
+    try {
+      await bridge[compact ? 'compactCommand' : 'runTurn']({ chatId: 'test', message, workspacePath: dir, mode: 'plan', onFrame: frame => frames.push(frame) });
+    } catch (error) {
+      throw new Error(`Harness request failed during ${message.split('\n')[0]}\n${logs.join('\n')}`, { cause: error });
+    }
     assert.equal(frames.at(-1)?.type, 'done', JSON.stringify(frames.at(-1)));
     assert.ok(!frames.some(frame => frame.type === 'error'), JSON.stringify(frames.find(frame => frame.type === 'error')));
     return frames;
   };
-  await send('SCRIPT:call read {"file_path":"report.txt"}\nKorrektur: src/a.cpp behalten.');
+  // The model's own recap can contain the same marker without the full result.
+  // Set it explicitly so this does not depend on the absolute path in the read response.
+  const script = { calls: [['read', { file_path: 'report.txt' }]], say: 'Tool finished. Result: FINAL_TEST_EVIDENCE: 12' };
+  await send(`SCRIPT:multi ${JSON.stringify(script)}\nKorrektur: src/a.cpp behalten.`);
   for (let i = 0; i < 2; i++) await send('SCRIPT:fill 1000');
   const before = worker.requests.length;
   const compacted = await send('/compact', true);
   if (!calls.length) {
-    const status = await bridge._debug().rt.gw.rpc('commands/execute', { agentId: bridge.sessionOf('test'), line: '/strata-context', submittedAttachments: [] });
+    const status = await bridge._debug().rt?.gw.rpc('commands/execute', { agentId: bridge.sessionOf('test'), line: '/strata-context', submittedAttachments: [] })
+      .catch(error => ({ error: error.message }));
     await bridge.close();
     let log = '';
     try { log = readFileSync(join(dir, 'agent', 'harness.log'), 'utf8').slice(-3500); } catch { /* process may have failed to start */ }
     assert.fail(JSON.stringify({ compacted, status }) + '\n' + logs.join('\n') + '\n' + log);
   }
   assert.ok(!worker.requests.slice(before).some(req => req.summary), 'the main model did not have to summarize');
+  const candidates = calls.flatMap(({ body }) => JSON.parse(body.messages[1].content).excerpts);
+  assert.ok(candidates.some(item => item.role === 'assistant' && item.text === script.say), 'the optimizer saw the incomplete recap');
+  assert.ok(candidates.some(item => item.role.startsWith('tool result') && item.text.includes('FINAL_TEST_EVIDENCE: 12 passed.')), 'the optimizer saw the complete tool result');
   await send('SCRIPT:echo continue');
-  assert.match(worker.requests.at(-1).raw, /Selected excerpts from earlier messages/);
-  assert.match(worker.requests.at(-1).raw, /FINAL_TEST_EVIDENCE: 12 passed/);
-  assert.match(worker.requests.at(-1).raw, /Korrektur: src\/a\.cpp behalten/);
+  const checkpoint = JSON.parse(worker.requests.at(-1).raw).messages
+    .find(message => message.role === 'user' && message.content.includes('Selected excerpts from earlier messages'));
+  assert.ok(checkpoint, 'the next request includes the optimizer checkpoint');
+  assert.match(checkpoint.content, /FINAL_TEST_EVIDENCE: 12 passed\./);
+  assert.match(checkpoint.content, /Korrektur: src\/a\.cpp behalten/);
   const previousCalls = calls.length;
   selected = null;
   await send('SCRIPT:echo after disabling');
