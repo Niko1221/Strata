@@ -33,7 +33,7 @@ endforeach()
 foreach(_type IN ITEMS q4_k q5_k q5_1 q6_k)
   target_sources(strata_hy4_flash_kq PRIVATE ${_hy4_cuda}/template-instances/mmq-instance-${_type}.cu)
 endforeach()
-target_compile_definitions(strata_hy4_flash_mmq PRIVATE STRATA_KQ_DSO=1 STRATA_MMQ_KQUANTS=1
+target_compile_definitions(strata_hy4_flash_mmq PRIVATE STRATA_KQ_DSO=1 STRATA_MMQ_KQUANTS=1 STRATA_HY4_FLASH_MMQ_QUANTIZED_SUM=1
     INTERFACE STRATA_HY4_FLASH_MMQ=1)
 target_link_libraries(strata_hy4_flash_mmq PRIVATE strata_hy4_flash_w4a4 CUDA::cudart ${CMAKE_DL_LIBS})
 add_dependencies(strata_hy4_flash_mmq strata_hy4_flash_kq)

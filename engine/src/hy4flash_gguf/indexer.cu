@@ -8,6 +8,9 @@
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/pdl.hpp"
 
+#include "reference_ops.hpp"
+
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -69,14 +72,15 @@ __global__ void save_window_k(const float* src, float* dst, int kd, int nt, cons
 
 /// Pack `value` and `gate` into the `[2 * key_dim, n]` column layout `pool_k` reads, after the carry.
 __global__ void pack_vg(const float* __restrict__ v, const float* __restrict__ g, float* __restrict__ out,
-                        int key_dim, int n, const int32_t* __restrict__ cnt) {
+                        int key_dim, int n, const int32_t* __restrict__ cnt, bool reference) {
     const long long base = (long long) 2 * key_dim * idx_carry(cnt);
     const long long total = (long long) key_dim * n;
     for (long long i = (long long) blockIdx.x * kBlock + threadIdx.x; i < total;
          i += (long long) gridDim.x * kBlock) {
         const int d = (int) (i % key_dim), tk = (int) (i / key_dim);
-        out[base + (std::size_t) tk * 2 * key_dim + d] = v[i];
-        out[base + (std::size_t) tk * 2 * key_dim + key_dim + d] = g[i];
+        out[base + (std::size_t)tk * 2 * key_dim + d] = reference ? __half2float(__float2half_rn(v[i])) : v[i];
+        out[base + (std::size_t)tk * 2 * key_dim + key_dim + d] =
+            reference ? __half2float(__float2half_rn(g[i])) : g[i];
     }
 }
 
@@ -108,6 +112,33 @@ __global__ void pool_k(const float* __restrict__ vgs, const float* __restrict__ 
     out[(std::size_t) g * key_dim + d] = acc / sum;
 }
 
+// Match the four-row softmax and the pairwise sum used by GGML.
+__global__ void reference_pool_four(const float* input, const float* ape, float* out, int kd, const int32_t* cnt,
+                                    int nt) {
+    const int group = blockIdx.x, channel = threadIdx.x;
+    if (channel >= kd) return;
+    if (group >= idx_nnew(cnt, nt, 4)) {
+        out[size_t(group)*kd+channel]=0.f;
+        return;
+    }
+    float logits[4], values[4];
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        const float* row = input + size_t(4 * group + j) * 2 * kd;
+        logits[j] = row[kd + channel] + ape[j * kd + channel];
+        values[j] = row[channel];
+    }
+    float mx = fmaxf(fmaxf(logits[0], logits[2]), fmaxf(logits[1], logits[3]));
+    for (int j = 0; j < 4; j++)
+        logits[j] = __expf(logits[j] - mx);
+    const float sum = (logits[0] + logits[2]) + (logits[1] + logits[3]);
+    const float inv = __fdividef(1.f, sum);
+    for (int j = 0; j < 4; j++)
+        values[j] = __fmul_rn(__fmul_rn(logits[j], inv), values[j]);
+    out[size_t(group) * kd + channel] =
+        __fadd_rn(__fadd_rn(values[0], values[2]), __fadd_rn(values[1], values[3]));
+}
+
 /// The first member's position for each group formed in this call: `kpool * (n_pool + g)`. A dead slot gets
 /// 0, which is a position the rope accepts and nothing reads.
 __global__ void pool_pos(int32_t* __restrict__ pos, int kpool, int max_new, int n_tok,
@@ -119,14 +150,15 @@ __global__ void pool_pos(int32_t* __restrict__ pos, int kpool, int max_new, int 
 
 /// Append completed keys after the previously pooled keys.
 __global__ void commit_pooled_k(const float* __restrict__ stage, float* __restrict__ pooled, int key_dim,
-                                int max_new, int n_tok, int kpool, const int32_t* __restrict__ cnt) {
+                                int max_new, int n_tok, int kpool, const int32_t* __restrict__ cnt,
+                                bool reference) {
     const int n_new = idx_nnew(cnt, n_tok, kpool);
     const long long total = (long long) key_dim * max_new;
     const long long base = (long long) idx_npool(cnt) * key_dim;
     for (long long i = (long long) blockIdx.x * kBlock + threadIdx.x; i < total;
          i += (long long) gridDim.x * kBlock) {
         if (i >= (long long) key_dim * n_new) return;
-        pooled[base + i] = stage[i];
+        pooled[base + i] = reference ? __half2float(__float2half_rn(stage[i])) : stage[i];
     }
 }
 
@@ -148,6 +180,46 @@ __global__ void idx_advance_k(int32_t* __restrict__ cnt, int n_tok, int kpool) {
     const int have = cnt[0] + n_tok;
     cnt[1] += have / kpool;
     cnt[0] = have % kpool;
+}
+
+// Match the reference dot-product reduction with one half-warp per visible pool.
+template <int kHeads, int kDim>
+__global__
+__launch_bounds__(kDim) void reference_score_k(const float* __restrict__ iq, const float* __restrict__ wgt,
+                                               const float* __restrict__ pooled, float* __restrict__ score,
+                                               int pool_stride, int kpool, const int32_t* __restrict__ q_pos,
+                                               int n_keep, bool select_tail) {
+    const int t = blockIdx.y;
+    const int pos = q_pos[t];
+    const int visible = (pos + (select_tail ? 0 : 1)) / kpool;
+    if (visible <= n_keep)
+        return;
+    const int lane = threadIdx.x % 16;
+    const int group = threadIdx.x / 16;
+    const unsigned mask = 0xffffu << (threadIdx.x % 32 >= 16 ? 16 : 0);
+    for (int j = blockIdx.x * (blockDim.x / 16) + group; j < visible; j += gridDim.x * (blockDim.x / 16)) {
+        const float* key = pooled + size_t(j) * kDim;
+        float keys[8];
+#pragma unroll
+        for (int g = 0; g < 8; g++)
+            keys[g] = key[lane + 16 * g];
+        float total = 0;
+        for (int h = 0; h < kHeads; h++) {
+            const float* q = iq + (size_t(t) * kHeads + h) * kDim;
+            float v[4];
+#pragma unroll
+            for (int g = 0; g < 4; g++)
+                v[g] = __fmaf_rn(q[lane + 16 * g + 64], keys[g + 4], __fmul_rn(q[lane + 16 * g], keys[g]));
+            float dot = __fadd_rn(__fadd_rn(v[0], v[2]), __fadd_rn(v[1], v[3]));
+#pragma unroll
+            for (int off = 8; off; off /= 2)
+                dot = __fadd_rn(dot, __shfl_down_sync(mask, dot, off, 16));
+            if (!lane)
+                total = __fmaf_rn(fmaxf(dot, 0.f), wgt[size_t(t) * kHeads + h], total);
+        }
+        if (!lane)
+            score[size_t(t) * pool_stride + j] = total;
+    }
 }
 
 /// Score each (token, pool) by the weighted sum of its rectified head dot products.
@@ -194,7 +266,8 @@ __global__ void scale_k(float* __restrict__ x, float s, long long n) {
 /// Retain the highest-scoring visible pools and append the mandatory causal tail.
 __global__ __launch_bounds__(kBlock) void select_k(const float* __restrict__ score, int32_t* __restrict__ sel,
                                                    int pool_stride, int n_sel, int kpool, int n_keep,
-                                                   const int32_t* __restrict__ q_pos, bool select_tail) {
+                                                   const int32_t* __restrict__ q_pos, bool select_tail,
+                                                   bool reference) {
     const int t = (int) blockIdx.x;
     const float* sc = score + (std::size_t) t * pool_stride;
     int32_t* out = sel + (std::size_t) t * n_sel;
@@ -207,6 +280,14 @@ __global__ __launch_bounds__(kBlock) void select_k(const float* __restrict__ sco
     const int nv = select_tail ? pos / kpool : (pos + 1) / kpool;
     const int keep = nv < n_keep ? nv : n_keep;
 
+    if (reference && nv <= n_keep) {
+        for (int j = threadIdx.x; j < n_keep * kpool; j += kBlock)
+            out[j] = j < nv * kpool ? j : -1;
+        if (select_tail)
+            for (int j = threadIdx.x; j < kpool; j += kBlock)
+                out[n_keep * kpool + j] = j <= pos % kpool ? nv * kpool + j : -1;
+        return;
+    }
     // Map float to an unsigned key that compares the same way, so a bisection on the integer is a
     // bisection on the value. Scores can be negative (wgt is unconstrained), so the sign flip matters.
     auto key = [](float f) -> unsigned {
@@ -475,31 +556,44 @@ void indexer_select(IndexerCache& c, int layer, const IndexerWeights& w, const I
     const MatIn cur_in = mat_staged(mc, const_cast<float*>(cur_f16), cur_q8, n_embd, n_tok, stream, kSiteQA);
     mat_apply(cur_in, w.attn_k_type, w.attn_k, ik, n_embd, kd, n_tok, stream, kSiteQA);
     kernels::rms_norm_weighted_wide(ik, w.k_norm, n_tok, kd, rms_eps, stream);
-    kernels::native_quantize_q8_1_wide(ik, ikq8, kd, n_tok, stream);
-    const MatIn ik_in = mat_staged(mc, w.value_type == 30 || w.gate_type == 30 ? ik : nullptr,
-                                   ikq8, kd, n_tok, stream, kSiteQA);
-    mat_apply(ik_in, w.value_type, w.value, iv, kd, kd, n_tok, stream, kSiteQA);
-    mat_apply(ik_in, w.gate_type, w.gate, ig, kd, kd, n_tok, stream, kSiteQA);
+    const bool reference = reference_ops_path() != nullptr;
+    using MatFn = void (*)(const void*, int, const float*, float*, int, int, int, void*);
+    static auto mm = reference_ops_path() ? reference_op<MatFn>("hy4_flash_reference_mm") : nullptr;
+    if (reference && n_tok > 1) {
+        mm(w.value, w.value_type, ik, iv, kd, kd, n_tok, stream);
+        mm(w.gate, w.gate_type, ik, ig, kd, kd, n_tok, stream);
+    } else {
+        kernels::native_quantize_q8_1_wide(ik, ikq8, kd, n_tok, stream);
+        const MatIn ik_in = mat_staged(mc, w.value_type == 30 || w.gate_type == 30 ? ik : nullptr, ikq8, kd,
+                                       n_tok, stream, kSiteQA);
+        mat_apply(ik_in, w.value_type, w.value, iv, kd, kd, n_tok, stream, kSiteQA);
+        mat_apply(ik_in, w.gate_type, w.gate, ig, kd, kd, n_tok, stream, kSiteQA);
+    }
 
     // Complete pooled keys even when the current sequence is too short to use sparse selection.
     const int32_t* cnt = (const int32_t*) c.counters;
     const int max_new = n_tok / kp + 1;        // the most groups a chunk of n_tok can complete
     carry_load_k<<<grid_for((long long) 2 * kd * kp), kBlock, 0, s>>>((const float*) c.vg[(std::size_t) layer],
                                                                      vgs, kd, kp, cnt);
-    pack_vg<<<grid_for((long long) kd * n_tok), kBlock, 0, s>>>(iv, ig, vgs, kd, n_tok, cnt);
+    pack_vg<<<grid_for((long long)kd * n_tok), kBlock, 0, s>>>(iv, ig, vgs, kd, n_tok, cnt, reference);
     if (c.verify_capacity && n_tok <= c.verify_capacity && !c.verify_vg.empty())
         cudaMemcpyAsync(c.verify_vg[(std::size_t) layer], vgs,
             (std::size_t) 2 * kd * (n_tok + base_pos % kp) * sizeof(float), cudaMemcpyDeviceToDevice, s);
     if (window_save != nullptr)
         save_window_k<<<grid_for((long long) 2 * kd * (kp - 1 + n_tok)), kBlock, 0, s>>>(
             vgs, window_save, kd, n_tok, cnt);
-    pool_k<<<max_new, kd, 0, s>>>(vgs, w.ape, praw, kd, kp, n_tok, cnt);
+    if (reference && kp != 4)
+        throw std::invalid_argument("HY4 reference pooling requires groups of four");
+    if (reference)
+        reference_pool_four<<<max_new, kd, 0, s>>>(vgs, w.ape, praw, kd, cnt, n_tok);
+    else
+        pool_k<<<max_new, kd, 0, s>>>(vgs, w.ape, praw, kd, kp, n_tok, cnt);
     kernels::rms_norm_weighted_wide(praw, w.compressor_norm, max_new, kd, rms_eps, stream);
     pool_pos<<<grid_for(max_new), kBlock, 0, s>>>(ppos, kp, max_new, n_tok, cnt);
     // Rotate only the tail of the 128-channel head.
     rope_norm_head_tail(praw, pstage, kd, n_rot, 1, max_new, ppos, freq_base, stream, image);
-    commit_pooled_k<<<grid_for((long long) kd * max_new), kBlock, 0, s>>>(
-        pstage, (float*) c.pooled[(std::size_t) layer], kd, max_new, n_tok, kp, cnt);
+    commit_pooled_k<<<grid_for((long long)kd * max_new), kBlock, 0, s>>>(
+        pstage, (float*)c.pooled[(std::size_t)layer], kd, max_new, n_tok, kp, cnt, reference);
     carry_store_k<<<grid_for((long long) 2 * kd * kp), kBlock, 0, s>>>(vgs, (float*) c.vg[(std::size_t) layer],
                                                                       kd, kp, n_tok, cnt);
     // The caller advances both counters once for all layers; this one only writes its own rows.
@@ -513,7 +607,10 @@ void indexer_select(IndexerCache& c, int layer, const IndexerWeights& w, const I
     // The same layout rule as the pooled key, and it has to be: the score is their dot product, so a query
     // roped into different channels from the key is a different function, not a different rounding.
     rope_norm_head_tail(iq, iqr, kd, n_rot, heads, n_tok, q_pos, freq_base, stream, image);
-    mat_apply(cur_in, w.proj_type, w.proj, wgt, n_embd, heads, n_tok, stream, kSiteQA);
+    if (reference && n_tok > 1)
+        mm(w.proj, w.proj_type, cur_f16, wgt, n_embd, heads, n_tok, stream);
+    else
+        mat_apply(cur_in, w.proj_type, w.proj, wgt, n_embd, heads, n_tok, stream, kSiteQA);
     scale_k<<<grid_for((long long) heads * n_tok), kBlock, 0, s>>>(
         wgt, 1.f / std::sqrt((float) (kd * heads)), (long long) heads * n_tok);
 
@@ -522,10 +619,14 @@ void indexer_select(IndexerCache& c, int layer, const IndexerWeights& w, const I
     // Grid-stride over the live pool count read on device.
     const int score_blocks = std::min(2 * idx_sm_count(), c.max_pool);
     dim3 g((unsigned) (score_blocks > 0 ? score_blocks : 1), (unsigned) n_tok);
-    score_k<16, 128><<<g, 128, 0, s>>>(iqr, wgt, (const float*) c.pooled[(std::size_t) layer], score,
-                                       c.max_pool, n_tok, kp, cnt);
+    if (reference)
+        reference_score_k<16, 128><<<g, 128, 0, s>>>(iqr, wgt, (const float*)c.pooled[layer], score, c.max_pool,
+                                                     kp, q_pos, plan.n_top, plan.select_tail);
+    else
+        score_k<16, 128><<<g, 128, 0, s>>>(iqr, wgt, (const float*)c.pooled[(std::size_t)layer], score,
+                                           c.max_pool, n_tok, kp, cnt);
     select_k<<<n_tok, kBlock, 0, s>>>(score, sel_cells, c.max_pool, plan.n_sel, kp, plan.n_top, q_pos,
-                                      plan.select_tail);
+                                      plan.select_tail, reference);
 }
 
 bool indexer_restore_window(IndexerCache& c, const std::vector<void*>& windows, int win_start, int end_pos,

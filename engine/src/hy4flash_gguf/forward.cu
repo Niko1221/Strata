@@ -76,6 +76,8 @@ namespace { struct OffloadNvtx { explicit OffloadNvtx(const char* n){nvtxRangePu
 #include <unistd.h>
 #endif
 
+#include "reference_ops.hpp"
+
 namespace strata::hy4_flash {
 
 // Collect row-read statistics separately from the synchronization used in phase timing.
@@ -536,7 +538,7 @@ std::string blk(int l) { return "blk." + std::to_string(l) + "."; }
 bool graphs_enabled() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_HY4_FLASH_GRAPHS");
-        return v == nullptr || std::atoi(v) != 0;
+        return !reference_ops_path() && (v == nullptr || std::atoi(v) != 0);
     }();
     return on;
 }

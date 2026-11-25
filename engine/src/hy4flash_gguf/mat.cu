@@ -465,6 +465,9 @@ bool dense_mmq(MatCtx* mc, int ggml_type, const void* w, const float* x, float* 
 
 }  // namespace
 
+static bool mat_sgemm(MatCtx* mc, const float* w, const float* x, float* y, std::int64_t n_in,
+                      std::int64_t n_out, int T, void* stream, bool allow_tf32);
+
 void mat_apply(const MatIn& x, int ggml_type, const void* w, float* y, std::int64_t n_in,
                std::int64_t n_out, int T, void* stream, unsigned site) {
     if (decode_equivalent && T>1 && T<=8 && ggml_type!=30 && ggml_type!=0) {
@@ -484,7 +487,12 @@ void mat_apply(const MatIn& x, int ggml_type, const void* w, float* y, std::int6
     }
     if (ggml_type == 0) {
         if (!x.f32) throw std::invalid_argument("F32 projection needs its F32 activation");
-        if (!mat_router_f32(x.mc, static_cast<const float*>(w), x.f32, y, n_in, n_out, T, stream))
+        static const bool reference_mix = [] {
+            const char* value = std::getenv("STRATA_HY4_FLASH_REFERENCE_MIX");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        if (!mat_sgemm(x.mc, static_cast<const float*>(w), x.f32, y, n_in, n_out, T, stream,
+                       reference_mix && site == kSiteMixes))
             mat_f32(static_cast<const float*>(w), x.f32, y, (int)n_in, (int)n_out, T, stream);
         return;
     }
@@ -530,8 +538,8 @@ bool mat_ctx_require_prefill(MatCtx* mc, void* stream, std::string& err) {
     return true;
 }
 
-bool mat_router_f32(MatCtx* mc, const float* w, const float* x, float* y, std::int64_t n_in,
-                    std::int64_t n_out, int T, void* stream) {
+static bool mat_sgemm(MatCtx* mc, const float* w, const float* x, float* y, std::int64_t n_in,
+                      std::int64_t n_out, int T, void* stream, bool allow_tf32) {
     // The same three conditions as the GEMM path, for the same reasons: no context, too few columns (one
     // token reads the weight once either way, and decode must keep the kernel it was measured on), or
     // another stream than the one this context's handle is bound to.
@@ -558,12 +566,25 @@ bool mat_router_f32(MatCtx* mc, const float* w, const float* x, float* y, std::i
 
     // Express the activation and weight layouts in cuBLAS column-major coordinates.
     const float alpha = 1.0f, beta = 0.0f;
+    if (allow_tf32 && cublasSetMathMode(h, CUBLAS_TF32_TENSOR_OP_MATH) != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cannot enable TF32 for the reference projection");
     const cublasStatus_t rc =
         cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, (int) n_out, T, (int) n_in, &alpha, w, (int) n_in, x,
                     (int) n_in, &beta, y, (int) n_out);
+    if (allow_tf32 && cublasSetMathMode(h, CUBLAS_PEDANTIC_MATH) != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cannot restore FP32 math after the reference projection");
     if(rc!=CUBLAS_STATUS_SUCCESS && mc->strict_router)
         throw std::runtime_error("planned prefill: router SGEMM failed, status="+std::to_string((int)rc));
     return rc == CUBLAS_STATUS_SUCCESS;
+}
+
+bool mat_router_f32(MatCtx* mc, const float* w, const float* x, float* y, std::int64_t n_in,
+                    std::int64_t n_out, int T, void* stream) {
+    static const bool reference_router = [] {
+        const char* value = std::getenv("STRATA_HY4_FLASH_REFERENCE_ROUTER");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return mat_sgemm(mc, w, x, y, n_in, n_out, T, stream, reference_router);
 }
 
 }  // namespace strata::hy4_flash

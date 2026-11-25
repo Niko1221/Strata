@@ -15,6 +15,8 @@
 #include "strata/kernels/pdl.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 
+#include "reference_ops.hpp"
+
 #include <dlfcn.h>
 
 #include <algorithm>
@@ -2006,7 +2008,20 @@ void mla_attention_t(const float* q_absorbed, const float* q_pe, const KvT* kv_c
 
     // Optionally compare attention against the external GGML diagnostic adapter.
     static const char* diag_fa = std::getenv("STRATA_HY4_FLASH_DIAG_FA_LIBRARY");
-    if (diag_fa != nullptr && std::is_same<KvT, float>::value) {
+    auto eager_stream = [&] {
+        cudaStreamCaptureStatus capture;
+        if (cudaStreamIsCapturing(static_cast<cudaStream_t>(stream), &capture) != cudaSuccess)
+            throw std::runtime_error("reference attention: cannot query capture state");
+        return capture == cudaStreamCaptureStatusNone;
+    };
+    if (std::is_same<KvT, __half>::value && reference_ops_path() && !pq && eager_stream()) {
+        using Fn = void (*)(const float*, const float*, const void*, const void*, const float*, int, int, int,
+                            int, int, const int*, const int*, const int*, int, float, float*, void*, size_t,
+                            const int*, int);
+        static auto fn = reference_op<Fn>("hy4_flash_reference_attention");
+        fn(q_absorbed, q_pe, kv_cmpr, k_pe, sinks, kv_lora, n_rot, n_head, n_tok, n_kv, q_pos, kv_pos,
+           d_n_kv, causal_window, kq_scale, latent, stream, p - reinterpret_cast<char*>(latent), sel, n_sel);
+    } else if (diag_fa != nullptr && std::is_same<KvT, float>::value) {
         using Fn = void (*)(const float*, const float*, const float*, const float*, const float*, int, int,
                             int, int, int, const int*, const int*, int, float, float*, void*);
         static void* handle = dlopen(diag_fa, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
@@ -2364,6 +2379,12 @@ bool f32_dense_enabled();
 bool f32_matvec_dequant(const void* w, int type, const float* x, float* y, int n_in, int n_out, int n_tok,
                         void* stream);
 
+static auto reference_ffn() {
+    using Fn = void (*)(const float*, const void*, int, const void*, int, const void*, int, float*, int,
+                        int, int, void*, float*, float*);
+    static auto fn = reference_op<Fn>("hy4_flash_reference_ffn");
+    return fn;
+}
 void dense_ffn(const float* x, const void* w_gate, int w_gate_type, const void* w_up, int w_up_type,
                const void* w_down, int w_down_type, const float* post_norm, int n_embd, int n_ff, int n_tok,
                float rms_eps, float* out, void* scratch, void* stream, const MatIn& x_in) {
@@ -2372,6 +2393,13 @@ void dense_ffn(const float* x, const void* w_gate, int w_gate_type, const void* 
         throw std::invalid_argument("dense_ffn: a stream and non-null buffers");
     if (n_embd <= 0 || n_ff <= 0 || n_tok <= 0) throw std::invalid_argument("dense_ffn: positive extents");
 
+    if (n_tok > 1 && reference_ops_path()) {
+        auto* gate = static_cast<float*>(scratch);
+        reference_ffn()(x, w_gate, w_gate_type, w_up, w_up_type, w_down, w_down_type, out,
+                        n_embd, n_ff, n_tok, stream, gate, gate + size_t(n_ff) * n_tok);
+        kernels::rms_norm_weighted_wide(out, post_norm, n_tok, n_embd, rms_eps, stream);
+        return;
+    }
     char* p = static_cast<char*>(scratch);
     const std::size_t ff_bytes = ((std::size_t) n_ff * n_tok * sizeof(float) + 15) & ~(std::size_t) 15;
     float* gate = reinterpret_cast<float*>(p);
@@ -3139,6 +3167,11 @@ void latent_moe(const float* cur, const LatentMoeWeights& w, int n_embd, int exp
 
     // Compute the unclamped shared expert from the original hidden state.
     const auto shared_expert = [&](void* st, void* branch_q8) {
+        if (n_tok > 1 && reference_ops_path()) {
+            reference_ffn()(cur, w.gate_shexp, w.gate_shexp_type, w.up_shexp, w.up_shexp_type,
+                            w.down_shexp, w.down_shexp_type, shexp, n_embd, expert_ff, n_tok, st, sh_gate, sh_up);
+            return;
+        }
         // w13: gate and up read the same images of `cur` and have the same shape. The GEMM has no pair, so
         // there it is two products over one activation image.
         if (mat_gemm_path(cur_im.mc, n_tok, kSiteShexpGU) || w.gate_shexp_type != w.up_shexp_type ||

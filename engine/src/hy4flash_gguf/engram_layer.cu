@@ -6,6 +6,8 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/pdl.hpp"
 
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -73,7 +75,8 @@ __global__ __launch_bounds__(kBlock) void add_kv_bias_k(float* kv_,
 }
 
 /// Reduce the gated dot product per residual stream and token.
-__global__ __launch_bounds__(kEngramGateThreads) void engram_gate_k(const float* x_,
+template<int threads, bool reference_sum>
+__global__ __launch_bounds__(threads) void engram_gate_k(const float* x_,
                                                         const float* kv_,
                                                         const float* __restrict__ gate, int n_embd, int hc,
                                                         int n_tok, float* out_gate_,
@@ -98,13 +101,13 @@ __global__ __launch_bounds__(kEngramGateThreads) void engram_gate_k(const float*
     const float* gr = gate + (long long) h * n_embd;
 
     float sx = 0.f, sk = 0.f;
-    for (int d = (int) threadIdx.x; d < n_embd; d += kEngramGateThreads) {
+    for (int d = (int) threadIdx.x; d < n_embd; d += threads) {
         sx += xr[d] * xr[d];
         sk += kr[d] * kr[d];
     }
     sx = warp_sum(sx);
     sk = warp_sum(sk);
-    __shared__ float px[kEngramGateThreads / 32], pk[kEngramGateThreads / 32];
+    __shared__ float px[threads / 32], pk[threads / 32];
     if ((threadIdx.x & 31) == 0) {
         px[threadIdx.x / 32] = sx;
         pk[threadIdx.x / 32] = sk;
@@ -112,8 +115,8 @@ __global__ __launch_bounds__(kEngramGateThreads) void engram_gate_k(const float*
     __syncthreads();
     __shared__ float ix, ik;
     if (threadIdx.x < 32) {
-        float a = threadIdx.x < kEngramGateThreads / 32 ? px[threadIdx.x] : 0.f;
-        float b = threadIdx.x < kEngramGateThreads / 32 ? pk[threadIdx.x] : 0.f;
+        float a = threadIdx.x < threads / 32 ? px[threadIdx.x] : 0.f;
+        float b = threadIdx.x < threads / 32 ? pk[threadIdx.x] : 0.f;
         a = warp_sum(a);
         b = warp_sum(b);
         if (threadIdx.x == 0) {
@@ -125,14 +128,27 @@ __global__ __launch_bounds__(kEngramGateThreads) void engram_gate_k(const float*
 
     float acc = 0.f;
     // Each product rounded on its own and then added, rather than contracted into an FMA.
-    for (int d = (int) threadIdx.x; d < n_embd; d += kEngramGateThreads)
-        acc = __fadd_rn(acc, __fmul_rn(__fmul_rn(xr[d] * ix, kr[d] * ik), gr[d]));
+    if constexpr (reference_sum) {
+        float partial[8]{};
+        for (int base = threadIdx.x; base < n_embd; base += 8 * threads) {
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const int d = base + j * threads;
+                if (d < n_embd)
+                    partial[j] = __fadd_rn(partial[j], __fmul_rn(__fmul_rn(xr[d] * ix, kr[d] * ik), gr[d]));
+            }
+        }
+        for (float value : partial) acc = __fadd_rn(acc, value);
+    } else {
+        for (int d = (int) threadIdx.x; d < n_embd; d += threads)
+            acc = __fadd_rn(acc, __fmul_rn(__fmul_rn(xr[d] * ix, kr[d] * ik), gr[d]));
+    }
     acc = warp_sum(acc);
-    __shared__ float pd[kEngramGateThreads / 32];
+    __shared__ float pd[threads / 32];
     if ((threadIdx.x & 31) == 0) pd[threadIdx.x / 32] = acc;
     __syncthreads();
     if (threadIdx.x < 32) {
-        float v = threadIdx.x < kEngramGateThreads / 32 ? pd[threadIdx.x] : 0.f;
+        float v = threadIdx.x < threads / 32 ? pd[threadIdx.x] : 0.f;
         v = warp_sum(v);
         if (threadIdx.x == 0) {
             // A reciprocal and a multiply, not a divide; and the APPROXIMATE square root, both as c50.
@@ -272,7 +288,33 @@ void engram_layer(const float* x, const float* rows, const float* valid, const E
         kernels::rms_norm_block(kv + ((std::size_t) t * (hc + 1) + hc) * n_embd, nullptr,
                                 nv + (std::size_t) t * n_embd, 1, n_embd, kEngramEps, stream);
     }
-    launch_pdl(engram_gate_k, (unsigned) (hc * n_tok), kEngramGateThreads, 0,
+    static const bool reference_sum = [] {
+        const char* value = std::getenv("STRATA_HY4_FLASH_REFERENCE_ENGRAM");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    int threads = kEngramGateThreads;
+    auto kernel = engram_gate_k<kEngramGateThreads, false>;
+    if (reference_sum) {
+        int device;
+        if (cudaGetDevice(&device) != cudaSuccess)
+            throw std::runtime_error("engram_layer: cannot query active CUDA device");
+        static thread_local int cached_device = -1, sm_count = 0;
+        if (device != cached_device) {
+            if (cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || sm_count <= 0)
+                throw std::runtime_error("engram_layer: cannot query SM count");
+            cached_device = device;
+        }
+        if ((long long)hc * n_tok < 2LL * sm_count) {
+            kernel = engram_gate_k<512, true>;
+        } else if (n_embd < 1024) {
+            threads = 32;
+            kernel = engram_gate_k<32, true>;
+        } else {
+            threads = 128;
+            kernel = engram_gate_k<128, true>;
+        }
+    }
+    launch_pdl(kernel, (unsigned) (hc * n_tok), threads, 0,
                static_cast<cudaStream_t>(stream), x, kv, w.gate, n_embd, hc, n_tok, gate, nx, nk);
     launch_pdl(engram_delta_k, (unsigned) n_tok, kBlock, 0, static_cast<cudaStream_t>(stream),
                x, kv, w.pre_gamma, w.hc_scale, gate, valid, n_embd, hc, columns, n_tok, out, nv);
