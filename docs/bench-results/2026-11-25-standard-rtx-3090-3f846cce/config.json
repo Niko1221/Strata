@@ -1,0 +1,39 @@
+{
+  "engine_options": {
+    "--pack": "unsloth-ud-q2_k_xl",
+    "--native": "Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00004.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--max-context": "204800",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--vision": true,
+    "--vram-reserve-mib": "700",
+    "--adapt-async": "1",
+    "--prompt-cache-spread": true,
+    "--draft": "dflash2",
+    "--draft-model": "qwen3.8-flash-next-dflash2.q4_0.pack",
+    "--draft-fallback": "none",
+    "--mtp-draft-vocab": "draft_vocab.bin",
+    "--spec": "6",
+    "--draft-conf": "0.5"
+  },
+  "other_engine_options": {
+    "--pack": "unsloth-ud-q2_k_xl",
+    "--native": "Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00004.gguf",
+    "--max-context": "204800",
+    "--vision": true,
+    "--adapt-async": "1",
+    "--prompt-cache-spread": true
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 204800,
+  "source": "effective engine arguments of the profile"
+}
