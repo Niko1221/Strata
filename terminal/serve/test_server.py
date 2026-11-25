@@ -327,7 +327,7 @@ class FitMaxTokens(unittest.TestCase):
         self.assertIn("no room to answer", b["error"]["message"])
 
 
-class VisionTempFiles(unittest.TestCase):
+class VisionRequestFiles(unittest.TestCase):
     """A request's combined image file (req-*.sve, ~10 MB a picture) goes with the request: one refused after prepare()
     wrote it (the engine starting, no room) or whose answer never started left it in the vision directory for good."""
 
@@ -335,8 +335,16 @@ class VisionTempFiles(unittest.TestCase):
                                          {"type": "image", "source": "x.png"}]}]
 
     @staticmethod
-    def leftovers(d):
-        return sorted(p.name for p in Path(d).glob("req-*.sve"))
+    def in_shm():
+        # #874: on Linux the file goes to /dev/shm when that has room; its name carries only the process id
+        shm = Path("/dev/shm")
+        return sorted(p.name for p in shm.glob(f"strata-vision-{os.getpid()}-req-*.sve")) if shm.is_dir() else []
+
+    def setUp(self):
+        self.shm_before = set(self.in_shm())     # what earlier tests in this process left there is not this test's
+
+    def leftovers(self, d):
+        return sorted(p.name for p in Path(d).glob("req-*.sve")) + [n for n in self.in_shm() if n not in self.shm_before]
 
     def test_a_refused_request_writes_none(self):
         from serve.server import EngineStarting
@@ -351,8 +359,10 @@ class VisionTempFiles(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no room to answer"):
                 svc.prepare(self.MSGS, None, {})
             engine.max_context = CTX
+            svc.fit_max_tokens = False                               # #545: the default shortens it instead
             with self.assertRaisesRegex(ValueError, "exceeds the context"):
                 svc.prepare(self.MSGS, None, {}, CTX)
+            svc.fit_max_tokens = True
             self.assertEqual(self.leftovers(d), [])
             svc.prepare(self.MSGS, None, {}, 16)                     # one that fits has it
             self.assertEqual(len(self.leftovers(d)), 1)
