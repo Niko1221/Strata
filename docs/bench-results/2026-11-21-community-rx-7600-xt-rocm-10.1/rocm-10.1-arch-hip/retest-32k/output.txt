@@ -1,0 +1,7 @@
+17:52:09 calibrating (two tiny requests) ...
+17:52:46   calibrated: about 1.08 tokens per word
+17:52:46 32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+17:54:15   run 1: 32050 tokens, prompt 364.1 tok/s (0 reused), first token 88.086 s
+17:55:43   run 2: 32050 tokens, prompt 368.3 tok/s (0 reused), first token 87.087 s
+17:57:11   run 3: 32050 tokens, prompt 367.1 tok/s (0 reused), first token 87.355 s
+17:57:11 result: prompt_tps={'median': 367.1, 'min': 364.1, 'max': 368.3, 'n': 3} ttft_s={'median': 87.355, 'min': 87.087, 'max': 88.086, 'n': 3} failures=[]

@@ -387,6 +387,20 @@ Merge the field into the existing config (this is not a complete run config), ch
 engine, and remove it to go back. If the engine runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`:
 `MemoryHigh` counts the page cache that `--mmap-experts` reads from.
 
+## Linux: ROCm 10.1 on CachyOS crashes at start (x86-64-v3 builds)
+
+On CachyOS, `hip-runtime-amd` 10.1-2.1 from `cachyos-extra-v3` makes the engine exit at start with SIGSEGV inside
+`libamdhip64.so.7`, at its first `hipStreamCreateWithFlags` ("the engine exited before it was ready"). The kernel log
+stays clean. It is a HIP runtime bug, not an engine one: `alignas(64)` `roc::VirtualGPU` objects get 16-byte aligned
+memory (ROCm/rocm-systems#14003 / #11256, fix in PR #16099), and builds with AVX code (x86-64-v3, znver4) fault on the
+aligned stores. Arch's generic x86-64 build does not. CachyOS tracks it as CachyOS/CachyOS-PKGBUILDS#2143.
+
+Workarounds: install Arch's build (`sudo pacman -S extra/hip-runtime-amd`, then `IgnorePkg = hip-runtime-amd` in
+`/etc/pacman.conf` until a fixed CachyOS build ships), or put the `opt/rocm/lib` of an unpacked Arch package first in the
+config's `lib_dirs`. Rebuilding the engine does not help. On an RX 7600 XT (gfx1102), ROCm 10.1 with Arch's
+`libamdhip64` measured at least as fast as ROCm 7.2.4; the reproducer, the root-cause check and the A/B are in
+[2026-11-21-community-rx-7600-xt-rocm-10.1](bench-results/2026-11-21-community-rx-7600-xt-rocm-10.1/README.md).
+
 ## RDNA4 (gfx1201)
 
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per workgroup, the

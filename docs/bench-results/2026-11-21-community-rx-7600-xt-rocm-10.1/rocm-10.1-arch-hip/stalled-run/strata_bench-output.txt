@@ -1,0 +1,48 @@
+Using the Strata server already running at http://127.0.0.1:8080.
+Note: the server runs 1 request(s) at a time (--batch), so 4 clients will partly wait their turn.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 37.9 tok/s, first token 1.459 s, 100 tokens
+  run 1 q2: decode 26.4 tok/s, first token 1.451 s, 100 tokens
+  run 1 q3: decode 25.7 tok/s, first token 1.813 s, 100 tokens
+  run 2 q1: decode 30.9 tok/s, first token 1.491 s, 100 tokens
+  run 2 q2: decode 24.9 tok/s, first token 1.435 s, 100 tokens
+  run 2 q3: decode 27.4 tok/s, first token 1.581 s, 100 tokens
+  run 3 q1: decode 33.4 tok/s, first token 1.516 s, 100 tokens
+  run 3 q2: decode 27.2 tok/s, first token 1.431 s, 100 tokens
+  run 3 q3: decode 27.0 tok/s, first token 1.552 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4021 tokens, prompt 267.9 tok/s (0 reused), first token 15.054 s
+  run 2: 4021 tokens, prompt 327.0 tok/s (0 reused), first token 12.335 s
+  run 3: 4021 tokens, prompt 338.3 tok/s (0 reused), first token 11.923 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 333.4 tok/s (0 reused), first token 48.208 s
+  run 2: 16058 tokens, prompt 365.2 tok/s (0 reused), first token 44.018 s
+  run 3: 16058 tokens, prompt 362.6 tok/s (0 reused), first token 44.326 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 647, reused 0, read 647, first token 4.186 s
+  run 1 turn 1: prompt 2810, reused 656, read 2154, first token 8.819 s
+  run 1 turn 2: prompt 4378, reused 2873, read 1505, first token 6.862 s
+  run 1 turn 3: prompt 7787, reused 4407, read 3380, first token 12.099 s
+  run 1 turn 4: prompt 10714, reused 7850, read 2864, first token 17.419 s
+  run 1 turn 5: prompt 13640, reused 10741, read 2899, first token 46.28 s
+  run 2 turn 0: prompt 647, reused 0, read 647, first token 4.05 s
+  run 2 turn 1: prompt 2827, reused 673, read 2154, first token 8.305 s
+  run 2 turn 2: prompt 4395, reused 2890, read 1505, first token 6.42 s
+  run 2 turn 3: prompt 7839, reused 4458, read 3381, first token 11.242 s
+  run 2 turn 4: prompt 10751, reused 7888, read 2863, first token 16.768 s
+  run 2 turn 5: prompt 13701, reused 10802, read 2899, first token 11.068 s
+  run 3 turn 0: prompt 647, reused 0, read 647, first token 4.027 s
+  run 3 turn 1: prompt 2821, reused 667, read 2154, first token 8.77 s
+  run 3 turn 2: prompt 4389, reused 2884, read 1505, first token 7.921 s
+  run 3 turn 3: prompt 7833, reused 4452, read 3381, first token 11.4 s
+  run 3 turn 4: prompt 10741, reused 7878, read 2863, first token 14.978 s
+  run 3 turn 5: prompt 13692, reused 10793, read 2899, first token 12.79 s
+concurrency: 4 requests at once x 3 rounds, 128 new tokens each
+  round 1: 512 tokens in 24.0 s = 21.3 tok/s total
+  round 2: 512 tokens in 23.5 s = 21.8 tok/s total
+  round 3: 512 tokens in 23.1 s = 22.2 tok/s total
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+    FAILED: {'type': 'server_error', 'message': 'the engine stopped unexpectedly (exit code -6); the next request restarts it'}

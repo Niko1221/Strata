@@ -1,0 +1,20 @@
+strata serve: no progress for 60 s during a request (reading the prompt (batched): layer 45 of the prompt chunk from token 0) - stopping the engine so the server starts it again (issue #29)
+strata serve: stall report (engine 0.1.44.1): stage "reading the prompt (batched): layer 45 of the prompt chunk from token 0" for 284 s; 0 layers served since the last finished step (0 = stopped, more = slow)
+  VRAM free when this request began: 2862 MiB
+  expert pool: epoch 139468, batch epoch 139468: 18 of 18 jobs claimed, 18 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 355249 ms
+  verify window (last window, not the current stage): 4 tokens at position 229, host at layer step 48; the GPU rang 48; flags: served 48, plan (A) 48, copies (B) 48
+  threads waiting on the disk (state D): 3 of 47 (? x1, folio_wait_bit_common x2) - the engine is waiting for the drive: a rotational or failing disk with --ple-io direct (#605: --ple-io ram), or a drive too slow for the reads asked of it
+  memory: 24307 MiB resident, 0 MiB in swap, 6379 MiB RAM available; 577952 major page faults so far
+  2 s later:
+  expert pool: epoch 139468, batch epoch 139468: 18 of 18 jobs claimed, 18 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 367324 ms
+  verify window (last window, not the current stage): 4 tokens at position 229, host at layer step 48; the GPU rang 48; flags: served 48, plan (A) 48, copies (B) 48
+  threads waiting on the disk (state D): 1 of 46 (svm_range_set_attr x1) - the engine is waiting for the drive: a rotational or failing disk with --ple-io direct (#605: --ple-io ram), or a drive too slow for the reads asked of it
+  memory: 24363 MiB resident, 0 MiB in swap, 6289 MiB RAM available; 598587 major page faults so far
+strata: released the verify window's GPU waits (#267): the GPU finished in 250 ms
+[strata] 2026-11-21 17:49:06 engine started: <strata>/engine/strata --serve --pack <data>/packs/coder-iq1_m --native <data>/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf <data>/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile <strata>/data/expert-profile-custom.bin --expert-cache auto --prefill auto --prompt-cache 12 --prompt-cache-tail --prompt-cache-every 8192 --spec 4 --spec-min-p 0.5 --mtp <data>/mtp/rt --max-context 65536 --kv int8 --resident-experts --vram-reserve-mib 3072 --control-vector-scaled <strata>/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --session-state-codec bf16 --vision --tail-role-token 8678
+strata generate: memory guard: limit 31.2 GiB (source: meminfo), current 6.6 GiB, reclaimable cache credited 0.0 GiB; available 24.6 GiB (MemAvailable 24.6 GiB), floor 2560 MiB
+strata generate: PCIe probe: 14.0 GB/s host->device (best of 14.0 14.0 14.0 14.0) -> pcie_frac 0.39 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: <data>/packs/coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
