@@ -460,6 +460,7 @@ export function ChatScreen() {
         }
         const text = draft.trim();
         if (text === '/pause-for-update') { updateDraft(''); void pauseForUpdate(); return; }
+        if (text === '/resume-agents') { updateDraft(''); void resumeAfterUpdate(); return; }
         if (!text && !queuedPhotos.length)
             return;
         if (streaming) {
@@ -507,7 +508,7 @@ export function ChatScreen() {
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
         return (<>
-        <ChatToolbar onPauseForUpdate={pauseForUpdate} previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); closePreviewPanel(); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
+        <ChatToolbar onPauseForUpdate={pauseForUpdate} onResumeAfterUpdate={resumeAfterUpdate} previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); closePreviewPanel(); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
         <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
          <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller}>
@@ -526,7 +527,7 @@ export function ChatScreen() {
     }
     return (<>
       {tr(selection && session ? <button type="button" className="quote-selection" style={{ left: selection.x, top: selection.y }} onMouseDown={e => e.preventDefault()} onClick={() => { addQuote(session.id, selection.text, selection.messageId, selection.role); window.getSelection()?.removeAllRanges(); setSelection(null); }}>{tr("Quote")}</button> : null)}
-      <ChatToolbar onPauseForUpdate={pauseForUpdate} previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); closePreviewPanel(); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
+      <ChatToolbar onPauseForUpdate={pauseForUpdate} onResumeAfterUpdate={resumeAfterUpdate} previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); closePreviewPanel(); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
                 the context panel open, a full-width composer sat underneath the panel
@@ -578,14 +579,38 @@ interface SlashCommand {
     icon: IconName;
     run: () => void;
 }
+/** Tell the toolbar button which of "Pause for update" and "Resume agents" it is now. */
+function announcePaused(paused: boolean) { window.dispatchEvent(new CustomEvent('strata:agents-paused', { detail: paused })); }
+/** Whether the host still holds the pause; true when it cannot be asked, so the person is never left without a Resume. */
+async function hostIsPaused() {
+    try { return (await api.get<{ paused?: boolean }>('/api/agent/status')).paused === true; } catch { return true; }
+}
+/** Resolves true when the host is paused afterwards (also after a failed preparation: the host stays paused until it is resumed). */
 async function pauseForUpdate() {
     pushToast('info', 'Saving agent work and preparing the update…');
     try {
         const result = await api.post<{ checkpoint: string; receipts: { chatId: string; helperId?: string }[] }>('/api/chat/pause-for-update', {});
         const agents = result.receipts.map(row => (row.helperId ?? row.chatId) + ' ✓');
         pushToast('info', 'Agent work saved. Ready for update.', [...agents, result.checkpoint].join('\n'));
+        announcePaused(true);
+        return true;
     } catch (error) {
         pushToast('error', 'Update preparation failed', error instanceof Error ? error.message : String(error));
+        const paused = await hostIsPaused();
+        announcePaused(paused);
+        return paused;
+    }
+}
+/** Lift the pause (#7099): for a pause the person started and no update followed. Resolves true when the agents work again. */
+async function resumeAfterUpdate() {
+    try {
+        await api.post('/api/chat/resume-after-update', {});
+        pushToast('info', 'Agent work resumed.');
+        announcePaused(false);
+        return true;
+    } catch (error) {
+        pushToast('error', 'Could not resume agent work', error instanceof Error ? error.message : String(error));
+        return false;
     }
 }
 function useSlashCommands(clear: () => void, setDraft: (value: string) => void): SlashCommand[] {
@@ -600,6 +625,7 @@ function useSlashCommands(clear: () => void, setDraft: (value: string) => void):
         { id: 'website', label: '/website', hint: 'Open a website in the preview sidebar', icon: 'link', run: () => { clear(); window.dispatchEvent(new Event('strata:open-website')); } },
         { id: 'preview', label: '/preview', hint: 'Open a local file in the preview sidebar', icon: 'file', run: () => { clear(); window.dispatchEvent(new Event('strata:open-preview')); } },
         { id: 'pause-for-update', label: '/pause-for-update', hint: 'Save progress and pause all agents for an update', icon: 'stop', run: () => { clear(); void pauseForUpdate(); } },
+        { id: 'resume-agents', label: '/resume-agents', hint: 'Let the paused agents work again', icon: 'refresh', run: () => { clear(); void resumeAfterUpdate(); } },
         ...(demo ? [{ id: 'subagents', label: '/subagents', hint: 'Preview subagent statistics', icon: 'experts' as const, run: () => { clear(); createSubagentExample(); } }] : []),
         ...getSlashCommands().map(command => ({ ...command, run: () => { clear(); command.run(); } }))
     ];

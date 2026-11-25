@@ -181,7 +181,7 @@ if (control) {
     return answer && !answer.usable && bundledWrongMake ? { ...answer, notice: bundledWrongMake, wrongMake: true } : answer;
   };
 }
-const native=createNativeControl({control,beforeUpdate:()=>agent.prepareForUpdate(),ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+const native=createNativeControl({control,beforeUpdate:()=>agent.prepareForUpdate(),afterUpdate:()=>agent.resumeAfterUpdate(),ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
@@ -2097,6 +2097,12 @@ async function api(req, res, path, method, url) {
   if (path === '/api/chat/pause-for-update' && method === 'POST') {
     try { return json(res, 200, await agent.prepareForUpdate()); }
     catch (e) { return error(res, 409, e.message); }
+  }
+  // Lift a pause nobody followed with an update (#7099). While "Update Strata" runs, the job itself resumes or keeps the pause when it ends.
+  if (path === '/api/chat/resume-after-update' && method === 'POST') {
+    if (native.state().jobs.some(j => j.kind === 'update-strata' && j.state === 'running')) return error(res, 409, 'A Strata update is running. Agent work resumes when it ends, unless the app restarts.');
+    try { return json(res, 200, await agent.resumeAfterUpdate()); }
+    catch (e) { return error(res, 500, e.message); }
   }
   // A follow-up for the live parent on the same Harness session.
   if (path === '/api/chat/steer' && method === 'POST') {
