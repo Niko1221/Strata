@@ -35,6 +35,7 @@ def runtime_capabilities(exe: str) -> set[str]:
                 ("conditional", b"window conditional body capture failed"),
                 ("vision", b"hy4-flash requires a hy_v4_flash mmproj GGUF"),
                 ("kv_q8", b"HY4_FLASH_KV_Q8 enabled"),
+                ("metal", b"STRATA_METAL_ARENA_GB"),
                 ("dfly5", b"dfly: --draft-max exceeds the GGUF block size minus the anchor"),
                 ("dfly", b"--draft dfly requires F16 or Q8_0 KV"),
             ) if data.find(marker) >= 0}
@@ -583,7 +584,11 @@ def config(s, src: Path) -> dict:
     if missing:
         raise ValueError(f"hy4-flash pack {pack} is incomplete: {', '.join(missing)}")
     mtp = s.mtp == "on"
-    if sys.platform == "darwin":
+    # The ENGINE decides this, not the platform.  `defaults()` takes the Metal path only when there is
+    # no CUDA card as well, so keying this on sys.platform alone made the two disagree: planning a CUDA
+    # target on a Mac got CUDA defaults and a Metal config.  A Metal build is the one that reads the
+    # unified-memory arena, so its own marker is the discriminator - the same rule the vision gate uses.
+    if "metal" in runtime_capabilities(str(engine_path(s, src))):
         return _metal_config(s, src, model, pack, mtp)
     draft_bytes = mtp_weight_bytes(model, host_experts=mtp_host_experts(s)) if mtp else 0
     env = serving_environment(mtp or bool(s.dfly_model))
