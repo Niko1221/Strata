@@ -247,22 +247,20 @@ void set_env(const char* name, const char* value) {
 #endif
 }
 
-// #7089: the share of the lend regions the budget reserves before the complement.  Setting and drive -> percent.
+// #7089: the share of the lend regions the budget reserves before the complement: all by default, the setting changes it.
 void test_lend_reserve_percent_rule() {
     using strata::core::detail::split_lend_reserve_percent;
     std::string why;
-    require(split_lend_reserve_percent(nullptr, false, 0, &why) == 100 && !why.empty(), "an unmeasured drive keeps the whole reservation (#6583)");
-    require(split_lend_reserve_percent("", true, 1.5e9) == 100, "a slow drive keeps the whole reservation");
-    require(split_lend_reserve_percent(nullptr, true, 2.99e9) == 100, "just under the fast-drive line keeps the whole reservation");
-    require(split_lend_reserve_percent(nullptr, true, 3.0e9) == 50, "a fast drive reserves half (#7089)");
-    require(split_lend_reserve_percent("auto", true, 7.0e9) == 50, "auto is the unset rule");
-    require(split_lend_reserve_percent("0", true, 7.0e9) == 0, "0 reserves nothing (PR #7091)");
-    require(split_lend_reserve_percent("0", false, 0) == 0, "0 holds without a measured drive");
-    require(split_lend_reserve_percent("full", true, 7.0e9) == 100, "full reserves all on a fast drive");
-    require(split_lend_reserve_percent("100", true, 7.0e9) == 100, "100 reserves all");
-    require(split_lend_reserve_percent("25", false, 0) == 25, "a percent is taken as given");
-    require(split_lend_reserve_percent("101", true, 7.0e9) == 50, "an out-of-range number falls back to the drive rule");
-    require(split_lend_reserve_percent("yes", true, 1.0e9) == 100, "an unknown word falls back to the drive rule");
+    require(split_lend_reserve_percent(nullptr, &why) == 100 && !why.empty(), "unset reserves all (#6583)");
+    require(split_lend_reserve_percent("") == 100, "empty reserves all");
+    require(split_lend_reserve_percent("auto") == 100, "auto is the default: all");
+    require(split_lend_reserve_percent("0") == 0, "0 reserves nothing (PR #7091)");
+    require(split_lend_reserve_percent("full") == 100, "full reserves all");
+    require(split_lend_reserve_percent("100") == 100, "100 reserves all");
+    require(split_lend_reserve_percent("25") == 25, "a percent is taken as given");
+    require(split_lend_reserve_percent("101") == 100, "an out-of-range number falls back to all");
+    require(split_lend_reserve_percent("-5") == 100, "a negative number falls back to all");
+    require(split_lend_reserve_percent("yes") == 100, "an unknown word falls back to all");
 }
 
 // #7089: the same fixture at the three reservations, budget 4 blobs, complement (0,3) hot + (1,3) cold, each stage lends 2 slots.
