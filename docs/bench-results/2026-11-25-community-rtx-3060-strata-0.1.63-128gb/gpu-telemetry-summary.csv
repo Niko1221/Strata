@@ -1,0 +1,4 @@
+context,samples,peak_temp_c,peak_power_w,max_vram_mib,min_available_ram_gib,max_swap_used_kib,gen4_x4_samples,old_min_available_ram_gib
+64k,126,71.0,168.66,11408,77.83208847045898,620,126,16.32
+128k,253,71.0,168.52,11406,72.37066650390625,620,253,10.91
+262k,564,71.0,169.27,11408,71.9084358215332,620,564,10.7

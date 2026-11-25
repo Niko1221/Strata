@@ -1,0 +1,9 @@
+    These files are qwen Q2_0.
+Plan for 'Q2_0 32K':
+  model     Qwen3.8-Flash-Next Q2_0, 66 GB   (your files in /home/<user>/strata-data/models/Q2_0)
+  context   32K    pictures off    parallel 1
+  download  Nothing to download: your model files are used where they are.
+  drafting  Off
+  tuning    skip    access This computer only, port 18080
+  same as   strata launch --model-path "/home/<user>/strata-data/models/Q2_0" --model q2_0 --context 32k --vision off --parallel 1 --drafting off --tune skip --access local --port 18080
+Nothing was changed.

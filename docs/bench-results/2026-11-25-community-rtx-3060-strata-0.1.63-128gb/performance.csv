@@ -1,0 +1,4 @@
+context,context_tokens,actual_speed_input,actual_recall_input,old_prefill_tps,old_decode_tps,old_ttft_s,new_prefill_tps,new_decode_tps,new_ttft_s,recall_passed,decode_change_pct
+64k,65536,64044,63262,1386.9,49.6,46.23,1387.1,52.5,46.2159,2,5.846774193548376
+128k,131072,128030,128030,1308.1,47.8,97.95,1309.8,48.8,97.8195,2,2.092050209205021
+262k,262144,260050,259889,1160.3,42.8,224.25,1161.7,44.7,223.9745,2,4.439252336448618
