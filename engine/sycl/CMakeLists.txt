@@ -133,7 +133,11 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-if(WIN32)
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+  # The MSVC-style drivers: MSVC itself, icx/icx-cl and clang-cl.  A Linux->Windows cross build (intel/llvm clang++
+  # targeting windows-msvc, report on PR #3607) selects this same WIN32 path with the GNU frontend, where the flags are
+  # spelled -fp-model / -qmkl instead; CMAKE_CXX_COMPILER_FRONTEND_VARIANT is what tells the two apart (CMake leaves it
+  # unset for icx, which keeps this branch).
   set(_sycl_fp /fp:precise)
   set(_sycl_mkl /Qmkl:sequential)
 else()
