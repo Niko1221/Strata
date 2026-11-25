@@ -1060,10 +1060,85 @@ struct InkCudaModel {
             for (int il = 0; il < man.c.n_phys; ++il) {
                 for (int r = 0; r < man.c.n_experts; ++r) layer_exp_b[il] += eff_bytes[(size_t)il * man.c.n_experts + r];
             }
+            // #7093 (from #7093 by the reporter): a peer stage (s > 0) also holds the packed trunk tensors of its layers, so the
+            // "every expert of a peer stage fits in its VRAM" clamp has to count them as well.
+            std::vector<size_t> layer_trunk_b(man.c.n_phys, 0);
+            for (const auto& kv : man.trunk) {
+                const std::string& nm = kv.first;
+                for (int il = 0; il < man.c.n_phys; ++il) {
+                    const std::string lp = "model.llm.layers." + std::to_string(il) + ".";
+                    if (nm.rfind(lp, 0) == 0 ||
+                        nm == ("model.llm.attn_res.mlp_queries." + std::to_string(il)) ||
+                        (il > 0 && nm == ("model.llm.attn_res.attn_queries." + std::to_string(il - 1)))) {
+                        layer_trunk_b[il] += (kv.second.bytes + 255ull) & ~255ull;
+                        break;
+                    }
+                }
+            }
+            const size_t ls_user_cap = (vram_experts_gb >= 0.0)
+                ? static_cast<size_t>(vram_experts_gb * 1073741824.0)
+                : static_cast<size_t>(-1);
+            // The VRAM a peer stage keeps back at the tier step below (same formula as there).
+            auto peer_stage_reserve = [&](size_t vtot) -> size_t {
+                return std::max<size_t>((size_t)(896ull << 20), wddm_safety_floor(vtot) + (size_t)(512ull << 20));
+            };
+            // Host experts are computed ONLY on stage 0 (the hybrid branch of the MoE step needs cur_stage == 0), so a peer stage
+            // must keep every one of its experts in its own VRAM. If the plan misses (the free VRAM measured at the partition is not
+            // what is left after the peer has its trunk), the partition is done again with the measured shortfall as extra margin.
+            const int ls_n_stages0 = n_stages;
+            int ls_gpu0[kMaxStages], ls_cc0[kMaxStages];
+            bool ls_fp16_0[kMaxStages];
+            for (int s = 0; s < kMaxStages; ++s) { ls_gpu0[s] = stage_gpu[s]; ls_cc0[s] = stage_cc[s]; ls_fp16_0[s] = stage_trunk_attn_fp16[s]; }
+            std::vector<size_t> ls_margin(kMaxStages, 0);   // by stage index at the first try (= by position in the --gpus list)
+            // The loop body below is not re-indented, to keep the #7093 diff small.
+            for (int ls_try = 0;; ++ls_try) {
+            if (ls_try > 0) {
+                n_stages = ls_n_stages0;
+                for (int s = 0; s < kMaxStages; ++s) { stage_gpu[s] = ls_gpu0[s]; stage_cc[s] = ls_cc0[s]; stage_trunk_attn_fp16[s] = ls_fp16_0[s]; }
+                for (int s = 1; s < n_stages; ++s) INK_CK(ink_cuda_mem_info(&gpu_vf[s], &gpu_vt[s], stage_gpu[s]));
+                INK_CK(cudaSetDevice(primary_gpu));
+            }
             // Refresh free VRAM on GPU0 after trunk upload
             INK_CK(ink_cuda_mem_info(&gpu_vf[0], &gpu_vt[0], stage_gpu[0]));
 
             std::vector<int> counts;
+            // VRAM a peer stage s > 0 can give to (experts + trunk + 48 MiB per layer): the same overhead the auto weights below use.
+            auto peer_room = [&](int s) -> size_t {
+                const size_t oh = wddm_safety_floor(gpu_vt[s]) + (size_t)(1024ull << 20) + ls_margin[s];
+                return gpu_vf[s] > oh ? gpu_vf[s] - oh : 0;
+            };
+            // How many layers, counted from the end of layers [0, rem), peer stage s can take with ALL their experts in its VRAM (at most 'want').
+            auto fit_tail = [&](int s, int rem, int want) -> int {
+                const size_t max_b = peer_room(s);
+                size_t acc_b = 0, acc_e = 0;
+                int fit = 0;
+                for (int k = 0; k < want && rem - 1 - k >= 0; ++k) {
+                    const int il = rem - 1 - k;
+                    const size_t cost = layer_exp_b[il] + layer_trunk_b[il] + (48ull << 20);
+                    if (acc_b + cost <= max_b && acc_e + layer_exp_b[il] <= ls_user_cap) {
+                        acc_b += cost; acc_e += layer_exp_b[il]; ++fit;
+                    } else break;
+                }
+                return fit;
+            };
+            // A split that was asked for (--layer-split K1,K2,.. or the even fallback) is cut back the same way: a peer stage
+            // that cannot keep all its experts in VRAM hands its first layers to the stage before it (stage 0 may use host experts).
+            auto clamp_peers = [&]() {
+                const std::vector<int> before = counts;
+                int rem = man.c.n_phys;
+                for (int s = n_stages - 1; s >= 1; --s) {
+                    const int want = counts[s];
+                    const int fit = fit_tail(s, rem, want);
+                    counts[s] = fit;
+                    counts[s - 1] += want - fit;
+                    rem -= fit;
+                }
+                if (counts != before) {
+                    std::fprintf(stderr, "[InkCUDA] layer split: cut back to fit every expert of a peer stage in its VRAM (host experts are computed only on the first stage, #7093):");
+                    for (int s = 0; s < n_stages; ++s) std::fprintf(stderr, " %d->%d", before[s], counts[s]);
+                    std::fprintf(stderr, " layers per stage\n");
+                }
+            };
             if (!layer_split_spec.empty() && layer_split_spec != "auto") {
                 size_t ppos = 0;
                 while (ppos < layer_split_spec.size()) {
@@ -1087,6 +1162,7 @@ struct InkCudaModel {
                     }
                     counts[n_stages - 1] = std::max(1, man.c.n_phys - acc);
                 }
+                clamp_peers();
             } else {
                 // Automatic VRAM-weighted partition (ensuring peer stages s > 0 fit 100% in VRAM!)
                 counts.assign(n_stages, 0);
@@ -1102,22 +1178,16 @@ struct InkCudaModel {
                     const int base = man.c.n_phys / n_stages;
                     for (int s = 0; s < n_stages; ++s) counts[s] = base;
                     counts[0] += man.c.n_phys - base * n_stages;
+                    clamp_peers();
                 } else {
                     int rem = man.c.n_phys;
                     for (int s = n_stages - 1; s >= 1; --s) {
                         int want = std::max(1, (int)std::lround((double)man.c.n_phys * (usable[s] / tot_u)));
                         want = std::min(want, rem - s);
                         // Clamp stage s > 0 to layers that fit 100% in stage_gpu[s] VRAM (leaving stage 0 to handle any hybrid overflow!)
-                        size_t acc_b = 0;
-                        int fit = 0;
-                        const size_t max_b = (size_t)usable[s];
-                        for (int k = 0; k < want; ++k) {
-                            const int il = rem - 1 - k;
-                            if (acc_b + layer_exp_b[il] + (48ull << 20) <= max_b) {
-                                acc_b += layer_exp_b[il] + (48ull << 20);
-                                ++fit;
-                            } else break;
-                        }
+                        // (#7093: counts the packed trunk bytes of those layers and the --vram-experts-gb cap too, and keeps the
+                        // shortfall found by an earlier try as extra margin)
+                        const int fit = fit_tail(s, rem, want);
                         counts[s] = fit;
                         rem -= fit;
                     }
@@ -1198,6 +1268,49 @@ struct InkCudaModel {
                 }
                 INK_CK(cudaSetDevice(primary_gpu));
             }
+            // Check the plan against what each peer card really has now that its trunk is there (the tier step below uses these numbers).
+            bool ls_redo = false;
+            if (ls_active) {
+                for (int s = 1; s < n_stages; ++s) {
+                    size_t sf = 0, st = 0;
+                    INK_CK(ink_cuda_mem_info(&sf, &st, stage_gpu[s]));
+                    const size_t sres = peer_stage_reserve(st);
+                    size_t bud = (sf > sres) ? (sf - sres) : 0;
+                    if (ls_user_cap < bud) bud = ls_user_cap;
+                    size_t need = 0;
+                    for (int il = stage_l0[s]; il < stage_l1[s]; ++il) need += layer_exp_b[il];
+                    if (need > bud) {
+                        int orig = s;
+                        for (int t = 0; t < ls_n_stages0; ++t) if (ls_gpu0[t] == stage_gpu[s]) orig = t;
+                        size_t packed = 0;
+                        for (int il = stage_l0[s]; il < stage_l1[s]; ++il) packed += layer_trunk_b[il];
+                        const size_t used = (gpu_vf[orig] > sf) ? (gpu_vf[orig] - sf) : 0;
+                        // memory the card lost beyond the packed trunk itself (context, handles, ...): the plan did not know it
+                        const size_t extra = (used > packed) ? (used - packed) : 0;
+                        const size_t lack = need - bud;
+                        std::fprintf(stderr, "[InkCUDA] layer split: GPU%d: %.0f MiB free at the partition, %.0f MiB packed trunk, %.0f MiB free now (%.0f MiB lost beyond the trunk); "
+                                     "%.0f MiB left for experts but its %d layer(s) need %.0f MiB (try %d)%s\n",
+                                     stage_gpu[s], (double)gpu_vf[orig] / 1048576.0, (double)packed / 1048576.0, (double)sf / 1048576.0, (double)extra / 1048576.0,
+                                     (double)bud / 1048576.0, stage_l1[s] - stage_l0[s], (double)need / 1048576.0, ls_try,
+                                     (ls_try < 3) ? "; planning again with that margin" : "");
+                        // first miss: the measured loss is the margin (removing layers removes their trunk too, so the shortfall itself would over-correct);
+                        // a later miss: add what is still missing
+                        ls_margin[orig] = (ls_try == 0) ? std::max<size_t>(ls_margin[orig], extra + (64ull << 20)) : ls_margin[orig] + lack + (64ull << 20);
+                        ls_redo = true;
+                    }
+                }
+            }
+            if (ls_redo && ls_try < 3) {
+                for (int s = 1; s < n_stages; ++s) {
+                    INK_CK(cudaSetDevice(stage_gpu[s]));
+                    if (stage_d_trunk[s]) { cudaFree(stage_d_trunk[s]); stage_d_trunk[s] = nullptr; }
+                    stage_trunk_off[s].clear();
+                }
+                INK_CK(cudaSetDevice(primary_gpu));
+                continue;
+            }
+            break;
+            }   // the #7093 retry loop
         }
         sec1.clear();
         sec1.shrink_to_fit();
@@ -1256,6 +1369,7 @@ struct InkCudaModel {
         n_vram_experts = 0; n_peer_experts = 0; n_host_experts = 0;
         for (int s = 0; s < kMaxStages; ++s) { stage_sec4_bytes[s] = 0; stage_n_experts[s] = 0; }
 
+        size_t ls_peer_host_overflow = 0;
         if (ls_active) {
             for (int s = 0; s < n_stages; ++s) {
                 size_t sf = 0, st = 0;
@@ -1278,9 +1392,18 @@ struct InkCudaModel {
                     const size_t hb = (eff_bytes[di] + 63ull) & ~63ull;
                     target_tier[di] = 2; uh += hb; ++n_host_experts;
                     max_exp_b = std::max(max_exp_b, eff_bytes[di]);
+                    if (s > 0) ++ls_peer_host_overflow;
                 }
             }
             u0 = stage_u[0];
+            // #7093: host experts are computed ONLY on stage 0 (the hybrid branch of the MoE step needs cur_stage == 0). A host expert
+            // on a peer stage would be read as if it sat in that card's VRAM and the output would be garbage, with no error.
+            if (ls_peer_host_overflow > 0) {
+                err = "layer split: " + std::to_string(ls_peer_host_overflow) +
+                      " experts of a peer card do not fit in its VRAM, and host experts are computed only on the first card (#7093); "
+                      "give the other card(s) fewer layers (--layer-split), raise --vram-experts-gb, or use one card (--gpus 1)";
+                return false;
+            }
         } else {
             const int n_peer_per_layer = ep2_active ? std::max(1, std::min(man.c.n_experts - 1, (int)std::lround(man.c.n_experts * eff_split))) : 0;
             auto want_peer = [&](int exp_id) -> bool {
