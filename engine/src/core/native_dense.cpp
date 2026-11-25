@@ -1,5 +1,6 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/core/gfx11_extra.hpp"
+#include "strata/core/projection_arena.hpp"
 #include "strata/core/run_manifest.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
@@ -205,10 +206,20 @@ struct Pending {
     WeightRef* ref;
     int type;
     uint64_t bytes;
-    DevicePtr data;
+    void* data;
+    DevicePtr owned;    // null for a view into the projection arena
     DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
     bool inplace_packed = false;
 };
+
+#if !defined(STRATA_USE_HIP) && defined(CUDART_VERSION)
+bool projection_arena_requested() {
+    const char* value = std::getenv("STRATA_NATIVE_DENSE_ARENA");
+    if (!value || std::strcmp(value, "1") != 0) return false;
+    int devices = 0;
+    return cudaGetDeviceCount(&devices) == cudaSuccess && devices == 1;
+}
+#endif
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -235,10 +246,16 @@ void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le 
 // have to stay in step.  A repeated name is skipped rather than refused (`load` refuses it).
 bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
                                    int64_t lb, int64_t le, uint64_t& out, std::string& err) {
+    return measure_weights(shards, table, include_ple_key, lb, le, out, err, nullptr);
+}
+
+bool NativeDense::measure_weights(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                  int64_t lb, int64_t le, uint64_t& out, std::string& err, uint64_t* arena_bytes) {
     out = 0;
     try {
         std::set<std::string> seen, hc_seen;
         uint64_t total = 0;
+        ProjectionArenaLayout arena;
         auto in_stage = [&](const std::string& name) {   // a blk.<l>. tensor of layers [lb, le); the rest belongs to every stage
             if (name.rfind("blk.", 0) != 0) return true;
             const long l = std::strtol(name.c_str() + 4, nullptr, 10);
@@ -271,19 +288,26 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                     return false;
                 }
                 const auto& ref = found->second;
+                uint64_t bytes;
                 if (bf16_as_q8_0(tensor, ref)) {   // #4741
-                    total += alloc_bytes((uint64_t) ref.ne0 / 32 * 34 * (uint64_t) ref.ne1);
-                    continue;
+                    bytes = (uint64_t) ref.ne0 / 32 * 34 * (uint64_t) ref.ne1;
+                } else {
+                    if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
+                    if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
+                    if (!ref.quantized() || tensor.shape.size() != 2 ||
+                        ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
+                        tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
+                        err = "native dense: incompatible matrix " + tensor.name;
+                        return false;
+                    }
+                    bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1);
                 }
-                if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
-                if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
-                if (!ref.quantized() || tensor.shape.size() != 2 ||
-                    ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
-                    tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
-                    err = "native dense: incompatible matrix " + tensor.name;
+                total += alloc_bytes(bytes);
+                uint64_t offset;
+                if (arena_bytes && !arena.append(bytes, offset)) {
+                    err = "native dense: invalid projection arena size";
                     return false;
                 }
-                total += alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1));
             }
         }
         if (hc_q8_env())   // a bf16 pack: `load` quantizes the layers' down / up projections that the GGUF does not carry as Q8_0
@@ -294,6 +318,7 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                 if (ref.ne0 % 32 == 0 && ref.elements == ref.ne0 * ref.ne1) total += alloc_bytes((uint64_t) ref.elements / 32 * 34);
             }
         out = total;
+        if (arena_bytes) *arena_bytes = arena.bytes;
         return true;
     } catch (const std::exception& error) {
         err = std::string("native dense: ") + error.what();
@@ -334,6 +359,7 @@ void NativeDense::release() {
     packed_keys_.clear();
     layer_bytes_.clear();
     bytes_ = 0;
+    arena_tensor_adjustment_ = 0;
 }
 
 uint64_t NativeDense::bytes_in(int64_t lo, int64_t hi) const {
@@ -360,6 +386,43 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::set<std::string> seen;
         int max_in = 0;
         uint64_t total = 0, hc_q8_bytes = 0, allocated = 0, hc_q8_skipped_bytes = 0, hc_q8_skipped = 0;
+        DevicePtr arena;
+        uint64_t arena_bytes = 0;
+#if !defined(STRATA_USE_HIP) && defined(CUDART_VERSION)
+        if (layer_lo == 0 && layer_hi < 0 && g_layer_lb < 0 && g_layer_le < 0 && projection_arena_requested()) {
+            uint64_t separate_bytes;
+            if (!measure_weights(shards, table, include_ple_key, 0, INT64_MAX, separate_bytes, err, &arena_bytes))
+                return false;
+            if (arena_bytes > 0 && arena_bytes <= (std::numeric_limits<size_t>::max)()) {
+                void* base = nullptr;
+                const auto status = cudaMalloc(&base, (size_t) arena_bytes);
+                if (status == cudaSuccess) {
+                    arena.reset(base);
+                    allocated = alloc_bytes(arena_bytes);
+                } else if (status == cudaErrorMemoryAllocation) {
+                    (void) cudaGetLastError();
+                } else {
+                    err = std::string("native dense arena allocation: ") + cudaGetErrorString(status);
+                    return false;
+                }
+            }
+        }
+#endif
+        ProjectionArenaLayout used;
+        auto allocate_projection = [&](uint64_t bytes, void*& data, DevicePtr& owned) {
+#if !defined(STRATA_USE_HIP) && defined(CUDART_VERSION)
+            if (arena) {
+                uint64_t offset;
+                if (!used.append(bytes, offset) || used.bytes > arena_bytes) return cudaErrorInvalidValue;
+                data = static_cast<uint8_t*>(arena.get()) + offset;
+                return cudaSuccess;
+            }
+#endif
+            const auto status = cudaMalloc(&data, bytes);
+            owned.reset(data);
+            if (status == cudaSuccess) allocated += alloc_bytes(bytes);
+            return status;
+        };
         std::vector<uint64_t> per_layer;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
@@ -442,18 +505,17 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     const uint64_t n = (uint64_t) ref.ne0 * (uint64_t) ref.ne1;
                     const std::vector<uint8_t> q8 = q8_0_of_bf16((const uint16_t*) gguf.tensor_data(tensor), n);
                     void* allocation = nullptr;
-                    auto status = cudaMalloc(&allocation, q8.size());
-                    DevicePtr data(allocation);
-                    if (status == cudaSuccess) status = cudaMemcpy(data.get(), q8.data(), q8.size(), cudaMemcpyHostToDevice);
+                    DevicePtr owned;
+                    auto status = allocate_projection(q8.size(), allocation, owned);
+                    if (status == cudaSuccess) status = cudaMemcpy(allocation, q8.data(), q8.size(), cudaMemcpyHostToDevice);
                     if (status != cudaSuccess) {
                         err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
                     }
                     max_in = (std::max)(max_in, (int) ref.ne0);
                     total += q8.size();
-                    allocated += alloc_bytes(q8.size());
                     std::fprintf(stderr, "native dense: %s is BF16 in the file: served as Q8_0 like its siblings (#4741)\n",
                                  tensor.name.c_str());
-                    pending.push_back(Pending{&ref, 8, (uint64_t) q8.size(), std::move(data), DevicePtr()});
+                    pending.push_back(Pending{&ref, 8, (uint64_t) q8.size(), allocation, std::move(owned), DevicePtr()});
                     continue;
                 }
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
@@ -470,16 +532,16 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                                         strata::kernels::native_q8_0_inplace_enabled() &&
                                         strata::kernels::native_q8_0_inplace_eligible((int) ref.ne0, (int) ref.ne1);
                 void* allocation = nullptr;
-                auto status = cudaMalloc(&allocation, bytes);
-                DevicePtr data(allocation);
+                DevicePtr owned;
+                auto status = allocate_projection(bytes, allocation, owned);
                 if (status == cudaSuccess) {
                     if (do_inplace) {
                         std::vector<uint8_t> host(bytes);
                         strata::kernels::native_q8_0_pack_host(gguf.tensor_data(tensor), host.data(), (int) ref.ne0,
                                                                (int) ref.ne1);
-                        status = cudaMemcpy(data.get(), host.data(), bytes, cudaMemcpyHostToDevice);
+                        status = cudaMemcpy(allocation, host.data(), bytes, cudaMemcpyHostToDevice);
                     } else {
-                        status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
+                        status = cudaMemcpy(allocation, gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
                     }
                 }
                 if (status != cudaSuccess) {
@@ -487,7 +549,6 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
-                allocated += alloc_bytes(bytes);
                 {
                     const int64_t layer = layer_of(tensor.name);
                     if (layer >= 0) {
@@ -518,7 +579,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     strata::core::manifest::instance().tensors("dense", strata::ggml_type_name((uint32_t) tensor.type), 1, bytes);
                     if (packed) strata::core::manifest::instance().tensors("dense_packed_copy", "Q8_0", 1, bytes);
                 }
-                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed), do_inplace});
+                pending.push_back(Pending{&ref, (int) tensor.type, bytes, allocation, std::move(owned), std::move(packed), do_inplace});
             }
             if (strata::core::manifest::enabled()) {
                 const char* v = std::getenv("STRATA_HC_Q8");
@@ -620,33 +681,44 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             }
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
+        if (arena && used.bytes != arena_bytes) { err = "native dense: projection arena size mismatch"; return false; }
         void* allocation = nullptr;
         const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
         DevicePtr scratch(allocation);
         if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }        // All checks and allocations finish before publishing any reference.
-        weights_.reserve(pending.size());
+        // HC_Q8 keeps its regular uploads and scratch. Only the dense projection owners change here.
+        weights_.reserve(weights_.size() + 2 * pending.size() + (arena ? 1 : 0));
+        packed_keys_.reserve(packed_keys_.size() + pending.size());
+        if (arena) {
+            weights_.push_back(arena.release());
+            arena_tensor_adjustment_ = pending.size() - 1;
+        }
         uint64_t packed_bytes = 0, inplace_bytes = 0;
         size_t packed_count = 0, inplace_count = 0;
         for (auto& item : pending) {
-            item.ref->native_data = item.data.get();
+            item.ref->native_data = item.data;
             item.ref->native_type = item.type;
             item.ref->native_bytes = item.bytes;
             item.ref->native_q8_1 = scratch.get();
             if (item.inplace_packed) {
-                strata::kernels::native_q8_0_packed_register(item.data.get(), item.data.get(), (int) item.ref->ne0,
+                strata::kernels::native_q8_0_packed_register(item.data, item.data, (int) item.ref->ne0,
                                                              (int) item.ref->ne1);
-                packed_keys_.push_back(item.data.get());
+                packed_keys_.push_back(item.data);
                 inplace_bytes += item.bytes;
                 ++inplace_count;
             } else if (item.packed) {
-                strata::kernels::native_q8_0_packed_register(item.data.get(), item.packed.get(), (int) item.ref->ne0,
+                strata::kernels::native_q8_0_packed_register(item.data, item.packed.get(), (int) item.ref->ne0,
                                                              (int) item.ref->ne1);
-                packed_keys_.push_back(item.data.get());
+                packed_keys_.push_back(item.data);
                 packed_bytes += item.bytes;
                 ++packed_count;
                 weights_.push_back(item.packed.release());
             }
-            weights_.push_back(item.data.release());
+            if (item.owned) weights_.push_back(item.owned.release());
+        }
+        if (used.bytes != 0) {
+            std::fprintf(stderr, "native dense: one CUDA allocation for %zu projections (%.1f MiB)\n",
+                         pending.size(), arena_bytes / 1048576.0);
         }
         if (packed_count)
             std::fprintf(stderr, "native dense: STRATA_Q8_PACKED=1 packed %zu Q8_0 matrices for decode (+%.1f MiB)\n",
