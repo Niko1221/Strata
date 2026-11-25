@@ -10,6 +10,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -117,6 +119,7 @@ struct Context::Impl {
         std::fprintf(stderr, "mtl: GPU keep-alive every %.0f ms for %.0f s after the last command buffer (#6078; "
                      "STRATA_METAL_KEEPALIVE_MS=0 turns it off)\n", ms, win);
     }
+    MTLSharedEventListener* ev_listener = nil;   // for STRATA_METAL_SEG_WAIT=event (created on first use)
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
@@ -150,11 +153,7 @@ Context::Context() : impl_(new Impl) {
     kernel_dir = strata_metal::resource("STRATA_METAL_KERNELS", "kernels", STRATA_METAL_KERNELS_DEFAULT);
 }
 
-Context::~Context() {
-    impl_->ka_stop.store(true);
-    if (impl_->ka.joinable()) impl_->ka.join();
-    delete impl_;
-}
+// ~Context is defined after the GPU filler, which it has to stop first (see set_seg_fill).
 
 std::string Context::device_name() const { return [[impl_->dev name] UTF8String]; }
 bool Context::has_family_apple(int n) const {
@@ -166,6 +165,25 @@ bool Context::supports_metal4() const {
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
+
+// See mtl_rt.h: the switches a deterministic engine must not inherit.
+const char* deterministic_env_violation() {
+    if (const char* m = std::getenv("STRATA_METAL_MATH"))
+        if (std::string(m) == "fast") return "STRATA_METAL_MATH=fast";
+    if (std::getenv("STRATA_METAL_F16")) return "STRATA_METAL_F16";
+    if (std::getenv("STRATA_METAL_SKIP")) return "STRATA_METAL_SKIP";
+    if (std::getenv("STRATA_METAL_GEMV_NR")) return "STRATA_METAL_GEMV_NR";
+    return nullptr;
+}
+
+void Context::lock_safe_math() {
+    if (const char* bad = deterministic_env_violation()) {
+        std::fprintf(stderr, "ERR mtl: %s is set, and this engine requires safe math and f32 activations "
+                             "(ADR 0001 §2); refusing to run instead of changing the numerics silently\n", bad);
+        std::exit(3);
+    }
+    safe_math_locked_ = true;
+}
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
     std::string why;
@@ -208,9 +226,18 @@ int Context::compile_try(const std::vector<std::string>& files, const std::strin
     }
     MTLCompileOptions* o = [MTLCompileOptions new];
     // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
-    // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.
+    // (the kernels write their contractions as explicit fma).
     fast_math = false;
     if (const char* m = std::getenv("STRATA_METAL_MATH")) fast_math = std::string(m) == "fast";
+    if (safe_math_locked_) {
+        // Re-checked at every compile, not only at lock(): a caller that locks safe math must never get a fast-math
+        // library, and the switch is an error rather than a downgrade.
+        if (const char* bad = deterministic_env_violation()) {
+            std::fprintf(stderr, "ERR mtl: %s is set and this context locked safe math (ADR 0001 §2)\n", bad);
+            std::exit(3);
+        }
+        fast_math = false;
+    }
     if (@available(macOS 15.0, *)) {
         o.mathMode = fast_math ? MTLMathModeFast : MTLMathModeSafe;
     } else {
@@ -298,9 +325,8 @@ void require_fit(const Pipeline& p, uint32_t threads, const char* where) {
 
 Buffer Context::alloc(size_t bytes) {
     // Metal returns the new buffer with one more reference parked in the calling thread's autorelease pool.  The engine's host
-    // threads have no pool (only Context::run opens one), so that reference was never given back: every buffer made here lived for
-    // the rest of the process, free() or not (a 16 KB job array per expert matvec, ~90K a request: +1.3 GB and a slower queue every
-    // call, 16 -> 3 tok/s after a few requests on a big Mac).
+    // threads have no pool (only Context::run opens one), so without the pool below that reference is never given back: every
+    // buffer made here would live for the rest of the process, free() or not.
     Buffer r;
     @autoreleasepool {
         id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
@@ -457,6 +483,7 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 }
 
 double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
+    seg_tm_.n_dis_plain += ds.size();
     // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
     // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
     static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
@@ -486,6 +513,7 @@ double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
 }
 
 void* Context::run_graph_async(const std::vector<Dispatch>& ds) {
+    seg_tm_.n_dis_plain += ds.size();
     @autoreleasepool {
         if (impl_->q2 == nil) impl_->q2 = [impl_->dev newCommandQueue];
         id<MTLCommandBuffer> cb = [impl_->q2 commandBufferWithUnretainedReferences];
@@ -514,16 +542,268 @@ double Context::wait_async(void* token) {
     }
 }
 
+namespace {
+// HOW THE HOST WAITS FOR A CUT.  `spin` is the default and the event path is opt-in.  Neither can alter a value: the
+// choice only decides when this thread notices a signal the GPU has already sent.
+//   STRATA_METAL_SEG_WAIT=event   short spin, then block on the shared event
+//   STRATA_METAL_SEG_SPIN_US=N    the spin budget before blocking (default 50)
+// Note STRATA_METAL_SPIN belongs to `run_graph` and does not affect `run_graph_seg`.
+bool seg_wait_event() {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_METAL_SEG_WAIT");
+        return e != nullptr && std::string(e) == "event";
+    }();
+    return on;
+}
+double spin_budget_s() {
+    static const double b = [] {
+        const char* e = std::getenv("STRATA_METAL_SEG_SPIN_US");
+        const double us = e != nullptr ? std::atof(e) : 50.0;
+        return (us > 0 ? us : 0.0) * 1e-6;
+    }();
+    return b;
+}
+}  // namespace
+
 double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                               void* user) {
+    return run_graph_seg(ds, cuts, {}, at_cut, user);
+}
+
+// ---- the GPU filler (see mtl_rt.h: set_seg_fill) ---------------------------------------------------------------
+//
+// One per Context, created on the first set_seg_fill(non-zero) and joined in ~Context, so it never outlives the
+// queue and objects it uses.  Three states for the thread:
+//   disarmed (mode 0)  blocked on the condition variable - no CPU, no GPU.  An engine that never calls
+//                      set_seg_fill has no thread at all.
+//   cut (1)            while the host is inside a cut, a back-to-back stream of short filler buffers; otherwise it
+//                      yield-spins, because it has to start within microseconds of the host entering a cut and a
+//                      condition-variable wake costs more than that.  So an armed `cut` filler holds one CPU core;
+//                      the caller arms it only for decode (hy4-flash: main.cpp, around the generation loop).
+//   always (2)         filler buffers while any segmented run happened in the last 50 ms, else 1 ms sleeps.
+// A filler buffer is ~250 us of GPU, so at disarm or exit at most one is still in flight; the thread finishes it
+// before it parks or returns, and ~Context waits for the thread.
+struct Context::Filler {
+    std::mutex mu;
+    std::condition_variable cv;
+    int mode = 0;                         // guarded by mu; mirrored into `armed` for the run_graph_seg fast path
+    bool stop = false;                    // guarded by mu
+    std::atomic<int> armed{0};
+    // its own cache line: the worker writes `mu`'s line on every spin iteration, and the host's increment around
+    // each at_cut should not have to pull that line back
+    alignas(64) std::atomic<int> want{0};   // cut mode: > 0 while the host is inside at_cut
+    std::atomic<int64_t> last_ns{0};      // always mode: the last segmented run's activity
+    std::atomic<uint64_t> n{0}, gpu_ns{0};
+    std::thread th;
+    bool failed = false;                  // guarded by mu: a filler buffer failed, so it stays off
+    double one_us = 0;
+    uint32_t iters = 4000;
+};
+
+namespace {
+int64_t fill_now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+// ALU only: an LCG per thread, and a store that happens only if the state lands on one value in 2^32 after n
+// steps, into a word nothing reads.  No loads, so it takes no bandwidth from the real work and cannot change a
+// value anywhere.
+const char* kFillSrc = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+kernel void seg_fill(device atomic_uint* sink [[buffer(0)]], constant uint& n [[buffer(1)]],
+                     uint t [[thread_position_in_grid]]) {
+    uint x = t * 2654435761u + 1u;
+    for (uint i = 0; i < n; ++i) x = x * 1664525u + 1013904223u;
+    if (x == 0xdeadbeefu) atomic_fetch_add_explicit(sink, 1u, memory_order_relaxed);
+}
+)MSL";
+}  // namespace
+
+std::string Context::set_seg_fill(int mode) {
+    // The environment wins over the caller, so it can be switched without a rebuild: `off` disables it
+    // outright; `cut` / `always` pick the mode, while the caller still decides WHEN it is armed.
+    if (const char* e = std::getenv("STRATA_METAL_SEG_FILL")) {
+        std::string m(e);
+        for (char& c : m) c = (char) std::tolower((unsigned char) c);
+        // an unrecognised value is an error, not "leave it on": `OFF` or `false` silently keeping the filler on
+        // would put it on both sides of a comparison that was meant to turn it off
+        if (m == "off" || m == "0" || m == "false" || m == "no" || m == "none") mode = 0;
+        else if (m == "cut" || m == "1") mode = mode == 0 ? 0 : 1;
+        else if (m == "always" || m == "2") mode = mode == 0 ? 0 : 2;
+        else return "STRATA_METAL_SEG_FILL=" + std::string(e) + " is not off|cut|always";
+    }
+    if (mode < 0 || mode > 2) mode = 0;
+    if (mode != 0 && fill_ == nullptr) {
+        auto* f = new Filler;
+        // Bounded: a filler buffer cannot be interrupted once submitted, so its length is the bound on how long it
+        // can sit in front of real work, and on how long a disarm or ~Context waits.  Hence the range check below:
+        // a negative value would wrap into billions of steps.
+        if (const char* it = std::getenv("STRATA_METAL_SEG_FILL_ITERS")) {
+            const long v = std::atol(it);
+            if (v < 1 || v > 100000) {
+                delete f;
+                return "STRATA_METAL_SEG_FILL_ITERS=" + std::string(it) + " is outside 1..100000";
+            }
+            f->iters = (uint32_t) v;
+        }
+        NSError* err = nil;
+        MTLCompileOptions* o = [MTLCompileOptions new];
+        o.fastMathEnabled = NO;   // nothing here is a value anyone reads, but this runtime never compiles fast-math
+        id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:kFillSrc] options:o
+                                                        error:&err];
+        id<MTLComputePipelineState> ps =
+            lib ? [impl_->dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"seg_fill"] error:&err]
+                : nil;
+        if (ps == nil) {
+            delete f;
+            return std::string("the GPU filler did not compile: ") +
+                   (err ? [[err localizedDescription] UTF8String] : "?");
+        }
+        id<MTLCommandQueue> q = [impl_->dev newCommandQueue];
+        id<MTLBuffer> sink = [impl_->dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+        if (q == nil || sink == nil) {
+            delete f;
+            return "the GPU filler could not create its queue or its sink buffer";
+        }
+        // < 0 = the buffer did not run.  Checked, because an unchecked failure turns the filler into a tight CPU
+        // loop that counts buffers the GPU never executed.
+        auto submit = [q, ps, sink](uint32_t iters) -> double {
+            @autoreleasepool {
+                id<MTLCommandBuffer> cb = [q commandBuffer];
+                if (cb == nil) return -1.0;
+                id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+                if (enc == nil) return -1.0;
+                [enc setComputePipelineState:ps];
+                [enc setBuffer:sink offset:0 atIndex:0];
+                [enc setBytes:&iters length:4 atIndex:1];
+                [enc dispatchThreads:MTLSizeMake(256, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [enc endEncoding];
+                [cb commit];
+                [cb waitUntilCompleted];
+                if (cb.status != MTLCommandBufferStatusCompleted) return -1.0;
+                return cb.GPUEndTime - cb.GPUStartTime;
+            }
+        };
+        for (int k = 0; k < 3; ++k) {   // the last of three counts, after the first has warmed the pipeline
+            const double g = submit(f->iters);
+            if (!(g > 0)) {
+                delete f;
+                return "the GPU filler's test buffer did not run";
+            }
+            f->one_us = g * 1e6;
+        }
+        f->th = std::thread([f, submit] {
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(f->mu);
+                    f->cv.wait(lk, [f] { return f->stop || f->mode != 0; });
+                    if (f->stop) return;
+                }
+                const int m = f->armed.load(std::memory_order_acquire);
+                bool on = false;
+                if (m == 1) on = f->want.load(std::memory_order_acquire) > 0;
+                else if (m == 2) on = fill_now_ns() - f->last_ns.load(std::memory_order_relaxed) < 50000000LL;
+                if (!on) {
+                    if (m == 1) std::this_thread::yield();
+                    else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                const double g = submit(f->iters);
+                if (!(g > 0)) {
+                    // a failed filler buffer disarms the filler for good rather than spinning on it; decode
+                    // carries on without it (it is only a clock aid)
+                    std::fprintf(stderr, "mtl: a GPU filler buffer failed; the filler is off for the rest of the run\n");
+                    std::lock_guard<std::mutex> lk(f->mu);
+                    f->mode = 0;
+                    f->armed.store(0, std::memory_order_release);
+                    f->failed = true;
+                    continue;
+                }
+                f->n.fetch_add(1, std::memory_order_relaxed);
+                f->gpu_ns.fetch_add((uint64_t) (g * 1e9), std::memory_order_relaxed);
+            }
+        });
+        fill_ = f;
+    }
+    if (fill_ == nullptr) return {};
+    {
+        std::lock_guard<std::mutex> lk(fill_->mu);
+        if (fill_->failed) {
+            fill_->mode = 0;
+            fill_->armed.store(0, std::memory_order_release);
+            return mode == 0 ? std::string() : "a GPU filler buffer failed earlier in this run";
+        }
+        fill_->mode = mode;
+        fill_->armed.store(mode, std::memory_order_release);
+        fill_->want.store(0, std::memory_order_release);
+    }
+    fill_->cv.notify_all();
+    return {};
+}
+
+int Context::seg_fill_mode() const { return fill_ == nullptr ? 0 : fill_->armed.load(); }
+double Context::seg_fill_buffer_us() const { return fill_ == nullptr ? 0.0 : fill_->one_us; }
+
+Context::FillStats Context::fill_stats() const {
+    FillStats f;
+    if (fill_ != nullptr) {
+        f.n = fill_->n.load();
+        f.gpu_ms = (double) fill_->gpu_ns.load() / 1e6;
+    }
+    return f;
+}
+void Context::reset_fill_stats() {
+    if (fill_ == nullptr) return;
+    fill_->n = 0;
+    fill_->gpu_ns = 0;
+}
+
+Context::~Context() {
+    // the filler first: its thread uses a queue and buffers that must outlive it (see set_seg_fill)
+    if (fill_ != nullptr) {
+        {
+            std::lock_guard<std::mutex> lk(fill_->mu);
+            fill_->stop = true;
+            fill_->mode = 0;
+            fill_->armed.store(0);
+        }
+        fill_->cv.notify_all();
+        if (fill_->th.joinable()) fill_->th.join();
+        delete fill_;
+        fill_ = nullptr;
+    }
+    impl_->ka_stop.store(true);          // then the GPU keep-alive thread
+    if (impl_->ka.joinable()) impl_->ka.join();
+    delete impl_;
+}
+
+double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, const std::vector<int>& waits,
+                              void (*at_cut)(void*, int), void* user) {
+    if (!waits.empty() && waits.size() != cuts.size()) {
+        std::fprintf(stderr, "mtl: run_graph_seg: %zu waits for %zu cuts\n", waits.size(), cuts.size());
+        std::exit(5);
+    }
+    for (size_t s = 0; s < waits.size(); ++s) {
+        const int hi = s + 1 < cuts.size() ? cuts[s + 1] : (int) ds.size();
+        if (waits[s] < cuts[s] || waits[s] > hi) {
+            std::fprintf(stderr, "mtl: run_graph_seg: wait %zu at %d is outside [%d, %d]\n", s, waits[s], cuts[s], hi);
+            std::exit(5);
+        }
+    }
+    const int fill = fill_ == nullptr ? 0 : fill_->armed.load(std::memory_order_acquire);
+    if (fill == 2) fill_->last_ns.store(fill_now_ns(), std::memory_order_relaxed);
     @autoreleasepool {
         if (impl_->ev == nil) impl_->ev = [impl_->dev newSharedEvent];
         id<MTLSharedEvent> ev = impl_->ev;
         const uint64_t base = impl_->ev_v;
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        const double t_enc0 = now_s();
         size_t i = 0;
-        for (size_t s = 0; s <= cuts.size(); ++s) {
-            const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
+        auto encoder = [&](size_t end) {
+            // an empty segment (two cuts at one index: the MoE split's second cut sits where the first one's wait
+            // is) gets no encoder at all
+            if (i == end && !waits.empty()) return;
             id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
             const size_t first = i;
             for (; i < end; ++i) {
@@ -531,28 +811,93 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
                 encode(enc, ds[i]);
             }
             [enc endEncoding];
+            ++seg_tm_.n_enc;
+        };
+        for (size_t s = 0; s <= cuts.size(); ++s) {
+            encoder(s < cuts.size() ? (size_t) cuts[s] : ds.size());
             if (s < cuts.size()) {
                 [cb encodeSignalEvent:ev value:base + 2 * s + 1];
+                // the work between the signal and the wait: its own encoder, run while the host takes its turn
+                if (!waits.empty() && waits[s] > cuts[s]) encoder((size_t) waits[s]);
                 [cb encodeWaitForEvent:ev value:base + 2 * s + 2];
             }
         }
+        seg_tm_.encode_ms += (now_s() - t_enc0) * 1e3;
+        const double t_commit0 = now_s();
         [cb commit];
         impl_->touch();
+        seg_tm_.commit_ms += (now_s() - t_commit0) * 1e3;
+        ++seg_tm_.n_cb;
+        seg_tm_.n_dis += ds.size();
         for (size_t s = 0; s < cuts.size(); ++s) {
             const uint64_t want = base + 2 * s + 1;
-            while (ev.signaledValue < want) {
-                if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+            // THE BUSY-WAIT, timed on its own.  It is the GPU still computing segment s, and it lies INSIDE the
+            // command buffer's GPU span - so without this split it reads as "the GPU computed", while
+            // `host_cut_ms` covers only the at_cut body below.
+            const double t_spin0 = now_s();
+            if (seg_wait_event()) {
+                // A SHORT SPIN, THEN SLEEP.  The tight loop below burns a core for the whole segment, and on
+                // this chip the CPU and the GPU share the memory controller and the power budget, so a spinning
+                // core is not free to the thing it is waiting for.  Most cuts are not instant, so the spin
+                // budget is short and the common case is the sleep.
+                //
+                // The listener is created once; `notifyListener:atValue:` fires on its queue when the GPU
+                // signals, and the semaphore hands that to this thread.  The wait has a TIMEOUT and rechecks,
+                // because a command buffer that failed will never reach `want` and a plain wait would hang
+                // the engine instead of reporting the error - the status is only consulted on a timeout, so
+                // the fast path does not pay for it.
+                const double budget = spin_budget_s();
+                while (ev.signaledValue < want && now_s() - t_spin0 < budget) {}
+                if (ev.signaledValue < want) {
+                    if (impl_->ev_listener == nil)
+                        impl_->ev_listener = [[MTLSharedEventListener alloc]
+                            initWithDispatchQueue:dispatch_queue_create("strata.seg", DISPATCH_QUEUE_SERIAL)];
+                    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                    [ev notifyListener:impl_->ev_listener
+                              atValue:want
+                                block:^(id<MTLSharedEvent>, uint64_t) { dispatch_semaphore_signal(sem); }];
+                    while (ev.signaledValue < want) {
+                        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0)
+                            break;
+                        if (cb.status >= MTLCommandBufferStatusCompleted) break;   // failed: reported below
+                    }
+                }
+            } else {
+                while (ev.signaledValue < want) {
+                    if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+                }
             }
+            const double spin = (now_s() - t_spin0) * 1e3;
+            seg_tm_.spin_ms += spin;
+            const double t_cut0 = now_s();
+            if (fill == 1) fill_->want.fetch_add(1, std::memory_order_release);
             at_cut(user, (int) s);
+            if (fill == 1) fill_->want.fetch_sub(1, std::memory_order_release);
+            if (fill == 2) fill_->last_ns.store(fill_now_ns(), std::memory_order_relaxed);
+            const double cut = (now_s() - t_cut0) * 1e3;
+            seg_tm_.cut_ms += cut;
+            ++seg_tm_.n_cut;
+            // n_cut has already counted this cut, hence the -1: the index is this cut's position in the
+            // window, not the next one's.
+            const size_t k = cut_period_ > 0 ? (seg_tm_.n_cut - 1) % (size_t) cut_period_ : s;
+            if (k < (size_t) kMaxCuts) {
+                seg_tm_.spin_at[k] += spin;
+                seg_tm_.cut_at[k] += cut;
+                ++seg_tm_.n_at[k];
+            }
             ev.signaledValue = base + 2 * s + 2;
         }
         impl_->ev_v = base + 2 * cuts.size() + 2;
+        const double t_wait0 = now_s();
         [cb waitUntilCompleted];
+        seg_tm_.wait_ms += (now_s() - t_wait0) * 1e3;
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);
         }
-        return cb.GPUEndTime - cb.GPUStartTime;
+        const double gpu = cb.GPUEndTime - cb.GPUStartTime;
+        seg_tm_.gpu_ms += gpu * 1e3;
+        return gpu;
     }
 }
 
