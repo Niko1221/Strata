@@ -354,7 +354,7 @@ int64_t append_stage_lend_regions(int64_t n_layers, int64_t n_expert, const std:
     return kept;
 }
 
-int split_lend_reserve_percent(const char* env, bool drive_measured, double direct_bps, std::string* why) {
+int split_lend_reserve_percent(const char* env, std::string* why) {
     auto say = [&](const std::string& s) { if (why != nullptr) *why = s; };
     if (env != nullptr && env[0] != '\0') {
         const std::string v(env);
@@ -368,17 +368,7 @@ int split_lend_reserve_percent(const char* env, bool drive_measured, double dire
             }
         }
     }
-    if (!drive_measured) { say("the drive was not measured: the whole reservation, as #6583"); return 100; }
-    char msg[160];
-    if (direct_bps >= kLendReserveFastDriveBps) {
-        std::snprintf(msg, sizeof msg, "the drive reads %.1f GB/s (fast, from %.0f GB/s): half the reservation (#7089)",
-                      direct_bps / 1e9, kLendReserveFastDriveBps / 1e9);
-        say(msg);
-        return 50;
-    }
-    std::snprintf(msg, sizeof msg, "the drive reads %.1f GB/s (under %.0f GB/s): the whole reservation, as #6583",
-                  direct_bps / 1e9, kLendReserveFastDriveBps / 1e9);
-    say(msg);
+    say("the whole reservation (#6583), the default");
     return 100;
 }
 
@@ -4141,30 +4131,19 @@ bool FileExpertSource::pin_cache_complement(
         // regions BEFORE filling the coldest tail of the complement.  Borrowed slots hold GPU-resident hot experts
         // that are evicted and re-read on every prompt chunk; letting the coldest complement experts crowd them out
         // turns every chunk into hundreds of uncached SSD blob reads.
-        // #7089: the reservation is paid out of the complement, which is what decode reads.  On a RAM-tight host with a fast drive that cost ~9%
-        // decode (2 x RTX 4090/3090, UD-Q4_K_XL, --resident-budget-gib 47 of 64 GiB: 82.6 vs 90.1 tok/s with it off) and bought no prefill
-        // (the borrowed slots read from an NVMe at 7 GB/s: prefill flat at 18K / 36K / 72K), so only a share of it is reserved there, counted
-        // from the highest slot of each region (what a short prompt borrows).  A drive that is not clearly fast, or one nobody measured
-        // (Windows), keeps the whole reservation: #6583's 2 x RTX 3090 on Windows lost 9% prefill to 315 unbacked slots.
-        // STRATA_SPLIT_LEND_RESERVE: 0 = none (PR #7091 by @svonolfen), full / 100 = all, 1..99 = percent, auto / unset = by the drive.
+        // #7089 (PR #7091 by @svonolfen): the reservation is paid out of the complement, which is what decode reads.  On a RAM-tight 2-GPU layer split
+        // (RTX 4090 + 3090, UD-Q4_K_XL, --resident-budget-gib 47 of 64 GiB) switching it off gave +9% decode (82.6 -> 90.1 tok/s) and cost ~5% cold
+        // prompt reading at 18K tokens; on 2 x A6000 with the same lend regions +5.5% decode and -17% (reservation 100% -> 0%).  The default stays whole:
+        // it is what #6583 measured on Windows (2 x RTX 3090: 315 unbacked slots cost 9% prefill).  STRATA_SPLIT_LEND_RESERVE=0 (none) or 1..99 (that
+        // percent, from the highest slot of each region) is an opt-in.
         uint64_t stage_lend_reserve = 0;
         int lend_percent = 100;
         if (!stage_lend_regions_.empty()) {
-            const char* lr = std::getenv("STRATA_SPLIT_LEND_RESERVE");
-            double direct_bps = 0;
-            bool measured = false;
-#if defined(__linux__)
-            // the drive probe (O_DIRECT preads of 1 MiB at random places, memoised: the file tier's choice reads the same numbers); only when the
-            // setting leaves the choice to the drive
-            if (lr == nullptr || lr[0] == '\0' || std::strcmp(lr, "auto") == 0) {
-                double cached_bps = 0;
-                measured = !paths_.empty() && file_tier_probe(paths_, direct_bps, cached_bps);
-            }
-#endif
             std::string why;
-            lend_percent = detail::split_lend_reserve_percent(lr, measured, direct_bps, &why);
-            std::fprintf(stderr, "FileExpertSource: the stage lend reservation takes %d%% of the lend regions before the complement is filled: %s\n",
-                         lend_percent, why.c_str());
+            lend_percent = detail::split_lend_reserve_percent(std::getenv("STRATA_SPLIT_LEND_RESERVE"), &why);
+            if (lend_percent != 100)   // the default says nothing: the line below it already reports the kept slots
+                std::fprintf(stderr, "FileExpertSource: the stage lend reservation takes %d%% of the lend regions before the complement is filled: %s\n",
+                             lend_percent, why.c_str());
         }
         if (lend_percent > 0 && !stage_lend_regions_.empty()) {
             std::vector<uint8_t> seen(offsets.size(), 0);

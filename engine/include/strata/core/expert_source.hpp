@@ -189,17 +189,12 @@ int64_t append_stage_lend_regions(int64_t n_layers, int64_t n_expert, const std:
                                   const std::vector<std::vector<std::pair<int32_t, int32_t>>>& regions,
                                   std::string& err);
 
-/// #7089: how much of the stages' lend regions (percent of their bytes, counted from the highest slot of each region down, the slots a short
-/// prompt borrows) the RAM budget reserves BEFORE it fills the coldest tail of the complement.  #6583 reserved all of it (100): on a drive that
-/// is slow to read the experts a prompt chunk borrows (an unbuffered Windows read) every uncached lent slot costs prompt speed.  The reservation
-/// is paid out of the complement, the copy decode reads, so on a RAM-tight host with a fast drive it cost ~9% decode and bought no prefill
-/// (reporter: 2 x RTX 4090 + 3090, NVMe 7 GB/s: 82.6 vs 90.1 tok/s, prefill flat).
-///   `env` is STRATA_SPLIT_LEND_RESERVE: "0" none (the complement first, as before #6583), "full" or "100" all, "1".."99" that percent,
-///   "auto" or unset: by the drive.  Auto: 50 when `direct_bps` (the drive's measured random 1 MiB O_DIRECT read rate; `drive_measured` false
-///   when nothing measured it: Windows, no probe) is at least kFastDriveBps, else 100 - a drive not clearly fast, or an unknown one, keeps the
-///   #6583 behaviour.  `why` (optional) says which rule decided.
-constexpr double kLendReserveFastDriveBps = 3.0e9;
-int split_lend_reserve_percent(const char* env, bool drive_measured, double direct_bps, std::string* why = nullptr);
+/// #7089 (PR #7091 by @svonolfen): how much of the stages' lend regions (percent of their bytes, counted from the highest slot of each region down, the
+/// slots a short prompt borrows) the RAM budget reserves BEFORE it fills the coldest tail of the complement.  #6583 reserves all of it (100) and that stays
+/// the default on every drive.  The reservation is paid out of the complement, the copy decode reads, so on a RAM-tight 2-GPU layer split it can cost
+/// decode (reporter: 82.6 against 90.1 tok/s) and it buys cold prompt reading (5 to 17% at 18K tokens).  `env` is STRATA_SPLIT_LEND_RESERVE:
+/// "0" none (the complement first, as before #6583), "1".."99" that percent, anything else or unset: all (100).  `why` (optional) says which rule decided.
+int split_lend_reserve_percent(const char* env, std::string* why = nullptr);
 
 }  // namespace detail
 
