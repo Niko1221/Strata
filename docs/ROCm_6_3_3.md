@@ -29,24 +29,27 @@ Notes that cost time to find:
 - The build carries the upstream warning set and is not `-Werror`.
 - Two source-level blockers must be applied first on this tree: the `__shared__ alignas(16) int4` class (#4151, fixed upstream as `804003950`) and the `hip_compat` P2P names (#7088). With those, `ninja -C build-906 strata` links, a 28.6 MB binary.
 
-## 2. Same-day run (2026-11-25, 225 W = the ceiling)
+## 2. Same-day runs (225 W, the ceiling)
 
-Identical request throughout: 122-token prompt, 256 generated, temperature 0, `--batch 2`, `--spec 4`, `--max-context 262144`, `--kv-resident 32768`, `--pool-workers 15`; one warm-up request discarded; decode tok/s from the engine's own per-request line, cross-checked against client wall time. Clocks, power and junction temperature sampled every 0.5 s.
+Identical request throughout: 122-token prompt, 256 generated, temperature 0, `--batch 2`, `--spec 4`, `--max-context 262144`, `--kv-resident 32768`, `--pool-workers 15`; one warm-up discarded per series; decode tok/s taken from the engine's own per-request line and cross-checked against client wall time. The second session added 0.5 s sampling of junction temperature, power draw and the active DPM level on both cards.
 
-| config | engine decode tok/s (3 runs) | median | client wall median |
+| session | single `gpu[0]` | split `gpu[0,1]` | expert cache (single / per card, split) |
 | --- | --- | --- | --- |
-| layer split, 2x MI50 (`gpu [0,1]`, `layer_split auto`) | 24.8 / 17.9 / 23.2 | **23.0** | 22.96 |
-| single MI50 (`gpu [0]`) | 17.3 / 18.3 / 15.4 | **17.3** | 17.07 |
+| 2026-11-24, no telemetry | 21.50 median (20.99 / 22.21 / 21.50) | 22.75 median (24.26 / 19.54 / 22.75) | 7,499 slots / 9,112 + 8,865 |
+| 2026-11-25, 0.5 s telemetry | 17.07 median (17.07 / 18.04 / 15.20) | 22.96 median (24.58 / 17.75 / 22.96) | 7,499 / 9,070 + 8,879 |
 
-**The split arm is bimodal, and this is the honest reading of it.** Fast/slow/fast reproduced across two sessions on different days. The slow run is not distinguishable from the fast ones by any GPU signal: all runs reached the top DPM level (1725 MHz), peak draw 141–192 W of the 225 W ceiling, junction 46–55 °C, expert-cache hit rate flat at 96.3–96.4 %, zero file-tier reads with 0 major faults, KV streaming 99.7–99.9 %, draft acceptance flat at 82–87 %. Two candidates remain, both host-side: the pageable resident complement (27.27 GiB, and every start logs `NUMA placement FAILED: the complement is not page-locked`) taking a memory event mid-decode, or the peer-expert handoff occasionally not engaging. **Do not quote a split speed-up on this evidence** — the median advantage is smaller than the spread of the winning arm.
+**The split arm is bimodal in both sessions** — fast, slow, fast — and that is the honest reading of it. The slow run is not distinguishable from the fast ones by any GPU signal: every run reached the top DPM level (1725 MHz), peak draw was 141-192 W of the 225 W ceiling, junction stayed 46-55 °C, expert-cache hit rate was flat at 96.3-96.4 %, file-tier reads were zero with no major faults, KV reads hit VRAM 99.7-99.9 % of the time, and draft acceptance sat at 82-87 %. Two candidates remain, both host-side: the pageable resident complement (27.27 GiB, and every start logs `NUMA placement FAILED: the complement is not page-locked`) taking a memory event mid-decode, or the peer-expert handoff occasionally not engaging. **No split speed-up is claimed.** With three runs per arm the median gap is smaller than the winning arm's own spread, and the arms ran in blocks rather than interleaved, so a time effect cannot be separated from a configuration effect.
 
-The single-GPU arm also moved between days (21.50 median on 2026-11-24, 17.07 on 2026-11-25) at an identical 7,499-slot expert cache, with healthy clocks and the cap not binding. Unexplained; treat single-GPU absolute numbers as day-dependent, while the two arms remain comparable to each other because they ran back to back in the same conditions.
+**The two sessions disagree on the single arm, and the second should not be used as a baseline.** Same binary, same 7,499-slot cache, healthy clocks, yet 21.50 on 11-24 against 17.07 on 11-25, with the arm's own standard deviation rising from 0.61 to 1.44. Tripled variance at an unchanged configuration reads as contention during the later session rather than drift, so the 11-24 single figure is the reference and any comparison should rest on arms measured back to back inside one session.
 
-Memory placement, measured at load:
+**Expert-cache size moves decode much more than the split does.** One launch on 11-25 found only 13.70 GiB free, sized itself at 4,269 slots instead of 7,499, and decoded at 5.17 and 7.00 tok/s — 3x slower with the card at full clock (1,533 MHz mean, 1,725 peak), 182 W peak of 225, and 56 °C. Nothing in the HTTP response reports the difference, so a benchmark on a card with other tenants has to record the engine's own `expert cache auto` line to be interpretable at all.
+
+Memory placement at load:
+
 - **Split:** CUDA1 took 25.94 GiB of experts (`--vram-reserve-mib` is gone in 0.2.x, replaced by the elastic segment scheme, and the freed reserve goes to expert slots); 810 MiB (CUDA0) / 908 MiB (CUDA1) free after load.
 - **Single:** resident RAM mode — 62.78 GiB of experts pageable in RAM, 7,499 slots (21.89 GiB) in VRAM, 810 MiB free after load.
 
-Boot to serving: **~12.2 min from a cold page cache** (2.5 s startup, 270.4 s profile pre-fill, 458 s for the 62.78 GiB pageable complement at ~87 MB/s), against **~90 s warm** for the split engine and ~1.7 min warm for single. This box's system disk is DRAM-less, so cold boots measure the disk rather than the engine; warm the cache before timing anything.
+Boot to serving, measured: **~12 min** with the PLE table already in the page cache (2.5 s table lock, 270.4 s profile pre-fill, 458 s for the 62.78 GiB pageable complement at ~87 MB/s). A genuinely cold PLE path adds roughly 428 s, but that figure is inferred rather than measured to completion. Warm launches serve in ~90 s (split) and ~1.7 min (single). This box's system disk is DRAM-less, so boot time measures the disk rather than the engine.
 
 ## 3. Historical: the 0.1.45 tree (October)
 
