@@ -282,7 +282,7 @@ bool test_flash_swa_and_dspark(bool is_uma) {
         reinterpret_cast<const int32_t*>(d_pos.dev_ptr),
         reinterpret_cast<const int32_t*>(d_pt.dev_ptr), pages_per_slot,
         d_kp.dev_ptr, d_vp.dev_ptr, nullptr, nullptr, reinterpret_cast<float*>(d_out.dev_ptr),
-        B, n_qh, n_kvh, 1024, 0);
+        B, n_qh, n_kvh, 1024, 1024, 0);
     INK_HCK(hipDeviceSynchronize());
 
     std::vector<float> h_out(h_q.size());
@@ -356,6 +356,85 @@ void bench_sf4_bw(strata::hip_uma::AmdGen gen, bool is_uma) {
     strata::hip_uma::free_gpu_buffer(d_y);
 }
 
+// #6736 / #6737: k1_loop_ctrl_up3 runs the three channels as unordered blocks of one launch.  On a sliding-window
+// visit all three read in0, so channel 0 must not write its result back to in0 (k / v blocks may still be reading it).
+// The backend now gives channel 0 its own destination (mx3).  This checks, over many repeats, that
+//   - the backend's call (src {in0,in0,in0}, dst {other,in1,in2}) gives k / v bit for bit equal to the reference
+//     (three separate copies of the input), every time;
+//   - the old call (dst {in0,in1,in2}) is reported (the race, when it shows, is timing dependent: informational).
+bool test_loop_ctrl_up3_swa_race() {
+    const int M = 1, D = 4096, rank = 64, reps = 400;
+    std::mt19937 rng(6736);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    const size_t nrow = static_cast<size_t>(M) * D;
+    std::vector<float> h_in(nrow), h_msg(static_cast<size_t>(M) * 4 * D), h_gate(static_cast<size_t>(3) * M * rank);
+    std::vector<float> h_wg[3], h_wf[3];
+    for (auto& v : h_in) v = dist(rng);
+    for (auto& v : h_msg) v = dist(rng);
+    for (auto& v : h_gate) v = dist(rng);
+    for (int c = 0; c < 3; ++c) {
+        h_wg[c].resize(static_cast<size_t>(D) * rank);
+        h_wf[c].resize(static_cast<size_t>(D) * rank);
+        for (auto& v : h_wg[c]) v = dist(rng) * 0.2f;
+        for (auto& v : h_wf[c]) v = dist(rng) * 0.2f;
+    }
+    float *d_in0 = nullptr, *d_in1 = nullptr, *d_in2 = nullptr, *d_alt = nullptr, *d_msg = nullptr, *d_gate = nullptr;
+    float *d_ref[3] = {nullptr, nullptr, nullptr}, *d_wg[3], *d_wf[3];
+    const size_t rb = nrow * sizeof(float);
+    INK_HCK(hipMalloc(&d_in0, rb)); INK_HCK(hipMalloc(&d_in1, rb)); INK_HCK(hipMalloc(&d_in2, rb)); INK_HCK(hipMalloc(&d_alt, rb));
+    INK_HCK(hipMalloc(&d_msg, h_msg.size() * 4)); INK_HCK(hipMalloc(&d_gate, h_gate.size() * 4));
+    INK_HCK(hipMemcpy(d_msg, h_msg.data(), h_msg.size() * 4, hipMemcpyHostToDevice));
+    INK_HCK(hipMemcpy(d_gate, h_gate.data(), h_gate.size() * 4, hipMemcpyHostToDevice));
+    for (int c = 0; c < 3; ++c) {
+        INK_HCK(hipMalloc(&d_ref[c], rb));
+        INK_HCK(hipMalloc(&d_wg[c], h_wg[c].size() * 4)); INK_HCK(hipMalloc(&d_wf[c], h_wf[c].size() * 4));
+        INK_HCK(hipMemcpy(d_wg[c], h_wg[c].data(), h_wg[c].size() * 4, hipMemcpyHostToDevice));
+        INK_HCK(hipMemcpy(d_wf[c], h_wf[c].data(), h_wf[c].size() * 4, hipMemcpyHostToDevice));
+    }
+    const Ptr3 wg{{d_wg[0], d_wg[1], d_wg[2]}}, wf{{d_wf[0], d_wf[1], d_wf[2]}};
+    const dim3 grid((D + 63) / 64, M, 3);
+    // reference: every channel reads and writes its own buffer (the input uploaded three times)
+    for (float* p : {d_in0, d_in1, d_in2}) INK_HCK(hipMemcpy(p, h_in.data(), rb, hipMemcpyHostToDevice));
+    {
+        const FPtr3 src{{d_in0, d_in1, d_in2}};
+        const MutFPtr3 dst{{d_ref[0], d_ref[1], d_ref[2]}};
+        k1_loop_ctrl_up3<false><<<grid, 64>>>(src, d_msg, d_gate, wg, wf, dst, M, D, rank);
+        INK_HCK(hipDeviceSynchronize());
+    }
+    std::vector<float> ref[3];
+    for (int c = 0; c < 3; ++c) {
+        ref[c].resize(nrow);
+        INK_HCK(hipMemcpy(ref[c].data(), d_ref[c], rb, hipMemcpyDeviceToHost));
+    }
+    int bad_new = 0, bad_old = 0;
+    std::vector<float> g1(nrow), g2(nrow);
+    for (int mode = 0; mode < 2; ++mode) {   // 0: the backend's call (channel 0 to its own buffer), 1: the old call (in place)
+        for (int r = 0; r < reps; ++r) {
+            INK_HCK(hipMemcpy(d_in0, h_in.data(), rb, hipMemcpyHostToDevice));
+            INK_HCK(hipMemset(d_in1, 0, rb));
+            INK_HCK(hipMemset(d_in2, 0, rb));
+            const FPtr3 src{{d_in0, d_in0, d_in0}};
+            const MutFPtr3 dst{{mode == 0 ? d_alt : d_in0, d_in1, d_in2}};
+            k1_loop_ctrl_up3<false><<<grid, 64>>>(src, d_msg, d_gate, wg, wf, dst, M, D, rank);
+            INK_HCK(hipDeviceSynchronize());
+            INK_HCK(hipMemcpy(g1.data(), d_in1, rb, hipMemcpyDeviceToHost));
+            INK_HCK(hipMemcpy(g2.data(), d_in2, rb, hipMemcpyDeviceToHost));
+            const bool same = std::memcmp(g1.data(), ref[1].data(), rb) == 0 && std::memcmp(g2.data(), ref[2].data(), rb) == 0;
+            if (!same) (mode == 0 ? bad_new : bad_old)++;
+            if (mode == 0) {   // channel 0 matches the reference too
+                std::vector<float> g0(nrow);
+                INK_HCK(hipMemcpy(g0.data(), d_alt, rb, hipMemcpyDeviceToHost));
+                if (std::memcmp(g0.data(), ref[0].data(), rb) != 0) bad_new++;
+            }
+        }
+    }
+    std::printf("[ink-hip-test] loop_ctrl_up3 SWA alias (D=%d, %d reps): backend call %d bad, old in-place call %d bad (race shows when > 0): %s\n",
+                D, reps, bad_new, bad_old, bad_new == 0 ? "PASS" : "FAIL");
+    for (float* p : {d_in0, d_in1, d_in2, d_alt, d_msg, d_gate}) (void) hipFree(p);
+    for (int c = 0; c < 3; ++c) { (void) hipFree(d_ref[c]); (void) hipFree(d_wg[c]); (void) hipFree(d_wf[c]); }
+    return bad_new == 0;
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +462,7 @@ int main() {
     ok &= test_sf4(gen, is_uma);
     ok &= test_mx8(gen, is_uma);
     ok &= test_flash_swa_and_dspark(is_uma);
+    ok &= test_loop_ctrl_up3_swa_race();
     bench_sf4_bw(gen, is_uma);
 
     std::printf("[ink-hip-test] OVERALL: %s\n", ok ? "PASS" : "FAIL");

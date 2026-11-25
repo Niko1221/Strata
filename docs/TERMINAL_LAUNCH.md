@@ -93,7 +93,7 @@ strata launch --show-key
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens. |
 | `--kv FORMAT` | Conversation memory format: `int8` (default), `q4_0` (half the memory), `k8v4`, `fp16`. |
 | `--vision off\|on\|gpu\|cpu` | Picture reading. Default: on when the model and the engine can. |
-| `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; one at a time with DFlash2 (the Auto drafter where the engine has it). |
+| `--parallel N` | Requests answered at the same time, 1 to 64. Inkling-2-Mini runs up to 64; the Qwen engine keeps 16 on NVIDIA and AMD cards and 8 elsewhere (a layer split over several cards can run more); Hy4-Flash answers one. Launch says in plain words when a family or a card cannot hold N (Inkling: when the slots do not fit the card at the chosen context, or leave less of the model in graphics memory). Default: fit to your card; one at a time with DFlash2 (the Auto drafter where the engine has it). |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
 | `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads its drafter once (0.34 GB for the models that have a tuned drafter, 0.52 GB on Intel Arc, else 1.2 GB). If it cannot run, MTP is used and the start says why. |
 | `--gpu LIST`, `--gpu-roles LIST` | Which cards to use, and a role per card. |

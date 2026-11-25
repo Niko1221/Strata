@@ -1,6 +1,7 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
 // two off switches, and that no other card's table changed.
 #include "strata/core/emulate.hpp"
+#include "strata/core/lookup_default.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/prefill/nvfp4_prefill_mode.hpp"
@@ -156,6 +157,52 @@ int main() {
         put("STRATA_SM70_PERF", "1");
         CHECK(nv_default_env(7, 0, false).size() == 21);
         unset("STRATA_SM70_PERF");
+    }
+    // #6747: every architecture's default table against the window limits of the build.  STRATA_GDN_SPLIT=1 (the sm_70 table) holds
+    // kVerifyMaxT rows and has no batched commit; the 8-row build's default lookup window is 12.  The pair ended the V100 engine on the first
+    // request ("gdn_step_norm_multi: invalid arguments").  For every raw compute capability, card size, STRATA_DEFAULTS and build width,
+    // the settled configuration (table + lookup default + gdn_split_window_fix) must not pair the split with a wider window.
+    {
+        CHECK(find(nv_default_env(7, 0, false), "STRATA_GDN_SPLIT") != nullptr);       // the case this is about: sm_70 sets it
+        unset("STRATA_SM70_PERF"); unset("STRATA_SM86_PERF"); unset("STRATA_SM89_PERF"); unset("STRATA_SM120_PERF"); unset("STRATA_SM121_PERF"); unset("STRATA_SM60_PERF");
+        const int ccs[][2] = {{6, 0}, {6, 1}, {7, 0}, {7, 5}, {8, 0}, {8, 6}, {8, 9}, {9, 0}, {10, 0}, {12, 0}, {12, 1}};
+        const uint64_t vrams[] = {0, 8ull << 30, 12ull << 30, 16ull << 30, 24ull << 30, 32ull << 30};
+        int cases = 0, splits = 0;
+        for (const auto& cc : ccs)
+            for (const uint64_t vram : vrams)
+                for (const bool d026 : {false, true})
+                    for (const int vmax : {8, 12, 16}) {
+                        const auto t = nv_default_env(cc[0], cc[1], d026, vram);
+                        const std::string* gs = find(t, "STRATA_GDN_SPLIT");
+                        LookupDefaultIn ld;
+                        ld.narrow_window = vmax == 8, ld.serve = true, ld.suffix_draft = true, ld.spec_at_least_2 = true;
+                        const int lookup = default_lookup_max_t(ld);
+                        const bool split = gs != nullptr && *gs == "1";
+                        const auto fix = gdn_split_window_fix(split, true, lookup, vmax);
+                        const bool split_after = split && !fix.drop_default_split;
+                        CHECK(!(split_after && fix.lookup_max_t > vmax));
+                        CHECK(fix.lookup_max_t == lookup);                           // the table's switch yields to the wide window, not the reverse
+                        ++cases;
+                        if (split && lookup > vmax) {
+                            CHECK(fix.drop_default_split);
+                            ++splits;
+                        }
+                    }
+        CHECK(cases == 11 * 6 * 2 * 3);
+        CHECK(splits > 0);                                                           // sm_70, 8-row build: the dropped case exists
+        // the user's own STRATA_GDN_SPLIT=1 is kept and the window is clamped instead
+        const auto u = gdn_split_window_fix(true, false, 12, 8);
+        CHECK(!u.drop_default_split && u.lookup_max_t == 8);
+        // a window that fits, or no split: nothing changes
+        const auto f1 = gdn_split_window_fix(true, true, 8, 8), f2 = gdn_split_window_fix(false, false, 12, 8), f3 = gdn_split_window_fix(true, true, 0, 8);
+        CHECK(!f1.drop_default_split && f1.lookup_max_t == 8 && !f2.drop_default_split && f2.lookup_max_t == 12 && !f3.drop_default_split && f3.lookup_max_t == 0);
+        // the 16-row build has no default lookup window and keeps the split
+        {
+            LookupDefaultIn ld;
+            ld.narrow_window = false, ld.serve = true, ld.suffix_draft = true, ld.spec_at_least_2 = true;
+            CHECK(default_lookup_max_t(ld) == 0);
+            CHECK(!gdn_split_window_fix(true, true, 0, 16).drop_default_split);
+        }
     }
     // nbald/volta-forever remapping: 7.5 -> 7.0 when active, other architectures untouched
     CHECK(strata::cc_of(7, 5, false) == 75);

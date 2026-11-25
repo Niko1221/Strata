@@ -41,7 +41,7 @@ class SettingsRules(unittest.TestCase):
         notes = S.check_parallel(S.LaunchSettings(parallel=4), vram_gb=12)
         self.assertEqual([n.level for n in notes], ["warn"])
         self.assertIn("still start", notes[0].line())
-        self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=9), vram_gb=12)[0].level, "error")
+        self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=65), vram_gb=12)[0].level, "error")
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=2), vram_gb=24), [])
 
     def test_no_key_warnings_are_plain_and_stronger_in_public(self):
@@ -736,6 +736,37 @@ class AdoptRules(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["gpu"], 1)
             self.assertEqual(json.loads(installed.read_text())["gpu"], 0)
 
+    def test_inkling_kv_reaches_the_engine_for_a_gguf_and_a_strata_file_and_a_wrong_value_is_said(self):
+        """GRID, 0.2.20: `--kv k8v4` for an Inkling GGUF started with --model-path was accepted and not passed on (the engine arguments had no --kv), so the
+        8-bit comparison ran on the default. The allowed values now reach the engine whatever the file is, and a value the engine does not take is said."""
+        import json
+        from strata_control import tune_knobs
+        for name, native in (("gguf", "Inkling-2-Mini-UD-Q4_K_XL.gguf"), ("strata", "Inkling-2-Mini-SQ-10.strata")):
+            for backend, kv, want in (("cuda", "k8v4", "k8v4"), ("cuda", "k8v8", "k8v8"), ("cuda", "fp8", "fp8"), ("cuda", "fp16", "fp16"),
+                                      ("hip", "fp8", "fp8"), ("hip", "k8v4", "fp8"), ("sycl", "k8v8", "fp8"), ("metal", "fp16", "fp16")):
+                with self.subTest(file=name, backend=backend, kv=kv):
+                    base = {"exe": "component:strata-inkling", "arch": "inkling2_loop", "args": ["--native", f"/m/{native}", "--max-context", "32768"],
+                            **({"backend": backend} if backend != "cuda" else {})}
+                    cfg = derive_config(base, S.LaunchSettings(family="inkling-2-mini", kv=kv), bool_flags=tune_knobs.BOOL_FLAGS)
+                    self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], want)
+                    self.assertEqual(cfg["args"].count("--kv"), 1)
+        # a Qwen format is not an Inkling one: nothing is written and the launch says so, in the notices and as a warning
+        self.assertIsNone(S.inkling_kv_note("k8v4", "cuda"))
+        self.assertIsNone(S.inkling_kv_note(None, "hip"))
+        self.assertIn("--kv int8 is not a memory format of Inkling-2-Mini (it takes fp16, fp8, k8v8, k8v4)", S.inkling_kv_note("int8", None))
+        self.assertIn("(it takes fp16, fp8)", S.inkling_kv_note("q4_0", "hip"))
+        self.assertIn("using --kv fp8 instead", S.inkling_kv_note("k8v4", "metal"))
+        with Home() as h:
+            installed = h.base / "strata-inkling-2-mini-sq-10.json"
+            installed.write_text(json.dumps({"exe": "component:strata-inkling", "arch": "inkling2_loop", "port": 8080,
+                                             "args": ["--native", "/m/Inkling-2-Mini-UD-Q4_K_XL.gguf", "--max-context", "32768"]}))
+            for kv, said in (("int8", "is not a memory format of Inkling-2-Mini"), ("k8v4", None)):
+                seen = []
+                r = Runner(S.LaunchSettings(family="inkling-2-mini", model="SQ-10", name="kv", kv=kv), catalog=catalog(HW_12), emit=seen.append)
+                cfg = json.loads(r.build_config(installed).read_text())
+                self.assertEqual("--kv" in cfg["args"], said is None, (kv, cfg["args"]))
+                self.assertEqual(any(said in n for n in r.notices) if said else bool(r.notices and any("--kv" in n for n in r.notices)), said is not None, (kv, r.notices))
+
     def test_a_card_the_installed_model_was_set_to_is_not_replaced_by_the_automatic_pick(self):
         """Two equal cards: the fit rule recommends card 0, so a person's earlier choice (setup --gpu 1, the app's card pick: "gpus_asked")
         must survive a `strata launch` that names no cards - in its order, with "gpu_order": "as_given" too."""
@@ -804,6 +835,17 @@ class AdoptRules(unittest.TestCase):
             path = r.adopt_prepared_files("no NVIDIA GPU found (nvidia-smi did not answer)")
             self.assertTrue(path.is_file())
             self.assertTrue(r.notices and "wrote the run settings itself" in r.notices[0])
+            for key in ("mcp_servers", "mcpServers"):
+                with self.subTest(key=key):
+                    edited = json.loads(path.read_text())
+                    edited.pop("mcp_servers", None)
+                    edited.pop("mcpServers", None)
+                    overrides = {key: {"workspace-tools": {"url": "http://127.0.0.1:3000/mcp"}}, "mcp": {"timeout_s": 60}}
+                    path.write_text(json.dumps({**edited, **overrides}), encoding="utf-8")
+
+                    self.assertEqual(r.adopt_prepared_files("no NVIDIA GPU found"), path)
+                    saved = json.loads(path.read_text())
+                    self.assertEqual({k: saved[k] for k in overrides}, overrides)
             self.assertIsNone(r.adopt_prepared_files("not enough free disk space"))
             from strata_cli.launch.runner import LaunchError
             r2 = Runner(S.LaunchSettings(family="qwen", model="IQ3_S", context=32768, data_dir=str(d)), catalog=cat)
@@ -1035,7 +1077,7 @@ class FlagsCommand(unittest.TestCase):
 
     def test_bad_values_are_plain_sentences(self):
         for argv, word in ((["--tune", "quik"], "quick"), (["--access", "lann"], "lan"), (["--context", "huge"], "context"),
-                           (["--port", "99999"], "1 to 65535"), (["--parallel", "12"], "1 to 8"), (["--vision", "maybe"], "off")):
+                           (["--port", "99999"], "1 to 65535"), (["--parallel", "65"], "1 to 64"), (["--vision", "maybe"], "off")):
             code, out, err = run_cli(["launch", "--plan", *argv])
             self.assertEqual(code, 2, argv)
             self.assertIn(word, err, argv)
@@ -1450,6 +1492,32 @@ class GpuRolesFlag(unittest.TestCase):
         saved = {"gpu": [0, 1], "gpu_order": "as_given", "gpu_roles": {"0": "helper", "1": "main"}}
         self.assertEqual(installed_cards(saved), [0, 1])
         self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), catalog(HW_2X16), base=saved))
+
+    def test_q36_two_cards_get_peer_device_not_layer_split(self):
+        # qwen35moe (Qwen3.6-35B-A3B, its own engine path) has no layer split: --gpu 0,1 must add --peer-device,
+        # never a layer split (the engine refuses that flag and silently drops back to one GPU).
+        from strata_cli.launch.runner import apply_cards
+        cfg = {"exe": "/x/strata", "arch": "qwen35moe", "args": ["--native", "/m.gguf", "--max-context", "65536"]}
+        apply_cards(cfg, [0, 1])
+        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertNotIn("layer_split", cfg)
+        self.assertIn("--peer-device", cfg["args"])
+        self.assertEqual(cfg["args"][cfg["args"].index("--peer-device") + 1], "1")
+        # back to one card: the peer flag is removed, not left stale from an earlier two-card launch
+        apply_cards(cfg, [0])
+        self.assertEqual(cfg["gpu"], 0)
+        self.assertNotIn("--peer-device", cfg["args"])
+
+    def test_q36_kv_in_apply_choices_uses_its_own_widths_not_flash_nexts(self):
+        # Flash-Next's int8 default (and q4_0/k8v4) are not q36 --kv values; the preview must not write them.
+        from strata_cli.launch.runner import apply_choices
+        cfg = {"exe": "/x/strata", "arch": "qwen35moe", "args": ["--native", "/m.gguf", "--max-context", "65536"]}
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536))
+        self.assertNotIn("--kv", out["args"])                       # no --kv asked: none written (the engine's own fp32 default)
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536, kv="fp16"))
+        self.assertEqual(out["args"][out["args"].index("--kv") + 1], "fp16")
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536, kv="int8"))
+        self.assertNotIn("--kv", out["args"])                       # a Flash-Next value: not q36's, so not written
 
 
 if __name__ == "__main__":

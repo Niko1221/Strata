@@ -12,6 +12,8 @@
 #include "ink_moe_cuda.cuh"
 
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_kv_grow.hpp"
+#include "strata/core/ink_kv_reserve.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -368,6 +371,7 @@ struct InkCudaModel {
                 dev.dn_code  = e.dn_code_id;
                 dev.tier     = 0;
                 h_exp[(size_t)il * man.c.n_experts + e.expert_id] = dev;
+                if ((e.gu_code_id == FMT_SF4 || e.gu_code_id == FMT_MX8) && e.dn_code_id != e.gu_code_id) moe_info[il].mixed_gu_dn = true;
                 if (e.gu_code_id == FMT_SF4) moe_info[il].has_sf4 = true;
                 else if (e.gu_code_id == FMT_MX8) moe_info[il].has_mx8 = true;
                 else {
@@ -382,6 +386,13 @@ struct InkCudaModel {
         }
 
         double t1 = now_s();
+        {   // which codecs the experts use (the CPU path's speed depends on it): gate_up code / down code -> count, body bytes
+            std::map<int, std::pair<int, size_t>> hist;
+            for (const auto& e : dir) { auto& h = hist[(int)e.gu_code_id * 100 + (int)e.dn_code_id]; ++h.first; h.second += e.body_bytes; }
+            std::fprintf(stderr, "[InkCUDA] expert codecs (gate_up/down code: count, mean MB):");
+            for (const auto& kv : hist) std::fprintf(stderr, " %d/%d: %d, %.2f;", kv.first / 100, kv.first % 100, kv.second.first, (double)kv.second.second / kv.second.first / 1e6);
+            std::fprintf(stderr, "\n");
+        }
         // Guaranteed headroom BEFORE sizing VRAM experts: KV init + O(1) prefill ws (144 MiB) + DSpark + runner ws + OS/WDDM floor!
         const size_t wddm_floor = wddm_safety_floor(vtot);
         const size_t base_reserve = ((vtot >= (20ull << 30)) ? (1600ull << 20)
@@ -456,6 +467,31 @@ struct InkCudaModel {
                     ++n_host_experts;
                 }
             }
+            // Adaptive hot-expert tier (see InkHybridEngine::tier_plan): the card's expert bytes become a pool of slots that follows the
+            // router; every expert then has a host copy (RAM for the card's share on top of the host share, checked against what is available).
+            bool tier_mode = false;
+            if (n_host_experts > 0 && n_ssd_experts == 0 && vram_used > 0 && !ssd_experts && InkHybridEngine::tier_enabled_env()) {
+                size_t add = 0;
+                for (int di = 0; di < n_total; ++di) if (in_vram[di]) add += (size_t)((dir[di].body_bytes + 63ull) & ~63ull);
+                const uint64_t avail_ram = ink_ram_available_bytes();
+                if (avail_ram == 0 || avail_ram > (uint64_t)(host_used + add) + (5ull << 30)) tier_mode = true;
+                else std::fprintf(stderr, "[InkTier] off: the host copy of the card's experts (%.2f GiB more) does not fit the available RAM (%.2f GiB, %.2f GiB already planned)\n",
+                                  (double)add / 1073741824.0, (double)avail_ram / 1073741824.0, (double)host_used / 1073741824.0);
+            }
+            if (tier_mode) {
+                const int E = man.c.n_experts;
+                std::vector<size_t> kb(n_total, 0);
+                std::vector<int> ord_keys;
+                ord_keys.reserve(order.size());
+                for (uint16_t di : order) {
+                    const int key = (di / E) * E + dir[di].expert_id;
+                    kb[(size_t)key] = dir[di].body_bytes;
+                    ord_keys.push_back(key);
+                }
+                std::vector<double> kw(n_total, 1.0);
+                for (int key = 0; key < n_total; ++key) { const int il = key / E; if (il >= man.c.core_start && il < man.c.core_end) kw[(size_t)key] = 3.0; }
+                hybrid.tier_plan(kb, ord_keys, vram_used, kw);
+            }
             // #6617: Allocate ping-pong prefill staging buffers BEFORE d_sec4 and the pinned host arena so
             // pinned-RAM VRAM page tables can never starve pf_buf to 0 MB and silently skip host experts!
             if (n_host_experts > 0) {
@@ -463,6 +499,26 @@ struct InkCudaModel {
                 if (!hybrid.alloc_pf_stage(max_exp_bytes)) {
                     err = "not enough free VRAM for the 2x prefill staging buffers required by host experts; close other GPU apps or use a smaller pack";
                     return false;
+                }
+            }
+            if (tier_mode) {
+                if (hybrid.tier_alloc()) {
+                    const int E = man.c.n_experts;
+                    size_t n_start = 0;
+                    for (int di = 0; di < n_total; ++di) {
+                        if (in_vram[di]) {
+                            in_vram[di] = 0;
+                            in_ram[di] = 1;
+                            host_used += (size_t)((dir[di].body_bytes + 63ull) & ~63ull);
+                        }
+                        if (hybrid.tier_slot_ptr((di / E) * E + dir[di].expert_id)) ++n_start;
+                    }
+                    vram_used = 0;
+                    n_vram_experts = n_start;
+                    n_host_experts = (size_t)n_total - n_start;
+                } else {
+                    tier_mode = false;
+                    std::fprintf(stderr, "[InkTier] off: the card has no room for the slot pool (%.2f GiB)\n", (double)hybrid.tier_pool_bytes / 1073741824.0);
                 }
             }
             INK_CK(cudaMalloc(&d_sec4, std::max<size_t>(256, vram_used)));
@@ -542,6 +598,13 @@ struct InkCudaModel {
                     dev.tier = 2;  // CPU Doorbell (M=1) + Ping-Pong DMA Streaming (M>=2)!
                     layer_has_host[il] = true;
                     h_cur += (size_t)((e.body_bytes + 63ull) & ~63ull);
+                    if (tier_mode) {   // starts in a slot of the hot tier: bytes into the slot, table entry on the card (the host copy stays)
+                        if (uint8_t* sp = hybrid.tier_slot_ptr(key)) {
+                            INK_CK(cudaMemcpy(sp, tmp_body.data(), e.body_bytes, cudaMemcpyHostToDevice));
+                            dev.body_off = (uint64_t)((intptr_t)sp - (intptr_t)d_sec4);
+                            dev.tier = 0;
+                        }
+                    }
                 } else {
                     // Cold SSD expert: ZERO host RAM allocated at startup! Streamed via pinned InkColdStore DMA ring!
                     hybrid.host_meta[key].body       = nullptr;
@@ -562,6 +625,7 @@ struct InkCudaModel {
                 INK_CK(ink_cuda_mem_info(&vf_now, &vt_now));
                 const size_t avail = (vf_now > hyb_post_res) ? (vf_now - hyb_post_res) : 0;
                 hybrid.alloc_staging(max_exp_bytes, avail);
+                hybrid.exact_prepare();
                 if (hybrid.cold_store) {
                     std::vector<int> idle_keys;
                     for (uint16_t di : order) {
@@ -787,7 +851,8 @@ struct InkCudaModel {
         const std::string& layer_split_spec = "",
         int cpu_threads = 0) {
         // Fast zero-overhead path for single-GPU .strata v1.1!
-        const bool is_strata_fmt = (mf.m.format.rfind("strata", 0) == 0);
+        // The file's real kind decides, not the manifest's format string: a GGUF / safetensors file must never reach load() (the .strata reader).
+        const bool is_strata_fmt = mf.is_native_strata();
         const bool single_gpu_req = (gpu1 < 0) && (all_gpus.size() <= 1) && layer_split_spec.empty();
         if (is_strata_fmt && single_gpu_req) {
             return load(mf.path, gpu0, build_screen, err, extra_reserve_bytes, vram_experts_gb, ram_experts_gb, ssd_experts, cpu_threads);
@@ -1274,13 +1339,65 @@ struct InkCudaModel {
             }
         }
 
+        // Adaptive hot-expert tier (one GPU, experts partly in RAM): the card's expert bytes become a pool of slots that follows the router;
+        // every expert then has a host copy. Needs the RAM for the card's share on top of the host share (checked against what is available).
+        bool tier_mode = false;
+        std::vector<int> tier_key_of_di;
+        if (!ls_active && !ep2_active && n_host_experts > 0 && u0 > 0 && !ssd_experts && InkHybridEngine::tier_enabled_env()) {
+            size_t add = 0;
+            for (int di = 0; di < n_total; ++di) if (target_tier[di] == 0) add += (eff_bytes[di] + 63ull) & ~63ull;
+            const uint64_t avail_ram = ink_ram_available_bytes();
+            if (avail_ram == 0 || avail_ram > (uint64_t)(uh + add) + (5ull << 30)) tier_mode = true;
+            else std::fprintf(stderr, "[InkTier] off: the host copy of the card's experts (%.2f GiB more) does not fit the available RAM (%.2f GiB, %.2f GiB already planned)\n",
+                              (double)add / 1073741824.0, (double)avail_ram / 1073741824.0, (double)uh / 1073741824.0);
+        }
+        if (tier_mode) {
+            const int E = man.c.n_experts;
+            tier_key_of_di.assign(n_total, 0);
+            std::vector<size_t> kb(n_total, 0);
+            for (int di = 0; di < n_total; ++di) {
+                const int key = (di / E) * E + dir[di].expert_id;
+                tier_key_of_di[di] = key;
+                kb[(size_t)key] = eff_bytes[di];
+            }
+            std::vector<int> ord_keys;
+            ord_keys.reserve(order.size());
+            for (uint16_t di : order) ord_keys.push_back(tier_key_of_di[di]);
+            // pool = the bytes the static fill would have used
+            std::vector<double> kw(n_total, 1.0);
+            for (int key = 0; key < n_total; ++key) { const int il = key / E; if (il >= man.c.core_start && il < man.c.core_end) kw[(size_t)key] = 3.0; }
+            hybrid.tier_plan(kb, ord_keys, u0, kw);
+            max_body_all = 0;
+            for (int di = 0; di < n_total; ++di) max_body_all = std::max<size_t>(max_body_all, eff_bytes[di]);
+        }
+
         // #6617: Allocate ping-pong prefill staging buffers BEFORE d_sec4 and host pinned arena!
         INK_CK(cudaSetDevice(primary_gpu));
         if (n_host_experts > 0) {
             hybrid.start_workers(cpu_threads);
-            if (!hybrid.alloc_pf_stage(max_exp_b)) {
+            if (!hybrid.alloc_pf_stage(tier_mode ? max_body_all : max_exp_b)) {
                 err = "not enough free VRAM for the 2x prefill staging buffers required by host experts; close other GPU apps or use a smaller quant";
                 return false;
+            }
+        }
+        if (tier_mode) {
+            if (hybrid.tier_alloc()) {
+                // every expert is now a host expert; the ones that start in a slot are copied into it below
+                int n_start = 0;
+                size_t uh2 = 0;
+                for (int di = 0; di < n_total; ++di) {
+                    if (target_tier[di] == 0) { target_tier[di] = 2; }
+                    uh2 += (eff_bytes[di] + 63ull) & ~63ull;
+                    if (hybrid.tier_slot_ptr(tier_key_of_di[di])) ++n_start;
+                }
+                uh = uh2;
+                u0 = 0;
+                n_vram_experts = (size_t)n_start;
+                n_host_experts = (size_t)(n_total - n_start);
+                max_exp_b = max_body_all;
+            } else {
+                tier_mode = false;
+                std::fprintf(stderr, "[InkTier] off: the card has no room for the slot pool (%.2f GiB)\n", (double)hybrid.tier_pool_bytes / 1073741824.0);
             }
         }
         sec4_bytes = u0;
@@ -1404,6 +1521,7 @@ struct InkCudaModel {
 
             // Upload layer's experts to owning GPU stage / EP2 / Host hybrid (updating PR#6593 sk_gu_mask / sk_dn_mask!)
             auto mark_info = [](InkLayerMoeInfo& mi, uint8_t gu_code, uint8_t dn_code) {
+                if ((gu_code == FMT_SF4 || gu_code == FMT_MX8) && dn_code != gu_code) mi.mixed_gu_dn = true;
                 if (gu_code == FMT_SF4)           mi.has_sf4  = true;
                 else if (gu_code == FMT_MX8)      mi.has_mx8  = true;
                 else if (gu_code == FMT_GGUF_RAW) mi.has_gguf = true;
@@ -1454,6 +1572,14 @@ struct InkCudaModel {
                     d1.body_off = 0;           d1.tier = 3;
                     layer_has_host[il] = true;
                     mark_info(moe_info[il], layer_gu_code[r], layer_dn_code[r]);
+                    if (tier_mode) {
+                        // starts in a slot of the hot tier: bytes into the slot, table entry on the card (the host copy stays: it is what a swap demotes to)
+                        if (uint8_t* sp = hybrid.tier_slot_ptr(key)) {
+                            INK_CK(cudaMemcpy(sp, body.data(), body.size(), cudaMemcpyHostToDevice));
+                            d0.body_off = (uint64_t)((intptr_t)sp - (intptr_t)d_sec4);
+                            d0.tier = 0;
+                        }
+                    }
                 }
                 h_exp0[key] = d0;
                 h_exp1[key] = d1;
@@ -1466,6 +1592,7 @@ struct InkCudaModel {
             INK_CK(ink_cuda_mem_info(&vf_now, &vt_now, primary_gpu));
             const size_t avail = (vf_now > hyb_post_res) ? (vf_now - hyb_post_res) : 0;
             hybrid.alloc_staging(max_exp_b, avail);
+            hybrid.exact_prepare();
         }
         double t_exp = now_s() - t1;
 
@@ -1665,6 +1792,27 @@ struct InkCudaRunner {
     float *d_attn_out = nullptr, *d_wo_raw = nullptr, *d_wo_conv = nullptr;
     float *d_moe_in = nullptr, *d_moe_raw = nullptr, *d_moe_conv = nullptr;
     float *d_h_norm = nullptr;        // [max_batch, 2304] final output_norm hidden
+    // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), the MoE input (4v+1), the router logits (4v+3), cur at
+    // the end of the visit (4v+2) and the final norm (192); visit 0 also q, k, v after the clip (193..195), the attention output (196), the sinks (198)
+    bool dbg_hash_on = false;
+    int dbg_tap_visit = 0;   // STRATA_INK_HASH_VISIT: the visit whose inner stages (projections, attention, MoE) are hashed
+    unsigned long long* d_dbg_hash = nullptr;
+    static constexpr int kDbgSlots = 212;
+    void dbg_hash(int slot, const float* ptr, int rows, int dim) {
+        if (!dbg_hash_on || rows > 16 || rows < 1) return;
+        k_ink_dbg_hash_rows<<<rows, 256, 0, st>>>(ptr, dim, d_dbg_hash, slot, kDbgSlots);
+    }
+    void dbg_hash_print(const char* tag, int M, const int32_t* pos, const int32_t* dep, const int32_t* tok, const int32_t* par, int anchor) {
+        if (!dbg_hash_on || M > 16 || M < 1) return;
+        INK_CK(cudaStreamSynchronize(st));
+        std::vector<unsigned long long> h((size_t)M * kDbgSlots);
+        INK_CK(cudaMemcpy(h.data(), d_dbg_hash, h.size() * 8, cudaMemcpyDeviceToHost));
+        for (int b = 0; b < M; ++b) {
+            std::fprintf(stderr, "[HASH] %s B=%d row=%d pos=%d dep=%d anchor=%d tok=%d par=%d", tag, M, b, pos[b], dep ? dep[b] : 0, anchor, tok[b], par ? par[b] : b - 1);
+            for (int q = 0; q <= 211; ++q) std::fprintf(stderr, " %llx", h[(size_t)b * kDbgSlots + q]);
+            std::fputc('\n', stderr);
+        }
+    }
     float *d_taps[4] = {};            // [max_batch, 2304] taps at visits [5, 23, 41, 48]
     float *d_taps_compact[4] = {};    // [tree_cap, 2304] compacted accepted-path taps for DSpark
     float *d_ctrl_cat = nullptr, *d_ctrl_gate = nullptr, *d_ctrl_gain = nullptr, *d_ctrl_forget = nullptr;
@@ -1679,6 +1827,8 @@ struct InkCudaRunner {
     int32_t* d_acc_path = nullptr;
     __nv_bfloat16 *d_x_bf16 = nullptr;
     __nv_bfloat16 *d_w_scratch = nullptr;  // [max_N, max_K] BF16 scratch for Q8_ROW / S_K cuBLAS prefill
+    int8_t* d_xq8 = nullptr;               // activations of a Q8_0 dense GEMM, quantized into the mma B-fragment order (k_ink_quant_x_q8f)
+    float*  d_xs8 = nullptr;               // and their scales, one per (token, 32-wide block)
 
     // Logits & screened argmax buffers
     float   *d_logits = nullptr;      // [logits_cap, 200058] (allocated lazily if full logits needed)
@@ -1762,24 +1912,55 @@ struct InkCudaRunner {
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
-    double prof_ms[8] = {};  // 0=res/ctrl/norm, 1=dense_qkv, 2=sconv_clip_kv, 3=attn, 4=dense_wo, 5=moe, 6=other, 7=unembed
+    bool prof_prefill = false;   // STRATA_INK_PROF=2: also print the phases of every prefill chunk (M >= 64)
+    long prof_steps = 0;
+    double prof_ms[16] = {};  // 0=res/ctrl/norm, 1=dense_qkv, 2=sconv_clip_kv, 3=attn, 4=dense_wo, 5=moe, 6=other, 7=unembed
     cudaEvent_t ev_p0 = nullptr, ev_p1 = nullptr;
-    void prof_mark_start() { if (prof_enabled) INK_CK(cudaEventRecord(ev_p0, st)); }
+    // The marks only record events (no sync per phase), so the GPU stays fed and the phase times are the stream's own;
+    // prof_flush() adds them up once the step is done.
+    struct ProfPair { cudaEvent_t a, b; int idx; };
+    std::vector<cudaEvent_t> prof_pool;
+    std::vector<ProfPair> prof_pairs;
+    size_t prof_used = 0;
+    cudaEvent_t prof_prev = nullptr;
+    cudaEvent_t prof_next_ev() {
+        if (prof_used == prof_pool.size()) { cudaEvent_t e; INK_CK(cudaEventCreate(&e)); prof_pool.push_back(e); }
+        return prof_pool[prof_used++];
+    }
+    void prof_mark_start() {
+        if (!prof_enabled) return;
+        cudaEvent_t e = prof_next_ev();
+        INK_CK(cudaEventRecord(e, st));
+        prof_prev = e;
+    }
     void prof_mark_end(int idx) {
         if (!prof_enabled) return;
-        INK_CK(cudaEventRecord(ev_p1, st));
-        INK_CK(cudaEventSynchronize(ev_p1));
-        float ms = 0.0f;
-        INK_CK(cudaEventElapsedTime(&ms, ev_p0, ev_p1));
-        prof_ms[idx] += ms;
+        cudaEvent_t e = prof_next_ev();
+        INK_CK(cudaEventRecord(e, st));
+        if (prof_prev) prof_pairs.push_back({prof_prev, e, idx});
+        prof_prev = e;
+    }
+    void prof_flush() {
+        if (!prof_enabled || prof_pairs.empty()) { prof_used = 0; return; }
+        INK_CK(cudaStreamSynchronize(st));
+        for (const auto& p : prof_pairs) {
+            float ms = 0.0f;
+            INK_CK(cudaEventElapsedTime(&ms, p.a, p.b));
+            prof_ms[p.idx] += ms;
+        }
+        prof_pairs.clear();
+        prof_used = 0;
+        prof_prev = nullptr;
     }
     void prof_reset() { for (double& x : prof_ms) x = 0.0; }
     void prof_print(const char* tag, int iters) const {
         double tot = 0; for (double x : prof_ms) tot += x;
-        std::printf("[PROF %s / %d iters] total=%.2f ms/step | res_ctrl=%.2f dense_qkv=%.2f sconv_kv=%.2f attn=%.2f dense_wo=%.2f moe=%.2f unembed=%.2f\n",
+        std::fprintf(stderr, "[PROF %s / %d iters] total=%.2f ms/step | res_ctrl=%.2f dense_qkv=%.2f sconv_kv=%.2f attn=%.2f dense_wo=%.2f moe=%.2f unembed=%.2f\n",
                     tag, iters, tot / iters,
                     prof_ms[0] / iters, prof_ms[1] / iters, prof_ms[2] / iters, prof_ms[3] / iters,
                     prof_ms[4] / iters, prof_ms[5] / iters, prof_ms[7] / iters);
+        std::fprintf(stderr, "[PROF moe parts / %d iters] (the moe= above is what is left after these) router+topk=%.2f bin=%.2f gu(sf4/mx8/sk)=%.2f dn(sf4/mx8/sk)=%.2f gu(gguf)=%.2f dn(gguf)=%.2f ms/step\n",
+                    iters, prof_ms[8] / iters, prof_ms[9] / iters, prof_ms[10] / iters, prof_ms[11] / iters, prof_ms[12] / iters, prof_ms[13] / iters);
     }
 
     static size_t kv_bytes_per_visit_pos(InkKvDtype dt) noexcept {
@@ -1917,6 +2098,15 @@ struct InkCudaRunner {
         cur_moe_ws = &moe_ws;
 
         INK_CK(cudaSetDevice(m.primary_gpu));
+        {
+            const char* hv = std::getenv("STRATA_INK_HASH");
+            if (hv && hv[0] == '1') {
+                dbg_hash_on = true;
+                if (const char* tv = std::getenv("STRATA_INK_HASH_VISIT")) dbg_tap_visit = std::atoi(tv);
+                INK_CK(cudaMalloc(&d_dbg_hash, (size_t)16 * kDbgSlots * 8));
+                INK_CK(cudaMemset(d_dbg_hash, 0, (size_t)16 * kDbgSlots * 8));
+            }
+        }
         INK_CK(cudaStreamCreate(&st));
         INK_CK(cudaEventCreate(&ev_p0));
         INK_CK(cudaEventCreate(&ev_p1));
@@ -1949,8 +2139,8 @@ struct InkCudaRunner {
             const size_t swa_kv_bytes = (size_t)n_swa_g0 * max_slots * swa_ring * per_visit_pos;
             const size_t sconv_bytes  = (size_t)(n_swa_g0 + n_glob_g0) * max_slots * 3 * kInkSconvCh * 4;
             const size_t wddm_fl = InkCudaModel::wddm_safety_floor(vtot);
-            const size_t ws_reserve = ((max_slots >= 8) ? (1280ull << 20) : (768ull << 20))
-                                    + (m.man.has_dspark ? (256ull << 20) : 0ull)
+            // the workspaces the runner still allocates after the K/V (strata/core/ink_kv_reserve.hpp: v0.2.20's values)
+            const size_t ws_reserve = strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark)
                                     + (wddm_fl / 2);
             const size_t avail_glob = (vfree > swa_kv_bytes + sconv_bytes + ws_reserve)
                 ? (vfree - swa_kv_bytes - sconv_bytes - ws_reserve) : 0u;
@@ -2099,7 +2289,7 @@ struct InkCudaRunner {
         d_ctrl_gate   = dalloc<float>(3ull * MB * kInkGateRank);
         d_ctrl_gain   = dalloc<float>(MB * kInkHidden);
         d_ctrl_forget = dalloc<float>(MB * kInkHidden);
-        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnSplits);
+        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits);   // #6671: a tree uses the M == 1 split count
         d_attn_pm     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_pl     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_po     = dalloc<float>(sp_cap * kInkHeads * kInkHeadDim);
@@ -2114,6 +2304,11 @@ struct InkCudaRunner {
 
         d_x_bf16    = dalloc<__nv_bfloat16>(MB * std::max(kInkDsparkInter, std::max(kInkQDim, kInkHidden)));
         d_w_scratch = dalloc<__nv_bfloat16>((size_t)kInkDsparkInter * kInkHidden);
+        {
+            const size_t mpad = (size_t)((max_batch + 7) / 8) * 8;
+            d_xq8 = dalloc<int8_t>(mpad * kInkQDim);
+            d_xs8 = dalloc<float>(mpad * (kInkQDim / 32));
+        }
 
         // Warmup cuBLAS Tensor Cores once at init (eliminates 61 ms first-call JIT tax from prompt #1!)
         {
@@ -2266,8 +2461,7 @@ struct InkCudaRunner {
         if (needed_pos <= kv_alloc_ctx) return true;
         if (needed_pos > max_ctx) return false;
         const int old_cap = kv_alloc_ctx;
-        int new_cap = std::min(max_ctx, std::max(needed_pos, ((old_cap + 8191) / 8192 + 1) * 8192));
-        new_cap = std::min(max_ctx, ((new_cap + 63) & ~63));
+        int new_cap = strata::core::ink_kv_next_cap(old_cap, needed_pos, max_ctx);
 
         const size_t per_pos = kv_bytes_per_visit_pos(kv_dtype);
         for (int s = 0; s < (m.ls_active ? m.n_stages : 1); ++s) {
@@ -2281,14 +2475,20 @@ struct InkCudaRunner {
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
             const size_t floor_b = 256ull << 20;
-            const size_t need_b = (size_t)n_glob_s * max_slots * new_cap * per_pos;
-            if (vf <= floor_b + need_b) {
+            // #6770: the visits grow one at a time (new buffer, copy, free the old one), so the card needs the net growth
+            // plus one held old visit, not the whole new K/V next to the old one (that refused growth at about half the context).
+            if (!strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, new_cap, per_pos)) {
                 const int tight_cap = std::min(max_ctx, ((needed_pos + 255) & ~255));
-                const size_t tight_b = (size_t)n_glob_s * max_slots * tight_cap * per_pos;
-                if (vf <= floor_b + tight_b) {
+                if (tight_cap <= old_cap ||
+                    !strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, tight_cap, per_pos)) {
                     // VRAM cannot grow global KV further: seamlessly spill tail [kv_dev_ctx..new_cap-1] into mapped pinned host RAM!
+                    // The whole rest of the context first, so the K/V never has to grow again (a tail sized to just this request made the next, longer
+                    // request end the engine, #6905); only when that does not fit in host memory, just what this request needs.
                     if (kv_offload_mode >= 0 && kv_host_ctx == 0) {
-                        const int hcap = new_cap - kv_dev_ctx;
+                      const int tails[2] = {strata::core::ink_kv_host_tail_full(kv_dev_ctx, max_ctx), strata::core::ink_kv_host_tail_need(kv_dev_ctx, new_cap)};
+                      for (int ti = 0; ti < 2; ++ti) {
+                        const int hcap = tails[ti];
+                        if (ti == 1 && hcap == tails[0]) break;
                         if (hcap > 0) {
                             if (m.ls_active) {
                                 for (int ss = 0; ss < m.n_stages; ++ss) {
@@ -2337,6 +2537,7 @@ struct InkCudaRunner {
                             }
                             for (int v = 0; v < kInkVisits; ++v) if (!kv_desc[v].is_swa) free_host_kv_visit(v);
                         }
+                      }
                     }
                     return false;
                 }
@@ -2484,7 +2685,8 @@ struct InkCudaRunner {
             if (norm_w) k_ink_rms_norm<<<M, 256, 0, st>>>(out, norm_w, out, nullptr, M, D);
         } else {
             const float alpha = 1.0f, beta = 0.0f;
-            if (!exact_fp32 && m.sm_cc >= 70 && m.sm_cc < 80) {
+            const int ctl_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;   // the stage that runs this, not the first card (#6796)
+            if (!exact_fp32 && ctl_cc >= 70 && ctl_cc < 80) {
                 // Volta sm_70 (V100) / Turing sm_75 (2080 Ti): 125 TFLOPS FP16 TC for loop controller GEMMs (4x faster than FP32!)
                 __half* x_h = reinterpret_cast<__half*>(d_x_bf16);
                 __half* w_h = reinterpret_cast<__half*>(d_w_scratch);
@@ -2510,7 +2712,7 @@ struct InkCudaRunner {
                     w_h, CUDA_R_16F, kInkGateRank, x_h, CUDA_R_16F, kInkGateRank, &beta,
                     d_ctrl_forget, CUDA_R_32F, D, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             } else {
-                const cublasComputeType_t ctype = (!exact_fp32 && m.sm_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+                const cublasComputeType_t ctype = (!exact_fp32 && ctl_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
                 INK_CUBLAS_CK(cublasGemmEx(
                     cublas, CUBLAS_OP_T, CUBLAS_OP_N, kInkGateRank, M, D2, &alpha,
                     w_down, CUDA_R_32F, D2, d_ctrl_cat, CUDA_R_32F, D2, &beta,
@@ -2621,6 +2823,63 @@ struct InkCudaRunner {
         }
     }
 
+    // Tracks which converted representation of a shared X buffer is currently valid in d_x_bf16.
+    enum XCacheFmt { XC_NONE = 0, XC_BF16 = 1, XC_FP16 = 2, XC_I8 = 3 };
+
+    XCacheFmt linear_x_cache_fmt(const std::string& tname, int M, int N_override, bool exact_fp32_x) const {
+        const auto& ti = m.tinfo(tname);
+        const int N = N_override > 0 ? N_override : (int)ti.rows();
+        const int K = (int)ti.cols();
+        const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
+        const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
+        const XCacheFmt gemm_fmt = (cur_cc >= 80) ? XC_BF16 : ((cur_cc >= 70) ? XC_FP16 : XC_NONE);
+        if (ti.fmt == FMT_BF16) {
+            const bool is_fp16 = cur_attn_fp16 && (tname.find(".attn.") != std::string::npos);
+            const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+            if (M <= bf16_gemv_max) return XC_NONE;
+            return is_fp16 ? XC_FP16 : gemm_fmt;
+        }
+        if (ti.fmt == FMT_F32) return XC_NONE;
+        if (ti.fmt == FMT_Q8_0F) return XC_NONE;   // quantizes its own activations (k_ink_quant_x_q8f)
+        if (ti.fmt == FMT_Q8ROW) {
+            if (M > 16 && cur_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) return XC_I8;
+            const size_t cap = (size_t)kInkDsparkInter * kInkHidden;
+            const size_t max_tile = (cur_cc < 70) ? (cap / 3) : cap;
+            if (M <= 16 || (size_t)N * K > max_tile) return XC_NONE;
+            return gemm_fmt;
+        }
+        return gemm_fmt;
+    }
+
+    void linear_cached(const std::string& tname, const float* X, float* Y, int M, XCacheFmt& x_cached, bool exact_fp32_x = false) {
+        const XCacheFmt need = linear_x_cache_fmt(tname, M, 0, exact_fp32_x);
+        const bool reuse = (need != XC_NONE && need == x_cached);
+        linear(tname, X, Y, M, 0, reuse, exact_fp32_x);
+        if (need != XC_NONE) x_cached = need;
+    }
+
+    // Q8_0 dense matrices (FMT_Q8_0F): the activations are quantized once into the fragment order, then one GEMM launch for all the
+    // matrices of mp (see k_ink_gemm_q8f for the layout and why the result does not depend on M).
+    bool q8f_ok(int M, int K) const { return M >= 1 && M <= max_batch && K % 32 == 0 && K <= kInkQDim && d_xq8 != nullptr; }
+    void gemm_q8f(const InkMultiProj& mp, const float* X, int M, int K) {
+        const int nMT = (M + 7) / 8;
+        const int nKB = K >> 5;
+        const int total_warps = nMT * 8 * nKB;
+        k_ink_quant_x_q8f<<<(total_warps + 7) / 8, 256, 0, st>>>(X, d_xq8, d_xs8, M, K, nMT);
+        const int row_tiles = mp.cumN[mp.count] / 16;
+        const int gx = (row_tiles + 1) / 2;
+        // token tiles per warp: as many as fit, but split the tokens over more CTAs when the matrices are short of row tiles
+        // (the output projection has 144) so that about 1500 warps are in flight; the result does not depend on this choice
+        const int want_gy = std::max(1, (1536 + row_tiles - 1) / row_tiles);
+        int mtw = 1;
+        for (int c : {8, 4, 2}) { if (nMT >= c && (nMT + c - 1) / c >= std::min(want_gy, nMT)) { mtw = c; break; } }
+        const dim3 grid(gx, (nMT + mtw - 1) / mtw);
+        if (mtw == 8)      k_ink_gemm_q8f<8><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else if (mtw == 4) k_ink_gemm_q8f<4><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else if (mtw == 2) k_ink_gemm_q8f<2><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else               k_ink_gemm_q8f<1><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+    }
+
     // ---- Dense linear projection helper: Y[M, N] = X[M, K] @ W[N, K]^T ----
     void linear_multi(const std::string* names, float* const* Ys, int count, const float* X, int M, bool exact_fp32_x = false) {
         if (count <= 0) return;
@@ -2630,7 +2889,8 @@ struct InkCudaRunner {
         const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
         const bool is_fp16 = cur_attn_fp16 && (names[0].find(".attn.") != std::string::npos);
         const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
-        bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16));
+        bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16) ||
+                                         (ti0.fmt == FMT_Q8_0F && q8f_ok(M, K)));
         InkMultiProj mp{};
         mp.count = count;
         mp.cumN[0] = 0;
@@ -2645,6 +2905,10 @@ struct InkCudaRunner {
         }
         if (can_fuse) {
             const int grid = (mp.cumN[count] + 7) / 8;
+            if (ti0.fmt == FMT_Q8_0F) {
+                gemm_q8f(mp, X, M, K);
+                return;
+            }
             if (ti0.fmt == FMT_BF16) {
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -2655,26 +2919,32 @@ struct InkCudaRunner {
                     else if (M <= 8) k_ink_gemv_multi_bf16<8, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else             k_ink_gemv_multi_bf16<16, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                 }
-            } else if ((K % 64) == 0 && K <= kInkQDim && (cur_cc == 61 || cur_cc >= 75)) {
+                return;
+            }
+            if ((K % 64) == 0 && K <= kInkQDim && (cur_cc == 61 || cur_cc >= 75)) {
                 if (M == 1) {
                     k_ink_gemv_multi_q8row_m1<<<grid, 128, 0, st>>>(mp, X, K);
-                } else {
-                    const int nblk = M * (K / 64);
+                    return;
+                }
+                const int nblk = M * (K / 64);
+                if (cur_moe_ws && (size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
                     k_ink_quant_q8_1<<<(nblk + 7) / 8, 256, 0, st>>>(X, cur_moe_ws->xq_sk, M, K);
                     if (M <= 4)      k_ink_gemv_multi_q8row_preq<4><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                     else if (M <= 8) k_ink_gemv_multi_q8row_preq<8><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                     else             k_ink_gemv_multi_q8row_preq<16><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
+                    return;
                 }
-            } else {
-                const int g4 = (mp.cumN[count] + 3) / 4;
-                if (M == 1)      k_ink_gemv_multi_q8row<1><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else if (M <= 4) k_ink_gemv_multi_q8row<4><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else if (M <= 8) k_ink_gemv_multi_q8row<8><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else             k_ink_gemv_multi_q8row<16><<<g4, 128, 0, st>>>(mp, X, M, K);
             }
+            const int g4 = (mp.cumN[count] + 3) / 4;
+            if (M == 1)      k_ink_gemv_multi_q8row<1><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else if (M <= 4) k_ink_gemv_multi_q8row<4><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else if (M <= 8) k_ink_gemv_multi_q8row<8><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else             k_ink_gemv_multi_q8row<16><<<g4, 128, 0, st>>>(mp, X, M, K);
             return;
         }
-        for (int i = 0; i < count; ++i) linear(names[i], X, Ys[i], M, 0, i > 0, exact_fp32_x);
+        // Mixed-format or non-fusible projections: only reuse d_x_bf16 when a prior projection populated the same format.
+        XCacheFmt x_cached = XC_NONE;
+        for (int i = 0; i < count; ++i) linear_cached(names[i], X, Ys[i], M, x_cached, exact_fp32_x);
     }
 
     void linear(const std::string& tname, const float* X, float* Y, int M, int N_override = 0, bool reuse_x_bf16 = false, bool exact_fp32_x = false) {
@@ -2733,6 +3003,10 @@ struct InkCudaRunner {
                     cur_cc >= 80 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             }
+        } else if (ti.fmt == FMT_Q8_0F) {
+            InkMultiProj mp{};
+            mp.W[0] = W; mp.Y[0] = Y; mp.N[0] = N; mp.cumN[0] = 0; mp.cumN[1] = N; mp.count = 1;
+            gemm_q8f(mp, X, M, K);
         } else if (ti.fmt == FMT_Q8ROW) {
             if (M > 16 && cur_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) {
                 int8_t* x_i8 = reinterpret_cast<int8_t*>(d_x_bf16);
@@ -2768,7 +3042,7 @@ struct InkCudaRunner {
                         return;
                     }
                     const int nblk = M * (K / 64);
-                    if ((size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
+                    if (cur_moe_ws && (size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
                         k_ink_quant_q8_1<<<(nblk + 7) / 8, 256, 0, st>>>(X, cur_moe_ws->xq_sk, M, K);
                         if (M <= 4)      k_ink_gemv_multi_q8row_preq<4><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                         else if (M <= 8) k_ink_gemv_multi_q8row_preq<8><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
@@ -2800,7 +3074,7 @@ struct InkCudaRunner {
                 if (ti.fmt == FMT_S5_K)      k_ink_sk_to_bf16<FMT_S5_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
                 else if (ti.fmt == FMT_S6_K) k_ink_sk_to_bf16<FMT_S6_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
                 else                         k_ink_sk_to_bf16<FMT_S8_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
-                gemm_bf16_compat(w_dst, X, Y + n0, M, nt, K, N, n0 > 0, true);
+                gemm_bf16_compat(w_dst, X, Y + n0, M, nt, K, N, (n0 > 0) || reuse_x_bf16, true);
             }
         }
     }
@@ -2921,7 +3195,9 @@ struct InkCudaRunner {
         // 3. Fused Q, K, V, R, Gate_Attn, Sinks projections (1 launch on SWA-no-msg at M<=16 -> 1,500+ GB/s!)
         prof_mark_end(0); prof_mark_start();
         const bool share_qkv = (in_q == in_k && in_q == in_v);
-        if (M <= 16 && share_qkv) {
+        // Q8_0 dense matrices: one fused launch (one activation quantization) at any batch size, prefill chunks included
+        const bool q8f_dense = (m.tinfo(p + ".attn.wq_du.weight").fmt == FMT_Q8_0F);
+        if ((M <= 16 || q8f_dense) && share_qkv) {
             const std::string names[5] = {
                 p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight",
                 p + ".attn.wk_dv.weight", p + ".attn.wv_dv.weight"
@@ -2929,7 +3205,7 @@ struct InkCudaRunner {
             float* ys[5] = { d_q, d_r, d_gate_attn, d_k_raw, d_v_raw };
             linear_multi(names, ys, 5, in_q, M, exact_x);
             linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
-        } else if (M <= 16) {
+        } else if (M <= 16 || q8f_dense) {
             const std::string names[3] = {
                 p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight"
             };
@@ -2939,14 +3215,17 @@ struct InkCudaRunner {
             linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, false, exact_x);
             linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, false, exact_x);
         } else {
-            linear(p + ".attn.wq_du.weight", in_q, d_q, M, 0, false);
-            linear(p + ".attn.wr_du.weight", in_q, d_r, M, 0, true);
-            linear(p + ".attn.gate_attn.weight", in_q, d_gate_attn, M, 0, true);
-            linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false);
-            linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, share_qkv);
-            linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, share_qkv);
+            XCacheFmt x_q = XC_NONE;
+            linear_cached(p + ".attn.wq_du.weight", in_q, d_q, M, x_q);
+            linear_cached(p + ".attn.wr_du.weight", in_q, d_r, M, x_q);
+            linear_cached(p + ".attn.gate_attn.weight", in_q, d_gate_attn, M, x_q);
+            linear_cached(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, x_q);
+            XCacheFmt x_k = XC_NONE, x_v = XC_NONE;
+            linear_cached(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, share_qkv ? x_q : x_k);
+            linear_cached(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, share_qkv ? x_q : x_v);
         }
 
+        if (visit == dbg_tap_visit) { dbg_hash(201, in_q, M, kInkHidden); dbg_hash(199, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(200, d_k_raw, M, kInkKVDim); dbg_hash(202, d_r, M, kInkHeads * kInkDRel); dbg_hash(203, d_gate_attn, M, kInkHeads * kInkHeadDim); }
         // 4. Dynamic K/V ShortConv tap projections on global layers
         float* k_dyn_ptr = nullptr;
         float* v_dyn_ptr = nullptr;
@@ -3017,7 +3296,9 @@ struct InkCudaRunner {
             dim3 gr(kInkHeads, M);
             k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
             if (M <= 16 || mode == 2) {
-                const int n_sp = (M == 1) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
+                // #6671: a verify tree uses the one-token step's split count, so row m is the value the step at that position gives (the key split, the
+                // warp walk and the merge are the same; only the count differed: 8 for M > 1 against 16 / 32 for M == 1)
+                const int n_sp = (M == 1 || mode == 2) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
                 k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks,
@@ -3124,6 +3405,8 @@ struct InkCudaRunner {
         // 8. Output projection wo + FUSED post-attn ShortConv + residual add / block boundary!
         linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, (mode == 2));
         prof_mark_end(4); prof_mark_start();
+        if (visit == dbg_tap_visit) dbg_hash(209, d_wo_raw, M, kInkHidden);
+        if (visit == dbg_tap_visit) { dbg_hash(210, d_sconv_pool[visit] + (size_t)(2 * kInkKVDim) * 3 * max_slots + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(211, d_cur, M, kInkHidden); }
         if (ip % m.man.c.block_size == 0) {
             INK_CK(cudaMemcpyAsync(d_blocks[n_blocks], d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
             block_ptrs[n_blocks] = d_blocks[n_blocks];
@@ -3133,6 +3416,8 @@ struct InkCudaRunner {
             run_sconv_uniform(d_wo_raw, m.d_sconv_attn[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim, 0, true);
         }
 
+        dbg_hash(visit * 4 + 0, d_cur, M, kInkHidden);
+        if (visit == dbg_tap_visit) { dbg_hash(193, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(194, d_k, M, kInkKVDim); dbg_hash(195, d_v, M, kInkKVDim); dbg_hash(196, d_attn_out, M, kInkHeads * kInkHeadDim); dbg_hash(198, d_sinks, M, kInkHeads); }
         // 9. MoE Sublayer: Fused Pre-MLP Mix+CatRMS -> SITU MoE -> Fused Reduce8 + Post-MLP ShortConv4 + Add!
         const float* mlp_nw = (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp_norm.weight");
         {
@@ -3154,6 +3439,7 @@ struct InkCudaRunner {
             }
         }
         prof_mark_end(0); prof_mark_start();
+        dbg_hash(visit * 4 + 1, d_moe_in, M, kInkHidden);
 
         if (m.ep2_active && m.layer_has_peer[ip]) {
             launch_ink_moe_router(
@@ -3224,9 +3510,11 @@ struct InkCudaRunner {
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
                 d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
             prof_mark_end(5); prof_mark_start();
+            if (visit == dbg_tap_visit) { dbg_hash(204, cur_moe_ws->y_pair, M, kInkTopK * kInkHidden); dbg_hash(205, cur_moe_ws->topk_w, M, kInkTopK); dbg_hash(206, reinterpret_cast<const float*>(cur_moe_ws->topk_idx), M, kInkTopK); }
             if (fuse_moe_sconv) {
                 constexpr int mlp_ch_off = 2 * kInkKVDim + kInkHidden;
                 float* hbase = d_sconv_pool[visit] + (size_t)mlp_ch_off * 3 * max_slots;
+                if (visit == dbg_tap_visit) { dbg_hash(207, hbase + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(208, d_cur, M, kInkHidden); }
                 if (mode == 0 && M == 1) {
                     k_ink_moe_reduce8_sconv_m1<<<(kInkHidden + 255) / 256, 256, 0, st>>>(
                         cur_moe_ws->y_pair, m.d_sconv_mlp[ip], hbase + (size_t)slot0 * 3 * kInkHidden, d_cur);
@@ -3244,6 +3532,8 @@ struct InkCudaRunner {
             }
         }
         prof_mark_end(2);
+        dbg_hash(visit * 4 + 3, cur_moe_ws->r_logits, M, kInkExperts);
+        dbg_hash(visit * 4 + 2, d_cur, M, kInkHidden);
     }
 
     // ---- Full 48-Visit Body (Capturable inside a SINGLE CUDA Graph on single GPU, or Pipeline Layer-Split on 2..4 GPUs!) ----
@@ -3356,6 +3646,7 @@ struct InkCudaRunner {
             k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, (const float*)m.trunk_ptr("model.llm.attn_res.output_query"), d_moe_in, 1, M, kInkHidden);
             k_ink_rms_norm<<<M, 256, 0, st>>>(d_moe_in, (const float*)m.trunk_ptr("model.llm.norm.weight"), d_h_norm, nullptr, M, kInkHidden);
             if (want_taps) INK_CK(cudaMemcpyAsync(d_taps[3], d_h_norm, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+            dbg_hash(192, d_h_norm, M, kInkHidden);
         }
     }
 
@@ -3369,7 +3660,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_tok_ids, slot_buf, (size_t)M * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, h_pos, (size_t)M * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0) {
+        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0 && !m.hybrid.needs_eager()) {
             GraphKey key{M, 0, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -3390,17 +3681,81 @@ struct InkCudaRunner {
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] CUDA Graph capture unavailable (err=%d): falling back to eager mode\n", (int)ge);
                     emit_48_visits(M, 0, slot0, p0, want_taps);
-                    if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+                    if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(1, m.d_sec4, m.d_experts, st);
                     return;
                 }
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
-            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(1, m.d_sec4, m.d_experts, st);
+            if (dbg_hash_on) dbg_hash_print("fwd", M, h_pos, nullptr, tok_ids, nullptr, -1);
             return;
         }
         emit_48_visits(M, 0, slot0, p0, want_taps);
-        if (M == 1 && m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(M <= 16 ? M : 0, m.d_sec4, m.d_experts, st);
+        if (dbg_hash_on) dbg_hash_print("fwd", M, h_pos, nullptr, tok_ids, nullptr, -1);
+        if (prof_enabled) {   // STRATA_INK_PROF=1: where one decode step goes (eager, events only), every 100 steps
+            prof_flush();
+            if (M != 1) {
+                if (prof_prefill && M >= 64) {   // STRATA_INK_PROF=2: one line per prefill chunk (the phases of this chunk, ms)
+                    char tag[32];
+                    std::snprintf(tag, sizeof(tag), "PREFILL-M%d", M);
+                    prof_print(tag, 1);
+                }
+                prof_reset();
+            }
+            else if (++prof_steps % 100 == 0) { prof_print("DECODE-M1", (int)prof_steps); prof_steps = 0; prof_reset(); }
+        }
+    }
+
+    // Launch probe for the cold-expert lane (STRATA_INK_EXACT unset): the same short run of decode steps is timed with the CPU lane and with
+    // the card's own copy-in lane (exact), on the placement the loaders made (the tier is paused and learns nothing), and the faster one is kept:
+    // the CPU lane unless the card's copy is clearly (10%) faster, because a CPU lane is the default of this engine and the probe is noisy.
+    // Runs once after the runner exists, before any request; a slot is reset when a request takes it, so the probe leaves no state behind.
+    void pick_cold_lane() {
+        auto& h = m.hybrid;
+        if (h.lane_pref != 0 || !h.active || m.n_host_experts == 0) return;   // forced lane, or nothing is cold
+        if (m.ls_active || has_img_step) {
+            std::fprintf(stderr, "[InkHybrid] cold experts: no launch probe on this configuration, computed on the CPU where they are\n");
+            return;
+        }
+        // The first 24 token ids of a plain chat prompt (the chat template's header and a user question): the experts they route to are those of real text,
+        // not of random ids, so the probe's share of cold experts is close to a request's.
+        static const int32_t kProbeTok[24] = {200002, 200004, 34182, 279, 154554, 150628, 25, 220, 15, 200010, 200000, 200004,
+                                              40, 150480, 149882, 150617, 153048, 13, 153611, 154845, 30, 200010, 200001, 200004};
+        constexpr int kWarm = 6, kTimed = 18;
+        const auto run_lane = [&](bool exact) -> double {
+            h.set_lane(exact);
+            for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+            graph_cache.clear();
+            std::vector<double> ms;
+            for (int i = 0; i < kWarm + kTimed; ++i) {
+                int32_t tok = kProbeTok[i];
+                const auto t0 = std::chrono::steady_clock::now();
+                forward_seq(&tok, i, 1, 0, false);
+                INK_CK(cudaStreamSynchronize(st));
+                if (i >= kWarm) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            return ms[ms.size() / 2];
+        };
+        h.probing = true;
+        const double t_cpu = run_lane(false);
+        const double t_card = run_lane(true);
+        h.probing = false;
+        const bool exact = t_card < 0.9 * t_cpu;
+        h.set_lane(exact);
+        for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        graph_cache.clear();
+        if (h.d_use_cnt) INK_CK(cudaMemsetAsync(h.d_use_cnt, 0, (size_t)h.n_layers * h.n_experts * sizeof(float), st));
+        if (h.d_stat) INK_CK(cudaMemsetAsync(h.d_stat, 0, 2 * sizeof(unsigned long long), st));
+        std::fill(h.h_use_batch.begin(), h.h_use_batch.end(), 0.0f);   // the eager copy lane counted its routing here
+        if (h.d_trace_n) { INK_CK(cudaMemsetAsync(h.d_trace_n, 0, 4, st)); h.trace_flushed = 0; }
+        INK_CK(cudaStreamSynchronize(st));
+        std::fprintf(stderr, "[InkHybrid] cold experts: launch probe (%d decode steps each): CPU lane %.1f ms/token, copy into the card %.1f ms/token -> %s%s\n",
+                     kTimed, t_cpu, t_card, exact ? "copied into the card and computed by its kernels (identical answers wherever an expert lives)"
+                                                  : "computed on the CPU where they are (the answer can differ from an all-resident run in rounding)",
+                     " (STRATA_INK_EXACT=1 or 0 forces a lane)");
     }
 
     // Speculative Tree-32 / Block-8 verify (100% CUDA-Graph capturable with safe eager fallback!)
@@ -3451,9 +3806,18 @@ struct InkCudaRunner {
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
+            dbg_tree_print(tree, p0);
             return;
         }
         emit_48_visits(M, 2, slot0, p0, want_taps);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(M, m.d_sec4, m.d_experts, st);   // the hot tier learns from verify steps too
+        dbg_tree_print(tree, p0);
+    }
+    void dbg_tree_print(const InkTreeSpec& tree, int p0) {
+        if (!dbg_hash_on) return;
+        int32_t pos[kInkMaxTree], dep[kInkMaxTree], par[kInkMaxTree];
+        for (int i = 0; i < tree.M && i < kInkMaxTree; ++i) { pos[i] = p0 + (int)tree.depth[i]; dep[i] = (int)tree.depth[i]; par[i] = (int)tree.parent[i]; }
+        dbg_hash_print("tree", tree.M, pos, dep, tree.tok, par, p0);
     }
 
     // Batched multi-slot 1-token-per-slot step (B = 1..64 concurrent requests, with safe eager fallback!)
@@ -3467,7 +3831,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_slots, slot_buf + B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, slot_buf + 2 * B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || B == 1)) {
+        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || (B == 1 && !m.hybrid.needs_eager()))) {
             GraphKey key{B, 10, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -3493,9 +3857,21 @@ struct InkCudaRunner {
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
+            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(B, m.d_sec4, m.d_experts, st);
             return;
         }
         emit_48_visits(B, 1, 0, 0, want_taps);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(B, m.d_sec4, m.d_experts, st);
+        if (prof_enabled) {   // STRATA_INK_PROF=1: the batched decode step, every 50 steps
+            prof_flush();
+            if (++prof_steps % 50 == 0) {
+                char tag[32];
+                std::snprintf(tag, sizeof(tag), "DECODE-B%d", B);
+                prof_print(tag, (int)prof_steps);
+                prof_steps = 0;
+                prof_reset();
+            }
+        }
     }
 
     // ---- Unembed + Softcap(30.0) + Argmax ----
@@ -3638,7 +4014,7 @@ struct InkCudaRunner {
         fr(d_pf_q); fr(d_pf_k); fr(d_pf_v); fr(d_pf_p); fr(d_pf_s); fr(d_pf_o); fr(d_pf_ot); fr(d_pf_m); fr(d_pf_l);
         fr(d_stage_k); fr(d_stage_v); fr(d_stage_sconv);
         fr(d_kv_desc_arr); fr(d_sconv_pool_arr); fr(d_acc_path);
-        fr(d_x_bf16); fr(d_w_scratch); fr(d_logits);
+        fr(d_x_bf16); fr(d_w_scratch); fr(d_logits); fr(d_xq8); fr(d_xs8);
         fr(d_dot_hat); fr(d_h_norm2); fr(d_max_lb); fr(d_cand_ids); fr(d_cand_cnt); fr(d_argmax);
         fr(d_tok_ids); fr(d_slots); fr(d_pos); fr(d_is_img); fr(d_img_emb); fr(d_sconv_lag); fr(d_tree_anc); fr(d_tree_dep);
         if (h_meta_pin) { cudaFreeHost(h_meta_pin); h_meta_pin = nullptr; }

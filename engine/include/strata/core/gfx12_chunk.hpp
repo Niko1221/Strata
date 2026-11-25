@@ -34,4 +34,14 @@ inline uint64_t prefill_ram_reserve_mib(const char* env, bool resident_cpu_exper
     return resident_cpu_experts ? 6144ull : 3072ull;
 }
 
+/// RAM (MiB) the #2090 guard counts for the extra cache slots a bigger chunk lends (`extra_mib` = slots x the biggest expert blob).
+/// With --resident-experts the lent slots' experts are pinned copies in RAM (the case #2090 was about): the whole extra counts.
+/// Without it they come from the expert arena / file pages that are already resident or reclaimable, and the guard's estimate was 2.4x to 25x too high:
+///   RX 7900 XT (boxia, IQ2_XS, whole arena in RAM): a 32K-chunk plan lowered MemAvailable by 0.46 GiB against 8K chunks, the guard counted 11.3 GiB;
+///   RX 7900 XTX report (#6687, 125B IQ3_XXS, 62 GiB host): 3.95 GiB measured, 9.4 GiB counted.
+/// Half of the estimate stays counted (3.95 / 9.4 = 0.42 is the worst measured ratio), together with the reserve of prefill_ram_reserve_mib.
+inline uint64_t prefill_loan_ram_mib(uint64_t extra_mib, bool resident_cpu_experts) noexcept {
+    return resident_cpu_experts ? extra_mib : extra_mib / 2;
+}
+
 }  // namespace strata::core

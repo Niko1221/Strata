@@ -79,6 +79,13 @@ inline uint64_t job_commit_room_bytes(uint64_t discrete_vram_reserve = 0) noexce
 #endif
 }
 
+/// #6748: the host memory an expert pool may take on Windows is what is free in RAM AND what can still be committed. Pinned and
+/// private allocations are charged to the commit limit (RAM plus page files), which can be smaller than the free RAM: 16.2 GiB of RAM
+/// free with 9.3 GiB of commit left stopped the engine at "host malloc failed" for the 17th layer.  A commit_avail of 0 means unknown (not Windows).
+constexpr uint64_t host_ram_budget(uint64_t ram_avail, uint64_t commit_avail) noexcept {
+    return (commit_avail == 0 || ram_avail <= commit_avail) ? ram_avail : commit_avail;
+}
+
 /// #5742: the commit an allocation can still get on Windows, from what is left now (ullAvailPageFile) and what the page
 /// files may still grow by (commit_growth below), bounded by any enclosing Windows Job Object memory limit.
 /// Saturates instead of wrapping.

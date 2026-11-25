@@ -112,20 +112,19 @@ $("api-key").onchange = () => saveApiKey(true);
 
 let health = {model: "strata", family: null, images: false, max_context: 0};
 function thinkingForFamily(v, family = health && health.family) {
-  if (family === "inkling2") return "none";
   if (family === "hy4") {
     if (v === "none" || v === "no_think" || v === "off") return "none";
     if (v === "max" || v === "xhigh") return "max";
     return "high";
   }
+  if (family === "inkling2") return v === "max" ? "high" : (v || "low");     // the model's own levels: none (0), low (0.2), medium (0.7), high (0.9)
   return v === "max" ? "high" : (v || "high");
 }
 function syncThinkingUI() {
   const fam = health && health.family;
   const isHy4 = fam === "hy4";
-  const noThink = fam === "inkling2";
-  if ($("thinking-field")) $("thinking-field").hidden = noThink;
-  if ($("show-thinking-row")) $("show-thinking-row").hidden = noThink;
+  if ($("thinking-field")) $("thinking-field").hidden = false;
+  if ($("show-thinking-row")) $("show-thinking-row").hidden = false;
   const seg = $("s-thinking");
   if (seg) {
     seg.classList.toggle("seg--3", isHy4);
@@ -145,6 +144,8 @@ function renderEmptyChat() {
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
+    // Inkling-2-Mini: a page that never saved a thinking level starts at the server's own default level (low), not at the Qwen default (high)
+    if (health.family === "inkling2" && typeof settings !== "undefined" && !(store.get("sampling", {}) || {}).thinking) settings.thinking = "low";
     renderEmptyChat();
     syncThinkingUI();
     $("tab-btn-images").hidden = !health.image_generation;
@@ -1735,7 +1736,7 @@ function sharedDefaults(s) {
     ? (s.thinking === "none" || s.thinking === "no_think" || s.thinking === "off" ? "none"
        : (s.thinking === "max" || s.thinking === "xhigh") ? "max" : "high")
     : (s.thinking === "max" ? "high" : s.thinking);
-  const d = fam === "inkling2" ? {} : {reasoning_effort: eff};
+  const d = {reasoning_effort: eff};
   if (!(+s.temperature > 0)) d.temperature = 0;
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;

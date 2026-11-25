@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,9 @@
 #include "../image/vae/safetensors_lite.hpp"
 #include "ink_json.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_dspark_layout.hpp"
+#include "strata/core/ink_names.hpp"
+#include "strata/core/ink_widen.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
 namespace ink2 {
@@ -109,7 +113,8 @@ struct SafetensorsAdapter {
         size_t shard_idx = 0;
         const strata::image::StTensor* tensor = nullptr;
         uint64_t off = 0;
-        uint64_t bytes = 0;
+        uint64_t bytes = 0;     // bytes in the file
+        int widen_fmt = 0;      // 102 / 103: a 16-bit drafter vector stored as F32 in the section (twice the bytes)
     };
     std::vector<Sec1Item> sec1_items;
     uint64_t sec1_total_bytes = 0;
@@ -396,6 +401,8 @@ struct SafetensorsAdapter {
         }
 
         if (has_mtp) {
+            const size_t mtp_items0 = sec1_items.size();
+            const uint64_t mtp_total0 = sec1_total_bytes;
             for (const auto& kv : mtp_shard.st.tensors) {
                 const std::string& name = kv.first;
                 const auto& st_t = kv.second;
@@ -403,17 +410,32 @@ struct SafetensorsAdapter {
                 if (wfmt < 0) continue;
                 uint64_t off = align64(sec1_total_bytes);
                 uint64_t sz  = st_t.end - st_t.begin;
+                const bool widen = strata::core::ink_dspark_wants_f32(name, st_t.shape.size(), wfmt);
+                const uint64_t dst_bytes = widen ? sz * 2 : sz;
                 TInfoT ti;
-                ti.name = name;
-                ti.fmt = wfmt;
+                // Backends ask for "dspark.<name>" (#6762): put the prefix on a plain mtp.safetensors name.
+                ti.name = strata::core::ink_dspark_name(name);
+                ti.fmt = widen ? 101 : wfmt;
                 ti.shape = st_t.shape;
                 ti.off = off;
-                ti.bytes = sz;
-                m.dspark_tensors[name] = std::move(ti);
-                sec1_items.push_back({name, true, 0, &st_t, off, sz});
-                sec1_total_bytes = off + sz;
+                ti.bytes = dst_bytes;
+                m.dspark_tensors[ti.name] = std::move(ti);
+                sec1_items.push_back({name, true, 0, &st_t, off, sz, widen ? wfmt : 0});
+                sec1_total_bytes = off + dst_bytes;
             }
             m.dspark.present = !m.dspark_tensors.empty();
+            // a drafter in a layout the runners do not read never stops the model: drop it, drafting is off for this start
+            std::set<std::string> plain_names;
+            for (const auto& kv : m.dspark_tensors) plain_names.insert(strata::core::ink_dspark_plain(kv.first));
+            std::string why;
+            if (m.dspark.present && !strata::core::ink_dspark_layout_check(plain_names, &why)) {
+                std::fprintf(stderr, "%s\n", strata::core::ink_dspark_layout_message(mtp_shard.path, why).c_str());
+                m.dspark_tensors.clear();
+                m.dspark.present = false;
+                has_mtp = false;
+                sec1_items.resize(mtp_items0);
+                sec1_total_bytes = mtp_total0;
+            }
         }
 
         // 5. Index all routed experts (NVFP4 -> SF4 code_id=15, MXFP8 -> MX8 code_id=16) with ZERO requantization!
@@ -514,6 +536,12 @@ struct SafetensorsAdapter {
         out.assign(static_cast<size_t>(sec1_total_bytes), 0);
         for (const auto& item : sec1_items) {
             const auto& sh = item.is_mtp ? mtp_shard : shards[item.shard_idx];
+            if (item.widen_fmt != 0) {
+                std::vector<uint8_t> narrow(static_cast<size_t>(item.bytes));
+                if (!detail::read_slice_from_file(sh.path, sh.st.data_start + item.tensor->begin, narrow.data(), narrow.size(), err)) return false;
+                strata::core::ink_widen16_to_f32(narrow.data(), item.widen_fmt, narrow.size() / 2, out.data() + item.off);
+                continue;
+            }
             if (!detail::read_slice_from_file(sh.path, sh.st.data_start + item.tensor->begin,
                                               out.data() + item.off, static_cast<size_t>(item.bytes), err)) {
                 return false;

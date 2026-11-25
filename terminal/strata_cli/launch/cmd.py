@@ -29,7 +29,7 @@ examples:
 """
 
 
-PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the reader runs on the processor)", "gpu": "on (the reader runs on the graphics card)"}
+PICTURE_WORDS = S.PICTURE_WORDS
 
 
 def _choice(label: str, options: tuple[str, ...]):
@@ -94,7 +94,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
                         "gpu / cpu choose one; off turns pictures off")
-    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card; one request at a time with the DFlash2 drafter)")
+    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 64 (Inkling-2-Mini runs up to 64; the Qwen engine keeps 16 on NVIDIA and AMD cards and 8 elsewhere; Hy4-Flash answers one; default: fit to your graphics card; one request at a time with the DFlash2 drafter)")
     g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
@@ -412,7 +412,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
-    notices += S.check_parallel(s, vram_gb=vram)
+    notices += S.check_parallel(s, vram_gb=vram, ram_gb=comp.ram_gb, vendor=comp.engine_vendor)
     return s, notices
 
 

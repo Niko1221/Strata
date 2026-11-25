@@ -43,6 +43,17 @@ inline double now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// STRATA_SYCL_NO_XMX=1 (or the older name INK_SYCL_NO_XMX=1) turns the oneMKL XMX GEMM path off. On Arc A-series (Alchemist / DG2) that GEMM
+// gives last-bit differences between runs in prompt reading; without it the logits repeat, at about 40% of the prompt speed (docs/INTEL.md).
+inline bool sy_no_xmx_requested() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_SYCL_NO_XMX");
+        if (!e || !e[0]) e = std::getenv("INK_SYCL_NO_XMX");
+        return e && e[0] == '1';
+    }();
+    return v;
+}
+
 inline void sy_setenv(const char* k, const char* v, int overwrite = 1) {
 #ifdef _WIN32
     if (!overwrite && std::getenv(k)) return;
@@ -181,6 +192,89 @@ inline sycl::queue& Q_copy() {
 
 inline void wait() { Q().wait_and_throw(); }
 
+// Decode step profiler (off by default; every call below is a single bool test when off).
+//   INK_SY_TIMING=1  host submit time vs total time per decode step (no extra waits)
+//   INK_SY_PROF=1    wait() after each phase group: wall time per group, summed over decode steps
+//   INK_SY_PROF=2    the same plus finer marks inside the mix and router groups (fx_*: residual copy, attention-residual mix, controller
+//                    concat, controller down linear, controller apply, norm, gate linear, top-k); each mark costs one wait(), so the
+//                    summary also prints the measured cost of an empty wait() and the number of marks per step
+// Only single-token steps (M == 1) are counted. A summary goes to stderr every 64 steps.
+enum SyProfCat { PF_MIX = 0, PF_QKV, PF_SCONV, PF_ATTN, PF_WO, PF_ROUTER, PF_MOE, PF_TAILV, PF_HEAD,
+                 FX_RES, FX_ARM, FX_CCAT, FX_CLIN, FX_CAPP, FX_NORM, FX_MARM, FX_MCCAT, FX_MCLIN, FX_MCAPP, FX_MNORM, FX_GATE, FX_TOPK, PF_N };
+struct SyProf {
+    bool on = false, timing = false, step = false, fine = false;
+    double last = 0.0, t_enter = 0.0, t_submit = 0.0;
+    double acc[PF_N] = {};
+    long cnt[PF_N] = {};
+    double sum_submit = 0.0, sum_total = 0.0;
+    long steps = 0;
+};
+inline SyProf& sy_prof() {
+    static SyProf p = [] {
+        SyProf q;
+        const char* e = std::getenv("INK_SY_PROF");
+        q.on = e && (e[0] == '1' || e[0] == '2');
+        q.fine = e && e[0] == '2';
+        const char* t = std::getenv("INK_SY_TIMING");
+        q.timing = (t && t[0] == '1') || q.on;
+        return q;
+    }();
+    return p;
+}
+inline void sy_prof_begin(int M) {
+    SyProf& p = sy_prof();
+    p.step = (M == 1) && (p.on || p.timing);
+    if (!p.step) return;
+    if (p.on) wait();
+    p.t_enter = p.last = now_s();
+}
+inline void sy_prof_mark(int cat) {
+    SyProf& p = sy_prof();
+    if (!p.step || !p.on) return;
+    wait();
+    const double t = now_s();
+    p.acc[cat] += t - p.last;
+    ++p.cnt[cat];
+    p.last = t;
+}
+inline void sy_prof_fmark(int cat) {   // a mark of the finer groups: only with INK_SY_PROF=2
+    if (sy_prof().fine) sy_prof_mark(cat);
+}
+inline void sy_prof_before_wait() {
+    SyProf& p = sy_prof();
+    if (!p.step) return;
+    p.t_submit = now_s();
+}
+inline void sy_prof_end() {
+    SyProf& p = sy_prof();
+    if (!p.step) return;
+    const double t = now_s();
+    p.sum_submit += p.t_submit - p.t_enter;
+    p.sum_total += t - p.t_enter;
+    ++p.steps;
+    if (p.steps % 64 == 0) {
+        const double n = (double)p.steps;
+        static const char* kNames[PF_N] = {"mix", "qkv", "sconv", "attn", "wo", "router", "moe", "tailv", "head",
+                                           "fx_res", "fx_armix", "fx_ccat", "fx_clin", "fx_capp", "fx_norm",
+                                           "fx_mlp_armix", "fx_mlp_ccat", "fx_mlp_clin", "fx_mlp_capp", "fx_mlp_norm", "fx_gate", "fx_topk"};
+        std::fprintf(stderr, "[ink_sy_prof] steps=%ld host-submit=%.2f ms total=%.2f ms per step", p.steps,
+                     p.sum_submit / n * 1e3, p.sum_total / n * 1e3);
+        if (p.on) {
+            for (int i = 0; i < PF_N; ++i) {
+                if (i >= FX_RES && p.cnt[i] == 0) continue;
+                std::fprintf(stderr, " | %s=%.2f", kNames[i], p.acc[i] / n * 1e3);
+                if (p.fine && i >= FX_RES) std::fprintf(stderr, "(%.0f marks)", (double)p.cnt[i] / n);
+            }
+            if (p.fine) {
+                const double t0 = now_s();
+                for (int i = 0; i < 200; ++i) wait();
+                std::fprintf(stderr, " | empty_wait=%.1f us", (now_s() - t0) / 200 * 1e6);
+            }
+        }
+        std::fprintf(stderr, "\n");
+    }
+}
+
 struct SyDevCaps {
     std::string name;
     std::string platform;
@@ -207,7 +301,7 @@ inline const SyDevCaps& dev_caps() {
         for (auto s : dev.get_info<sycl::info::device::sub_group_sizes>()) {
             if (s == 16) c.has_sg16 = true;
         }
-        const bool no_xmx = std::getenv("INK_SYCL_NO_XMX") && std::getenv("INK_SYCL_NO_XMX")[0] == '1';
+        const bool no_xmx = sy_no_xmx_requested();
         if (!no_xmx && c.has_sg16) {
             // Xe2 Battlemage (B580 bmg_g21, Arc Pro B60/B70 bmg_g31, Lunar Lake) & PVC natively support SG16 XMX
             if (c.name.find("B5") != std::string::npos || c.name.find("B6") != std::string::npos ||
@@ -254,7 +348,26 @@ inline void dfree(void* p) { if (p) sycl::free(p, Q()); }
 inline void h2d(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b); }
 inline void h2d_sync(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b).wait(); }
 inline void d2h(void* h, const void* d, size_t b) { if (b) Q().memcpy(h, d, b); }
-inline void d2d(void* dst, const void* src, size_t b) { if (b) Q().memcpy(dst, src, b); }
+// INK_SY_D2D_KERNEL=1 copies with a small kernel instead of queue.memcpy (same bytes, experiment for Level Zero copy-engine sync cost).
+inline bool d2d_kernel_mode() {
+    static const bool v = [] { const char* e = std::getenv("INK_SY_D2D_KERNEL"); return e && e[0] == '1'; }();
+    return v;
+}
+inline void d2d(void* dst, const void* src, size_t b) {
+    if (!b) return;
+    if (d2d_kernel_mode() && (b & 3) == 0 && (reinterpret_cast<uintptr_t>(dst) & 3) == 0 &&
+        (reinterpret_cast<uintptr_t>(src) & 3) == 0) {
+        uint32_t* d = static_cast<uint32_t*>(dst);
+        const uint32_t* s = static_cast<const uint32_t*>(src);
+        const size_t n = b >> 2;
+        Q().parallel_for(sycl::nd_range<1>(((n + 255) / 256) * 256, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const size_t i = it.get_global_id(0);
+            if (i < n) d[i] = s[i];
+        });
+        return;
+    }
+    Q().memcpy(dst, src, b);
+}
 inline void dzero(void* d, size_t b) { if (b) Q().memset(d, 0, b); }
 
 inline sycl::nd_range<1> NR(size_t G, size_t B) { return sycl::nd_range<1>(G * B, B); }
@@ -312,6 +425,7 @@ inline uint16_t ld16(const uint8_t* p) {
 inline float h2f_bits(uint16_t b) {
     return (float)sycl::bit_cast<half>(b);
 }
+
 
 inline float e2m1_lut(uint32_t nib) {
     constexpr float kLut[16] = {

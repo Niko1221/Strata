@@ -511,6 +511,10 @@ struct InkModelFile {
         return true;
     }
 
+    // True only for a real .strata file (never for GGUF or safetensors): a backend may then re-open `path` with the .strata reader
+    // (#6643 / #6597: "Invalid .strata magic" came from handing a GGUF to that reader).
+    bool is_native_strata() const noexcept { return kind == ModelSourceKind::Strata; }
+
     const std::vector<strata::artifact::StrataExpertEntry>& expert_directory() const {
         if (kind == ModelSourceKind::Safetensors && st_adapter) return st_adapter->expert_dir;
         if (kind == ModelSourceKind::Gguf && gguf_adapter) return gguf_adapter->expert_dir;

@@ -42,7 +42,13 @@ constexpr int kWddmFloor16GPlusMib = 1280;
 constexpr int kWddmFloor10To12GMib = 960;
 constexpr int kWddmFloor6To8GMib   = 640;
 constexpr int kWddmFloor4GMib      = 448;
-constexpr int64_t kWddmLateAllocMib = 384;
+// 0.2.21 (#6836 / #6887 / #6509): 384 -> 192.  The BF16/FP16 GEMM warm-up (cuBLAS workspaces, ~180 MiB) now runs BEFORE the cache is sized, so what is
+// still allocated after it is the verifier's buffers and graph captures: measured on an RTX 5070 12 GB (WDDM, IQ3_S, spec 4, MTP) 134 MiB at
+// --vram-reserve-mib 300 and 110 MiB at 700 ("strata serve: after the expert cache was written ..." line).  384 plus the shrink-after-write loop
+// ended the card with 606-620 MiB free (reserve 300): 0.36 GiB of cache lost against 0.1.65 (2287 -> 2099 slots), 886 -> 562 experts on the 8 GB
+// laptop of #6836, whose 0.1.62 ran at 336 MiB free and whose forced 250 MiB free paged (the engine's own line: below ~256 MiB a later allocation
+// pages GPU memory).  192 leaves the 50-80 MiB margin of a wider window and ends at about the reserve.
+constexpr int64_t kWddmLateAllocMib = 192;
 
 /// True on Windows WDDM discrete GPUs (excludes Linux, integrated APUs/UMA, and Windows TCC compute-only GPUs).
 inline bool is_wddm_discrete(bool windows, bool integrated, bool tcc_driver) noexcept {
@@ -90,6 +96,14 @@ inline int low_vram_auto_reserve_mib(bool discrete, bool reserve_given, int cur_
     if (total_vram_bytes <= kLowVram12GiB) return kLowVram12ReserveMib;
     return cur_reserve_mib;
 }
+
+/// The tiny-cache rules below (dampened --adapt-swaps, pinning the top quarter of the profile) are opt-in since 0.2.21: STRATA_TINY_CACHE=1.
+/// Measured against 0.1.65 on an RTX 5080 (sm_120, 16 GB, Qwen3.8-Flash-Next IQ2_XS, `--expert-cache 3000` = 12.2% of the experts, same
+/// binary, one engine start per arm and round, arms alternating, 5 rounds): with the rules on decode was -22% (code), -18% (chat), -13% (8K document);
+/// with the old swaps given explicitly (`--adapt-swaps 96`) -10% / -10% / -3%, and without the pinning as well (STRATA_CACHE_PIN_FRAC=0 and 96)
+/// -5.5% / -6.4% / -4.4%; with a 7.6% cache (`--expert-cache 1800`, 2 rounds so far) -25% / -18% / -18% with the rules on, -10% / -8% / -5% with 96 swaps.  The claim these rules were written on (a 96-swap default costs 14-26% on 8 and 12 GB cards) did not hold on this card.
+/// STRATA_CACHE_PIN_FRAC=<f> still pins by itself, and an explicit --adapt-swaps always wins.
+inline bool tiny_cache_rules_enabled(const char* env) noexcept { return env != nullptr && env[0] == '1' && env[1] == '\0'; }
 
 /// Dampened default --adapt-swaps when ExpertCache holds < 25% of total routed experts.
 /// Preserves explicit --adapt-swaps (including 0) and leaves >= 25% caches untouched.

@@ -211,6 +211,11 @@ moves about 26 GB; bigger chunks read faster.
   cache holds every expert, else 0.
 - `STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM (`strata-sycl.sh` sets it). Without it the
   host/GPU handshake is not visible across the bus on `xe` and the logits turn NaN a few tokens in.
+- **`STRATA_VERIFY_NO_HOST=1` and the host arena refuse each other (#4698).** With the switch on and no `--stream-experts`, the experts the
+  VRAM cache does not hold sit in an ordinary pageable RAM arena that the device plan cannot read, and nothing else answers for them: a
+  reply came out as `!` x 256 on an Arc Pro B70. The engine now stops at the start with `REFUSED: STRATA_VERIFY_NO_HOST=1 with the host
+  expert arena`. Use `--stream-experts`, or `STRATA_VERIFY_NO_HOST=0` on a card that runs the arena (an `i915` card). A cache that holds
+  every expert never reads the arena and is not refused.
 - On `xe`, setup writes `terminal/data/expert-profile-sycl.bin`, a ranking built from the routing of 45 varied prompts, so the cache
   holds the experts a chat, code or non-English prompt uses (`terminal/tools/make_profile_mix.py`, `terminal/tools/collect_profile_traces.py`).
   An `i915` card keeps the shipped profile.
@@ -307,6 +312,29 @@ The Battlemage AOT build compiles with the trellis kernels and was not run.
 
 Decode is bound by the CPU pool and the PCIe link (10.4 GB/s), not by the card's kernels. `--prefill 1024` gave +13% decode and
 -24% prompt speed; the default stays `--prefill auto`.
+
+### Repeatable answers on an Alchemist card (Inkling 2 Mini)
+
+On an Arc A-series card (Alchemist, DG2: A380, A580, A750, A770), Intel's oneMKL matrix multiply, which the Inkling 2 Mini engine
+uses to read the prompt, gives last-bit differences between runs. Send the same prompt twice and the numbers behind the first answer
+token can differ in the last digits, so an answer can vary slightly from run to run. The model still answers correctly: first
+chats, a needle in a 32,000-token prompt and 9 parallel requests were right on an A750.
+
+For results that repeat, turn the XMX matrix path off:
+
+```sh
+STRATA_SYCL_NO_XMX=1        # the older name INK_SYCL_NO_XMX=1 works too
+```
+
+The price is prompt-reading speed: about 60% of it (45 tokens a second down to 17 on an A750 with Inkling-2-Mini UD-IQ1_S, four
+alternating runs, spread 0.1). Reading the answer out (decode) is unchanged at 2.1 tokens a second. The default stays XMX on, because
+most people want the speed.
+
+The Arc Pro B70 (Battlemage) repeats with XMX on: five runs of the same 64-token prompt gave one result with UD-Q4_K_XL and with SQ-20.
+AMD and Apple Metal repeat too.
+
+Also on an 8 GB card: the engine plans the memory for the `--parallel` and `--max-context` you ask for before it allocates, and if they
+do not fit it stops at start and names the largest `--parallel` that does (an A750 with UD-IQ1_S at 4,096 tokens: 9, not 32).
 
 ## Pictures on an Arc
 
@@ -417,6 +445,7 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | `STRATA_UMA` | From the device | `1` / `0`: plan the GPU as one that shares the system's RAM (an integrated GPU), or as a card. Linux. See [INTEL_ARC.md](INTEL_ARC.md#integrated-arc-gpus-the-b390-panther-lake) |
 | `STRATA_UMA_HEADROOM_GIB` | 6 | On such a GPU, the GiB of RAM the engine leaves free when it sizes its cache |
 | `STRATA_PF_XMX` | 2 on Alchemist | Grouped XMX expert launch; `0` off, `1` dequantize first |
+| `STRATA_SYCL_NO_XMX` | Off (XMX on) | Inkling 2 Mini engine: `1` turns the oneMKL XMX matrix path off. On an Alchemist card this makes prompt reading repeatable between runs, at about 60% of the prompt speed ([above](#repeatable-answers-on-an-alchemist-card-inkling-2-mini)). `INK_SYCL_NO_XMX=1` is the older name |
 | `STRATA_GDN_XE` | On for Alchemist | Sub-group GDN recurrence |
 | `STRATA_SYCL_GDN_PREFILL_REG_QK` | Automatic on Level Zero Battlemage for the 128-wide, 16-key/48-value-head recurrence at 128 or more tokens | Load two consecutive inputs into subgroup registers and update the FP32 state in token order. Unset enables automatic selection. A value beginning with `1` requests the register kernel on supported inputs. Other explicit values, including `0`, an empty string, `on` and `true`, select the original column kernel. |
 | `STRATA_COPY_ENGINE` | On for Battlemage | Expert copies on the copy engine |

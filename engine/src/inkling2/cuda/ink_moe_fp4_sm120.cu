@@ -20,6 +20,7 @@
 //   bytes [40..47]: padding
 #include "ink_moe_fp4_sm120.cuh"
 #include "ink_cuda.cuh"
+#include "strata/core/ink_caps.hpp"
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12080)
 #include <cuda_fp4.h>
@@ -27,6 +28,7 @@
 #include <cuda_fp8.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace strata::ink::sm120 {
 namespace {
@@ -54,6 +56,12 @@ __device__ __forceinline__ uint32_t smem_u32(const void* p) {
 __device__ __forceinline__ void cp16_async(void* dst_smem, const void* src_glob) {
     const uint32_t d = smem_u32(dst_smem);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(d), "l"(src_glob));
+}
+
+// L2 prefetch of a contiguous byte range (size a multiple of 16): the weight rows are read 32 B per row and K64 step, 128 rows apart; asking
+// DRAM for 256 contiguous bytes of a row at a time keeps the memory pages open for the following 8 steps.
+__device__ __forceinline__ void pf_l2(const void* src_glob, uint32_t bytes) {
+    asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;\n" :: "l"(src_glob), "r"(bytes) : "memory");
 }
 
 __device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;\n"); }
@@ -196,7 +204,8 @@ __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
     const uint8_t* __restrict__ act,
     uint8_t* __restrict__ out_ha,
     const float* __restrict__ topk_w,
-    float* __restrict__ y_pair) {
+    float* __restrict__ y_pair,
+    int pf) {
 #if defined(INK_SM120_DEV)
     constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;  // 2304
     constexpr int ROWS_K   = GU ? kHidden : kInter;        // 2304 (GU) or 1152 (DN)
@@ -304,6 +313,10 @@ __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
             cp_commit();
         };
 
+        if (pf && uj == 0) {
+            pf_l2(wrow_p, (uint32_t)min((size_t)pf, W_P_ROW));
+            if constexpr (GU) pf_l2(wrow_s, (uint32_t)W_S_ROW);
+        }
         issue_stage(0, 0);
 
         float acc[NI][2][4] = {};
@@ -313,6 +326,10 @@ __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
         for (int st = 0; st < NS; ++st) {
             const int buf = st & 1;
             const int nxt = buf ^ 1;
+            if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < W_P_ROW) {
+                const size_t nb = (size_t)(st + pf / 32) * 32;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, W_P_ROW - nb));
+            }
             if (st + 1 < NS) {
                 issue_stage(st + 1, nxt);
                 cp_wait1();
@@ -465,7 +482,7 @@ __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
         }
     }
 #else
-    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair;
+    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair; (void)pf;
 #endif
 }
 
@@ -480,7 +497,8 @@ __global__ void __launch_bounds__(kNT) k_moe_mx8_tc(
     uint8_t* __restrict__ hq,
     uint8_t* __restrict__ hsc,
     const float* __restrict__ topk_w,
-    float* __restrict__ y_pair) {
+    float* __restrict__ y_pair,
+    int pf) {
 #if defined(INK_SM120_DEV)
     constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;
     constexpr int ROWS_K   = GU ? kHidden : kInter;
@@ -574,6 +592,7 @@ __global__ void __launch_bounds__(kNT) k_moe_mx8_tc(
             cp_commit();
         };
 
+        if (pf && uj == 0) pf_l2(wrow_p, (uint32_t)min((size_t)pf, (size_t)ROWS_K));
         issue_stage(0, 0);
 
         float acc[NI][2][4] = {};
@@ -583,6 +602,10 @@ __global__ void __launch_bounds__(kNT) k_moe_mx8_tc(
         for (int st = 0; st < NS; ++st) {
             const int buf = st & 1;
             const int nxt = buf ^ 1;
+            if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < (size_t)ROWS_K) {
+                const size_t nb = (size_t)(st + pf / 32) * 32;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, (size_t)ROWS_K - nb));
+            }
             if (st + 1 < NS) {
                 issue_stage(st + 1, nxt);
                 cp_wait1();
@@ -683,7 +706,7 @@ __global__ void __launch_bounds__(kNT) k_moe_mx8_tc(
         }
     }
 #else
-    (void)sec4_base; (void)experts; (void)tb; (void)xq; (void)xsc; (void)hq; (void)hsc; (void)topk_w; (void)y_pair;
+    (void)sec4_base; (void)experts; (void)tb; (void)xq; (void)xsc; (void)hq; (void)hsc; (void)topk_w; (void)y_pair; (void)pf;
 #endif
 }
 
@@ -920,22 +943,16 @@ bool available() {
 #if !defined(CUDART_VERSION) || (CUDART_VERSION < 12080)
     return false;
 #else
-    static int cached = -1;
-    if (cached >= 0) return cached != 0;
+    // per device (#6796, #6808): a cache filled on stage 0 told an sm_86 stage that it could run the sm_120 FP4 kernels
+    static strata::core::PerDeviceFlag flag;
     int dev = 0;
-    cudaDeviceProp p{};
-    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
-        cached = 0;
-        return false;
-    }
-    if (p.major != 12 || (p.minor != 0 && p.minor != 1)) {
-        cached = 0;
-        return false;
-    }
-    cudaFuncAttributes attr{};
-    cached = (cudaFuncGetAttributes(&attr, (const void*)k_moe_sf4_tc<true, 64>) == cudaSuccess &&
-              attr.binaryVersion >= 120) ? 1 : 0;
-    return cached != 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    return flag.get(dev, [dev] {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess || !strata::core::ink_cap_sm120(p.major, p.minor)) return false;
+        cudaFuncAttributes attr{};
+        return cudaFuncGetAttributes(&attr, (const void*)k_moe_sf4_tc<true, 64>) == cudaSuccess && attr.binaryVersion >= 120;
+    });
 #endif
 }
 
@@ -951,38 +968,60 @@ void quantize_act_mx8(const float* x, int rows, int cols, uint8_t* xq, uint8_t* 
     k_quant_act_mx8<<<blocks, 256, 0, stream>>>(x, nblk, xq, xsc);
 }
 
+// STRATA_INK_SM120_PF (gate/up, default 128) and STRATA_INK_SM120_PFD (down, default off): L2 prefetch window per weight row in bytes (multiple of 32), 0 = off.
+// On a 5090 the 32 B per row and K64 step weight reads left the memory system at about half its bandwidth; asking for 128 contiguous bytes of a row
+// ahead of time takes the gate/up phase at 64 slots from 20.6 to 13.1 ms (SQ-20). A prefetch is a hint: it changes no result.
+static int sf4_pf_env(bool gu) {
+    static const int v_gu = [] { const char* e = std::getenv("STRATA_INK_SM120_PF"); return e ? std::atoi(e) : 128; }();
+    static const int v_dn = [] { const char* e = std::getenv("STRATA_INK_SM120_PFD"); return e ? std::atoi(e) : 0; }();
+    return gu ? v_gu : v_dn;
+}
+
+// The MX8 kernel (layers 20-23 of a native NVFP4 file, SQ-20) takes the same window only on request: STRATA_INK_SM120_PF_MX8 = 1 (128 B) or a window in bytes,
+// default 0 = no prefetch, which is the code path before the prefetch existed. It becomes the default once its memcheck has run.
+static int mx8_pf_env() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_INK_SM120_PF_MX8");
+        const int x = e ? std::atoi(e) : 0;
+        return x == 1 ? 128 : (x >= 32 ? (x / 32) * 32 : 0);
+    }();
+    return v;
+}
+
 void moe_sf4_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream) {
+    const int pf = sf4_pf_env(true);
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_sf4_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
-    else if (tile_rows <= 32) k_moe_sf4_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
-    else                      k_moe_sf4_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
+    if (tile_rows <= 16)      k_moe_sf4_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+    else if (tile_rows <= 32) k_moe_sf4_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+    else                      k_moe_sf4_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
 }
 
 void moe_sf4_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* ha, const float* topk_w, float* y_pair, int max_tiles, int tile_rows, cudaStream_t stream) {
+    const int pf = sf4_pf_env(false);
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_sf4_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
-    else if (tile_rows <= 32) k_moe_sf4_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
-    else                      k_moe_sf4_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
+    if (tile_rows <= 16)      k_moe_sf4_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+    else if (tile_rows <= 32) k_moe_sf4_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+    else                      k_moe_sf4_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
 }
 
 void moe_mx8_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
                    int max_tiles, int tile_rows, cudaStream_t stream) {
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr);
-    else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr);
-    else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr);
+    if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
+    else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
+    else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
 }
 
 void moe_mx8_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
                    int max_tiles, int tile_rows, cudaStream_t stream) {
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair);
-    else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair);
-    else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair);
+    if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
+    else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
+    else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
 }
 
 void test_sf4_gemm_tc(const uint8_t* w_u8, const uint8_t* w_sc, float w_outer,

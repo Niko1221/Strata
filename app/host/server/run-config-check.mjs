@@ -22,15 +22,15 @@ export const KNOWN_KEYS = new Set([
   'before_load_strict', 'before_load_timeout_s', 'cors_origins', 'trusted_origins', 'allowed_hosts', 'open_browser', 'prevent_sleep',
   'max_queue', 'queue_timeout', 'max_tokens', 'min_tokens', 'answer_room', 'threads', 'replicas', 'replica_cpus', 'replica_load_tokens',
   'elastic', 'elastic_idle_s', 'elastic_mib', 'min_free_vram_mib', 'vram_segment_mib', 'slot_save_path', 'telemetry_read_key', 'batch_telemetry',
-  'reasoning_effort', 'reasoning_close_retry', 'reasoning_loop_recovery', 'repeat_stop_tokens', 'tool_call_recovery', 'codex_compaction_cache',
+  'reasoning_effort', 'inkling_thinking_budget', 'reasoning_close_retry', 'reasoning_loop_recovery', 'repeat_stop_tokens', 'tool_call_recovery', 'codex_compaction_cache',
   'codex_thread_titles', 'expert_profile_save', 'expert_profile_save_every', 'images', 'vision', 'mmproj', 'draft_vocab', 'ui_resource_profile',
   'ui_vision_enabled', 'ui_vision_chosen', 'ui_context_chosen', 'ui_budget_work_gib', 'shape_title', 'component', 'native', 'uma', 'remote_expert_opt', 'diffusion_model', 'llm', 'vae', 'quant', 'type', 'url', 'timeout_s',
 ]);
 
 const BOOLS = new Set(['open_browser', 'prevent_sleep', 'elastic', 'env_to_user', 'gpus_asked', 'batch_telemetry', 'tool_call_recovery', 'reasoning_loop_recovery']);
-const NUMBERS = { port: [1, 65535], max_queue: [0, 1e6], queue_timeout: [0, 1e6], threads: [1, 4096], elastic_idle_s: [0, 1e7], min_free_vram_mib: [0, 1e7] };
+const NUMBERS = { port: [1, 65535], max_queue: [0, 1e6], queue_timeout: [0, 1e6], threads: [1, 4096], elastic_idle_s: [0, 1e7], min_free_vram_mib: [0, 1e7], inkling_thinking_budget: [0, 1e7] };
 const REASONING = ['low', 'medium', 'high', 'none', 'off'];
-const INKLING_REASONING = ['none', 'off'];
+const INKLING_REASONING = ['low', 'medium', 'high', 'none', 'off'];   // Inkling-2-Mini thinks (0.2.21): the same levels as the other local models; none / off turn it off
 const HY4_REASONING = ['none', 'off', 'high', 'max'];
 const SAMPLING = { temperature: [0, 10], top_p: [0, 1], top_k: [1, 64], min_p: [0, 1], presence_penalty: [-10, 10], repetition_penalty: [0, 10], repeat_penalty: [0, 10], frequency_penalty: [-10, 10], penalty_last_n: [0, 1048576], repeat_last_n: [0, 1048576], seed: [0, 4294967295] };
 const WHOLE = new Set(['top_k', 'penalty_last_n', 'repeat_last_n', 'seed']);

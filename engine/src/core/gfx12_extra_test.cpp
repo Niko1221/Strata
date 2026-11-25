@@ -116,6 +116,14 @@ int main() {
     CHECK(prefill_ram_reserve_mib("0", false) == 0);
     CHECK(prefill_ram_reserve_mib("-100", false) == 3072);
     CHECK(prefill_ram_reserve_mib("bad", true) == 6144);
+    // #6687: without pinned experts the guard counts half of the extra loan (measured 0.46 GiB and 3.95 GiB against 11.3 and 9.4 GiB counted); pinned: all of it
+    CHECK(prefill_loan_ram_mib(9371, false) == 4685);
+    CHECK(prefill_loan_ram_mib(9371, true) == 9371);
+    CHECK(prefill_loan_ram_mib(0, false) == 0);
+    CHECK(prefill_loan_ram_mib(1, false) == 0);
+    // the report's host (7,830 MiB available, 0 MiB pinned, reserve 3,072): 32768 needs 4,685 + 3,072 = 7,757 and fits; with the old full count 12,443 it stepped down twice
+    CHECK(7830 >= prefill_loan_ram_mib(9371, false) + prefill_ram_reserve_mib(nullptr, false));
+    CHECK(7830 < 9371 + prefill_ram_reserve_mib(nullptr, false));
     if (fails == 0) std::printf("gfx12_extra_test: OK\n");
     return fails == 0 ? 0 : 1;
 }

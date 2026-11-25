@@ -28,8 +28,22 @@ TOKENIZER_FILE = "tokenizer.json"
 CHAT_TEMPLATE_FILE = "chat_template.jinja"
 DEFAULT_CONTEXT = inkling_fit.DEFAULT_CONTEXT
 CONTEXTS = inkling_fit.CONTEXTS
-DEFAULT_DRAFTER = "dspark"
+DEFAULT_DRAFTER = "dspark"      # the drafter used when drafting is on (Inkling's one checkpoint: mtp.safetensors / the Unsloth GGUF / the SQ pack's copy)
 DRAFTERS = ("off", "dspark")
+#: Window shape the engine is told to use when drafting is on (`--draft-beam`): 1 = one linear chain, the block drafter; 4 = the beam tree.
+#: Measured 2026-11-23 (0221-DSPARK): the chain is as fast as the tree on CUDA (within 3 percent either way) and simpler.
+DRAFT_BEAM = 1
+#: `--draft-adapt`: per request, drafting goes off for 40 steps when the measured gain (tokens per step over the step cost) falls below 0.93.
+DRAFT_ADAPT = True
+
+
+def default_drafting(backend: str | None = None) -> str:
+    """What a run config gets when the person chose nothing: "auto" = a measured probe on this card and placement decides
+    (strata_control/inkling_probe.py: drafting only when it gains MARGIN, 1.10x, on a code + chat probe; no valid probe yet = off).
+    Owner decision 2026-11-23: a slightly different answer is acceptable, a loss in speed is not, so the gate is the measured gain on every
+    backend, not bit-identical answers. `--drafting dspark` always turns drafting on, `--drafting off` always turns it off."""
+    return "auto"
+
 DEFAULT_VISION = True
 DEFAULT_PARALLEL = inkling_fit.DEFAULT_PARALLEL
 PARALLEL_CHOICES = inkling_fit.PARALLEL_CHOICES
@@ -62,6 +76,26 @@ FILES = {
     "Inkling-2-Mini-SQ-10.strata": (10_471_526_400, "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934"),
     VISION_FILE: (636_526_592, "6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677"),
     **UNSLOTH_GGUF_FILES,
+}
+#: The drafter of a GGUF build: the ORIGINAL checkpoint file of Thinking Machines (Apache-2.0, not gated, anonymous download), pinned to the commit of the
+#: upload (later commits only touch README / config). BF16, 635,801,416 bytes. Measured 2026-11-23 (0221-DSPARK): the same tensors as Unsloth's old Q8_0 drafter
+#: (every F32/BF16 tensor bit for bit; the 2-D matrices 0.55 percent relative RMS from Q8_0), the engine reads it beside any GGUF. Unsloth's pinned Q8_0 file
+#: (DSPARK_GGUF_FILE, 402 MB) is the fallback when this one cannot be fetched and the file kept by an install that already has it.
+MTP_FILE = "mtp.safetensors"
+MTP_COMMIT = "1fb4134b9a74f9681054f4ef82e4bf1f458a2337"
+MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"
+#: An engine reads mtp.safetensors (BF16 norms / biases widened to F32) only when its `--info` line lists this key (0221-DSPARK, measured on Metal: an
+#: engine without the widen gets 1.0 tokens per step from the same file, every draft rejected, while Unsloth's Q8_0 file gives 3 to 7). The flag, not
+#: the version, decides: builds of any age and custom builds are told apart by what they say.
+ENGINE_MTP_FLAG = "dspark_f32_widen"
+
+
+def engine_reads_mtp(info: dict | None) -> bool:
+    return str((info or {}).get(ENGINE_MTP_FLAG)) == "1"
+
+
+DRAFTER_FILES = {
+    MTP_FILE: (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"),
 }
 #: Auxiliary tokenizer files hosted beside the `.strata` weights (Section 0 embeds chat_template + config; tokenizer.json holds the 200K o200k BPE vocab/merges).
 TOKENIZER_FILES = {
@@ -103,13 +137,42 @@ def files_of(build: str, vision: bool = DEFAULT_VISION, dspark: bool = True) -> 
     return out
 
 
+#: The same main GGUFs as Unsloth re-uploaded them on 2026-11-23 14:54 UTC (commit 19bf97a66719d0165f6f8082a9d59581912a3863 "Support mainline llama.cpp"):
+#: +1,280 bytes each, a renamed layout (arch inkling2_loop, 24 physical blocks, loop_*_ctrl_* tensors). The engine loads and answers from them, so a file a
+#: person already has in this form is accepted next to the pinned old one (downloads stay on the pinned commit, resolve/800c946d...). The re-uploaded drafter
+#: (503,889,952 bytes, dflash layout) is NOT listed: the engine cannot read it yet and drops it with a message.
+ALT_GGUF_FILES = {
+    "Inkling-2-Mini-UD-Q8_K_XL.gguf": (22_867_452_896, "2da51788d43a17e1f033bec420fa83ba9cb87ac1f0130dc9135a4d2ed2678b68"),
+    "Inkling-2-Mini-UD-Q4_K_XL.gguf": (17_629_760_736, "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3"),
+    "Inkling-2-Mini-UD-Q4_K_M.gguf": (16_610_544_608, "78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae"),
+    "Inkling-2-Mini-UD-IQ4_XS.gguf": (15_733_756_512, "374970bf6f151fc50da49419751c3e77b82e373a3b9445ded617bd386cd12163"),
+    "Inkling-2-Mini-UD-Q3_K_XL.gguf": (13_631_779_296, "e2d03e8c92ac21cff0e3309b95f40dfd27d1825184f0d2bc09db249797273639"),
+    "Inkling-2-Mini-UD-IQ3_XXS.gguf": (11_663_310_784, "fd9ccedae17c1bb89744612fbb46730b5275f2a342133d0419776bd1ae311657"),
+    "Inkling-2-Mini-UD-Q2_K_XL.gguf": (9_138_716_608, "b42841608ea380ddde5a3f1125081357128a3c71b80d006246de4e31292fc6c1"),
+    "Inkling-2-Mini-UD-IQ2_XXS.gguf": (8_486_237_632, "2f953a44281cf861b19ccfdb2ce65f7648e1e92bda4af3729893604fd907c544"),
+    "Inkling-2-Mini-UD-IQ1_M.gguf": (8_024_442_304, "af7b45e1c0097fb2602d4c69abf72a009cad78e54201da2265853f5ef11a514a"),
+    "Inkling-2-Mini-UD-IQ1_S.gguf": (7_764_293_056, "17a7ff34acb0e1fe878309962458e0633172c7f93ffe3b1c4f5f6b317dc317db"),
+}
+
+
+def pins_for(name: str) -> list[tuple[int, str | None]]:
+    """Every (bytes, sha256) a file of this name may have: the pinned one first, then the re-uploaded layout for the main GGUFs."""
+    out = []
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
+    if got:
+        out.append(got)
+    if name in ALT_GGUF_FILES:
+        out.append(ALT_GGUF_FILES[name])
+    return out
+
+
 def size_of(name: str) -> int | None:
-    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
     return got[0] if got else None
 
 
 def sha256_of(name: str) -> str | None:
-    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
     return got[1] if got else None
 
 
@@ -158,8 +221,24 @@ def gguf_sources(env: dict | None = None, cfg: dict | None = None, shipped: Path
     return out
 
 
+DRAFTER_SOURCE_ENV = "STRATA_INKLING_DRAFTER_SOURCE"
+
+
+def drafter_sources(env: dict | None = None, cfg: dict | None = None) -> list[dict]:
+    """Download sources for mtp.safetensors: config inkling_drafter_source, env STRATA_INKLING_DRAFTER_SOURCE, STRATA_INKLING_SOURCE, then the pinned original repository."""
+    env = os.environ if env is None else env
+    out = _normalise((cfg or {}).get("inkling_drafter_source"))
+    if env.get(DRAFTER_SOURCE_ENV):
+        out += _normalise(env[DRAFTER_SOURCE_ENV])
+    if env.get(SOURCE_ENV):                                    # a local mirror of everything (tests, offline installs)
+        out += _normalise(env[SOURCE_ENV])
+    return out + [{"kind": "http", "base": MTP_BASE, "files": {}}]
+
+
 def sources_for(name: str, env: dict | None = None, cfg: dict | None = None, shipped: Path | None = None) -> list[dict]:
     """Return the prioritized download sources for `name` (Unsloth GGUF repo for GGUF files, Strata repo for .strata/tokenizer)."""
+    if name in DRAFTER_FILES:
+        return drafter_sources(env=env, cfg=cfg)
     if name in UNSLOTH_GGUF_FILES or str(name).lower().endswith(".gguf"):
         return gguf_sources(env=env, cfg=cfg, shipped=shipped)
     return sources(env=env, cfg=cfg, shipped=shipped)

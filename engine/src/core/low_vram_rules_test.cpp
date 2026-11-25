@@ -33,6 +33,13 @@ int main() {
     CHECK(low_vram_adapt_swaps(12, false, 1400, kTotal) == 12);    // never raises smaller value
     CHECK(low_vram_adapt_swaps(0, false, 1400, kTotal) == 0);
 
+    // 2b. since 0.2.21 the tiny-cache rules (2 and 3) only run with STRATA_TINY_CACHE=1 (RTX 5080, 12.2% cache: -22% decode with them on)
+    CHECK(!tiny_cache_rules_enabled(nullptr));
+    CHECK(!tiny_cache_rules_enabled(""));
+    CHECK(!tiny_cache_rules_enabled("0"));
+    CHECK(!tiny_cache_rules_enabled("on"));
+    CHECK(tiny_cache_rules_enabled("1"));
+
     // 3. Zipf-head profile pinning on tiny caches (< 25% resident)
     CHECK(low_vram_pin_slots(0, kTotal, nullptr) == 0);
     CHECK(low_vram_pin_slots(1400, kTotal, nullptr) == 350);       // 25% of 1400
@@ -79,7 +86,9 @@ int main() {
     CHECK(wddm_effective_reserve_mib(true, false, false, 700, 16 * GiB, "0") == 700); // STRATA_WDDM_VRAM_FLOOR=0 opt-out
     CHECK(wddm_effective_reserve_mib(false, false, false, 700, 16 * GiB) == 700);  // Linux/TCC/UMA untouched
 
-    CHECK(wddm_late_alloc_mib(true, false) == 384);
+    CHECK(wddm_late_alloc_mib(true, false) == 192);
+    CHECK(wddm_late_alloc_mib(true, false) >= 134 + 50);   // measured late allocation (RTX 5070, WDDM) plus a margin: the card ends at the reserve or more
+    CHECK(wddm_late_alloc_mib(true, false) <= wddm_late_alloc_mib(false, false));   // never more than the plain rule's price (#6836)
     CHECK(wddm_late_alloc_mib(false, false) == 256);
     CHECK(wddm_late_alloc_mib(true, true) == 0);
 

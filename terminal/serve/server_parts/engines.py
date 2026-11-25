@@ -1014,7 +1014,7 @@ def igpu_cards(indices: list[int], archs: dict[int, str] | None) -> set[int]:
 
 
 #: AMD chips that share the system memory (an iGPU): never preferred over a card that has memory of its own.
-HIP_IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+HIP_IGPU_ARCHS = engine_component.HIP_IGPU_ARCHS      # one list, also what the package choice counts (#6650)
 
 
 def parse_hip_devices(text: str) -> list[dict]:

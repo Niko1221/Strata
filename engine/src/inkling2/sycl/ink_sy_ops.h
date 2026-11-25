@@ -43,53 +43,89 @@ inline void k_embed_sg16(const InkTensorInfo& eti, const float* norm_w, const in
     });
 }
 
+// Several work-group sums at once: the same operations as N calls of wg_sum16 (sub-group reduce, cross-sub-group sum through local memory,
+// sub-group reduce), so every sum is bit for bit what wg_sum16 gives, but the barriers are shared: two for all N values instead of two each.
+// sh holds N * 16 floats.
+template <int N, class It, class P>
+inline void wg_sum16_multi(const It& it, float (&v)[N], P sh) {
+    auto sg = it.get_sub_group();
+    const int w = (int)sg.get_group_linear_id();
+    const int l = (int)sg.get_local_linear_id();
+    const int nw = (int)sg.get_group_linear_range();
+#pragma unroll
+    for (int i = 0; i < N; ++i) v[i] = sycl::reduce_over_group(sg, v[i], sycl::plus<float>());
+    sycl::group_barrier(it.get_group());
+    if (l == 0) {
+#pragma unroll
+        for (int i = 0; i < N; ++i) sh[i * 16 + w] = v[i];
+    }
+    sycl::group_barrier(it.get_group());
+#pragma unroll
+    for (int i = 0; i < N; ++i) {
+        const float r = (l < nw) ? (float)sh[i * 16 + l] : 0.0f;
+        v[i] = sycl::reduce_over_group(sg, r, sycl::plus<float>());
+    }
+}
+
+// One work-group per (token, query): the queries are independent, and every query repeats the (cheap) block norms, so the values are bit for bit
+// those of the one-group-does-everything kernel; the S block norms and the S dot products are each reduced in one batch (two barriers) instead
+// of one after the other.
+// copy_cur (optional): the kernel also writes its current-stream input to copy_cur (the residual of the sublayer), replacing a separate d2d copy.
 inline void k_attn_res_mix_sg16(const float* blocks_buf, const float* cur_buf, const float* queries, float* out_buf,
-                                int n_blocks, int block_stride, int M, int n_queries) {
+                                int n_blocks, int block_stride, int M, int n_queries, float* copy_cur = nullptr) {
     const int M_stride = M * INK_D;
     Q().submit([&](sycl::handler& h) {
-        sycl::local_accessor<float, 1> sh(16, h);
-        sycl::local_accessor<float, 1> inv_s(8, h);
-        sycl::local_accessor<float, 1> probs(32, h);  // [4][8]
-        h.parallel_for(NR(M, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-            const int m = (int)it.get_group(0), tid = (int)it.get_local_id(0);
+        sycl::local_accessor<float, 1> sh(8 * 16, h);
+        sycl::local_accessor<float, 1> probs(8, h);
+        h.parallel_for(NR2((size_t)n_queries, (size_t)M, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+            const int m = (int)it.get_group(0), q = (int)it.get_group(1), tid = (int)it.get_local_id(1);
             const int S = n_blocks + 1;
-            for (int s = 0; s < S; ++s) {
-                const float* sp = (s < n_blocks) ? (blocks_buf + (size_t)s * block_stride + (size_t)m * INK_D) : (cur_buf + (size_t)m * INK_D);
-                float ss = 0.0f;
-                for (int d = tid; d < INK_D; d += 256) ss += sp[d] * sp[d];
-                const float tot = wg_sum16(it, ss, sh);
-                if (tid == 0) inv_s[s] = sycl::rsqrt(tot / (float)INK_D + INK_RMS_EPS);
+            const float* sp[8];
+#pragma unroll
+            for (int s = 0; s < 8; ++s) {
+                sp[s] = (s < n_blocks) ? (blocks_buf + (size_t)s * block_stride + (size_t)m * INK_D) : (cur_buf + (size_t)m * INK_D);
+            }
+            float ss[8];
+#pragma unroll
+            for (int s = 0; s < 8; ++s) {
+                float a = 0.0f;
+                if (s < S) for (int d = tid; d < INK_D; d += 256) a += sp[s][d] * sp[s][d];
+                ss[s] = a;
+            }
+            wg_sum16_multi<8>(it, ss, sh);
+            float inv_s[8];
+#pragma unroll
+            for (int s = 0; s < 8; ++s) inv_s[s] = sycl::rsqrt(ss[s] / (float)INK_D + INK_RMS_EPS);
+            sycl::group_barrier(it.get_group());   // sh is read again below
+            const float inv_sqrt_d = 1.0f / 48.0f;
+            const float* qv = queries + (size_t)q * INK_D;
+            float dt[8];
+#pragma unroll
+            for (int s = 0; s < 8; ++s) {
+                float a = 0.0f;
+                if (s < S) for (int d = tid; d < INK_D; d += 256) a += sp[s][d] * qv[d];
+                dt[s] = a;
+            }
+            wg_sum16_multi<8>(it, dt, sh);
+            if (tid == 0) {
+                float sc[8];
+                for (int s = 0; s < S; ++s) sc[s] = dt[s] * inv_s[s] * inv_sqrt_d;
+                float mx = -1e30f;
+                for (int s = 0; s < S; ++s) mx = sycl::fmax(mx, sc[s]);
+                float sum = 0.0f;
+                for (int s = 0; s < S; ++s) { sc[s] = sycl::exp(sc[s] - mx); sum += sc[s]; }
+                const float isum = 1.0f / sum;
+                for (int s = 0; s < S; ++s) probs[s] = sc[s] * (isum * inv_s[s]);
             }
             sycl::group_barrier(it.get_group());
-            const float inv_sqrt_d = 1.0f / 48.0f;
-            for (int q = 0; q < n_queries; ++q) {
-                const float* qv = queries + (size_t)q * INK_D;
-                for (int s = 0; s < S; ++s) {
-                    const float* sp = (s < n_blocks) ? (blocks_buf + (size_t)s * block_stride + (size_t)m * INK_D) : (cur_buf + (size_t)m * INK_D);
-                    float dt = 0.0f;
-                    for (int d = tid; d < INK_D; d += 256) dt += sp[d] * qv[d];
-                    const float sc = wg_sum16(it, dt, sh) * inv_s[s] * inv_sqrt_d;
-                    if (tid == 0) probs[q * 8 + s] = sc;
-                }
-                sycl::group_barrier(it.get_group());
-                if (tid == 0) {
-                    float mx = -1e30f;
-                    for (int s = 0; s < S; ++s) mx = sycl::fmax(mx, probs[q * 8 + s]);
-                    float sum = 0.0f;
-                    for (int s = 0; s < S; ++s) { probs[q * 8 + s] = sycl::exp(probs[q * 8 + s] - mx); sum += probs[q * 8 + s]; }
-                    const float isum = 1.0f / sum;
-                    for (int s = 0; s < S; ++s) probs[q * 8 + s] *= isum * inv_s[s];
-                }
-                sycl::group_barrier(it.get_group());
-                float* dst = out_buf + (size_t)q * M_stride + (size_t)m * INK_D;
-                for (int d = tid; d < INK_D; d += 256) {
-                    float acc = 0.0f;
-                    for (int s = 0; s < S; ++s) {
-                        const float* sp = (s < n_blocks) ? (blocks_buf + (size_t)s * block_stride + (size_t)m * INK_D) : (cur_buf + (size_t)m * INK_D);
-                        acc += probs[q * 8 + s] * sp[d];
-                    }
-                    dst[d] = acc;
-                }
+            float* dst = out_buf + (size_t)q * M_stride + (size_t)m * INK_D;
+            for (int d = tid; d < INK_D; d += 256) {
+                float acc = 0.0f;
+                for (int s = 0; s < S; ++s) acc += probs[s] * sp[s][d];
+                dst[d] = acc;
+            }
+            if (copy_cur != nullptr && q == 0) {
+                for (int d = tid; d < INK_D; d += 256) copy_cur[(size_t)m * INK_D + d] = cur_buf[(size_t)m * INK_D + d];
             }
         });
     });
@@ -110,34 +146,39 @@ inline void k_ctrl_cat_rms_sg16(const float* cur_buf, const float* msg_buf, floa
     });
 }
 
+// The loop controller's gated mix, then (when do_norm) the RMS norm. Two kernels instead of one work-group per token: the mix runs one thread per
+// output channel across D/64 work-groups (same order of the 64-term dots, so the same bits), the norm is one work-group per token that adds the
+// squares in exactly the order the old single kernel did (thread t takes channels t, t+256, ...; then wg_sum16), so the result is bit for bit the same.
 inline void k_ctrl_apply_norm_sg16(const float* cur_buf, const float* msg_buf, const float* gate_buf,
                                    const float* w_gain, const float* w_forget, const float* norm_w,
                                    float* out_buf, int M, int do_norm) {
     Q().submit([&](sycl::handler& h) {
-        sycl::local_accessor<float, 1> sh(16, h);
         sycl::local_accessor<float, 1> g_sh(64, h);
+        h.parallel_for(NR2(INK_D / 64, (size_t)M, 64), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+            const int m = (int)it.get_group(0), blk = (int)it.get_group(1), tid = (int)it.get_local_id(1);
+            g_sh[tid] = gate_buf[(size_t)m * 64 + tid];
+            sycl::group_barrier(it.get_group());
+            const int d = blk * 64 + tid;
+            const float* wg = w_gain + (size_t)d * 64;
+            const float* wf = w_forget + (size_t)d * 64;
+            float sg = 0.0f, sf = 0.0f;
+            for (int r = 0; r < 64; ++r) { sg += wg[r] * g_sh[r]; sf += wf[r] * g_sh[r]; }
+            const float cp = cur_buf[(size_t)m * INK_D + d];
+            const float mp = msg_buf[(size_t)m * INK_D + d];
+            out_buf[(size_t)m * INK_D + d] = (1.0f - sycl::tanh(sycl::clamp(sf, -15.0f, 15.0f))) * cp
+                                           + sycl::tanh(sycl::clamp(sg, -15.0f, 15.0f)) * mp;
+        });
+    });
+    if (!do_norm) return;
+    Q().submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> sh(16, h);
         h.parallel_for(NR(M, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
             const int m = (int)it.get_group(0), tid = (int)it.get_local_id(0);
-            if (tid < 64) g_sh[tid] = gate_buf[(size_t)m * 64 + tid];
-            sycl::group_barrier(it.get_group());
-            const float* cp = cur_buf + (size_t)m * INK_D;
-            const float* mp = msg_buf + (size_t)m * INK_D;
             float* dst = out_buf + (size_t)m * INK_D;
             float ss = 0.0f;
-            for (int d = tid; d < INK_D; d += 256) {
-                const float* wg = w_gain + (size_t)d * 64;
-                const float* wf = w_forget + (size_t)d * 64;
-                float sg = 0.0f, sf = 0.0f;
-                for (int r = 0; r < 64; ++r) { sg += wg[r] * g_sh[r]; sf += wf[r] * g_sh[r]; }
-                const float v = (1.0f - sycl::tanh(sycl::clamp(sf, -15.0f, 15.0f))) * cp[d]
-                              + sycl::tanh(sycl::clamp(sg, -15.0f, 15.0f)) * mp[d];
-                dst[d] = v;
-                ss += v * v;
-            }
-            if (do_norm) {
-                const float inv = sycl::rsqrt(wg_sum16(it, ss, sh) / (float)INK_D + INK_RMS_EPS);
-                for (int d = tid; d < INK_D; d += 256) dst[d] = dst[d] * inv * norm_w[d];
-            }
+            for (int d = tid; d < INK_D; d += 256) { const float v = dst[d]; ss += v * v; }
+            const float inv = sycl::rsqrt(wg_sum16(it, ss, sh) / (float)INK_D + INK_RMS_EPS);
+            for (int d = tid; d < INK_D; d += 256) dst[d] = dst[d] * inv * norm_w[d];
         });
     });
 }
@@ -323,21 +364,29 @@ inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int*
         sycl::local_accessor<float, 1> sh_s(128, h);
         h.parallel_for(NR(M, 128), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
             const int m = (int)it.get_group(0), tid = (int)it.get_local_id(0);
+            auto grp = it.get_group();
             const float raw_l = r_logits[(size_t)m * 128 + tid];
             const float p_raw = 1.0f / (1.0f + sycl::exp(-raw_l));
             const float p = sycl::isfinite(p_raw) ? p_raw : 0.0f;
             const float sc = p + r_bias[tid];
             sh_p[tid] = p;
             sh_s[tid] = sycl::isfinite(sc) ? sc : -1e29f;
-            sycl::group_barrier(it.get_group());
+            sycl::group_barrier(grp);
+            // eight rounds of "the best remaining expert, the lowest index among equals" (max and min are exact, so the choice is
+            // the same as the serial scan it replaces); thread 0 keeps the weights in the old order
+            int sel[8]; float pw[8]; float sum = 0.0f;
+            for (int k = 0; k < 8; ++k) {
+                const float v = sh_s[tid];
+                const float mx = sycl::reduce_over_group(grp, v, sycl::maximum<float>());
+                const int cand = (v == mx) ? tid : (1 << 30);
+                int bi = sycl::reduce_over_group(grp, cand, sycl::minimum<int>());
+                if (!(mx > -1e30f)) bi = k;
+                if (tid == 0) { sel[k] = bi; pw[k] = sh_p[bi]; sum += pw[k]; }
+                sycl::group_barrier(grp);
+                if (tid == bi) sh_s[tid] = -1e30f;
+                sycl::group_barrier(grp);
+            }
             if (tid == 0) {
-                int sel[8]; float pw[8]; float sum = 0.0f;
-                for (int k = 0; k < 8; ++k) {
-                    int bi = -1; float bs = -1e30f;
-                    for (int e = 0; e < 128; ++e) if (sh_s[e] > bs) { bs = sh_s[e]; bi = e; }
-                    if (bi < 0) bi = k;
-                    sel[k] = bi; pw[k] = sh_p[bi]; sum += pw[k]; sh_s[bi] = -1e30f;
-                }
                 const float inv = route_scale / (sum + 1e-20f);
                 for (int k = 0; k < 8; ++k) { topk_idx[(size_t)m * 8 + k] = sel[k]; topk_w[(size_t)m * 8 + k] = pw[k] * inv; }
             }

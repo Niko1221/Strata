@@ -18,8 +18,16 @@
 
 using namespace hy4;
 
+#if HY4_CUDA
+#include "strata/core/arch_probe.hpp"
+// Never launched: cudaFuncGetAttributes() on it says whether this binary holds GPU code for the card (#6759).
+__global__ void k_hy4_arch_probe(int* p) {
+    if (p) *p = 1;
+}
+#endif
+
 #ifndef HY4_VERSION
-#define HY4_VERSION "0.1.66"  // the engine numbering of the 0.2.20 release (engines: 0.1.66; app and Terminal: 0.2.20)
+#define HY4_VERSION "0.1.67"  // the engine numbering of the 0.2.21 release (engines: 0.1.67; app and Terminal: 0.2.21)
 #endif
 
 // `strata-hy4 --export-tokenizer FILE.strata DIR`: Section 0's tokenizer_json and chat_template to DIR/tokenizer.hf.json and DIR/chat_template.jinja (Python builds serve's tokenizer
@@ -541,6 +549,31 @@ int main(int argc, char** argv) {
         }
     }
     if (gpu >= 0) HCK(hipSetDevice(gpu));
+#if HY4_CUDA
+    {   // a binary without code for this card (a CUDA 13 package on a Pascal / Volta card) would load, launch nothing that works and answer token 0 (#6759)
+        std::vector<int> probe_devs{gpu >= 0 ? gpu : primary_gpu};
+        probe_devs.insert(probe_devs.end(), peer_devs.begin(), peer_devs.end());
+        int back = 0;
+        cudaGetDevice(&back);
+        for (int d : probe_devs) {
+            cudaSetDevice(d);
+            cudaFuncAttributes probe_attr{};
+            const cudaError_t pe = cudaFuncGetAttributes(&probe_attr, reinterpret_cast<const void*>(k_hy4_arch_probe));
+            if (pe == cudaSuccess) continue;
+            cudaGetLastError();
+            cudaDeviceProp cp{};
+            cudaGetDeviceProperties(&cp, d);
+            const std::string msg = strata::core::no_gpu_code_message("strata-hy4", cp.name, cp.major, cp.minor, cudaGetErrorString(pe));
+            if (serve) {
+                printf("ERR %s\n", msg.c_str());
+                fflush(stdout);
+            }
+            fprintf(stderr, "%s\n", msg.c_str());
+            return 1;
+        }
+        cudaSetDevice(back);
+    }
+#endif
     if (serve) {
         if (model.empty()) {
             printf("ERR --native FILE.strata is required\n");

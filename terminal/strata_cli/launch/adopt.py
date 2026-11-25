@@ -165,18 +165,23 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         vision = next((c for c in (folder / inkling_family.VISION_FILE,
                                    Path(data_dir) / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE)
                        if c.is_file()), None)
-        if vision is None and is_gguf:
-            mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
-            vision = mmprojs[0] if mmprojs else None
         if vision is not None:
             args += ["--vision", str(vision)]
+        elif notes is not None:                              # 0221 APPTUI: the mmproj*.gguf beside an Unsloth GGUF is llama.cpp's projector; strata-inkling reads its own Vision.strata only
+            beside = sorted(p.name for p in folder.glob("mmproj*.gguf") if p.is_file()) if is_gguf else []
+            notes.append((f"The {beside[0]} beside the model is llama.cpp's picture projector, which Strata's engine does not read. " if beside
+                          else "No picture reader was found beside the model. ")
+                         + f"Images will not work until {inkling_family.VISION_FILE} (0.64 GB) is in {folder} or in "
+                           f"{Path(data_dir) / 'models' / inkling_family.FAMILY}; `strata launch --vision on` downloads it.")
         dspark = next((p for p in sorted(folder.glob("dspark*.gguf")) if p.is_file()), None) if is_gguf else None
         if dspark is None and is_st and (folder / "mtp.safetensors").is_file():
             dspark = folder / "mtp.safetensors"
         draft_off = str(drafting or "").strip().lower() == "off"
         if dspark is not None and not draft_off:
             args += ["--dspark", str(dspark)]
-        mode = "off" if (draft_off or (is_gguf and dspark is None)) else inkling_family.DEFAULT_DRAFTER
+        asked = str(drafting or "").strip().lower()
+        mode = "off" if (draft_off or (is_gguf and dspark is None)) else (
+            "auto" if asked == "auto" else inkling_family.DEFAULT_DRAFTER if asked in ("dspark", "on") else inkling_family.default_drafting(backend))
         if mode == "off":
             args += ["--draft", "off"]
         cfg = {"exe": f"component:{inkling_family.COMPONENT}", "args": args, "cwd": str(src), "tokenizer": str(tokenizer),
@@ -309,5 +314,13 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
 
 
 def write(path: Path, cfg: dict) -> None:
+    # Adopting the same model again rebuilds its engine settings, but its MCP servers and limits are user settings.
+    try:
+        old = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        old = None
+    if isinstance(old, dict):
+        saved_mcp = {key: old[key] for key in ("mcp_servers", "mcpServers", "mcp") if key in old}
+        cfg = {**saved_mcp, **cfg}
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(cfg, indent=1) + "\n", encoding="utf-8")

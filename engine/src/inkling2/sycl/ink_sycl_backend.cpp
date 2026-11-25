@@ -13,6 +13,7 @@
 #include <vector>
 
 #define INK_SYCL_WITH_MODEL_FILE 1
+#include "ink_sy_fit.h"
 #include "ink_sy_runner.h"
 
 namespace {
@@ -72,30 +73,40 @@ public:
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
-        // Compute exact runner + KV + DSpark + Vision + XMX/Hybrid reserve so 8-16 GB Arc cards NEVER OOM!
-        size_t kv_est = 0;
+        // Exact runner + KV + DSpark + Vision + XMX/Hybrid reserve (ink_sy_fit.h), so an 8-16 GB Arc card is told BEFORE the runner allocates
+        // that the --parallel / --max-context asked for does not fit (a start used to die with "dalloc ...: out of device memory").
         const auto& mc = model.m.c;
+        ink_sycl::InkSyFitGeom fit;
         const int core_len = mc.core_end - mc.core_start;
         for (int v = 0; v < mc.n_visits; ++v) {
             const int ip = (v < mc.core_start) ? v
                          : (v < mc.core_start + core_len * mc.num_passes)
                              ? (mc.core_start + (v - mc.core_start) % core_len)
                              : (mc.core_end + (v - mc.core_start - core_len * mc.num_passes));
-            const size_t stride = (size_t)(mc.is_swa[ip] ? mc.swa_win : ctx);
-            kv_est += 2ull * (size_t)par * stride * (size_t)mc.n_kv * (size_t)mc.head_dim * 2ull;
+            fit.visit_is_swa.push_back(mc.is_swa[ip] ? 1 : 0);
         }
-        const size_t dsp_kv = (opts.enable_dspark && model.m.dspark.present)
-            ? (3ull * 2ull * (size_t)par * (size_t)ctx * 1024ull * 2ull) : 0ull;
-        const size_t sc_est = (size_t)mc.n_visits * (size_t)par * 3ull * (2048ull + 2ull * (size_t)mc.hidden) * 8ull;
-        const size_t act_est = (size_t)batch_cap * 512ull * 1024ull + (128ull << 20);
-        const size_t vis_est = !opts.vision_path.empty() ? (700ull << 20) : 0ull;
-        const size_t hyb_xmx_est = (320ull << 20);  // Elastic VRAM cache ring (<=256 MiB) + XMX scratch (~32 MiB) + ping-pong
-        const size_t extra_reserve = kv_est + dsp_kv + sc_est + act_est + vis_est + hyb_xmx_est;
+        fit.swa_win = mc.swa_win;
+        fit.n_kv = mc.n_kv;
+        fit.head_dim = mc.head_dim;
+        fit.hidden = mc.hidden;
+        fit.dspark = opts.enable_dspark && model.m.dspark.present;
+        fit.vision = !opts.vision_path.empty();
+        const size_t extra_reserve = ink_sycl::ink_sy_runner_reserve(fit, par, ctx, opts.chunk);
         ink_sycl::ensure_l0_v1_default();
         if (model.kind == ModelSourceKind::Strata) {
             if (!mod_.load(model.path, opts.vram_experts_gb, err, extra_reserve, opts.gpus, opts.gpu_ids, opts.ep_split)) return false;
         } else {
             if (!mod_.load_from_model_file(model, opts.vram_experts_gb, err, extra_reserve)) return false;
+        }
+        {
+            const size_t gpu_mem = ink_sycl::dev_caps().global_mem;
+            const size_t used = ink_sycl::dev_bytes_allocated();
+            const size_t avail = gpu_mem > used ? gpu_mem - used : 0;
+            const std::string why = ink_sycl::ink_sy_fit_message(fit, par, ctx, opts.chunk, avail);
+            if (!why.empty()) {
+                err = why;
+                return false;
+            }
         }
         if (!runner_.init(mod_, par, ctx, batch_cap, opts.enable_dspark, err)) {
             return false;

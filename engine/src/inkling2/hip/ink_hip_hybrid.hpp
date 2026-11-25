@@ -10,6 +10,7 @@
 #pragma once
 
 #include "ink_hip_common.hip.h"
+#include "ink_hip_promote_policy.h"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
@@ -18,12 +19,36 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 namespace strata::inkling2::hip {
+
+// STRATA_HIP_HYB_PROF=1: time split of the hybrid decode MoE step (B <= 16), printed every 480 MoE visits (10 tokens).
+struct HybProf {
+    bool on = false;
+    double route_sync = 0, launch_to_wait = 0, cpu_wait = 0, rest = 0;   // seconds, summed
+    long visits = 0, cpu_jobs = 0, gpu_visits = 0;
+    static double now() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    HybProf() {
+        const char* e = std::getenv("STRATA_HIP_HYB_PROF");
+        on = e && e[0] == '1';
+    }
+    void report() {
+        if (!on || visits % 480 != 0) return;
+        const double n = static_cast<double>(visits) / 48.0;   // tokens
+        std::fprintf(stderr,
+                     "[hyb-prof] %ld visits: per token ms: route-sync %.2f | gpu+launch %.2f | cpu-wait %.2f | rest %.2f | cpu jobs/visit %.2f\n",
+                     visits, route_sync / n * 1e3, launch_to_wait / n * 1e3, cpu_wait / n * 1e3, rest / n * 1e3,
+                     static_cast<double>(cpu_jobs) / static_cast<double>(visits));
+    }
+};
 
 // Persistent spin-wait CPU worker pool executing RAM-resident experts via strata::inkling2::eval_inkling2_expert_batch
 // (AVX-512 VNNI / AVX2 / FMA) in parallel with GPU VRAM expert execution!
@@ -83,12 +108,42 @@ public:
         B_ = B;
         D_ = D;
         inter_ = inter;
-        if (static_cast<int>(thread_bufs_.size()) < n_threads_) {
-            thread_bufs_.resize(n_threads_);
+        // Decode: only 2-4 RAM experts per layer, each used by one token. One thread per expert would leave most of
+        // the cores idle, so split every expert's rows over several threads (bit-identical, see expert_m1_*).
+        split_ = false;
+        if (split_enabled_ && n_threads_ >= 2) {
+            bool ok = true;
+            for (const auto& j : *jobs) {
+                const auto gu = static_cast<strata::quant::sk::SkCode>(j.gu_code);
+                const auto dn = static_cast<strata::quant::sk::SkCode>(j.dn_code);
+                if (j.tok_idx.size() != 1 || !j.body || (static_cast<size_t>(D) % 8) != 0 || (static_cast<size_t>(inter) % 64) != 0 ||
+                    !strata::inkling2::expert_m1_splittable(gu, dn, j.body, static_cast<size_t>(D), static_cast<size_t>(inter))) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                const size_t nj = jobs->size();
+                split_slices_ = std::max<size_t>(1, std::min<size_t>(16, (static_cast<size_t>(n_threads_) + nj - 1) / nj));
+                split_ntask_ = static_cast<int>(nj * split_slices_);
+                if (job_gu_.size() < nj * 2 * static_cast<size_t>(inter)) job_gu_.resize(nj * 2 * static_cast<size_t>(inter));
+                if (job_act_.size() < nj * static_cast<size_t>(inter)) job_act_.resize(nj * static_cast<size_t>(inter));
+                if (job_y_.size() < nj * static_cast<size_t>(D)) job_y_.resize(nj * static_cast<size_t>(D));
+                for (int p = 0; p < 3; ++p) {
+                    ph_next_[p].store(0, std::memory_order_relaxed);
+                    ph_done_[p].store(0, std::memory_order_relaxed);
+                }
+                split_ = true;
+            }
         }
-        const size_t bd = static_cast<size_t>(B) * D;
-        for (int t = 0; t < n_threads_; ++t) {
-            if (thread_bufs_[t].size() < bd) thread_bufs_[t].resize(bd);
+        if (!split_) {
+            if (static_cast<int>(thread_bufs_.size()) < n_threads_) {
+                thread_bufs_.resize(n_threads_);
+            }
+            const size_t bd = static_cast<size_t>(B) * D;
+            for (int t = 0; t < n_threads_; ++t) {
+                if (thread_bufs_[t].size() < bd) thread_bufs_[t].resize(bd);
+            }
         }
         next_job_.store(0, std::memory_order_relaxed);
         done_count_.store(0, std::memory_order_relaxed);
@@ -111,6 +166,17 @@ public:
         in_flight_ = false;
         const size_t bd = static_cast<size_t>(B_) * D_;
         std::memset(y_accum_, 0, bd * sizeof(float));
+        if (split_) {
+            // Fixed order (job order, which follows the routing), so the sum does not depend on thread timing.
+            for (size_t ji = 0; ji < jobs_->size(); ++ji) {
+                const CpuJob& job = (*jobs_)[ji];
+                const float w = job.tok_w[0];
+                const float* src = job_y_.data() + ji * static_cast<size_t>(D_);
+                float* dst = y_accum_ + static_cast<size_t>(job.tok_idx[0]) * D_;
+                for (int d = 0; d < D_; ++d) dst[d] += w * src[d];
+            }
+            return;
+        }
         for (int t = 0; t < n_threads_; ++t) {
             if (!thread_touched_[t]) continue;
             const float* src = thread_bufs_[t].data();
@@ -121,6 +187,50 @@ public:
     int num_threads() const noexcept { return n_threads_; }
 
 private:
+    // Three phases (gate/up rows, SITU, down rows) over (job, slice) tasks; every thread takes tasks until none are
+    // left, then waits for the phase to finish (a task already taken always completes, so this cannot dead-lock).
+    void run_split(int /*tid*/) {
+        const size_t S = split_slices_;
+        const size_t inter = static_cast<size_t>(inter_), D = static_cast<size_t>(D_);
+        auto slice = [&](size_t total, size_t sl, size_t& a, size_t& b) {
+            size_t chunk = (total + S - 1) / S;
+            chunk = (chunk + 7) & ~size_t(7);            // multiples of 8 (also keeps dn row pairs together)
+            a = std::min(total, sl * chunk);
+            b = std::min(total, a + chunk);
+        };
+        for (int phase = 0; phase < 3; ++phase) {
+            while (true) {
+                const int t = ph_next_[phase].fetch_add(1, std::memory_order_relaxed);
+                if (t >= split_ntask_) break;
+                const size_t ji = static_cast<size_t>(t) / S, sl = static_cast<size_t>(t) % S;
+                const CpuJob& job = (*jobs_)[ji];
+                const auto gu_c = static_cast<strata::quant::sk::SkCode>(job.gu_code);
+                const auto dn_c = static_cast<strata::quant::sk::SkCode>(job.dn_code);
+                float* gu = job_gu_.data() + ji * 2 * inter;
+                float* act = job_act_.data() + ji * inter;
+                size_t a = 0, b = 0;
+                if (phase == 0) {
+                    slice(2 * inter, sl, a, b);
+                    strata::inkling2::expert_m1_gu_rows(job.body, gu_c, x_in_ + static_cast<size_t>(job.tok_idx[0]) * D,
+                                                        D, inter, a, b, gu);
+                } else if (phase == 1) {
+                    slice(inter, sl, a, b);
+                    strata::inkling2::expert_m1_act(gu, a, b, act);
+                } else {
+                    slice(D, sl, a, b);
+                    strata::inkling2::expert_m1_dn_rows(job.body, dn_c, job.dn_offset, act, D, inter, a, b,
+                                                        job_y_.data() + ji * D);
+                }
+                ph_done_[phase].fetch_add(1, std::memory_order_release);
+            }
+            while (ph_done_[phase].load(std::memory_order_acquire) < split_ntask_) {
+#if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+#endif
+            }
+        }
+    }
+
     void worker_loop(int tid) {
         uint64_t seen = 0;
         std::vector<float> x_gather;
@@ -148,6 +258,12 @@ private:
             }
             if (stop_.load(std::memory_order_acquire)) return;
             seen = cur_g;
+
+            if (split_) {
+                run_split(tid);
+                done_count_.fetch_add(1, std::memory_order_release);
+                continue;
+            }
 
             const size_t bd = static_cast<size_t>(B_) * D_;
             float* tbuf = thread_bufs_[tid].data();
@@ -212,6 +328,13 @@ private:
     std::condition_variable cv_;
 
     bool in_flight_ = false;
+    bool split_enabled_ = [] { const char* e = std::getenv("STRATA_HIP_CPU_SPLIT"); return !(e && e[0] == '0'); }();
+    bool split_ = false;
+    size_t split_slices_ = 1;
+    int split_ntask_ = 0;
+    std::atomic<int> ph_next_[3]{};
+    std::atomic<int> ph_done_[3]{};
+    std::vector<float> job_gu_, job_act_, job_y_;
     const std::vector<CpuJob>* jobs_ = nullptr;
     const float* x_in_ = nullptr;
     float* y_accum_ = nullptr;
@@ -307,7 +430,13 @@ public:
         if (s < 0) return nullptr;
         auto& sl = slots_[s];
         if (sl.dma_in_flight) {
-            if (hipEventQuery(sl.ready_ev) != hipSuccess) return nullptr;
+            // #6671: wait for the copy by default (see ink_hip_promote_policy.h); STRATA_INK_PROMOTE_ASYNC=1 polls (timing dependent)
+            static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
+            if (async_poll) {
+                if (hipEventQuery(sl.ready_ev) != hipSuccess) return nullptr;
+            } else {
+                if (hipEventSynchronize(sl.ready_ev) != hipSuccess) return nullptr;
+            }
             sl.dma_in_flight = false;
         }
         sl.last_use = ++clock_;
@@ -335,7 +464,13 @@ public:
         for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
             auto& sl = slots_[i];
             if (sl.dma_in_flight) {
-                if (hipEventQuery(sl.ready_ev) != hipSuccess) continue;
+                // the victim must not depend on which copies happen to be done: wait (STRATA_INK_PROMOTE_ASYNC=1 skips the running ones)
+                static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
+                if (async_poll) {
+                    if (hipEventQuery(sl.ready_ev) != hipSuccess) continue;
+                } else {
+                    if (hipEventSynchronize(sl.ready_ev) != hipSuccess) continue;
+                }
                 sl.dma_in_flight = false;
             }
             if (sl.dir_idx < 0) { victim = i; break; }

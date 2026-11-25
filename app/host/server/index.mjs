@@ -62,7 +62,7 @@ import { createUploads } from './chat-uploads.mjs';
 import { createNativeDrops } from './native-drop.mjs';
 import { createVisionProbe, effectiveVision, readsPicturesByDefault } from './vision-probe.mjs';
 import { RequestQueue } from './request-queue.mjs';
-import { selectSkills, skillInstructions } from './skill-selection.mjs';
+import { selectSkills, withSkills, historyWithSkills } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
 import { prepareOversized } from './oversize.mjs';
@@ -621,7 +621,7 @@ async function runRemoteTurn({ selection, message, history, images = [], thinkin
     const appliedSkills = selectSkills(skillState, message, workspaceId);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
-    const result = await modelProviders.stream({ selection, message, history, images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', userRules.promptBlock(), skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
+    const result = await modelProviders.stream({ selection, message: withSkills(skillState, message, workspaceId), history: historyWithSkills(skillState, history, workspaceId), images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', userRules.promptBlock()].filter(Boolean).join('\n\n'), onFrame: frame => {
       if (frame.type === 'start') noteSkillUse(appliedSkills);
       if (frame.type === 'done') serving.mark(entry.id, { tokensIn: frame.tokensIn, tokensOut: frame.tokensOut, usageSource: frame.usageSource });
       onFrame({ ...frame, requestId: entry.id, model: model.name, contextMax: model.contextMax, remoteModel: true, ...(frame.type === 'start' ? { skills: appliedSkills.map(s => s.name) } : {}) });
@@ -688,7 +688,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const hy4Local=instance.arch==='hy4flash'||/^hy4-flash/i.test(String(instance.model??instance.apiModelId??''));const inklingLocal=instance.arch==='inkling2_loop'||/^inkling-2-mini/i.test(String(instance.model??instance.apiModelId??''));const thinkKey=String(thinking).toLowerCase();const effortWord=hy4Local?(thinkKey==='xhigh'?'max':({off:'none',minimal:'high',low:'high',medium:'high',high:'high',max:'max'}[String(thinking).toLowerCase()]??'high')):inklingLocal?'none':({off:'none',max:'high'}[String(thinking).toLowerCase()]??(thinkKey==='xhigh'?'high':thinkKey));const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(!inklingLocal&&thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:effortWord},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock(),skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const hy4Local=instance.arch==='hy4flash'||/^hy4-flash/i.test(String(instance.model??instance.apiModelId??''));const inklingLocal=instance.arch==='inkling2_loop'||/^inkling-2-mini/i.test(String(instance.model??instance.apiModelId??''));const thinkKey=String(thinking).toLowerCase();const effortWord=hy4Local?(thinkKey==='xhigh'?'max':({off:'none',minimal:'high',low:'high',medium:'high',high:'high',max:'max'}[String(thinking).toLowerCase()]??'high')):inklingLocal?({off:'none',xhigh:'max',minimal:'minimal'}[thinkKey]??thinkKey):({off:'none',max:'high'}[String(thinking).toLowerCase()]??(thinkKey==='xhigh'?'high':thinkKey));const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message:withSkills(skillState,message,workspaceId),history:historyWithSkills(skillState,history,workspaceId),images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:effortWord},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock()].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;
@@ -718,7 +718,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
       // Scope is resolved again at dispatch: a disabled skill never stays active
       // merely because the request waited in the queue.
       const appliedSkills = selectSkills(skillState, message, workspaceId);
-      const systemPrompt = [SYSTEM_PROMPT, userRules.promptBlock(), skillInstructions(appliedSkills)].filter(Boolean).join('\n\n');
+      const systemPrompt = [SYSTEM_PROMPT, userRules.promptBlock()].filter(Boolean).join('\n\n');   // (the skills go with the message: skill-selection.mjs)
       serving.mark(entry.id, { state: 'generating' });
       const contextMax = instance.memory.context;
       const modelMonitor=models.REAL?monitor:{
@@ -730,8 +730,8 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
       };
       try {
         result = await streamChat({
-          message,
-          history,
+          message: withSkills(skillState, message, workspaceId),
+          history: historyWithSkills(skillState, history, workspaceId),
           systemPrompt,
           modelLabel: v.label,
           candidates: readableCandidates(),
@@ -1749,19 +1749,25 @@ async function api(req, res, path, method, url) {
       const instructions = String(body.body ?? '').trim();
       if (!name) throw new Error('Give the skill a name.');
       if (!instructions) throw new Error('Write the instructions the assistant should follow.');
-      // The form's own choices are kept: a skill created with "Skill enabled" off stays off (QA F04), and its trigger phrases are saved with it.
+      const onlyIn = body.onlyIn || null;
+      if (onlyIn !== null && !workspaces.some(w => w.id === onlyIn)) throw new Error('Choose an available workspace.');
+      // Keep the creation options with the skill, including its workspace scope.
       const triggers = body.triggers === undefined ? [] : skillEdit({ triggers: body.triggers }).triggers;
       const id = writeCreatedSkill(CREATED_SKILLS, { name, description: String(body.description ?? '').trim().slice(0, 400), body: instructions.slice(0, 40000) });
       const newId = `my-${id}`, off = body.enabled === false;
-      if (off || triggers.length) {
+      if (off || onlyIn !== null || triggers.length) {
         const saved = store.get();
         store.update({
-          ...(off ? { skillPreferences: { ...saved.skillPreferences, [newId]: { enabled: false, onlyIn: null } } } : {}),
+          ...(off || onlyIn !== null ? { skillPreferences: { ...saved.skillPreferences, [newId]: { enabled: !off, onlyIn } } } : {}),
           ...(triggers.length ? { skillEdits: { ...saved.skillEdits, [newId]: { ...saved.skillEdits?.[newId], triggers } } } : {}),
         });
       }
       const before = new Map(skillState.map(s => [s.id, s]));
-      skillState = skills().map(s => before.has(s.id) ? { ...s, enabled: before.get(s.id).enabled, onlyIn: before.get(s.id).onlyIn ?? null, useCount: before.get(s.id).useCount, lastUsedAt: before.get(s.id).lastUsedAt } : { ...s, enabled: s.id === newId && off ? false : s.enabled, onlyIn: null, useCount: 0, lastUsedAt: null });
+      skillState = skills().map(s => {
+        const existing = before.get(s.id);
+        if (existing) return { ...s, enabled: existing.enabled, onlyIn: existing.onlyIn ?? null, useCount: existing.useCount, lastUsedAt: existing.lastUsedAt };
+        return { ...s, enabled: s.id === newId ? !off : s.enabled, onlyIn: s.id === newId ? onlyIn : null, useCount: 0, lastUsedAt: null };
+      });
       syncAgentSkills();
       hub.send('skills', skillState);
       return json(res, 201, { id: newId, skills: skillState });

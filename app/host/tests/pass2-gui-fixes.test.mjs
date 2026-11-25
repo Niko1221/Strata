@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { buildProfile, connectionReasoningEfforts, effortOf, HY4_LOCAL_EFFORTS } from '../server/agent/profile.mjs';
+import { buildProfile, connectionReasoningEfforts, effortOf, HY4_LOCAL_EFFORTS, INKLING_LOCAL_EFFORTS, LOCAL_EFFORTS } from '../server/agent/profile.mjs';
 import { clampHy4Effort, shapeBody } from '../server/agent/llm-shape.mjs';
 import { parseQuestions, buildAnswer } from '../server/agent/user-questions.mjs';
 import { createChatStore, drainChatStore, realIo } from '../server/chat-store.mjs';
@@ -31,7 +31,7 @@ const bundleTs = async rel => {
   return import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 };
 
-test('#6680 Hy4-Flash effort clamping never emits xhigh and Inkling-2-Mini keeps thinking off', () => {
+test('#6680 Hy4-Flash effort clamping never emits xhigh and Inkling-2-Mini thinks like the other local models (0.2.21)', () => {
   assert.equal(clampHy4Effort('xhigh'), 'max');
   assert.equal(clampHy4Effort('max'), 'max');
   assert.equal(clampHy4Effort('high'), 'high');
@@ -60,11 +60,14 @@ test('#6680 Hy4-Flash effort clamping never emits xhigh and Inkling-2-Mini keeps
   const rows = JSON.parse(built.patch.slice(built.patch.indexOf('[')));
   const providers = rows.find(e => e.id === 'llm-pi-ai').config.providers;
   assert.deepEqual(providers['strata-local'].models[0].reasoningEfforts, HY4_LOCAL_EFFORTS);
-  assert.equal(providers['strata-local-ink-renamed'].models[0].reasoning, false);
-  assert.equal(providers['strata-local-ink-renamed'].models[0].reasoningEfforts, undefined);
+  assert.equal(providers['strata-local-ink-renamed'].models[0].reasoning, true);
+  assert.deepEqual(providers['strata-local-ink-renamed'].models[0].reasoningEfforts, INKLING_LOCAL_EFFORTS);
+  assert.equal(INKLING_LOCAL_EFFORTS.max, 'max');
+  assert.equal(INKLING_LOCAL_EFFORTS.off, null);
+  assert.equal(providers['strata-local-ink-renamed'].compat.thinkingFormat, 'chat-template');
 
   assert.deepEqual(connectionReasoningEfforts({ protocol: 'openai-chat', reasoningFormat: 'strata' }, { id: 'hy4-flash-sq-64', reasoning: true }), HY4_LOCAL_EFFORTS);
-  assert.equal(connectionReasoningEfforts({ protocol: 'openai-chat', reasoningFormat: 'strata' }, { id: 'inkling-2-mini-sq-20', reasoning: true }), null);
+  assert.equal(connectionReasoningEfforts({ protocol: 'openai-chat', reasoningFormat: 'strata' }, { id: 'inkling-2-mini-sq-20', reasoning: true }), LOCAL_EFFORTS);
 });
 
 test('#6668 QuestionCard data layer supports >4 questions, string/numeric multiSelect, duplicate ids/labels, and combined option+note', async () => {

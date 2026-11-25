@@ -19,11 +19,13 @@ and multiline code losslessly while reusing all downstream OpenAI / Anthropic / 
 from __future__ import annotations
 
 import json
+import os
 import re
 
 MSG_MODEL = "<|message_model|>"
 CONTENT_THINK = "<|content_thinking|>"
 CONTENT_TEXT = "<|content_text|>"
+CONTENT_TOOL_ERROR = "<|content_tool_error|>"   # a text block the model can open (id 200022): read as text, not shown as a tag
 CONTENT_TOOL_JSON = "<|content_invoke_tool_json|>"
 CONTENT_TOOL_TEXT = "<|content_invoke_tool_text|>"
 CONTENT_XML = "<|content_xml|>"
@@ -32,15 +34,15 @@ END_SAMPLING = "<|content_model_end_sampling|>"
 ENDOFTEXT = "<|endoftext|>"
 
 ALL_CHANNEL_TAGS = frozenset((
-    MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT,
+    MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT,
     CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT,
 ))
-_HEADER_TAGS = (CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT, MSG_MODEL)
-_IDLE_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
-_THINK_TAGS = (END_MSG, CONTENT_TEXT, END_SAMPLING, ENDOFTEXT)
+_HEADER_TAGS = (CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT, MSG_MODEL)
+_IDLE_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
+_THINK_TAGS = (END_MSG, CONTENT_TEXT, CONTENT_TOOL_ERROR, END_SAMPLING, ENDOFTEXT)
 _TEXT_TAGS = (END_MSG, END_SAMPLING, ENDOFTEXT)
 _TOOL_TAGS = (END_MSG, END_SAMPLING, ENDOFTEXT)
-_AFTER_END_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
+_AFTER_END_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
 _MAX_TAG = max(len(t) for t in _HEADER_TAGS)
 _MAX_HEADER_CHARS = 128
 _MAX_THINK_ACC = 65536
@@ -233,8 +235,8 @@ class InklingDialect:
         if not chunk:
             return
         if self.state == "think":
-            # Inkling-2-Mini has no thinking mode (off / "none" only): keep hidden unless truncated with no answer (#6682).
-            self._append_think(chunk)
+            # The thinking goes out as it is written (the reasoning channel: reasoning_content, thinking blocks, reasoning items).
+            out.append(("reasoning", chunk))
             return
         elif self.state == "think_end":
             # Lookahead after <|end_message|> in thinking (#6675): only another structural tag confirms end-of-thinking;
@@ -242,7 +244,7 @@ class InklingDialect:
             if not chunk.strip():
                 self._end_ws += chunk
                 return
-            self._append_think(END_MSG + self._end_ws + chunk)
+            out.append(("reasoning", END_MSG + self._end_ws + chunk))
             self._end_ws = ""
             self.state = "think"
             return
@@ -311,7 +313,7 @@ class InklingDialect:
                 return
             if self.state == "think_end":
                 # Second <|end_message|> after a quoted one inside thinking: keep absorbing the first and hold the second
-                self._append_think(END_MSG + self._end_ws)
+                out.append(("reasoning", END_MSG + self._end_ws))
                 self._end_ws = ""
                 return
             if self.state == "text":
@@ -338,7 +340,7 @@ class InklingDialect:
             self._think_acc = ""
             self.state = "think"
             return
-        if tag == CONTENT_TEXT:
+        if tag in (CONTENT_TEXT, CONTENT_TOOL_ERROR):
             if self.state in ("think", "think_end", "text_end"):
                 self._close_channel_typed(out)
             self.header_acc = ""
@@ -368,15 +370,17 @@ class InklingDialect:
                     self.calls += 1
                 out.append(("content", rendered))
                 self._emitted_visible = True
-        elif reason == "length" and self.state in ("think", "think_end") and not self._emitted_visible and self._think_acc.strip():
-            # #6682: when max_tokens expires inside <|content_thinking|> before any visible answer or tool call,
-            # surface the truncated thinking in the reasoning channel instead of a silent empty 200 OK.
-            out.append(("reasoning", self._think_acc))
         self.header_acc = ""
         self.tool_acc = ""
         self._think_acc = ""
         self._end_ws = ""
         self.state = "idle"
+
+
+# #6734: what the server writes into the model's hidden thinking when its budget (reasoning_budget_tokens) is spent: a short
+# sentence and the block's own end.  The model then opens its next turn itself (`<|message_model|>` and the text, or a call).
+# The Qwen wrap-up ends in `</think>`, which Inkling does not use.
+REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.<|end_message|>"
 
 
 def force_text(force):
@@ -396,30 +400,70 @@ def translate(text: str) -> str:
     return InklingDialect().feed(text, final=True)
 
 
-# ---- thinking mode: Inkling-2-Mini has NO thinking mode (default is off / "none", and that's it) ----
-DEFAULT_EFFORT = "none"
+# ---- thinking levels: the template's own (chat_template.jinja: "Thinking effort level: <number>") ----
+# The model is designed for these levels: 0 = no thinking, then the more the higher.  A request's reasoning_effort / enable_thinking / thinking
+# block reaches the template as the word below (None -> the default level).  Like robertkarl/UnbiasedStrata (MIT): none, 0 or enable_thinking
+# false is level 0; every other level goes through to the template.
+EFFORT_LEVEL = {"none": 0.0, "minimal": 0.1, "low": 0.2, "medium": 0.7, "high": 0.9, "xhigh": 0.99, "max": 0.99}
+DEFAULT_EFFORT = os.environ.get("STRATA_INKLING_EFFORT", "low").strip().lower() or "low"
 EFFORT = {
     "none": "none", "off": "none", "no_think": "none", "disabled": "none", "false": "none", "0": "none", "0.0": "none",
+    "minimal": "minimal", "min": "minimal", "low": "low", "medium": "medium", "med": "medium", "high": "high", "auto": "high", "default": "high",
+    "xhigh": "xhigh", "max": "max", "maximum": "max",
 }
 
 
-def normalize_effort(value=None) -> str:
-    """Inkling-2-Mini has no thinking mode: always normalizes to `"none"` (`Thinking effort level: 0`)."""
-    return DEFAULT_EFFORT
+def normalize_effort(value=None):
+    """A client's effort -> the template's word (or a number in (0, 0.99]).  None / "" -> the default level.  ValueError for anything else."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return DEFAULT_EFFORT if DEFAULT_EFFORT in EFFORT_LEVEL else "low"
+    if value is False:
+        return "none"
+    if value is True:
+        return normalize_effort(None)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value <= 0:
+            return "none"
+        if value > 0.99:
+            return "max"
+        return float(value)
+    key = str(value).strip().lower()
+    if key in EFFORT:
+        return EFFORT[key]
+    try:
+        return normalize_effort(float(key))
+    except ValueError:
+        raise ValueError(f"unknown reasoning effort {value!r}: use none, minimal, low, medium, high or max (or a number from 0 to 0.99)") from None
+
+
+def effort_of(kwargs: dict | None):
+    """The level a request's kwargs ask for: (the template's word or number, its number).  enable_thinking false is level 0."""
+    kwargs = kwargs or {}
+    word = "none" if kwargs.get("enable_thinking") is False else normalize_effort(kwargs.get("reasoning_effort"))
+    return word, (EFFORT_LEVEL[word] if isinstance(word, str) else float(word))
+
+
+def thinking_on(kwargs: dict | None) -> bool:
+    return effort_of(kwargs)[1] > 0.0
 
 
 def template_kwargs(kwargs: dict) -> dict:
-    """Normalize kwargs for Inkling-2-Mini's chat_template.jinja: always enforces thinking off (`reasoning_effort="none"`)."""
+    """Kwargs for Inkling-2-Mini's chat_template.jinja: the request's level (the default when it names none) as reasoning_effort."""
     out = dict(kwargs)
     out.pop("thinking_mode", None)
-    out["enable_thinking"] = False
-    out["reasoning_effort"] = DEFAULT_EFFORT
+    word, level = effort_of(out)
+    out["reasoning_effort"] = word
+    out["enable_thinking"] = level > 0.0
     return out
 
 
-def prepare_messages(messages: list[dict]) -> list[dict]:
+def prepare_messages(messages: list[dict], *, has_tools: bool = False, thinking: bool = False) -> list[dict]:
     """Canonicalize assistant tool_call arguments from JSON strings to dicts so Inkling-2-Mini's chat_template.jinja
-    never raises `tool call arguments must be a parsed object, not a JSON string`."""
+    never raises `tool call arguments must be a parsed object, not a JSON string`.
+
+    With `has_tools` at level 0 (no `thinking`) the history also gets the empty thinking turn `finish_prompt` forces (see
+    `_mark_forced_thinking`); pass the same `has_tools` and `thinking` to `finish_prompt`, which takes the marker out again.
+    With thinking on nothing is appended to the prompt, so nothing is replayed either."""
     out = []
     for m in messages:
         if not isinstance(m, dict) or not m.get("tool_calls"):
@@ -445,10 +489,35 @@ def prepare_messages(messages: list[dict]) -> list[dict]:
                 fn["arguments"] = {}
             new_calls.append({**tc, "function": fn})
         out.append({**m, "tool_calls": new_calls} if changed else m)
+    return _mark_forced_thinking(out) if (has_tools and not thinking) else out
+
+
+# A private-use marker, put in an assistant message's `reasoning_content` and removed again by `finish_prompt`.
+_EMPTY_THINK_MARK = "\ue000strata-inkling-empty-thinking\ue001"
+
+
+def _mark_forced_thinking(messages: list[dict]) -> list[dict]:
+    """With tools, `finish_prompt` ends every prompt with an empty thinking turn and the model answers after it. When
+    that answer comes back in the history, the template leaves the turn out (it renders a thinking turn only for a
+    non-empty `reasoning_content`), so the next prompt stops matching the previous one right before the answer and the
+    engine reads the whole conversation again on every turn of an agent.  Give each earlier assistant turn that has no
+    thinking of its own a marker as its `reasoning_content`: the template then writes the thinking turn where the model
+    wrote it, from the structure of the messages, and `finish_prompt` empties the marker.  Left alone: the last message
+    (a prefilled reply), a named assistant, an assistant turn with neither text nor tool calls, and everything when
+    a message already contains the marker."""
+    if not messages or _EMPTY_THINK_MARK in json.dumps(messages, ensure_ascii=False, default=str):
+        return messages
+    last = len(messages) - 1
+    out = []
+    for i, m in enumerate(messages):
+        if (i != last and isinstance(m, dict) and m.get("role") == "assistant" and not m.get("reasoning_content")
+                and not m.get("name") and (m.get("tool_calls") or m.get("content"))):
+            m = {**m, "reasoning_content": _EMPTY_THINK_MARK}
+        out.append(m)
     return out
 
 
-def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False) -> str:
+def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False, thinking: bool = False) -> str:
     """Append an explicit non-thinking turn opener to a rendered Inkling-2-Mini prompt (#6612, #6620, #6627).
 
     Inkling-2-Mini's `chat_template.jinja` ends at `<|end_message|>` with no assistant opener, so even with
@@ -459,9 +528,12 @@ def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False)
     - With tools: append an empty thinking turn `<|message_model|><|content_thinking|><|end_message|>` so the
       model immediately selects either `<|message_model|><|content_text|>` or a tool invocation without wasting
       tokens or looping inside hidden thinking.
+    With `thinking` (a level above 0) nothing is appended: the model opens its own thinking turn, then its answer or a call.
     Idempotent if the prompt already carries an opener or when a forced tool-call opener will be appended.
     """
-    if not prompt or forced:
+    if _EMPTY_THINK_MARK in prompt:
+        prompt = prompt.replace(_EMPTY_THINK_MARK, "")
+    if not prompt or forced or thinking:
         return prompt
     empty_think = f"{MSG_MODEL}{CONTENT_THINK}{END_MSG}"
     if prompt.endswith((CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, empty_think)):
