@@ -6,7 +6,7 @@ This page is built by `tools/capability_table.py` from [docs/data/capabilities.j
 - **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
-App and Terminal 0.2.21, Control 0.1.68, engines 0.1.67; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3; these packages stay at 0.1.67: Control linux-aarch64, linux-x86_64, macos-arm64, windows-x86_64. App, Control and engine versions differ on purpose.
+App and Terminal 0.2.21, Control 0.1.68.1, engines 0.1.67; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3; these packages stay at 0.1.67: Control linux-aarch64, linux-x86_64, macos-arm64, windows-x86_64; these packages stay at 0.1.68: Control linux-aarch64, linux-x86_64, macos-arm64, windows-x86_64. App, Control and engine versions differ on purpose.
 
 ## At a glance
 
@@ -29,7 +29,7 @@ Model guide: [MODELS.md](MODELS.md#qwen38-flash-next).
 | AMD on Windows | `hip-rdna2`, `hip-rdna3`, `hip-rx9070` | supported: RX 6000, 7000 and 9000, Ryzen AI Max | - | [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md); [AMD_HIP.md](AMD_HIP.md) |
 | AMD on Linux | `hip-halo`, `hip-rx6000`, `hip-rx7900`, `hip-rx9070` | supported: RX 6000, 7000 and 9000, Radeon AI PRO R9700, Ryzen AI Max | RX 6000 is validated differently from the newer cards ([AMD_HIP.md](AMD_HIP.md)). | [AMD_HIP.md](AMD_HIP.md); [STRIX_HALO.md](STRIX_HALO.md) |
 | Intel Arc on Linux | `sycl` | supported: Arc A-series and B-series | Linux only (Ubuntu 24.04 or newer); the model is prepared for the card first, with per-card limits ([INTEL_ARC.md](INTEL_ARC.md)). | [INTEL_ARC.md](INTEL_ARC.md) |
-| Apple silicon | `metal` | supported: M1 or newer, macOS 15 or newer | - | [MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB) |
+| Apple silicon | `metal` | supported: M1 or newer, macOS 15 or newer | On macOS 15 the Qwen engine reads prompts more slowly (about 10x on our measurement) because a macOS 26 feature is off ([MAC.md](MAC.md#limits-this-version)). | [MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB) |
 
 <a id="qwen36"></a>
 

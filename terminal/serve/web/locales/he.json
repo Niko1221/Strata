@@ -267,6 +267,7 @@
   "toast.httpAnswer": "השרת החזיר HTTP {code}.",
   "toast.keyAbout": "השרת הזה דורש מפתח: אפשר להוסיף אותו באודות > הגדרות.",
   "toast.keyAbout2": "נדרש מפתח API: אפשר להוסיף אותו באודות > הגדרות.",
+  "toast.keyFrom": "זה המפתח שבו השרת הופעל: ‎--api-key‎, ‎STRATA_API_KEY‎, ‎api_key‎ בתצורת ההרצה, או המפתח ‎sk-strata-‎ ש-strata launch יצר בעת שיתוף מעבר למחשב הזה.",
   "toast.keyNeeded": "השרת הזה דורש מפתח API: אפשר להוסיף אותו באודות > הגדרות.",
   "toast.requestFailed": "הבקשה נכשלה",
   "tool.arguments": "ארגומנטים",

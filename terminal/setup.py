@@ -9048,19 +9048,20 @@ def mtp_corrupt(mtp: Path, env=None) -> bool:
     return r.returncode == 3
 
 
-def auto_drafter(a, family: str, fam: dict, model: str, hip: bool, gpu: dict, mtp_here: bool) -> str | None:
+def auto_drafter(a, family: str, fam: dict, model: str, hip: bool, gpu: dict, mtp_here: bool, canonical: bool = False) -> str | None:
     """P14 (0.2.16): the drafter a fresh setup uses when the person named none (no --drafter, no --mtp): the Terminal's Auto rule
     (strata_control/drafting.py choice_of, the one `strata launch` and the app use), not a copy of it. "dflash2" when Auto means DFlash2 on this
     computer and the MTP layer is not on disk yet, so the ~5 GB MTP download is skipped and the 1.2 GB DFlash2 drafter is fetched instead (a P100 got the
     5 GB layer from setup while the Terminal's Auto picks DFlash2 there). None in every other case: the MTP layer is already here (nothing to save), a
-    drafter was named, or Auto means the MTP; setup then goes on as before. Never raises."""
+    drafter was named, or Auto means the MTP; setup then goes on as before. ``canonical``: step 6 builds the canonical pack (Q2_0 on a CPU with AVX-512), which
+    the engine's DFlash2 refuses ("it needs a native pack", #7090): Auto is the MTP then, and the layer is fetched. Never raises."""
     if getattr(a, "drafter", None) or a.mtp is not None or mtp_here:
         return None
     try:
         from strata_control import drafting
         backend, archs = drafting.hardware_for("hip" if hip else "cuda")
         pick = drafting.choice_of("auto", model_name=f"{fam['name']}-{model.lower()}", family=family, backend=backend, archs=archs,
-                                  vram_mib=float(gpu.get("vram_gb") or 0) * 1024 or None)
+                                  vram_mib=float(gpu.get("vram_gb") or 0) * 1024 or None, canonical=canonical)
         return "dflash2" if pick == "dflash2" else None
     except Exception:                                  # noqa: BLE001 - a rule that cannot be read leaves setup as it was
         return None
@@ -9503,12 +9504,28 @@ def shape_engine_fetch(a):
     name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
     from strata_cli import update_cmd
     source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
-    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
+    lines: list[str] = []                                            # #7119: what ensure said; the last one is why it stopped
+
+    def emit(m):
+        lines.append(str(m))
+        say("  " + m)
+
+    exe = shape_engine.ensure(shape, source, emit=emit, title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
             warn(shape_engine.WORDS["setup_skip"].format(model=name))
             return None
-        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
+        why = (lines[-1].strip() if lines else "").rstrip()
+        try:
+            hand = shape_engine.hand_install_note(shape)
+        except Exception:                                            # noqa: BLE001 - a note about folders never hides the failure itself
+            hand = ""
+        if why and not why.endswith((".", "!", "?")):
+            why += "."
+        if hand:
+            why = f"{why} {hand}".strip()
+        fail(shape_engine.WORDS["setup_failed"].format(model=name),
+             shape_engine.WORDS["setup_failed_why"].format(why=why) if why else shape_engine.WORDS["setup_failed_hint"])
     found = shape_engine.find(shape, full=False, title=title)
     ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
     return found
@@ -12366,9 +12383,12 @@ def main() -> int:
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     pack_bin = ready or ((pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists())   # ready: in the download
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
-    if not ready and (picked := auto_drafter(a, family, fam, model, hip, gpu, mtp_have)):      # P14: the Terminal's Auto rule, not always the 5 GB layer
-        a.drafter, a.drafter_auto = picked, True
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
+    if not ready and (picked := auto_drafter(a, family, fam, model, hip, gpu, mtp_have, canonical=q2_avx)):      # P14: the Terminal's Auto rule, not always the 5 GB layer
+        a.drafter, a.drafter_auto = picked, True
+    if q2_avx and not ready and getattr(a, "drafter", None) == "dflash2":     # #7090: step 6 builds the canonical pack, which DFlash2 refuses (also when the app or --drafter named it)
+        warn("DFlash2 needs a native pack, and the AVX-512 Q2_0 pack of this CPU is not one: the MTP draft layer is used instead")
+        a.drafter, a.drafter_auto = None, False
     prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
         not prepared_done(model, models_dir) else 0.0
     margin = 2 if mtp_have else 8                      # working room: a guess, not bytes that will be written
