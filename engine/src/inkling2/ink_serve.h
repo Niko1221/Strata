@@ -510,6 +510,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     int mix_decode = 0;
     if (const char* ev = std::getenv("STRATA_INK_MIX_DECODE")) mix_decode = std::max(0, std::atoi(ev));
     int mix_dec_left = 0;   // decode-only steps still owed before the next prefill-only step
+    // STRATA_INK_PREFILL_ONE=1: while two or more slots read a prompt, one step reads only one of them (the earliest request
+    // first, until its prompt is read), so the step stays one slot's contiguous rows and keeps the backend's prefill path
+    // (on HIP the WMMA flash-prefill attention needs exactly that). Default 0 = off: the budget is shared among them, as before.
+    const char* pf_one_env = std::getenv("STRATA_INK_PREFILL_ONE");
+    const bool prefill_one = pf_one_env && pf_one_env[0] == '1';
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
@@ -1058,6 +1063,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (token_budget > 0 && !hold_prefill) {
             std::vector<int> pf_slots;
             for (int s = 0; s < P; ++s) if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) pf_slots.push_back(s);
+            if (prefill_one && pf_slots.size() > 1) {
+                int first = pf_slots[0];
+                for (int s : pf_slots) if (reqs[s].t_start < reqs[first].t_start) first = s;
+                pf_slots.assign(1, first);
+            }
             if (!pf_slots.empty()) {
                 const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
                 for (int s : pf_slots) {
