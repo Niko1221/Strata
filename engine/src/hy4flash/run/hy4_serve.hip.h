@@ -473,7 +473,11 @@ inline int hy4_serve_main(const ServeOpts& o) {
         }
         const bool same_conv = start > 0 && (cc.ck_pos > 0 ? start >= cc.ck_pos - 64 : fwd - start <= 512);
         if (cc.on && dirty && fwd >= cc.min_tokens && (pk.ent >= 0 || !same_conv)) {
-            cc.park(r, tok, fwd);
+            if (cc.park(r, tok, fwd) && pk.ent >= 0) {
+                // Parking can erase entries and invalidate the selected index.
+                pk = cc.best(q.ids);
+                if (pk.start <= start + 256) pk = ConvCache::Pick();
+            }
             dirty = false;
         }
         if (pk.ent >= 0) {
