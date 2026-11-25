@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <iostream>
 #include <memory>
@@ -439,23 +440,49 @@ private:
     bool eof_ = false;
 };
 
+// A picture's content hash: 128 bits from two independent 64-bit hashes, so that two different pictures are never
+// taken for the same one in a long-lived engine.
+struct ImageHash {
+    uint64_t a = 0, b = 0;
+    bool operator==(const ImageHash& o) const { return a == o.a && b == o.b; }
+};
+struct ImageHashKey {
+    size_t operator()(const ImageHash& h) const { return static_cast<size_t>(h.a ^ (h.b * 0x9E3779B97F4A7C15ULL)); }
+};
+
 struct ImageSpan {
     int start = 0;
     int len = 0;
-    uint64_t hash = 0;
+    ImageHash hash;
 };
 
-// FNV-1a over a picture's normalized pixels and its grid: the same picture gives the same embeddings.
-inline uint64_t image_content_hash(const ImageRec& rc) {
-    uint64_t h = 1469598103934665603ULL;
-    auto mix = [&](const void* p, size_t n) {
-        const unsigned char* b = static_cast<const unsigned char*>(p);
-        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+// Over a picture's grid and normalized pixels (the same picture gives the same embeddings): FNV-1a over the bytes, and
+// a multiply-rotate hash over 64-bit words with its own seed.
+inline ImageHash image_content_hash(const ImageRec& rc) {
+    uint64_t h1 = 1469598103934665603ULL;
+    uint64_t h2 = 0x6A09E667F3BCC909ULL;
+    auto word = [&](uint64_t w) {
+        h2 ^= w * 0x9E3779B97F4A7C15ULL;
+        h2 = ((h2 << 31) | (h2 >> 33)) * 0xBF58476D1CE4E5B9ULL;
     };
-    mix(&rc.grid_h, sizeof(rc.grid_h));
-    mix(&rc.grid_w, sizeof(rc.grid_w));
-    mix(rc.pixel_values.data(), rc.pixel_values.size() * sizeof(float));
-    return h;
+    auto bytes = [&](const void* p, size_t n) {
+        const unsigned char* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; ++i) { h1 ^= b[i]; h1 *= 1099511628211ULL; }
+    };
+    bytes(&rc.grid_h, sizeof(rc.grid_h));
+    bytes(&rc.grid_w, sizeof(rc.grid_w));
+    bytes(rc.pixel_values.data(), rc.pixel_values.size() * sizeof(float));
+    word(static_cast<uint64_t>(static_cast<uint32_t>(rc.grid_h)) << 32 | static_cast<uint32_t>(rc.grid_w));
+    const size_t n = rc.pixel_values.size();
+    for (size_t i = 0; i < n; i += 2) {
+        uint32_t lo = 0, hi = 0;
+        std::memcpy(&lo, &rc.pixel_values[i], sizeof(float));
+        if (i + 1 < n) std::memcpy(&hi, &rc.pixel_values[i + 1], sizeof(float));
+        word(static_cast<uint64_t>(hi) << 32 | lo);
+    }
+    h2 ^= static_cast<uint64_t>(n) * 0x94D049BB133111EBULL;
+    h2 ^= h2 >> 29; h2 *= 0xBF58476D1CE4E5B9ULL; h2 ^= h2 >> 32;
+    return ImageHash{h1, h2};
 }
 
 // How much of `cached` (with its pictures `cached_spans`) the new prompt `ids` (pictures `spans`) can reuse: the
@@ -484,13 +511,13 @@ public:
         const long mb = e ? std::atol(e) : 512;
         cap_ = mb > 0 ? static_cast<size_t>(mb) * 1024 * 1024 : 0;
     }
-    const std::vector<float>* get(uint64_t h) {
+    const std::vector<float>* get(const ImageHash& h) {
         auto it = map_.find(h);
         if (it == map_.end()) return nullptr;
         it->second.tick = ++tick_;
         return &it->second.emb;
     }
-    void put(uint64_t h, const std::vector<float>& emb) {
+    void put(const ImageHash& h, const std::vector<float>& emb) {
         const size_t bytes = emb.size() * sizeof(float);
         if (cap_ == 0 || bytes > cap_ || map_.count(h)) return;
         while (used_ + bytes > cap_ && !map_.empty()) {
@@ -504,7 +531,7 @@ public:
     }
 private:
     struct Entry { std::vector<float> emb; uint64_t tick = 0; };
-    std::unordered_map<uint64_t, Entry> map_;
+    std::unordered_map<ImageHash, Entry, ImageHashKey> map_;
     size_t cap_ = 0, used_ = 0;
     uint64_t tick_ = 0;
 };
@@ -700,6 +727,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.img_embeds.clear();
         rq.prompt_img_idx.clear();
         std::vector<ImageSpan> spans;   // this prompt's pictures
+        std::vector<ImageRec> pending_recs;   // read once the reused prefix is known
 
         if (!pg.images.empty()) {
             if (!images_ok) {
@@ -718,7 +746,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 return false;
             }
             // Each picture's span in the expanded prompt (its placeholders are consecutive, in picture order)
-            std::vector<uint64_t> hashes(recs.size());
+            std::vector<ImageHash> hashes(recs.size());
             for (size_t k = 0; k < recs.size(); ++k) hashes[k] = image_content_hash(recs[k]);
             {
                 int base = 0;   // embedding rows of the pictures before picture k
@@ -731,25 +759,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     }
                 }
             }
-            // Encode images (a picture read before comes from the cache; else GPU backend first, fallback to CPU ViT)
-            for (size_t k = 0; k < recs.size(); ++k) {
-                std::vector<float> emb;
-                std::string verr;
-                const char* from = "cache";
-                if (const auto* hit = img_cache.get(hashes[k])) {
-                    emb = *hit;
-                } else {
-                    from = "gpu";
-                    if (!backend.encode_image(recs[k], emb, verr)) {
-                        from = "cpu";
-                        if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
-                        if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
-                    }
-                    img_cache.put(hashes[k], emb);
-                }
-                rq.img_embeds.insert(rq.img_embeds.end(), emb.begin(), emb.end());
-                proto("IMG %zu %d %d %d %s", k, recs[k].grid_h, recs[k].grid_w, recs[k].num_lm_tokens(), from);
+            if (spans.size() != recs.size()) {
+                err = "image: placeholders do not match the pictures";
+                rq.active = false;
+                return false;
             }
+            pending_recs = std::move(recs);
         } else {
             rq.prompt_ids = pg.ids;
             rq.prompt_img_idx.assign(rq.prompt_ids.size(), -1);
@@ -806,6 +821,52 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             } else if (full_match > 0) {
                 reuse = full_match;
             }
+        }
+        // Encode the pictures the prompt still has to read: one inside the reused prefix is already in the KV, so it
+        // is neither encoded nor fed (a picture read before comes from the cache; else the GPU backend, then the CPU ViT).
+        if (!pending_recs.empty()) {
+            int skip_rows = 0;
+            bool failed = false;
+            for (size_t k = 0; k < pending_recs.size() && !failed; ++k) {
+                const auto& rc = pending_recs[k];
+                if (spans[k].start + spans[k].len <= reuse) {
+                    skip_rows += rc.num_lm_tokens();
+                    proto("IMG %zu %d %d %d reused", k, rc.grid_h, rc.grid_w, rc.num_lm_tokens());
+                    continue;
+                }
+                std::vector<float> emb;
+                std::string verr;
+                const char* from = "cache";
+                if (const auto* hit = img_cache.get(spans[k].hash)) {
+                    emb = *hit;
+                } else {
+                    from = "gpu";
+                    if (!backend.encode_image(rc, emb, verr)) {
+                        from = "cpu";
+                        if ((!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) || !cpu_vit.encode(rc, emb, err)) {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    img_cache.put(spans[k].hash, emb);
+                }
+                rq.img_embeds.insert(rq.img_embeds.end(), emb.begin(), emb.end());
+                proto("IMG %zu %d %d %d %s", k, rc.grid_h, rc.grid_w, rc.num_lm_tokens(), from);
+            }
+            if (failed) {
+                // The slot may hold a restored checkpoint by now: forget it, so the next request starts clean.
+                backend.reset_slot(rq.slot);
+                rq.cached_prefix.clear();
+                rq.prompt_ckpt_prefix.clear();
+                rq.shared_prefix.clear();
+                rq.img_spans.clear();
+                rq.ckpt_img_spans.clear();
+                rq.active = false;
+                return false;
+            }
+            // Rows of the skipped pictures are not in img_embeds; their positions are below reuse and never fed.
+            if (skip_rows > 0)
+                for (auto& v : rq.prompt_img_idx) v = (v >= skip_rows) ? v - skip_rows : -1;
         }
         if (reuse == 0) {
             backend.reset_slot(rq.slot);
