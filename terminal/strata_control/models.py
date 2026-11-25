@@ -1026,6 +1026,12 @@ def plan_import(raw_path: str) -> dict:
         candidate = None
         if observed_experts and observed_experts <= {"Q4_K", "Q6_K", "Q8_0", "BF16"} and "Q4_K" in observed_experts:
             candidate = {"family": "hy4-flash", "model": "Q4_K_M", "expected_expert_types": ["Q4_K", "Q6_K", "Q8_0", "BF16"]}
+        # An ADDITIONAL build, not a relaxation: which expert quantizations are accepted is a claim about
+        # which engine implements them, and the IQ2 experts are implemented by the Metal engine only. Naming
+        # IQ2_XXS positively keeps this from widening the Q4_K-family case, which a bare subset test would.
+        elif (sys.platform == "darwin" and observed_experts
+              and observed_experts <= {"Q4_K", "IQ2_XXS", "BF16"} and "IQ2_XXS" in observed_experts):
+            candidate = {"family": "hy4-flash", "model": "IQ2_AH", "expected_expert_types": ["Q4_K", "IQ2_XXS", "BF16"]}
     if candidate is None and metadata is not None and not issues and metadata["architecture"] == "qwen4exp":
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
         if candidate is None:

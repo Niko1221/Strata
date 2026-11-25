@@ -6,6 +6,7 @@ import mmap
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -269,6 +270,12 @@ def defaults(s, computer, src: Path | None = None):
         if flag.startswith("--") and flag not in advanced:
             raise ValueError(f"hy4-flash launch does not support --set {flag}; use its named launch options or hy4-flash environment settings.")
     cards = [g for g in computer.usable_gpus if g.get("vendor") == "nvidia"]
+    if not cards and sys.platform == "darwin":
+        # Apple silicon: the engine is the native Metal one, whose expert budget is the unified-memory arena
+        # it plans for itself, not a card's VRAM. Everything below this point reads a CUDA card, so the Mac
+        # path resolves its own small set of choices and returns; off Darwin nothing here changes.
+        _metal_defaults(s, src)
+        return
     if not cards:
         raise ValueError("hy4-flash requires a CUDA GPU and a local hy4-flash-enabled engine build.")
     if not s.gpus:
@@ -328,6 +335,37 @@ def defaults(s, computer, src: Path | None = None):
         s.expert_vram = round(max(0, pool), 2)
     if not math.isfinite(s.expert_vram) or s.expert_vram < 0:
         raise ValueError("--expert-vram must be a finite, non-negative GiB budget.")
+
+
+def _metal_defaults(s, src: Path | None) -> None:
+    """The Apple-silicon choices: what the native Metal engine actually takes, and nothing invented.
+
+    The expert budget is deliberately NOT set here. STRATA_METAL_ARENA_GB short-circuits the engine's own
+    arena plan and with it the live shrink/grow guards, so a number chosen here would be a fixed budget with
+    the self-correction switched off - and the right number is the machine's, not this file's. A person who
+    wants a fixed arena passes --set STRATA_METAL_ARENA_GB=N, which reaches the engine through `extra`.
+    """
+    pictures = s.vision in ("on", "gpu")
+    if pictures:
+        # The Metal engine has its own tower now (engine/metal/src/hy4flash_gguf/vis_tower.cpp).  The capability marker is
+        # the gate, not the platform: a binary without it refuses --vision for the same reason the CUDA
+        # path does, and an older Metal build is one of those binaries.
+        exe = find_engine(s, src or Path(__file__).resolve().parents[1])
+        if not exe or "vision" not in runtime_capabilities(str(exe)):
+            raise ValueError("This Metal engine was built without the hy4-flash vision tower; use --vision off.")
+        vision_shard(s)
+    s.context = s.context or 4096
+    s.kv = kv_format(s, src)           # the binary is probed for Q8_0 KV, so a Metal build resolves to fp16
+    if s.kv != "fp16":
+        raise ValueError("The Metal hy4-flash engine keeps its latent KV cache as fp16; use --kv fp16.")
+    mtp = s.mtp == "on" or s.drafting == "mtp"
+    s.parallel, s.vision = 1, "on" if pictures else "off"
+    s.mtp, s.drafting = ("on", "mtp") if mtp else ("off", "off")
+    s.split_engine = "off"
+    s.gpus = s.gpus or [0]
+    # Accepted and ignored by this engine (its experts live in the arena, not in a card's VRAM); kept finite so
+    # the caller's own validation of the field still means something.
+    s.expert_vram = 0.0
 
 
 def find_engine(s, src: Path) -> Path | None:
@@ -506,12 +544,47 @@ def serving_environment(mtp: bool) -> dict[str, str]:
     return env
 
 
+#: Prefill positions a chunk covers on Apple silicon. A multiple of the indexer's kpool, which the engine
+#: re-checks: a chunk ending inside a group leaves that group to be pooled by the next one.
+METAL_PREFILL_CHUNK = 4096
+
+
+def _metal_config(s, src: Path, model, pack, mtp: bool) -> dict:
+    """The Metal engine's command line. None of the CUDA serving environment applies here - those switches
+    belong to src/hy4flash_gguf and this engine rejects the ones that would change its arithmetic - so only what a
+    person passed with --set is forwarded.
+
+    --expert-vram and --resident-experts are left out: this engine accepts and ignores them, and an argument
+    that reads as a budget while having no effect is worse than its absence. --draft-tokens is left out too,
+    so the engine's own default stands unless a person names one.
+    """
+    chunk = int(s.extra.get("HY4_FLASH_PREFILL_CHUNK", METAL_PREFILL_CHUNK))
+    args = ["--native", str(model), "--pack", str(pack), "--context", str(s.context or 4096),
+            "--prefill-chunk", str(chunk), "--serve"]
+    # terminal/serve/server.py selects Hy4FlashPictures on `--vision-shard` being in these args, so this is also what
+    # turns pictures on for the server side.
+    if s.vision == "on":
+        args += ["--vision-shard", str(vision_shard(s))]
+    if mtp:
+        args.append("--mtp")
+        if s.draft_tokens is not None:
+            args += ["--draft-tokens", str(s.draft_tokens)]
+    env = {k: str(v) for k, v in s.extra.items() if not k.startswith("--")}
+    return {"exe": str(engine_path(s, src)), "cwd": str(src), "arch": "hy4-flash", "backend": "metal",
+            "model_name": "hy4-flash-metal", "tokenizer": str(pack / "tokenizer"),
+            "args": args, "env": env, "kv": s.kv or "fp16",
+            "gpu": s.gpus or [0], "parallel": 1, "mtp": mtp, "mtp_resident_bytes": 0,
+            "drafting": "mtp" if mtp else "off", "split_engine": "off"}
+
+
 def config(s, src: Path) -> dict:
     model, pack = model_file(s.model_path), pack_path(s)
     missing = missing_pack(pack)
     if missing:
         raise ValueError(f"hy4-flash pack {pack} is incomplete: {', '.join(missing)}")
     mtp = s.mtp == "on"
+    if sys.platform == "darwin":
+        return _metal_config(s, src, model, pack, mtp)
     draft_bytes = mtp_weight_bytes(model, host_experts=mtp_host_experts(s)) if mtp else 0
     env = serving_environment(mtp or bool(s.dfly_model))
     exe = str(engine_path(s, src))
