@@ -9504,12 +9504,28 @@ def shape_engine_fetch(a):
     name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
     from strata_cli import update_cmd
     source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
-    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
+    lines: list[str] = []                                            # #7119: what ensure said; the last one is why it stopped
+
+    def emit(m):
+        lines.append(str(m))
+        say("  " + m)
+
+    exe = shape_engine.ensure(shape, source, emit=emit, title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
             warn(shape_engine.WORDS["setup_skip"].format(model=name))
             return None
-        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
+        why = (lines[-1].strip() if lines else "").rstrip()
+        try:
+            hand = shape_engine.hand_install_note(shape)
+        except Exception:                                            # noqa: BLE001 - a note about folders never hides the failure itself
+            hand = ""
+        if why and not why.endswith((".", "!", "?")):
+            why += "."
+        if hand:
+            why = f"{why} {hand}".strip()
+        fail(shape_engine.WORDS["setup_failed"].format(model=name),
+             shape_engine.WORDS["setup_failed_why"].format(why=why) if why else shape_engine.WORDS["setup_failed_hint"])
     found = shape_engine.find(shape, full=False, title=title)
     ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
     return found

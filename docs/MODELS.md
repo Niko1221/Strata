@@ -293,6 +293,8 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
+Inkling-2-Mini has its own engine package (`strata-inkling`), which Strata downloads the first time you choose the model. If you unpack a package by hand instead (for example after downloading it with a download manager), the right folder is `components\shapes\inkling2\engine\<package>\` (Windows: `%LOCALAPPDATA%\Strata\components\...`; Linux and Mac: `~/.local/share/strata/components/shapes/inkling2/engine/<package>/`), with `engine-component.json` directly inside the package folder; not in the Qwen engine's `engine` folder and not one folder deeper. When the install fails, the message now says why and names a wrongly placed package.
+
 **The DSpark drafter (speculative drafting)** is decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dspark` always turns it on, `--drafting off` always off).
 It is one small model: the original `mtp.safetensors` of Thinking Machines (636 MB, BF16; downloaded for the GGUF builds, pinned by commit and checksum), with Unsloth's 402 MB Q8_0 copy of the same weights (`dspark-...-Q8_0.gguf`, the version before 2026-11-23) as the fallback; the copy inside the SQ builds is the same checkpoint too. It guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
 code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
