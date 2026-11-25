@@ -3112,13 +3112,17 @@ struct Engine {
     const Layer& layer_at(int li) const { return li < (int) m->layers.size() ? m->layers[(size_t) li] : m->mtp; }
 
     /// A streamed forward over the state indices `seq`: the first two layers' experts start copying now.
+    static bool staging_one() {   // STRATA_Q36_STAGING_ONE: the single staging buffer plan (no prefetched next layer)
+        static const bool one = std::getenv("STRATA_Q36_STAGING_ONE") != nullptr;
+        return one;
+    }
     void stream_begin(const std::vector<int>& seq) {
         stream_seq = seq;
         stream_pos = 0;
-        for (int i = 0; i < 2 && i < (int) seq.size(); ++i) stream_kick(i);
+        for (int i = 0; i < (staging_one() ? 1 : 2) && i < (int) seq.size(); ++i) stream_kick(i);
     }
     void stream_kick(int i) {   // the i-th layer of the sequence into staging buffer i % 2, after its last reader
-        const int b = i % 2;
+        const int b = staging_one() ? 0 : i % 2;
         const Layer& L = layer_at(stream_seq[(size_t) i]);
         CK(cudaStreamWaitEvent(cst, ev_used[b], 0));
         // the experts with a VRAM slot come from it (device to device, at VRAM speed), only the others over PCIe; runs
@@ -3156,12 +3160,12 @@ struct Engine {
             std::fprintf(stderr, "strata-q36: the expert stream is out of step (layer %d)\n", li);
             std::exit(1);
         }
-        const int b = stream_pos % 2;
+        const int b = staging_one() ? 0 : stream_pos % 2;
         CK(cudaStreamWaitEvent(st, ev_copy[b], 0));
         return stage[b];
     }
     void stream_done() {
-        const int b = stream_pos % 2;
+        const int b = staging_one() ? 0 : stream_pos % 2;   // the slot stream_kick waits on
         CK(cudaEventRecord(ev_used[b], st));
         if (stream_pos + 2 < (int) stream_seq.size()) stream_kick(stream_pos + 2);
         ++stream_pos;
@@ -4356,7 +4360,9 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     hin.n_layers = all.size();
     hin.tail = kMmqTail;
     hin.outputs = (size_t) E.tmax * (size_t) m.top_k * (size_t) g.n_embd * 4 + (size_t) E.tmax * (size_t) m.top_k * 4;
-    hin.staging_full = 2 * (max_layer + kMmqTail);
+    // 200k+q8_0 on 8 GiB: the staging pair (0.80 GiB) does not fit, a single buffer (0.40 GiB) does
+    const bool one_stage = std::getenv("STRATA_Q36_STAGING_ONE") != nullptr;
+    hin.staging_full = (one_stage ? 1 : 2) * (max_layer + kMmqTail);
     hin.streamed = E.use_pf && E.main_hybrid;
     hin.allow_drop = std::getenv("STRATA_Q36_KEEP_STAGING") == nullptr;   // =1: the old plan, no fallback
     hin.ne = ne;
@@ -4481,7 +4487,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
         bool stage_ok = true;
-        for (int b = 0; b < 2; ++b) {
+        const int n_stage = std::getenv("STRATA_Q36_STAGING_ONE") != nullptr ? 1 : 2;
+        for (int b = 0; b < n_stage; ++b) {
             const cudaError_t se = cudaMalloc((void**) &E.stage[b], max_layer + kMmqTail);
             if (se != cudaSuccess) {
                 if (hin.allow_drop) {
