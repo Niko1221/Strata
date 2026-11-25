@@ -123,7 +123,17 @@ inline strata::inkling2::ArchProfile current_arch_profile(int dev = 0) {
 // cudaMemGetInfo subtracts reclaimable OS page cache (like the 19 GB .strata file just read!),
 // so take max(cuda_free, /proc/meminfo MemAvailable) to prevent false hybrid spill!
 inline cudaError_t ink_cuda_mem_info(size_t* vfree, size_t* vtot, int dev = -1) {
+    // #7093: cudaMemGetInfo reads the CURRENT device. Callers pass `dev` for another card (a peer stage of the layer
+    // split) without switching to it, and got the current card's free memory instead; read `dev` itself.
+    int prev_dev = -1;
+    if (dev >= 0 && cudaGetDevice(&prev_dev) == cudaSuccess && prev_dev != dev) {
+        cudaError_t se = cudaSetDevice(dev);
+        if (se != cudaSuccess) return se;
+    } else {
+        prev_dev = -1;
+    }
     cudaError_t ce = cudaMemGetInfo(vfree, vtot);
+    if (prev_dev >= 0) cudaSetDevice(prev_dev);
     if (ce != cudaSuccess) return ce;
 #if defined(__linux__)
     int cur = dev;
