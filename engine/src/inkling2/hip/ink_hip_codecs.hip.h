@@ -1920,6 +1920,166 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
     }
 }
 
+// M = 2..MT (MT <= 4) versions of k_bf16_gemv1_qkvrg and k_bf16_gemv1_wo_sconv for decode steps of distinct slots (the
+// fused counterparts of k_bf16_gemv1_mr): every row is reduced in exactly the M = 1 order (same lane split, same fmaf
+// nesting, same acc0 + acc1 then wave32 sum), so a slot decoding next to other slots gets the bits it gets alone. Each W
+// row is read once for all M rows; X rows are staged in dynamic LDS (M * K floats, K <= 4096, K % 8 == 0).
+// Grid: ((N + 7) / 8), Block: 256, dynamic LDS M * K * 4 bytes.
+#define INK_BF16_ROWDOT_STEP(WA, WB, XS, A0, A1, KK)                                                                  \
+    {                                                                                                                   \
+        const float4 xa0 = *reinterpret_cast<const float4*>((XS) + (KK));                                              \
+        const float4 xa1 = *reinterpret_cast<const float4*>((XS) + (KK) + 4);                                          \
+        const float4 xb0 = *reinterpret_cast<const float4*>((XS) + (KK) + 256);                                        \
+        const float4 xb1 = *reinterpret_cast<const float4*>((XS) + (KK) + 260);                                        \
+        A0 = fmaf(bf16_to_f32(WA.x & 0xFFFFu), xa0.x, fmaf(bf16_to_f32(WA.x >> 16), xa0.y,                             \
+             fmaf(bf16_to_f32(WA.y & 0xFFFFu), xa0.z, fmaf(bf16_to_f32(WA.y >> 16), xa0.w, A0))));                     \
+        A0 = fmaf(bf16_to_f32(WA.z & 0xFFFFu), xa1.x, fmaf(bf16_to_f32(WA.z >> 16), xa1.y,                             \
+             fmaf(bf16_to_f32(WA.w & 0xFFFFu), xa1.z, fmaf(bf16_to_f32(WA.w >> 16), xa1.w, A0))));                     \
+        A1 = fmaf(bf16_to_f32(WB.x & 0xFFFFu), xb0.x, fmaf(bf16_to_f32(WB.x >> 16), xb0.y,                             \
+             fmaf(bf16_to_f32(WB.y & 0xFFFFu), xb0.z, fmaf(bf16_to_f32(WB.y >> 16), xb0.w, A1))));                     \
+        A1 = fmaf(bf16_to_f32(WB.z & 0xFFFFu), xb1.x, fmaf(bf16_to_f32(WB.z >> 16), xb1.y,                             \
+             fmaf(bf16_to_f32(WB.w & 0xFFFFu), xb1.z, fmaf(bf16_to_f32(WB.w >> 16), xb1.w, A1))));                     \
+    }
+#define INK_BF16_ROWDOT_TAIL(WA, XS, A0, KK)                                                                            \
+    {                                                                                                                   \
+        const float4 xa0 = *reinterpret_cast<const float4*>((XS) + (KK));                                              \
+        const float4 xa1 = *reinterpret_cast<const float4*>((XS) + (KK) + 4);                                          \
+        A0 = fmaf(bf16_to_f32(WA.x & 0xFFFFu), xa0.x, fmaf(bf16_to_f32(WA.x >> 16), xa0.y,                             \
+             fmaf(bf16_to_f32(WA.y & 0xFFFFu), xa0.z, fmaf(bf16_to_f32(WA.y >> 16), xa0.w, A0))));                     \
+        A0 = fmaf(bf16_to_f32(WA.z & 0xFFFFu), xa1.x, fmaf(bf16_to_f32(WA.z >> 16), xa1.y,                             \
+             fmaf(bf16_to_f32(WA.w & 0xFFFFu), xa1.z, fmaf(bf16_to_f32(WA.w >> 16), xa1.w, A0))));                     \
+    }
+
+// Row dot products of W row `wr` with the M LDS rows sX[m * K ..], in the k_bf16_gemv1_lds order; out[m] = wave sum.
+template <int MT>
+__device__ __forceinline__ void bf16_rowdot_m1order(const uint16_t* __restrict__ wr, const float* sX, int M, int K,
+                                                     int lane, float (&out)[MT]) {
+    float acc0[MT], acc1[MT];
+#pragma unroll
+    for (int m = 0; m < MT; ++m) { acc0[m] = 0.0f; acc1[m] = 0.0f; }
+    int k = lane * 8;
+    for (; k + 256 < K; k += 512) {
+        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
+        const uint4 wb = *reinterpret_cast<const uint4*>(wr + k + 256);
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) INK_BF16_ROWDOT_STEP(wa, wb, sX + static_cast<size_t>(m) * K, acc0[m], acc1[m], k)
+        }
+    }
+    if (k < K) {
+        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) INK_BF16_ROWDOT_TAIL(wa, sX + static_cast<size_t>(m) * K, acc0[m], k)
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < MT; ++m) out[m] = wave32_sum(acc0[m] + acc1[m]);
+}
+
+__device__ __forceinline__ void stage_rows_lds(const float* __restrict__ X, float* sX, int n4) {
+    const float4* x4 = reinterpret_cast<const float4*>(X);
+    float4* sx4 = reinterpret_cast<float4*>(sX);
+    for (int i = threadIdx.x; i < n4; i += 256) sx4[i] = x4[i];
+    __syncthreads();
+}
+
+// = k_bf16_gemv1_qkvrg for M rows (outputs [M, q_dim] / [M, r_dim] / [M, kv_dim] / [M, n_sink])
+template <int MT>
+__global__ void __launch_bounds__(256) k_bf16_gemvm_qkvrg(
+    const uint16_t* __restrict__ W, const float* __restrict__ X,
+    float* __restrict__ Q, float* __restrict__ R, float* __restrict__ G, float* __restrict__ K_out, float* __restrict__ V_out,
+    const float* __restrict__ W_sink, float* __restrict__ Sinks_out,
+    int q_dim, int r_dim, int kv_dim, int tot_n, int n_sink, int M, int K) {
+    extern __shared__ float4 s_dyn4[];
+    float* sX = reinterpret_cast<float*>(s_dyn4);
+    const int lane = threadIdx.x & 31;
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    const int k4 = K >> 2;
+    stage_rows_lds(X, sX, M * k4);
+    if (row >= tot_n + n_sink) return;
+    if (row >= tot_n) {
+        const int sr = row - tot_n;
+        const float4* w4 = reinterpret_cast<const float4*>(W_sink + static_cast<size_t>(sr) * K);
+        float acc[MT];
+#pragma unroll
+        for (int m = 0; m < MT; ++m) acc[m] = 0.0f;
+        for (int i = lane; i < k4; i += 32) {
+            const float4 wv = w4[i];
+#pragma unroll
+            for (int m = 0; m < MT; ++m) {
+                if (m < M) {
+                    const float4 xv = s_dyn4[m * k4 + i];
+                    acc[m] = fmaf(wv.x, xv.x, fmaf(wv.y, xv.y, fmaf(wv.z, xv.z, fmaf(wv.w, xv.w, acc[m]))));
+                }
+            }
+        }
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            const float sum = wave32_sum(acc[m]);
+            if (lane == 0 && m < M) Sinks_out[static_cast<size_t>(m) * n_sink + sr] = sum;
+        }
+        return;
+    }
+    float s[MT];
+    bf16_rowdot_m1order<MT>(W + static_cast<size_t>(row) * K, sX, M, K, lane, s);
+    if (lane == 0) {
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m >= M) break;
+            const float sum = s[m];
+            if (row < q_dim) Q[static_cast<size_t>(m) * q_dim + row] = sum;
+            else if (row < q_dim + r_dim) R[static_cast<size_t>(m) * r_dim + row - q_dim] = sum;
+            else if (row < 2 * q_dim + r_dim) G[static_cast<size_t>(m) * q_dim + row - (q_dim + r_dim)] = sum;
+            else if (K_out && row < 2 * q_dim + r_dim + kv_dim) K_out[static_cast<size_t>(m) * kv_dim + row - (2 * q_dim + r_dim)] = sum;
+            else if (V_out) V_out[static_cast<size_t>(m) * kv_dim + row - (2 * q_dim + r_dim + kv_dim)] = sum;
+        }
+    }
+}
+
+// = k_bf16_gemv1_wo_sconv for M rows of distinct slots (slot_ids[m]; cur / blk_save are [M, D])
+template <int MT>
+__global__ void __launch_bounds__(256) k_bf16_gemvm_wo_sconv(
+    const uint16_t* __restrict__ W, const float* __restrict__ X, const float* __restrict__ static_w,
+    const int32_t* __restrict__ slot_ids, uint16_t* __restrict__ hist_pool, float* __restrict__ cur,
+    float* __restrict__ blk_save, int M, int D, int K) {
+    // no FMA contraction, as in k_bf16_gemv1_wo_sconv (#6671), so the ShortConv epilogue rounds like the one-token step
+#pragma clang fp contract(off)
+    extern __shared__ float4 s_dyn4[];
+    float* sX = reinterpret_cast<float*>(s_dyn4);
+    const int lane = threadIdx.x & 31;
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    stage_rows_lds(X, sX, (M * K) >> 2);
+    if (row >= D) return;
+    float s[MT];
+    bf16_rowdot_m1order<MT>(W + static_cast<size_t>(row) * K, sX, M, K, lane, s);
+    if (lane == 0) {
+        const float4 sw = *reinterpret_cast<const float4*>(static_w + static_cast<size_t>(row) * 4);
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m >= M) break;
+            const float x0 = s[m];
+            uint16_t* h_slot = hist_pool + static_cast<size_t>(slot_ids[m]) * 3 * D;
+            const float h0 = bf16_to_f32(h_slot[0 * D + row]);
+            const float h1 = bf16_to_f32(h_slot[1 * D + row]);
+            const float h2 = bf16_to_f32(h_slot[2 * D + row]);
+            const float y = (x0 + sw.x * h0 + sw.y * h1 + sw.z * h2 + sw.w * x0) * 0.44721359549995793f;
+            h_slot[0 * D + row] = h_slot[1 * D + row];
+            h_slot[1 * D + row] = h_slot[2 * D + row];
+            h_slot[2 * D + row] = f32_to_bf16(x0);
+            float* c = cur + static_cast<size_t>(m) * D;
+            if (blk_save != nullptr) {
+                blk_save[static_cast<size_t>(m) * D + row] = c[row];
+                c[row] = y;
+            } else {
+                c[row] += y;
+            }
+        }
+    }
+}
+#undef INK_BF16_ROWDOT_STEP
+#undef INK_BF16_ROWDOT_TAIL
+
 // Wave-6C High-Occupancy Small-N FP32 GEMV (1 block of 256 threads per output row -> 128 blocks for router, 24 for sink!)
 // Saturates ALL 40-64 CUs on R9700 & Strix Halo (8x higher occupancy than 16-block k_f32_gemv!)
 // Grid: (N, M), Block: 256

@@ -3499,7 +3499,10 @@ private:
                 slots_[s0].sconv_rec_n = B;
             }
         }
-        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_ && rec_slot >= 0);
+        // Decode steps of 2..4 distinct slots (one row each) take the same exact-row kernels, so a slot that decodes next to
+        // other slots gets the bits it gets alone (the B = 2..8 GEMVs otherwise round X and W to FP16).
+        const bool exact_dec = all_distinct_slots && rec_slot < 0 && B >= 2 && B <= 4;
+        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_ && (rec_slot >= 0 || exact_dec));
 
         bool is_contiguous_single_slot = (!all_distinct_slots && n_groups == 1 && B >= 16);
         for (int b = 1; b < B && is_contiguous_single_slot; ++b) {
@@ -3910,6 +3913,19 @@ private:
                             sink_is_f32 ? sinks : nullptr,
                             q_dim, r_dim, kv_dim, tot_n, ns, D);
                         sink_done = sink_is_f32;
+                    } else if (exact_rows_ && exact_dec && D <= 4096 && (D & 7) == 0) {
+                        const int ns = sink_is_f32 ? c_.n_head : 0;
+                        const size_t lds = static_cast<size_t>(B) * D * sizeof(float);
+                        const float* wsk = sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr;
+                        float* osk = sink_is_f32 ? sinks : nullptr;
+                        if (B == 2) {
+                            k_bf16_gemvm_qkvrg<2><<<(tot_n + ns + 7) / 8, 256, lds, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, k_raw, v_raw, wsk, osk, q_dim, r_dim, kv_dim, tot_n, ns, B, D);
+                        } else {
+                            k_bf16_gemvm_qkvrg<4><<<(tot_n + ns + 7) / 8, 256, lds, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, k_raw, v_raw, wsk, osk, q_dim, r_dim, kv_dim, tot_n, ns, B, D);
+                        }
+                        sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, tot_n, D);
                         k_split_qkvrg<<<dim3(((tot_n >> 2) + 255) / 256, B), 256, 0, stream_>>>(
@@ -3924,6 +3940,19 @@ private:
                             sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
                             sink_is_f32 ? sinks : nullptr,
                             q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                        sink_done = sink_is_f32;
+                    } else if (exact_rows_ && exact_dec && D <= 4096 && (D & 7) == 0) {
+                        const int ns = sink_is_f32 ? c_.n_head : 0;
+                        const size_t lds = static_cast<size_t>(B) * D * sizeof(float);
+                        const float* wsk = sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr;
+                        float* osk = sink_is_f32 ? sinks : nullptr;
+                        if (B == 2) {
+                            k_bf16_gemvm_qkvrg<2><<<(qrg_n + ns + 7) / 8, 256, lds, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, nullptr, nullptr, wsk, osk, q_dim, r_dim, kv_dim, qrg_n, ns, B, D);
+                        } else {
+                            k_bf16_gemvm_qkvrg<4><<<(qrg_n + ns + 7) / 8, 256, lds, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, nullptr, nullptr, wsk, osk, q_dim, r_dim, kv_dim, qrg_n, ns, B, D);
+                        }
                         sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, qrg_n, D);
@@ -4107,6 +4136,23 @@ private:
                     reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr),
                     reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr + visit * vstride),
                     cur, bsave, D, q_dim);
+            } else if (exact_rows_ && exact_dec && q_dim <= 4096 && (q_dim & 7) == 0 && trunk_bf16_.count(wo_key) > 0) {
+                const size_t vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
+                float* bsave = nullptr;
+                if (ip % c_.block_size == 0) {
+                    bsave = reinterpret_cast<float*>(sc_blocks_[n_blocks].dev_ptr);
+                    blk_ptrs.push_back(bsave);
+                    ++n_blocks;
+                }
+                const size_t lds = static_cast<size_t>(B) * q_dim * sizeof(float);
+                const float* sw = reinterpret_cast<const float*>(static_sconv_.at(p + ".attn_sconv").dev_ptr);
+                uint16_t* hp = reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr + visit * vstride);
+                const int32_t* sids = reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr);
+                if (B == 2) {
+                    k_bf16_gemvm_wo_sconv<2><<<(D + 7) / 8, 256, lds, stream_>>>(bf16_ptr(wo_key), aout, sw, sids, hp, cur, bsave, B, D, q_dim);
+                } else {
+                    k_bf16_gemvm_wo_sconv<4><<<(D + 7) / 8, 256, lds, stream_>>>(bf16_ptr(wo_key), aout, sw, sids, hp, cur, bsave, B, D, q_dim);
+                }
             } else {
                 launch_trunk_linear(wo_key, aout, oproj, B, D, q_dim);
                 if (ip % c_.block_size == 0) {
@@ -5827,8 +5873,9 @@ private:
     HipHybridController hybrid_;
     HybProf hyb_prof_;
     int blaslt_min_m_ = 16;
-    // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), every linear
-    // layer uses the kernels whose row m is the value the one-token step gives (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.
+    // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), and in decode
+    // steps of 2..4 distinct slots, every linear layer uses the kernels whose row m is the value the one-token step gives
+    // (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.
     bool exact_rows_ = false;
     bool exact_verify_enabled_ = true;
     // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), mlpin (4v+1), the router logits (4v+3),
