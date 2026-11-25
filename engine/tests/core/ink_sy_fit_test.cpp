@@ -40,15 +40,20 @@ int main() {
     for (uint8_t s : g.visit_is_swa) n_global += s ? 0 : 1;
     CHECK(g.visit_is_swa.size() == 48 && n_global == 8);
 
-    // the K/V of one slot at 32768 tokens is what the engine logs ("KV=1184.0 MiB"): 8 global visits of 32768 tokens + 40 window visits of 1024
+    // Eight global visits use the whole context. The 40 window visits keep a window plus the rest of an in-flight batch.
     const size_t one = ink_sy_runner_reserve(g, 1, 32768, 256);
-    const size_t kv_only_1 = 2ull * 1 * (8ull * 32768 + 40ull * 1024) * 8 * 128 * 2;
-    CHECK(kv_only_1 == 1184 * MiB);
+    const size_t kv_only_1 = 2ull * 1 * (8ull * 32768 + 40ull * 1279) * 8 * 128 * 2;
+    CHECK(swa_kv_stride(1024, 256, 32768) == 1279);
+    CHECK(swa_kv_stride(1024, 512, 1100) == 1100);
+    InkSyFitGeom no_window = g;
+    no_window.swa_win = 1;
+    const size_t extra_ring = 2ull * 40 * (1279 - 256) * 8 * 128 * 2;
+    CHECK(one == ink_sy_runner_reserve(no_window, 1, 32768, 256) + extra_ring);
     CHECK(one > kv_only_1 && one < kv_only_1 + 1 * GiB);
 
-    // 32 slots at 4096 tokens: about 4.3 GiB of K/V alone (the 256 MiB allocation of the crash is one visit of it)
-    const size_t kv32 = 2ull * 32 * (8ull * 4096 + 40ull * 1024) * 8 * 128 * 2;
-    CHECK(kv32 == 32ull * 2 * (8 * 4096 + 40 * 1024) * 1024 * 2);
+    // 32 slots at 4096 tokens: over 4 GiB of K/V alone (the 256 MiB allocation of the crash is one visit of it)
+    const size_t kv32 = 2ull * 32 * (8ull * 4096 + 40ull * 1279) * 8 * 128 * 2;
+    CHECK(kv32 == 32ull * 2 * (8 * 4096 + 40 * 1279) * 1024 * 2);
     CHECK(32ull * 4096 * 1024 * 2 == 256 * MiB);
     CHECK(ink_sy_runner_reserve(g, 32, 4096, 256) > kv32);
 

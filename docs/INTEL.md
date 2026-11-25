@@ -610,3 +610,37 @@ decimals. Prompt speed is unchanged.
 
 The eight "no" controls measured neutral or slightly slower on that configuration (an internal measurement; the single-control table is not published); they stay available for other models and cards. Unsupported layouts retain their
 existing paths. Explicit projection overrides take precedence over shape selection.
+
+## Inkling-2-Mini on Battlemage
+
+On Battlemage (BMG-G21 and BMG-G31) the Inkling SYCL engine uses the paths below. Each one gives the same bytes as
+the path it replaces for the same inputs. Unset or `1` enables a group; any other value, including `true` or `on`,
+disables it.
+
+- **Routed experts in a prompt step.** With all experts resident on one card, the step groups the routes of each
+  expert on the host, gathers the inputs once, calls oneMKL with the original per-expert GEMM shapes and adds the
+  weighted outputs in the original top-8 order. One kernel expands both FP16 panels of an SF4 expert. Experts with
+  1–11 rows use compressed SF4/MX8 dots with the reduction order of the separate kernels.
+- **Prompt chunks above 512 tokens.** On one slot with resident experts, a step of up to 4,096 tokens that starts at
+  a multiple of 512 keeps the GEMM shapes of 512-token chunks for every projection and routed expert. `--chunk 4096`
+  then gives the same bytes as `--chunk 512`, and each expanded expert weight serves all tiles of the step.
+- **Routed experts for a single token.** Fused SF4/MX8 expert dots, a top-8 router that keeps the original order
+  of equal scores, and a fused MLP ShortConv and residual.
+- **Attention.** Prompt attention reads each key and value once for the three query heads that share it (32 rows
+  or more) and reuses the clipped relative bias of distant keys. A single query with at least 1,024 positions
+  spreads the eight KV streams over work-groups.
+- **Projections, controllers and mixing.** Single-token FP32 and BF16 projections use SG16 streaming GEMV. Narrow FP32
+  prompt projections reuse four token rows per weight load, and attention projections that share one input convert
+  it to FP16 once. The single-token loop controllers use a packed BF16 copy of their FP32 weights when every weight
+  converts exactly (54 MiB for SQ-20); otherwise the original controller runs. ShortConv, the controller mix and the
+  residual mix are tiled for prompts.
+
+| Process variable | Effect |
+|---|---|
+| `INK_SYCL_BMG_OPT=0` | Use the original Inkling SYCL paths for everything below. |
+| `INK_SYCL_BMG_EXPERTS=0` | Use the original routed-expert paths, including 512-row tiling of larger prompt chunks. |
+| `INK_SYCL_BMG_DENSE=0` | Use the original attention, projection, controller, ShortConv and residual-mix paths. |
+
+Configure the Inkling build with `-DSTRATA_BUILD_TESTS=ON`, build it, then run
+`ctest --test-dir build-inkling -R inkling_bmg_kernels --output-on-failure`. Add
+`-DSTRATA_INKLING_TEST_MODEL=/path/to/SQ-20.strata` to include the checks on real SF4/MX8 experts.

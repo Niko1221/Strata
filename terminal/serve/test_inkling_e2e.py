@@ -337,6 +337,39 @@ def _build_mini_inkling_strata(out_path: Path, vision_path: Path) -> None:
 
 
 class TestInklingServing(unittest.TestCase):
+    def test_sycl_swa_logits_ignore_later_rows_after_wrap(self):
+        """Run with STRATA_INKLING_BIN and STRATA_INKLING_SYCL_TEST_MODEL (native SQ-20)."""
+        exe = _find_inkling_exe()
+        model = os.environ.get("STRATA_INKLING_SYCL_TEST_MODEL")
+        if not exe or not model:
+            self.skipTest("requires the SYCL engine and STRATA_INKLING_SYCL_TEST_MODEL")
+
+        # Five 256-row batches fill the 1,024-token window and wrap the KV ring.
+        # The first row of the final eight-row batch must be independent of its suffix.
+        query = 1280
+        prefix = [100 + p % 700 for p in range(query + 1)]
+        rows = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "logits.bin"
+            for suffix in ([10] * 7, [900 + p for p in range(7)]):
+                ids = prefix + suffix
+                result = subprocess.run(
+                    [str(exe), "--native", model, "--dump-ref", str(dump),
+                     "--prompt-ids", ",".join(map(str, ids)), "--chunk", "256",
+                     "--max-context", "1536", "--draft", "off"],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn("backend=sycl", result.stdout)
+                with dump.open("rb") as f:
+                    count, vocab = struct.unpack("<ii", f.read(8))
+                    self.assertEqual(count, len(ids))
+                    self.assertGreater(vocab, 0)
+                    f.seek(8 + 4 * count + 4 * query * vocab)
+                    row = f.read(4 * vocab)
+                    self.assertEqual(len(row), 4 * vocab)
+                    rows.append(row)
+        self.assertTrue(rows[0] == rows[1], "future tokens changed the target logits")
+
     def test_shape_engine_registration(self):
         self.assertEqual(shape_engine.INKLING_SHAPE, "inkling2")
         self.assertTrue(shape_engine.exe_name("inkling2").startswith("strata-inkling"))

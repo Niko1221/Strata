@@ -16,6 +16,10 @@
 #endif
 
 #include "ink_sy_common.h"
+#if __has_include(<sycl/ext/oneapi/experimental/group_load_store.hpp>)
+#include <sycl/ext/oneapi/experimental/group_load_store.hpp>
+#define INK_HAS_GROUP_LOAD 1
+#endif
 
 namespace ink_sycl {
 
@@ -306,8 +310,63 @@ inline void sy_gguf_decode_8(uint32_t t, const uint8_t* row, int col, float ext_
 // 1. Dense Trunk & DSpark Linear Kernels (SG16: BF16, Q8_ROW w/ dp4a, F32, S_K)
 // ============================================================================
 
+#ifdef INK_HAS_GROUP_LOAD
+// A striped subgroup fetch loads consecutive K steps for all 16 lanes.
+// Use integer packets so the native block read preserves float bit patterns.
+template <bool BF16>
+inline void k_streaming_gemv(const std::conditional_t<BF16, uint16_t, float>* weights, int n, int k,
+                             const float* x, float* y) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    constexpr int rows = BF16 ? 4 : 1;
+    Q().parallel_for(NR((n + rows - 1) / rows, rows * 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int row = it.get_global_id(0) / 16, lane = it.get_local_id(0) % 16;
+        if (row >= n)
+            return;
+        auto sg = it.get_sub_group();
+        float acc = 0.f;
+        const auto prop = ex::properties{ex::data_placement_striped, ex::full_group};
+        if constexpr (!BF16) {
+            for (int k0 = 0; k0 < k; k0 += 128) {
+                sycl::vec<uint32_t, 8> w, a;
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(weights + (size_t)row * k + k0), w,
+                               prop);
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(x + k0), a, prop);
+#pragma unroll
+                for (int j = 0; j < 8; ++j)
+                    acc += sycl::bit_cast<float>(static_cast<uint32_t>(w[j])) *
+                           sycl::bit_cast<float>(static_cast<uint32_t>(a[j]));
+            }
+        } else {
+            for (int k0 = 0; k0 < k; k0 += 256) {
+                sycl::vec<uint64_t, 4> w;
+                ex::group_load(sg, reinterpret_cast<const uint64_t*>(weights + (size_t)row * k + k0), w,
+                               prop);
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    auto a = *reinterpret_cast<const sycl::vec<float, 4>*>(x + k0 + 64 * j + lane * 4);
+                    auto b = sycl::bit_cast<sycl::vec<uint16_t, 4>>(static_cast<uint64_t>(w[j]));
+                    acc += bf16_to_f32(b[0]) * a[0] + bf16_to_f32(b[1]) * a[1] + bf16_to_f32(b[2]) * a[2] +
+                           bf16_to_f32(b[3]) * a[3];
+                }
+            }
+        }
+        const float sum = sg_sum(it, acc);
+        if (lane == 0)
+            y[row] = sum;
+    });
+}
+#endif
+
 // BF16 SG16 GEMV (16 SGs = 256 threads/WG -> 16 rows/WG)
 inline void k_linear_bf16_sg16(const uint16_t* W, int N, int K, const float* X, float* Y, int M) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool stream = ink_bmg_dense();
+    if (M == 1 && K % 256 == 0 && stream &&
+        reinterpret_cast<uintptr_t>(W) % 16 == 0 && reinterpret_cast<uintptr_t>(X) % 16 == 0) {
+        k_streaming_gemv<true>(W, N, K, X, Y);
+        return;
+    }
+#endif
     Q().parallel_for(NR((N + 15) / 16, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4;
         const int lane = (int)it.get_local_id(0) & 15;
@@ -484,6 +543,50 @@ inline void k_gemm_q8row_sg16(const uint8_t* W, int N, int K, const float* X, fl
     });
 }
 
+#ifdef INK_HAS_GROUP_LOAD
+// A subgroup reuses four token rows across its adjacent output channels.
+// Striped loads preserve the original order within each FP32 dot.
+template<int Outputs, int Subgroups>
+inline void k_f32_prefill_pairs(const float* weights, int n, int k, const float* x, float* y, int m) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    constexpr int tokens = 4, packet = 8;
+    Q().parallel_for(NR2(n / (Outputs * Subgroups), (m + tokens - 1) / tokens, 16 * Subgroups),
+                     [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const auto sg = it.get_sub_group();
+        const int row = (it.get_group(1) * Subgroups + sg.get_group_linear_id()) * Outputs;
+        const int first = it.get_group(0) * tokens;
+        const auto prop = ex::properties{ex::data_placement_striped, ex::full_group};
+        float acc[tokens][Outputs]{};
+        for (int k0 = 0; k0 < k; k0 += 16 * packet) {
+            sycl::vec<uint32_t, packet> weights_vec[Outputs];
+#pragma unroll
+            for (int o = 0; o < Outputs; ++o)
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(weights + size_t(row + o) * k + k0),
+                               weights_vec[o], prop);
+#pragma unroll
+            for (int t = 0; t < tokens; ++t) {
+                sycl::vec<uint32_t, packet> values;
+                const int tok = sycl::min(first + t, m - 1);
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(x + size_t(tok) * k + k0), values, prop);
+#pragma unroll
+                for (int j = 0; j < packet; ++j) {
+                    const float a = sycl::bit_cast<float>(static_cast<uint32_t>(values[j]));
+#pragma unroll
+                    for (int o = 0; o < Outputs; ++o)
+                        acc[t][o] += sycl::bit_cast<float>(static_cast<uint32_t>(weights_vec[o][j])) * a;
+                }
+            }
+        }
+        for (int t = 0; t < tokens && first + t < m; ++t)
+#pragma unroll
+            for (int o = 0; o < Outputs; ++o) {
+                const float value = sg_sum(it, acc[t][o]);
+                if (!sg.get_local_linear_id()) y[size_t(first + t) * n + row + o] = value;
+            }
+    });
+}
+#endif
+
 // One output row of an F32 linear by one sub-group (16 lanes, lane l sums the products of k = l, l + 16, ... in ascending k, then sg_sum). The loads of U
 // consecutive products of a lane are issued together before the U multiply-adds, which run in the same order as before, so the value is bit for bit
 // the one of the plain loop; what changes is that a row no longer waits for one memory round trip per product.
@@ -531,8 +634,34 @@ inline void k_linear_f32x3_sg16(const float* W0, const float* W1, const float* W
     });
 }
 
+inline bool use_f32_prefill_pairs(const float* w, int n, int k, const float* x, int m) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool enabled = ink_bmg_dense();
+    return enabled && m >= 32 && n <= 128 && n % 8 == 0 && k % 128 == 0 &&
+           reinterpret_cast<uintptr_t>(w) % 16 == 0 && reinterpret_cast<uintptr_t>(x) % 16 == 0;
+#else
+    (void)w; (void)n; (void)k; (void)x; (void)m;
+    return false;
+#endif
+}
+
 // F32 SG16 Linear (exact FP32 for routers, controllers, dynamic sconv weight_proj, attn_sink_proj)
 inline void k_linear_f32_sg16(const float* W, int N, int K, const float* X, float* Y, int M) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool stream = ink_bmg_dense();
+    if (M == 1 && N <= 128 && K % 128 == 0 && stream &&
+        reinterpret_cast<uintptr_t>(W) % 16 == 0 && reinterpret_cast<uintptr_t>(X) % 16 == 0) {
+        k_streaming_gemv<false>(W, N, K, X, Y);
+        return;
+    }
+    if (use_f32_prefill_pairs(W, N, K, X, M)) {
+        if (M >= 512)
+            k_f32_prefill_pairs<4, 2>(W, N, K, X, Y, M);
+        else
+            k_f32_prefill_pairs<2, 4>(W, N, K, X, Y, M);
+        return;
+    }
+#endif
     if (N <= 1024) {
         // Few rows (the loop controllers, the router, the dynamic conv taps): one sub-group per row and one row per work-group, so the rows
         // spread over the whole GPU instead of N/16 work-groups; the arithmetic of a row is the code below, bit for bit.
@@ -910,6 +1039,320 @@ inline void k_moe_dn_sg16(
     k_moe_dn_sg16_q(Q(), ex_layer, topk_w, uexp, uoff, ucnt, pair_list, n_uniq_dev, max_uniq, h_act, y_pairs);
 }
 
+// SQ-20 stores SF4 blocks as 8 bytes per 16 weights and MX8 blocks as
+// 32 bytes per 32 weights. Keep a whole block in registers for its dot.
+template <bool SF4> inline float sq20_block_dot(const uint8_t* payload, const float* x) {
+    constexpr int block = SF4 ? 16 : 32;
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < block; i += 8) {
+        const auto a = *reinterpret_cast<const sycl::vec<float, 8>*>(x + i);
+        if constexpr (SF4) {
+            const auto w = *reinterpret_cast<const sycl::vec<uint8_t, 4>*>(payload + i / 2);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                acc += e2m1_lut(w[j] & 15) * a[2 * j];
+                acc += e2m1_lut(w[j] >> 4) * a[2 * j + 1];
+            }
+        } else {
+            const auto w = *reinterpret_cast<const sycl::vec<uint8_t, 8>*>(payload + i);
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                acc += e4m3_to_f32(w[j]) * a[j];
+        }
+    }
+    return acc;
+}
+
+template <bool Down, bool SF4>
+inline void sq20_dot_pair(const InkSyExpertDev& ed, int pair, int lane, const float* x, float& first,
+                          float& second) {
+    constexpr int K = Down ? 1152 : 2304, block = SF4 ? 16 : 32;
+    constexpr int bytes = SF4 ? 8 : 32, blocks = K / block;
+    const uint8_t* w = ed.body_ptr + (Down ? ed.dn_off : (SF4 ? 16 : 0));
+    const uint8_t* scales = w + 2304 * blocks * bytes;
+    float outer = 1.0f;
+    if constexpr (SF4) {
+        const float* hdr = reinterpret_cast<const float*>(ed.body_ptr);
+        outer = hdr[Down ? 2 : 0] / hdr[Down ? 3 : 1];
+    }
+    for (int b = lane; b < blocks; b += 16) {
+        const int i0 = 2 * pair * blocks + b, i1 = i0 + blocks;
+        const float sc0 = SF4 ? e4m3_to_f32(scales[i0]) * outer : ue8m0_to_f32(scales[i0]);
+        const float sc1 = SF4 ? e4m3_to_f32(scales[i1]) * outer : ue8m0_to_f32(scales[i1]);
+        first += sq20_block_dot<SF4>(w + (size_t)i0 * bytes, x + b * block) * sc0;
+        second += sq20_block_dot<SF4>(w + (size_t)i1 * bytes, x + b * block) * sc1;
+    }
+}
+
+template <bool Down>
+inline void k_sq20_expert_gemv(const InkSyExpertDev* experts, const int* topk, const float* rw,
+                               const float* x, float* out) {
+    constexpr int rows_per_group = 8;
+    Q().parallel_for(NR2(1152 / rows_per_group, 8, 16 * rows_per_group),
+                     [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+                         const int rank = it.get_group(0),
+                                   pair = it.get_group(1) * rows_per_group + it.get_local_id(1) / 16;
+                         const int lane = it.get_local_id(1) % 16;
+                         const auto ed = experts[topk[rank]];
+                         const float* input = Down ? x + rank * 1152 : x;
+                         float a = 0.0f, b = 0.0f;
+                         if ((Down ? ed.dn_code : ed.gu_code) == FMT_SF4)
+                             sq20_dot_pair<Down, true>(ed, pair, lane, input, a, b);
+                         else
+                             sq20_dot_pair<Down, false>(ed, pair, lane, input, a, b);
+                         a = sg_sum(it, a);
+                         b = sg_sum(it, b);
+                         if (lane == 0) {
+                             if constexpr (Down) {
+                                 out[rank * 2304 + 2 * pair] = a * rw[rank];
+                                 out[rank * 2304 + 2 * pair + 1] = b * rw[rank];
+                             } else
+                                 out[rank * 1152 + pair] = situ_act(a, b);
+                         }
+                     });
+}
+
+// Both adjacent SF4 output rows reuse a single activation vector. Each lane
+// accumulates the original blocks in order before the SG16 reduction.
+template <bool Down>
+inline void k_sq20_sf4_pair(const InkSyExpertDev* experts, const int* ids, const float* route_weights,
+                            const float* x, float* out) {
+    constexpr int K = Down ? 1152 : 2304, blocks = K / 16;
+    Q().parallel_for(NR2(144, 8, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int rank = it.get_group(0), lid = it.get_local_id(1), lane = lid % 16;
+        const int pair = it.get_group(1) * 8 + lid / 16;
+        const auto ed = experts[ids[rank]];
+        const float* hdr = reinterpret_cast<const float*>(ed.body_ptr);
+        const float outer = hdr[Down ? 2 : 0] / hdr[Down ? 3 : 1];
+        const uint8_t* payload = ed.body_ptr + (Down ? ed.dn_off : 16);
+        const uint8_t* scales = payload + 2304 * blocks * 8;
+        const float* input = Down ? x + rank * K : x;
+        float sums[2]{};
+        for (int b = lane; b < blocks; b += 16) {
+            auto a = *reinterpret_cast<const sycl::vec<float, 16>*>(input + b * 16);
+#pragma unroll
+            for (int p = 0; p < 2; ++p) {
+                const int i = (2 * pair + p) * blocks + b;
+                auto bytes = *reinterpret_cast<const sycl::vec<uint8_t, 8>*>(payload + i * 8);
+                float dot = 0.f;
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    dot += e2m1_lut(bytes[j] & 15) * a[2 * j];
+                    dot += e2m1_lut(bytes[j] >> 4) * a[2 * j + 1];
+                }
+                sums[p] += dot * (e4m3_to_f32(scales[i]) * outer);
+            }
+        }
+        const float a = sg_sum(it, sums[0]), b = sg_sum(it, sums[1]);
+        if (!lane) {
+            if constexpr (Down) {
+                out[rank * 2304 + 2 * pair] = a * route_weights[rank];
+                out[rank * 2304 + 2 * pair + 1] = b * route_weights[rank];
+            } else {
+                out[rank * 1152 + pair] = situ_act(a, b);
+            }
+        }
+    });
+}
+
+// A nibble's magnitude is at most six and is a multiple of one half.
+inline float sf4_weight_from_nibble(uint32_t nibble) {
+    constexpr uint32_t doubled_magnitudes = 0xc8643210u;
+    const unsigned shift = (nibble & 7u) * 4u;
+    const float magnitude = float((doubled_magnitudes >> shift) & 15u) * 0.5f;
+    const uint32_t sign = (nibble & 8u) << 28;
+    return sycl::bit_cast<float>(sycl::bit_cast<uint32_t>(magnitude) | sign);
+}
+
+// All non-reserved E4M3 coefficients fit exactly in FP32. Construct
+// the normal values directly and restore the sign, including signed zero.
+inline float mx8_coefficient_f32(uint32_t code) {
+    const uint32_t magnitude = code & 127u;
+    const uint32_t normal = 0x3c000000u + (magnitude << 20);
+    const float subnormal = float(magnitude & 7u) * (1.f / 512.f);
+    const uint32_t bits = magnitude < 8 ? sycl::bit_cast<uint32_t>(subnormal) : normal;
+    return sycl::bit_cast<float>(magnitude == 127 ? 0u : bits | ((code & 128u) << 24));
+}
+
+// Both output rows share each
+// activation load. Keep block sums in FP32 before applying their separate scales.
+template <bool Down, bool SF4, bool Cached = false, int FixedRows = 0, bool MX8Only = false>
+inline void sq20_small_pairs(sycl::nd_item<2> it, const InkSyExpertDev &ed, const int *order, int n,
+                             const float *w, const float *x, float *out,
+                             const float* factors = nullptr, int output_tile = 0) {
+    constexpr int K = Down ? 1152 : 2304, width = SF4 ? 16 : 32;
+    constexpr int blocks = K / width, bytes = SF4 ? 8 : 32;
+    constexpr int pairs_per_group = Cached ? 8 : 16;
+    constexpr int rows_per_tile = FixedRows ? FixedRows : (Cached ? 8 : 4);
+    const int pair = (Cached ? output_tile : int(it.get_group(1))) * pairs_per_group + it.get_local_id(1) / 16, lane = it.get_local_id(1) % 16;
+    const uint8_t *data = ed.body_ptr + (Down ? ed.dn_off : (SF4 ? 16 : 0));
+    const uint8_t *scales = data + 2304 * blocks * bytes;
+    const float *hdr = reinterpret_cast<const float *>(ed.body_ptr);
+    const float outer = SF4 && !Cached ? hdr[Down ? 2 : 0] / hdr[Down ? 3 : 1] : 1.f;
+    for (int r0 = 0; r0 < n; r0 += rows_per_tile) {
+        const int rows = FixedRows ? FixedRows : sycl::min(rows_per_tile, n - r0);
+        const float *input[rows_per_tile];
+        int pid[rows_per_tile];
+        for (int r = 0; r < rows; ++r) {
+            pid[r] = order[r0 + r];
+            input[r] = x + (Down ? pid[r] : pid[r] / 8) * K;
+        }
+        float a[rows_per_tile]{}, b[rows_per_tile]{};
+        for (int block = lane; block < blocks; block += 16) {
+            const int i0 = 2 * pair * blocks + block, i1 = i0 + blocks;
+            const float s0 = Cached ? factors[scales[i0]] : SF4 ? e4m3_to_f32(scales[i0]) * outer : ue8m0_to_f32(scales[i0]);
+            const float s1 = Cached ? factors[scales[i1]] : SF4 ? e4m3_to_f32(scales[i1]) * outer : ue8m0_to_f32(scales[i1]);
+            float v0[width], v1[width];
+            if constexpr (SF4) {
+                const auto p = *reinterpret_cast<const sycl::vec<uint8_t, 8> *>(data + (size_t)i0 * bytes);
+                const auto q = *reinterpret_cast<const sycl::vec<uint8_t, 8> *>(data + (size_t)i1 * bytes);
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    if constexpr (Cached) {
+                        v0[2 * j] = sf4_weight_from_nibble(p[j]);
+                        v0[2 * j + 1] = sf4_weight_from_nibble(p[j] >> 4);
+                        v1[2 * j] = sf4_weight_from_nibble(q[j]);
+                        v1[2 * j + 1] = sf4_weight_from_nibble(q[j] >> 4);
+                    } else {
+                        v0[2 * j] = e2m1_lut(p[j] & 15);
+                        v0[2 * j + 1] = e2m1_lut(p[j] >> 4);
+                        v1[2 * j] = e2m1_lut(q[j] & 15);
+                        v1[2 * j + 1] = e2m1_lut(q[j] >> 4);
+                    }
+                }
+            } else {
+#pragma unroll
+                for (int j = 0; j < 32; j += 8) {
+                    const auto p =
+                        *reinterpret_cast<const sycl::vec<uint8_t, 8> *>(data + (size_t)i0 * bytes + j);
+                    const auto q =
+                        *reinterpret_cast<const sycl::vec<uint8_t, 8> *>(data + (size_t)i1 * bytes + j);
+#pragma unroll
+                    for (int t = 0; t < 8; ++t) {
+                        if constexpr (MX8Only) {
+                            v0[j + t] = mx8_coefficient_f32(p[t]);
+                            v1[j + t] = mx8_coefficient_f32(q[t]);
+                        } else {
+                            v0[j + t] = e4m3_to_f32(p[t]);
+                            v1[j + t] = e4m3_to_f32(q[t]);
+                        }
+                    }
+                }
+            }
+            for (int r = 0; r < rows; ++r) {
+                float a0 = 0.f, b0 = 0.f;
+#pragma unroll
+                for (int j = 0; j < width; j += 8) {
+                    auto vec = *reinterpret_cast<const sycl::vec<float, 8> *>(input[r] + block * width + j);
+#pragma unroll
+                    for (int t = 0; t < 8; t++) {
+                        a0 += v0[j + t] * vec[t];
+                        b0 += v1[j + t] * vec[t];
+                    }
+                }
+                a[r] += a0 * s0;
+                b[r] += b0 * s1;
+            }
+        }
+        for (int r = 0; r < rows; ++r) {
+            const float v = sg_sum(it, a[r]), u = sg_sum(it, b[r]);
+            if (!lane) {
+                if constexpr (Down) {
+                    out[pid[r] * 2304 + 2 * pair] = v * w[pid[r]];
+                    out[pid[r] * 2304 + 2 * pair + 1] = u * w[pid[r]];
+                } else
+                    out[pid[r] * 1152 + pair] = situ_act(v, u);
+            }
+        }
+    }
+}
+constexpr int sf4_scale_codes = 256;
+constexpr int sf4_expert_scales = 2 * sf4_scale_codes;
+
+// Form both projection tables on the device, using the same FP32 division
+// and multiplication as the uncached compressed dot.
+inline void k_sf4_build_scales(const InkSyExpertDev* experts, int count, float* factors) {
+    Q().parallel_for(NR(count, sf4_scale_codes), [=](sycl::nd_item<1> it) {
+        const int expert = it.get_group(0), code = it.get_local_id(0);
+        const auto ed = experts[expert];
+        if (!ed.body_ptr || ed.gu_code != FMT_SF4 || ed.dn_code != FMT_SF4) return;
+        const float* h = reinterpret_cast<const float*>(ed.body_ptr);
+        float* table = factors + size_t(expert) * sf4_expert_scales + code;
+        const float value = e4m3_to_f32(code);
+        table[0] = value * (h[0] / h[1]);
+        table[sf4_scale_codes] = value * (h[2] / h[3]);
+    });
+}
+
+template<bool Down>
+inline void k_sf4_cached(const InkSyExpertDev* experts, const int* ids, const int* offs,
+                              const int* counts, const int* order, const int* num, int limit,
+                              const float* weights, const float* x, float* out, const float* factors) {
+    constexpr int tiles = 1152 / 8, stripe = 8;
+    const int groups = std::min(limit, 16);
+    Q().parallel_for(NR2(tiles, groups, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int active = *num;
+        // Interleave eight output tiles from each active expert. Stride
+        // through the complete plan even when all routed experts are unique.
+        for (int i = it.get_group(0) * tiles + it.get_group(1); i < active * tiles; i += groups * tiles) {
+            const int run = i / stripe, group = run % active, tile = (run / active) * stripe + i % stripe;
+            const int expert = ids[group];
+            const float* table = factors + size_t(expert) * sf4_expert_scales + (Down ? sf4_scale_codes : 0);
+            const auto* pairs = order + offs[group];
+            const int rows = counts[group];
+            if (rows == 1)
+                sq20_small_pairs<Down, true, true, 1>(it, experts[expert], pairs, rows, weights, x, out, table, tile);
+            else
+                sq20_small_pairs<Down, true, true>(it, experts[expert], pairs, rows, weights, x, out, table, tile);
+        }
+    });
+}
+
+template <bool Down>
+inline void k_sq20_small_pairs(const InkSyExpertDev *experts, const int *exp, const int *off,
+                               const int *count, const int *order, const int *num, int limit, const float *w,
+                               const float *x, float *out) {
+    Q().parallel_for(NR2(72, limit, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int g = it.get_group(0);
+        if (g >= *num)
+            return;
+        const auto ed = experts[exp[g]];
+        if ((Down ? ed.dn_code : ed.gu_code) == FMT_SF4)
+            sq20_small_pairs<Down, true>(it, ed, order + off[g], count[g], w, x, out);
+        else
+            sq20_small_pairs<Down, false>(it, ed, order + off[g], count[g], w, x, out);
+    });
+}
+
+inline void sq20_small_moe(const InkSyExpertDev *experts, const int *exp, const int *off, const int *count,
+                           const int *order, const int *num, int limit, const float *w, const float *x,
+                           float *h, float *yp) {
+    k_sq20_small_pairs<false>(experts, exp, off, count, order, num, limit, w, x, h);
+    k_sq20_small_pairs<true>(experts, exp, off, count, order, num, limit, w, h, yp);
+}
+
+template <bool Down>
+inline void k_sq20_small_pairs_mx8(const InkSyExpertDev* experts, const int* ids, const int* offsets,
+                                    const int* counts, const int* order, const int* active, int limit,
+                                    const float* weights, const float* x, float* out) {
+    Q().parallel_for(NR2(72, limit, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int group = it.get_group(0);
+        if (group >= *active) return;
+        sq20_small_pairs<Down, false, false, 0, true>(
+            it, experts[ids[group]], order + offsets[group], counts[group], weights, x, out);
+    });
+}
+
+inline void sq20_small_moe_mx8(const InkSyExpertDev* experts, const int* ids, const int* offsets,
+                                const int* counts, const int* order, const int* active, int limit,
+                                const float* weights, const float* x, float* hidden, float* y) {
+    k_sq20_small_pairs_mx8<false>(experts, ids, offsets, counts, order, active, limit, weights, x, hidden);
+    k_sq20_small_pairs_mx8<true>(experts, ids, offsets, counts, order, active, limit, weights, hidden, y);
+}
+
+// For a single resident token, top-k rank is already the pair index.
+
 inline void k_moe_reduce8_sg16_q(sycl::queue& q, const float* y_pairs, float* moe_out, int M,
                                  const InkSyExpertDev* ex_layer = nullptr, const int* topk_idx = nullptr) {
     q.parallel_for(NR2(9, (size_t)M, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
@@ -925,6 +1368,47 @@ inline void k_moe_reduce8_sg16_q(sycl::queue& q, const float* y_pairs, float* mo
             s += y_pairs[((size_t)m * 8 + k) * 2304 + d];
         }
         moe_out[(size_t)m * 2304 + d] = s;
+    });
+}
+
+// Consume packed GEMM outputs directly, keeping the original expert rank
+// order and the separate FP32 rounding of the route weight multiplication.
+inline void k_moe_reduce_packed(const float* packed, const float* small,
+                                const float* weight, const int* packed_row,
+                                float* out, int rows) {
+    Q().parallel_for(NR2(9, rows, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+#pragma clang fp contract(off)
+        constexpr int width = 2304;
+        const int row = it.get_group(0);
+        const int col = it.get_global_id(1);
+        float sum = 0.0f;
+#pragma unroll
+        for (int rank = 0; rank < 8; ++rank) {
+            const int pid = row * 8 + rank;
+            const int source = packed_row[pid];
+            const float value = source >= 0 ? packed[size_t(source) * width + col] * weight[pid]
+                                            : small[size_t(pid) * width + col];
+            sum += value;
+        }
+        out[size_t(row) * width + col] = sum;
+    });
+}
+
+inline void k_moe_reduce_packed_vector(const float* packed, const float* small, const float* weight,
+                                       const int* packed_row, float* out, int rows) {
+    constexpr int width = 2304, threads = 64, values = 4;
+    Q().parallel_for(NR2(width / (threads * values), rows, threads), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+#pragma clang fp contract(off)
+        const int row = it.get_group(0), col = it.get_global_id(1) * values;
+        sycl::vec<float, values> sum(0.0f);
+#pragma unroll
+        for (int rank = 0; rank < 8; ++rank) {
+            const int pair = row * 8 + rank, source = packed_row[pair];
+            const size_t offset = size_t(source < 0 ? pair : source) * width + col;
+            const auto v = *reinterpret_cast<const sycl::vec<float, values>*>((source < 0 ? small : packed) + offset);
+            sum += source < 0 ? v : v * weight[pair];
+        }
+        *reinterpret_cast<sycl::vec<float, values>*>(out + size_t(row) * width + col) = sum;
     });
 }
 

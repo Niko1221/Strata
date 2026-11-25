@@ -317,6 +317,51 @@ inline const SyDevCaps& dev_caps() {
     return d;
 }
 
+inline bool ink_battlemage() {
+    static const bool supported = [] {
+#ifdef SYCL_EXT_ONEAPI_DEVICE_ARCHITECTURE
+        namespace exp = sycl::ext::oneapi::experimental;
+        try {
+            const auto arch = Q().get_device().get_info<exp::info::device::architecture>();
+            return arch == exp::architecture::intel_gpu_bmg_g21 ||
+                   arch == exp::architecture::intel_gpu_bmg_g31;
+        } catch (const sycl::exception&) {
+            return false;
+        }
+#else
+        return false;
+#endif
+    }();
+    return supported;
+}
+
+// A process-wide diagnostic fallback, evaluated before any optional BMG launch.
+inline bool ink_bmg_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("INK_SYCL_BMG_OPT");
+        return ink_battlemage() && (!value || std::strcmp(value, "1") == 0);
+    }();
+    return enabled;
+}
+
+inline bool ink_bmg_option(const char* name) {
+    const char* value = std::getenv(name);
+    return ink_bmg_enabled() && (!value || std::strcmp(value, "1") == 0);
+}
+
+// One switch per group of Battlemage paths. Each is read once per process.
+// Routed experts: grouped prompt GEMMs, compressed small-expert and single-token dots, routing and tail.
+inline bool ink_bmg_experts() {
+    static const bool enabled = ink_bmg_option("INK_SYCL_BMG_EXPERTS");
+    return enabled;
+}
+
+// Attention, projections, loop controllers, ShortConv and residual mixing.
+inline bool ink_bmg_dense() {
+    static const bool enabled = ink_bmg_option("INK_SYCL_BMG_DENSE");
+    return enabled;
+}
+
 inline size_t& dev_bytes_allocated() { static size_t b = 0; return b; }
 
 template <class T>
@@ -742,7 +787,31 @@ struct InkSyclModel {
     double t_load = 0.0;
 
     // Host shadow metadata for Strata Predictive CPU/RAM Hybrid + Elastic VRAM Cache Ring
+    bool sq20_experts = false;
+    struct LayerCodecs { bool sf4_gu, sf4_down, mx8_both; };
+    std::vector<LayerCodecs> layer_codecs;
     std::vector<InkSyExpertDev> h_ed;
+    void upload_expert_table(size_t n_total) {
+        if (ink_bmg_experts()) {
+            sq20_experts = std::all_of(h_ed.begin(), h_ed.end(), [](const InkSyExpertDev& ed) {
+                return (ed.gu_code == FMT_SF4 || ed.gu_code == FMT_MX8) &&
+                       (ed.dn_code == FMT_SF4 || ed.dn_code == FMT_MX8);
+            });
+            layer_codecs.resize(man.c.n_phys);
+            for (int layer = 0; layer < man.c.n_phys; ++layer) {
+                const auto begin = h_ed.begin() + (size_t)layer * man.c.n_experts;
+                const auto end = begin + man.c.n_experts;
+                layer_codecs[layer] = {
+                    std::all_of(begin, end, [](const auto& e) { return e.gu_code == FMT_SF4; }),
+                    std::all_of(begin, end, [](const auto& e) { return e.dn_code == FMT_SF4; }),
+                    std::all_of(begin, end, [](const auto& e) {
+                        return e.gu_code == FMT_MX8 && e.dn_code == FMT_MX8;
+                    })};
+            }
+        }
+        h2d(expert_dev, h_ed.data(), n_total * sizeof(InkSyExpertDev));
+    }
+
     std::vector<const uint8_t*> host_body_ptrs;
     std::vector<uint32_t> expert_body_bytes;
 
@@ -1074,7 +1143,7 @@ struct InkSyclModel {
         std::fclose(fp);
 
         expert_dev = dalloc<InkSyExpertDev>(n_total);
-        h2d(expert_dev, h_ed.data(), n_total * sizeof(InkSyExpertDev));
+        upload_expert_table(n_total);
         wait();
         if (ep2_active) {
             expert_dev_g1 = sycl::malloc_device<InkSyExpertDev>(n_total, *q_peer);
@@ -1425,7 +1494,7 @@ struct InkSyclModel {
         if (!populate_experts(vram_gids, true) || !populate_experts(host_gids, false)) return false;
 
         expert_dev = dalloc<InkSyExpertDev>(n_total);
-        h2d(expert_dev, h_ed.data(), n_total * sizeof(InkSyExpertDev));
+        upload_expert_table(n_total);
         wait();
 
         t_load = now_s() - t0;
