@@ -19,9 +19,11 @@ if(STRATA_KEEP_SYMBOLS)
     add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/Z7>" "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:-Xcompiler /Z7>")
     add_link_options("LINKER:/DEBUG" "LINKER:/OPT:REF" "LINKER:/OPT:ICF" "LINKER:/INCREMENTAL:NO" "LINKER:/PDBALTPATH:%_PDB%")
   elseif(WIN32)
-    # clang for Windows (the ROCm HIP build, MSVC target): CodeView through -g, linked by lld-link
-    # (HIP-language files get no flag: -Xarch_host -g changed .text, .hip_fatbin and .rodata of the Linux HIP build, measured with a same-directory control)
-    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-g>")
+    # clang for Windows (the ROCm HIP build, MSVC target): CodeView line tables, linked by lld-link
+    # (HIP-language files get no flag: -Xarch_host -g changed .text, .hip_fatbin and .rodata of the Linux HIP build, measured with a same-directory control;
+    # and plain -g changed the instruction selection of expert_source.cpp, 10 of 108,318 lines, in the Windows build: -gline-tables-only and -g1 give
+    # assembly identical to no flag on that file and on three more, so the C and C++ files take -gline-tables-only)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-gline-tables-only>")
     add_link_options("LINKER:/DEBUG" "LINKER:/OPT:REF" "LINKER:/OPT:ICF" "LINKER:/INCREMENTAL:NO" "LINKER:/PDBALTPATH:%_PDB%")
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "IntelLLVM")
     # icpx -fsycl: -g would reach the device compile too (and the AOT backend), and -Xarch_host -g changed the code: the host pass with line tables
