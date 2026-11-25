@@ -696,6 +696,9 @@ public:
         return true;
     }
 
+    // The weights as read (FP32, by tensor name), for a GPU encoder to upload.
+    const std::unordered_map<std::string, std::vector<float>>& weights() const noexcept { return weights_; }
+
 private:
     std::unordered_map<std::string, std::vector<float>> weights_;
 

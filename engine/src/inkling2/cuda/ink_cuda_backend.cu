@@ -11,6 +11,7 @@
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
 #include "ink_topk.cuh"
+#include "ink_cuda_vision.cuh"
 #include "strata/core/arch_probe.hpp"
 #include "strata/core/ink_chunk.hpp"
 #include "strata/core/volta_forever.hpp"
@@ -132,6 +133,9 @@ public:
         }
         // Resolve primary + optional multi-GPU list (up to 4 GPUs!) from opts.gpu_ids / opts.gpu_index / opts.gpus
         gpu_id_ = (opts.gpu_index >= 0 && opts.gpu_index < n_dev) ? opts.gpu_index : 0;
+        vision_path_ = opts.vision_path;
+        // The GPU picture reader is opt-in: it keeps its weights in VRAM the user may have meant for the language model.
+        if (const char* e = std::getenv("STRATA_INKLING_VISION_GPU")) vit_enabled_ = *e && std::strcmp(e, "0") != 0;
         std::vector<int> all_gpus;
         if (!opts.gpu_ids.empty()) {
             for (int g : opts.gpu_ids) {
@@ -1138,6 +1142,48 @@ public:
         return n_emit;
     }
 
+    // Pictures on the GPU (ink_cuda_vision.cuh) when STRATA_INKLING_VISION_GPU=1; false (and the CPU reference) when it
+    // is off, or the shard or VRAM is missing.
+    bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
+        if (!vit_enabled_) {
+            if (!vit_noted_off_ && !vision_path_.empty()) {
+                vit_noted_off_ = true;
+                fprintf(stderr, "[inkling2-vision] pictures are read on the CPU; STRATA_INKLING_VISION_GPU=1 reads them on "
+                                "the GPU (about 0.7 GB of VRAM)\n");
+            }
+            return false;
+        }
+        if (vision_path_.empty() || vit_failed_) return false;
+        std::string verr;
+        if (!vit_.loaded()) {
+            size_t vf0 = 0, vt0 = 0, vf1 = 0, vt1 = 0;
+            (void)strata::ink::ink_cuda_mem_info(&vf0, &vt0, gpu_id_);
+            if (!vit_.load(vision_path_, gpu_id_, verr)) {
+                vit_failed_ = true;
+                fprintf(stderr, "[inkling2-vision] GPU encoder unavailable, using the CPU one: %s (%.0f MiB free VRAM)\n",
+                        verr.c_str(), (double)vf0 / 1048576.0);
+                return false;
+            }
+            (void)strata::ink::ink_cuda_mem_info(&vf1, &vt1, gpu_id_);
+            const size_t held = (vf0 > vf1) ? (vf0 - vf1) : 0u;
+            fprintf(stderr, "[inkling2-vision] GPU encoder loaded on CUDA device %d: %.0f MiB of VRAM, %.0f MiB free\n",
+                    gpu_id_, (double)held / 1048576.0, (double)vf1 / 1048576.0);
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        if (!vit_.encode(img, out_embeds, verr)) {
+            fprintf(stderr, "[inkling2-vision] GPU encode failed, using the CPU one: %s\n", verr.c_str());
+            (void)err;
+            return false;
+        }
+        if (!vit_logged_first_) {
+            vit_logged_first_ = true;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "[inkling2-vision] encoded the first picture on CUDA device %d: %dx%d grid, %d tokens, %.1f ms\n",
+                    gpu_id_, img.grid_h, img.grid_w, img.num_lm_tokens(), ms);
+        }
+        return true;
+    }
+
     bool selfcheck(std::string& err) override {
         cudaDeviceProp prop{};
         cudaError_t ce = cudaGetDeviceProperties(&prop, gpu_id_);
@@ -1172,6 +1218,8 @@ private:
     }
 
     void cleanup() {
+        vit_.release();
+        vit_failed_ = false;
         if (dspark_) { dspark_->free_all(); dspark_.reset(); }
         if (runner_) { runner_->free_all(); runner_.reset(); }
         if (d_sconv_snap_) { cudaFree(d_sconv_snap_); d_sconv_snap_ = nullptr; }
@@ -1210,6 +1258,12 @@ private:
     KvDtype kv_dtype_ = KvDtype::FP16;
     std::string dev_info_;
 
+    std::string vision_path_;
+    cuvit::CudaVit vit_;
+    bool vit_failed_ = false;
+    bool vit_logged_first_ = false;
+    bool vit_enabled_ = false;      // STRATA_INKLING_VISION_GPU=1
+    bool vit_noted_off_ = false;
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;

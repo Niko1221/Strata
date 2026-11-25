@@ -93,3 +93,15 @@ target_link_libraries(strata_inkling_cuda PUBLIC
 
 target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_CUDA=1)
 target_link_libraries(strata-inkling PRIVATE strata_inkling_cuda)
+
+# Picture reader check (not built by default): GPU vs CPU embeddings, time and VRAM on real pictures
+add_executable(ink_vit_parity EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/ink_vit_parity.cu")
+target_include_directories(ink_vit_parity PRIVATE ${_ink_cuda_inc})
+set_target_properties(ink_vit_parity PROPERTIES
+  CUDA_STANDARD 20
+  CUDA_STANDARD_REQUIRED ON
+  CUDA_ARCHITECTURES "${STRATA_INK_CUDA_ARCHS}"
+  CUDA_RUNTIME_LIBRARY Shared
+)
+target_compile_options(ink_vit_parity PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -Xcompiler=-fopenmp>)   # the CPU reference's OpenMP loops
+target_link_libraries(ink_vit_parity PRIVATE strata_inkling_core CUDA::cudart CUDA::cublas)
