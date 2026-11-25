@@ -147,11 +147,9 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_kernel(const float* __rest
 // The up kernel when B fits in registers (rank <= PDL_RANK) and the device has programmatic dependent launch: the
 // same sums as lora_up_kernel, but the B column is loaded before cudaGridDependencySynchronize, while the down kernel
 // still runs.  The flag is read first, so an off request loads nothing (the host only writes it between syncs).
-#if defined(__HIPCC__)
-constexpr bool kPdl = false;
-#else
+// CUDA only: HIP has no PDL, and its compiler has no __ldcg.
+#if !defined(__HIPCC__)
 constexpr bool kPdl = true;
-#endif
 constexpr int PDL_RANK = 64;
 template <int NT>
 __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __restrict__ bt, const float* h,
@@ -163,7 +161,7 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __
     float bv[PDL_RANK];
 #pragma unroll
     for (int r = 0; r < PDL_RANK; ++r) bv[r] = (r < rank && o < n_out) ? __ldg(bt + (int64_t) r * n_out + o) : 0.0f;
-#if !defined(__HIPCC__) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
     cudaGridDependencySynchronize();   // h written and visible; before sm_90 the launch is an ordinary one
 #endif
     for (int i = threadIdx.x; i < NT * rank; i += UP_THREADS) hs[i] = __ldcg(h + i);
@@ -182,6 +180,7 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __
 #pragma unroll
     for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += acc[t];
 }
+#endif   // !__HIPCC__
 
 template <typename XT, int NT>
 void launch_small(const float* a, const float* bt, float* h, const XT* x, int64_t ldx, float* y, int64_t ldy, int rank,
