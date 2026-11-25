@@ -376,6 +376,35 @@ class CalibrationFlowTests(unittest.TestCase):
         self.assertEqual(settings["calibration"]["test-gpu|24GB|test-cpu"]["settings"], report["settings"])
         self.assertFalse(calibration.review("local", report_path)["applicable"])
 
+    def test_a_full_sweep_result_is_accepted_end_to_end(self):
+        """#7170: tools/calibrate.py emits `--prefill-pipe` when its prompt-chunk phase picks a size; the profile
+        validator rejected it, so `--measure` lost a finished ~25-minute sweep at its last step and wrote no report."""
+        def full_result(cfg, say, **_):
+            return {"settings": {"--prefill-pipe": "768", "--pcie-frac": "0.35", "--spec-min-p": "0.00",
+                                 "--pool-workers": "5", "--adapt-every": "1", "--adapt-swaps": "160",
+                                 "--adapt-decay": "0.97"},
+                    "report": {"default": {"pcie_frac": 0.35}, "confirm": {"default": [10.0, 10.2, 10.1]},
+                               "tok_s": 133.4, "seconds": 30}}
+        report_path = self.root / "cal-full.json"
+        report = calibration.measure("local", report_path, exclusive_ack=True, runner=full_result, say=lambda _: None)
+        self.assertTrue(report["applicable"])
+        applied = calibration.apply_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 2)
+        self.assertTrue(applied["changed"])
+        args = json.loads(self.config.read_text())["args"]
+        self.assertIn("--prefill-pipe", args)
+        self.assertIn("768", args)
+
+    def test_everything_the_sweep_can_propose_stays_allowed(self):
+        """#7170: the emitter (tools/calibrate.py) and the validator (strata_control/calibration.py) are separate modules —
+        a flag one can write and the other refuses only shows up after the whole sweep has run."""
+        import inspect
+        import re
+        from tools import calibrate
+        emitted = set(re.findall(r'settings\["(--[a-z-]+)"\]', inspect.getsource(calibrate))) | set(calibrate.ADAPT_FLAGS)
+        self.assertTrue(emitted, "the emitter's flags are no longer written as settings; update this check with them")
+        self.assertLessEqual(emitted, calibration.ALLOWED_SETTINGS)
+        self.assertLessEqual(emitted, set(calibrate.DEFAULTS))                                             # apply writes from DEFAULTS
+
     def test_applied_result_survives_the_next_launches_with_its_origin(self):
         """#5132: `engine calibrate --apply-result` writes the profile's run config; a launch builds that file again from the installed config and
         used to drop the calibrated values. They come back over Auto, as 'calibrated' (not as the person's overrides), launch after launch."""
