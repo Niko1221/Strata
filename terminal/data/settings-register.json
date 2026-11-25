@@ -16844,6 +16844,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_MIX_DECODE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 511,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "d06833f77f",
+   "first_date": "2026-11-24",
+   "since": null,
+   "last_commit": "d06833f77f",
+   "last_date": "2026-11-24",
+   "status": "opt-in",
+   "owner": "inkling2",
+   "note": "strata-inkling serve (#7021): N = decode-only steps between prefill-only steps while one request decodes and another reads its prompt (default 0 = off). Decode and prefill rows never share a step; tokens per slot do not change.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_MOE_V1",
    "backends": [
     "cuda-hip"
