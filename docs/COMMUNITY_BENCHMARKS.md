@@ -50,6 +50,12 @@ and their limits. Report what you actually measured and label estimates separate
   Strata v0.1.41 source build, ROCm 7.14.1, Unsloth UD-IQ4_XS, `docs/STRIX_HALO.md` §5 fast config with `--spec 5 --mtp-window 8192`;
   4–6 fresh-process runs at 8,192 / 32,768 / 131,072 prompt tokens: prompt 969 / 1,067 / 1,031 tok/s, decode 59.2 / 57.8 / 42.0 tok/s
   (medians). Prompt is power-limited (70 W package limit); needle 15/15, agentic 5/5.
+- [2026-11-21: Radeon 8060S / Ryzen AI Max+ 395 Strix Halo laptop (ASUS ROG Flow Z13, **64 GB unified memory**, 512 MiB carve-out)](bench-results/2026-11-21-community-strix-halo-64gb/README.md):
+  Strata 0.2.15 (engine 0.1.60 `linux-x86_64-hip-halo`), official ISTA-DASLab IQ3_XXS pack (plus an SC117 abliterated comparison),
+  `docs/STRIX_HALO.md` §5 fast config with `amd_iommu=off`, MTP drafter packed locally (`--spec 4`); standard protocol
+  `strata-qwen38-thinking-v1-draft.1` complete (21/21, sanity 12/12): prompt 939.9 / 1,180.5 tok/s at 4K / 16K, decode 34.0–42.4 tok/s,
+  4 min 45 s after load; hand-run greedy sweep 1,058–1,173 tok/s up to a 260,513-token prompt; the SSD file tier is never used.
+  [standard run](bench-results/2026-11-21-standard-8060s-7d853232/README.md)
 - [2026-10-09: RTX 3060 12 GB, Core i7-12700, 64 GB RAM](bench-results/2026-10-09-community-rtx-3060-0141/README.md):
   Strata v0.1.41 official Windows release, original Flash-Next Q2_0, IQ2_XS, IQ3_XXS and IQ3_S; prompt sweep from 128 to 128K tokens (260K for three of the four), plus recall, HumanEval 0-39, cache, MTP and concurrency checks.
 - [2026-10-10: AMD Radeon RX 9070 16 GB (gfx1201), Ryzen 7 5800X3D, 64 GB RAM](bench-results/2026-10-10-community-rx-9070/README.md):
