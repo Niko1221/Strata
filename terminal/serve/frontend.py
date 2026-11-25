@@ -222,6 +222,11 @@ def effort_kwargs(value) -> dict:
     return {"enable_thinking": False} if level is None else {"reasoning_effort": level}
 
 
+#: Claude Code's default thinking budget on /v1/messages (`thinking: {type: enabled, budget_tokens: 31999}`; its maximum output tokens, 32,000, less one). Only this exact
+#: number marks a request as "the client's default" (#7133); any other budget is a number somebody chose.
+CLIENT_DEFAULT_THINKING_BUDGET = 31999
+
+
 def budget_effort(tokens) -> dict:
     """Anthropic's thinking budget (budget_tokens) -> a level: under 2K low, under 8K medium, else high (clamped through EFFORT for Hy4-Flash)."""
     try:
@@ -638,12 +643,36 @@ def require_messages(messages: list) -> None:
         raise ValueError("messages must be a non-empty list: send at least one message")
 
 
+def _name_tool_results(messages: list[dict]) -> None:
+    """Give each tool result the name of the function whose call it answers (#7051), while the call ids are still here.
+
+    Inkling's template writes the header `<|message_tool|>NAME<|content_text|>` from `message.name` (its fallback by
+    `tool_call_id` can never match: the ids are private to this conversion).  The calls are those of the assistant message
+    before the whole run of results; a result whose id matches no call, or more than one, stays unnamed.  Other families'
+    templates do not read a tool message's name, so only Inkling gets it (their renders stay as they were)."""
+    if _FAMILY != "inkling2":
+        return
+    for i, m in enumerate(messages):
+        if m["role"] != "tool" or m.get("name"):
+            continue
+        j = i
+        while j and messages[j - 1]["role"] == "tool":
+            j -= 1
+        prev = messages[j - 1] if j else {}
+        if prev.get("role") != "assistant" or not m.get("_call_id"):
+            continue
+        named = [(c.get("function") or {}).get("name") for c in prev.get("tool_calls") or [] if c.get("_call_id") == m["_call_id"]]
+        if len(named) == 1 and isinstance(named[0], str) and named[0]:
+            m["name"] = named[0]
+
+
 def _order_chat_tool_results(messages: list[dict]) -> None:
     """The template pairs results by position, so restore call order while IDs are still available.
 
     Only a complete, unambiguous run of results is reordered. Legacy or incomplete histories keep their
     received order. IDs are private to this conversion and never reach the template.
     """
+    _name_tool_results(messages)
     i = 0
     while i < len(messages):
         if messages[i]["role"] != "tool":
@@ -910,6 +939,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     bt = thinking.get("budget_tokens") if isinstance(thinking, dict) and thinking.get("type") != "disabled" else None
     if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0 and req.get("reasoning_budget_tokens") is None:
         req["reasoning_budget_tokens"] = bt
+        if bt == CLIENT_DEFAULT_THINKING_BUDGET:
+            req["strata_default_thinking_budget"] = True       # #7133: Claude Code's own default, not a number somebody chose (Service.reasoning_budget caps only this one)
     if isinstance(thinking, dict) and thinking.get("type") == "disabled":
         kwargs["enable_thinking"] = False
     elif effort:

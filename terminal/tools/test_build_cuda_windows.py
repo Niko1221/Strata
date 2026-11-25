@@ -23,6 +23,12 @@ CUDA12 = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9")
 
 
 class ConfigureLine(unittest.TestCase):
+    def setUp(self):
+        # the release line keeps symbols unless STRATA_KEEP_SYMBOLS=0 is set in the environment of the run
+        saved = os.environ.pop("STRATA_KEEP_SYMBOLS", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "STRATA_KEEP_SYMBOLS", saved)
+
     def test_cuda13_is_the_release_line(self):
         # the 0.1.59 zips' line: 75;86;89;120 real + 120 PTX, portable, native experts, no tests (the K-quant and Q6_K options at their defaults)
         got = B.configure_args(Path("S"), Path("Bd"), "cuda13", CUDA13, [])
@@ -30,7 +36,8 @@ class ConfigureLine(unittest.TestCase):
                                "-DSTRATA_NATIVE_EXPERTS=ON", "-DSTRATA_PORTABLE=ON",
                                "-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;89-real;120-real;120-virtual",
                                "-DCMAKE_CUDA_COMPILER=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/bin/nvcc.exe",
-                               "-DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0"])
+                               "-DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0",
+                               "-DSTRATA_KEEP_SYMBOLS=ON"])       # 0.2.22: every release build keeps its PDB (host debug information only, same machine code)
 
     def test_cuda12_is_the_pascal_and_volta_build(self):
         got = B.configure_args(Path("S"), Path("Bd"), "cuda12", CUDA12, [])
@@ -52,7 +59,7 @@ class ConfigureLine(unittest.TestCase):
 
     def test_extra_arguments_come_last_and_the_override_is_named(self):
         got = B.configure_args(Path("S"), Path("Bd"), "cuda13", CUDA13, ["-DSTRATA_WINDOW_MAX_T=16"], ggml_dir="C:\\ref\\llama.cpp")
-        self.assertEqual(got[-2:], ["-DSTRATA_GGML_DIR=C:/ref/llama.cpp", "-DSTRATA_WINDOW_MAX_T=16"])
+        self.assertEqual(got[-3:], ["-DSTRATA_GGML_DIR=C:/ref/llama.cpp", "-DSTRATA_KEEP_SYMBOLS=ON", "-DSTRATA_WINDOW_MAX_T=16"])
         self.assertEqual([a for a in got if "MMQ" in a], [])   # 0.2.16: no MMQ option exists any more
 
     def test_an_arch_override_keeps_ptx_for_the_last(self):

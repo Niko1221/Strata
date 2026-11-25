@@ -261,6 +261,7 @@
   "toast.httpAnswer": "The server answered HTTP {code}.",
   "toast.keyAbout": "This server needs a key: add it under About > Settings.",
   "toast.keyAbout2": "API key needed: add it under About > Settings.",
+  "toast.keyFrom": "That is the key the server was started with: --api-key, STRATA_API_KEY, the run config's api_key, or the sk-strata- key that strata launch made when sharing beyond this computer.",
   "toast.keyNeeded": "This server needs an API key: add it under About > Settings.",
   "toast.requestFailed": "The request failed",
   "tool.arguments": "Arguments",

@@ -54,6 +54,7 @@ OUT="$WORK/pkg-mac"
 PKG="$OUT/$VERSION-macos-arm64-metal"
 mkdir -p "$WORK"
 cd "$ROOT"
+. "$ROOT/tools/packaging/symbols_build.sh"   # sym_cmake, symbols_keep (owner decision 2026-11-25: a dSYM per binary, kept outside the package)
 export STRATA_COMMIT=${STRATA_COMMIT:-$BUILD_ID}
 export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
 
@@ -62,7 +63,7 @@ if has engine; then
   rm -rf "$BUILD"
   # shellcheck disable=SC2086
   nice -n 19 "$CMAKE" -S engine/metal -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="$NINJA" -DMETAL_CPP_DIR="$METAL_CPP_DIR" $GGML \
-      -DSTRATA_BUILD_ID="$BUILD_ID" > "$WORK/metal-cfg.log" 2>&1 || { tail -30 "$WORK/metal-cfg.log"; exit 1; }
+      -DSTRATA_BUILD_ID="$BUILD_ID" $sym_cmake > "$WORK/metal-cfg.log" 2>&1 || { tail -30 "$WORK/metal-cfg.log"; exit 1; }
   nice -n 19 "$NINJA" -j"$JOBS" -C "$BUILD" strata > "$WORK/metal-build.log" 2>&1 || { tail -30 "$WORK/metal-build.log"; exit 1; }
   tail -3 "$WORK/metal-build.log"
 fi
@@ -80,6 +81,7 @@ if has pkg; then
   [ -f "$QUANT" ] && grep -q "^#ifndef GGML_COMMON_DECL$" "$QUANT" || { echo "$QUANT is missing or is not the header text"; exit 1; }
   rm -rf "$STAGE"; mkdir -p "$STAGE/metal/kernels" "$STAGE/metal/engine-msl" "$STAGE/metal/data"
   cp "$BUILD/strata" "$STAGE/"
+  symbols_keep macho "$ROOT" "strata-engine-$VERSION-macos-arm64-metal" "$STAGE/strata"   # dsymutil reads the object files of $BUILD; then strip -S
   cp "$WORK/vision-out/strata-vision" "$STAGE/"                 # BEFORE package_engine.py: it takes strata-vision from --src
   cp engine/metal/kernels/*.metal "$STAGE/metal/kernels/"
   cp engine/metal/src/engine/msl/*.metal "$STAGE/metal/engine-msl/"

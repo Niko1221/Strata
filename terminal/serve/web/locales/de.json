@@ -236,6 +236,7 @@
   "toast.httpAnswer": "Der Server antwortete mit HTTP {code}.",
   "toast.keyAbout": "Dieser Server braucht einen Schlüssel: Tragen Sie ihn unter Info > Einstellungen ein.",
   "toast.keyAbout2": "API-Schlüssel nötig: Tragen Sie ihn unter Info > Einstellungen ein.",
+  "toast.keyFrom": "Das ist der Schlüssel, mit dem der Server gestartet wurde: --api-key, STRATA_API_KEY, api_key in der Startkonfiguration oder der Schlüssel mit sk-strata-, den strata launch beim Teilen über diesen Computer hinaus erstellt hat.",
   "toast.keyNeeded": "Dieser Server braucht einen API-Schlüssel: Tragen Sie ihn unter Info > Einstellungen ein.",
   "toast.requestFailed": "Die Anfrage ist fehlgeschlagen",
   "tool.arguments": "Argumente",

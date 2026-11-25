@@ -293,11 +293,17 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
+Inkling-2-Mini has its own engine package (`strata-inkling`), which Strata downloads the first time you choose the model. If you unpack a package by hand instead (for example after downloading it with a download manager), the right folder is `components\shapes\inkling2\engine\<package>\` (Windows: `%LOCALAPPDATA%\Strata\components\...`; Linux and Mac: `~/.local/share/strata/components/shapes/inkling2/engine/<package>/`), with `engine-component.json` directly inside the package folder; not in the Qwen engine's `engine` folder and not one folder deeper. When the install fails, the message now says why and names a wrongly placed package.
+
 **The DSpark drafter (speculative drafting)** is decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dspark` always turns it on, `--drafting off` always off).
 It is one small model: the original `mtp.safetensors` of Thinking Machines (636 MB, BF16; downloaded for the GGUF builds, pinned by commit and checksum), with Unsloth's 402 MB Q8_0 copy of the same weights (`dspark-...-Q8_0.gguf`, the version before 2026-11-23) as the fallback; the copy inside the SQ builds is the same checkpoint too. It guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
 code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
 are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs
 a few hundred MB of video memory on a card that is already full (it takes a little expert space; up to 1 GB when the card has room), and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+
+**Sampling.** A request that names no sampling runs with temperature 1.0, the value in the model card's `generation_config.json`
+(no top_p, top_k or penalty is given there; the engine's own top_k 64 stays). Send `temperature` (or `"temperature": 0` for greedy)
+to choose another; the run config's `sampling` block and the Chat settings also win over the card. Before 0.2.22 such a request was greedy.
 
 ### Inkling-2-Mini: thinking levels
 
@@ -308,7 +314,7 @@ the conversation, `0` meaning no thinking. Strata sends the number the model was
 | --- | --- | --- |
 | `"none"`, `"off"`, `0`, `"chat_template_kwargs": {"enable_thinking": false}`, Anthropic `"thinking": {"type": "disabled"}` | `0` | No thinking pass; the answer starts at once. |
 | `"minimal"` | `0.1` | |
-| `"low"` | `0.2` | **The default** when a request names none (config `reasoning_effort`, or `STRATA_INKLING_EFFORT`, changes it). |
+| `"low"` | `0.2` | **The default** when nothing names a level: a request's own level wins, then the level set in the Chat settings shared with other apps, then `reasoning_effort` in the run config (`none`, `low`, `medium` or `high`); only when none of them is set does `low` apply (`STRATA_INKLING_EFFORT` changes that last fallback). |
 | `"medium"` | `0.7` | Anthropic `budget_tokens` 2K to 8K. |
 | `"high"` | `0.9` | |
 | `"xhigh"`, `"max"` | `0.99` | |
@@ -322,7 +328,11 @@ Responses API a `reasoning` output item with `reasoning_text` content. The think
 **The thinking cannot run away.** A request's own `reasoning_budget_tokens` (or Anthropic `budget_tokens`) is the limit; without one
 the default of its level applies: 1,024 tokens at `none` and `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at
 `xhigh` and `max`. `STRATA_INKLING_THINKING_BUDGET=<tokens>` (config `inkling_thinking_budget`) sets one number for every level, `0`
-none; a request's `reasoning_budget_tokens: 0` turns the default off for that request. When the budget is spent the server ends the
+none; a request's `reasoning_budget_tokens: 0` turns the default off for that request. Claude Code's own default request
+(`thinking.budget_tokens` of exactly 31,999 on `/v1/messages`, level high) is held to the default of its level, 8,192 tokens, so a step
+does not think for minutes. Every other budget a client sends (any other `budget_tokens`, `reasoning_budget_tokens`, a budget with
+`reasoning_effort` and `max_completion_tokens`) is used as it is. `"inkling_budget_cap": false` in the run config (or
+`STRATA_INKLING_BUDGET_CAP=0`) lets Claude Code's default use the full 31,999 as well. When the budget is spent the server ends the
 thinking with a short wrap-up and the model answers. Whatever `max_tokens` is, a quarter of it (at least 512 tokens, but never more
 than half of it) stays for the answer. A reply that still ends with no text and no tool call is retried once with the answer
 opened, and if nothing visible can be produced the reply says so (`[No answer: ...]`) with `finish_reason` left as it was: never an

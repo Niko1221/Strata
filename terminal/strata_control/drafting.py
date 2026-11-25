@@ -1524,16 +1524,33 @@ def can_run_dflash2(model_name: str | None, family: str | None, backend: str | N
     return bool(supported_model(model_name, family, named=named) and ENGINE_SERVES_DFLASH2 and backend is not None and hardware_support(backend, archs).can_run)
 
 
+def canonical_pack(args: list[Any] | None = None) -> bool:
+    """#7090: does ``--pack`` in these engine arguments name the canonical pack: a folder with experts.bin and no native_experts.txt (setup builds it for Q2_0 on a CPU with
+    AVX-512, tools/strata_pack.py)? The engine's DFlash2 refuses such a pack ("it needs a native pack") and, with no MTP to draft instead, ends the start. No --pack, a folder that
+    is not there or one that is empty or half built (neither file) is not known: False."""
+    pack = _flag_value(list(args or []), "--pack")
+    if not pack:
+        return False
+    try:
+        folder = Path(pack)
+        return (folder / "experts.bin").is_file() and not (folder / "native_experts.txt").is_file()
+    except OSError:
+        return False
+
+
 def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None,
-              args: list[Any] | None = None, vram_mib: float | None = None) -> str:
+              args: list[Any] | None = None, vram_mib: float | None = None, canonical: bool | None = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
     the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else and for a set whose entry in SET_DEFAULTS says MTP; DFlash2 asked for by name
-    where it cannot run is MTP."""
+    where it cannot run is MTP. Auto is also the MTP on a canonical pack (#7090; ``canonical`` says so for a pack that is not built yet, None reads ``--pack`` in ``args``):
+    the engine's DFlash2 needs a native pack."""
     asked = normalize(mode)
     if asked == "off":
         return "off"
     if asked == "mtp":
         return "mtp"
+    if asked == "auto" and str(backend or "").strip().lower() != "metal" and (canonical_pack(args) if canonical is None else canonical):
+        return "mtp"                                          # the canonical pack (the AVX-512 Q2_0): DFlash2 would end the start (#7090)
     entry = default_for(backend, model_name)
     if asked == "auto" and entry is not None and entry.drafter == "mtp":
         return "mtp"                                          # a set whose measured default on this engine family is the MTP (SET_DEFAULTS)
@@ -1564,6 +1581,8 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
     # (and never as the stand-in for a chosen MTP either: owner 11-15, a chosen drafter stays chosen and its fallback must be safe on the card; DFlash2 named by
     # itself is the person's own choice and is not looked at here)
     runnable = can_run_dflash2(model_name, family, backend, archs, named=asked == "dflash2") and not (asked != "dflash2" and auto_mtp_only(backend, archs))
+    if asked != "dflash2" and str(backend or "").strip().lower() != "metal" and canonical_pack(args):
+        runnable = False                            # #7090: not a stand-in on a canonical pack either (the engine refuses it: "it needs a native pack"); the start goes without a drafter, and the safety net fetches the MTP
 
     if want == "dflash2":
         ready = _here(Path(pack)) if pack is not None else drafter_ready(data_dir, model_name, backend)

@@ -308,6 +308,123 @@ def decode_path(text: str) -> str:
     return str(text).replace("%20", " ").replace("%25", "%")
 
 
+# ---- #7043: the picture reader on the CPU --------------------------------------------------------------------------------------------
+# strata-inkling reads a picture with its GPU encoder where it has one (HIP, SYCL, Metal) and otherwise, CUDA included, with the CPU one, which has
+# no size limit below 4096 x 4096 pixels: a 4535 x 3004 photo is 27,900 patches with full attention in 23 layers on one CPU thread of control, no
+# progress line and no cancel, minutes in which the engine answers nothing (and the 300 s watchdog ends it).  The engine has no option for the size,
+# so serve scales a picture down before it writes the file the engine reads: where the reader is the CPU (backend cuda or cpu), to at most
+# DEFAULT_MAX_PIXELS, 0.8 MP: where the measured CPU reader takes about a minute (a 1024 x 768 picture is not touched, a 1920 x 1080 screenshot is scaled to about 1190 x 670).  `inkling_image_max_mp` in the run config (or STRATA_INKLING_IMAGE_MAX_MP) sets
+# another size in megapixels, 0 turns the cap off; a value above 0 applies on every backend.
+DEFAULT_MAX_PIXELS = 800_000
+GPU_PICTURE_BACKENDS = ("hip", "sycl", "metal")
+
+
+def image_cap_pixels(cfg: dict | None, environ=None) -> int:
+    """The most pixels a picture may have when it is handed to the engine: 0 = no cap.  ValueError for a setting that is not a number >= 0."""
+    environ = os.environ if environ is None else environ
+    cfg = cfg or {}
+    raw = cfg.get("inkling_image_max_mp")
+    if raw is None or raw == "":
+        raw = (environ.get("STRATA_INKLING_IMAGE_MAX_MP") or "").strip() or None
+    if raw is None:
+        return DEFAULT_MAX_PIXELS if cfg.get("backend") not in GPU_PICTURE_BACKENDS else 0
+    try:
+        mp = float(raw)
+        if isinstance(raw, bool) or mp != mp or mp < 0 or mp > 1e6:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(f'"inkling_image_max_mp" must be a number of megapixels, 0 for no cap, not {raw!r}') from None
+    return int(mp * 1_000_000)
+
+
+def cap_picture(data: bytes, max_pixels: int):
+    """(the picture, or a smaller one with the same proportions when it has more than `max_pixels` pixels; a note saying so or None).
+    Needs Pillow (the server already uses it for other formats); without it, or for a picture it cannot read, the picture is passed on as it is."""
+    if not max_pixels or max_pixels < 1:
+        return data, None
+    try:
+        import io
+        from PIL import Image, ImageOps
+    except ImportError:
+        return data, None
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+            if w * h <= max_pixels:
+                return data, None
+            jpeg = data[:3] == b"\xff\xd8\xff"
+            im.load()
+            im = ImageOps.exif_transpose(im)
+            scale = (max_pixels / float(w * h)) ** 0.5
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            while nw * nh > max_pixels and nw > 1:               # (a sliver: one pixel high is the least it can be)
+                nw = max(1, max_pixels // nh)
+            small = im.resize((nw, nh), Image.LANCZOS)
+            out = io.BytesIO()
+            if jpeg:
+                small.convert("RGB").save(out, format="JPEG", quality=95)
+            else:
+                small.save(out, format="PNG")
+    except Exception:  # noqa: BLE001 - a picture Pillow cannot read goes on as it is: the engine says what it thinks of it
+        return data, None
+    note = (f"picture {w}x{h} ({w * h / 1e6:.1f} MP) scaled to {nw}x{nh} ({nw * nh / 1e6:.1f} MP) before the engine reads it "
+            f"(its picture reader runs on the CPU; inkling_image_max_mp in the run config sets the size, 0 turns this off)")
+    return out.getvalue(), note
+
+
+# What the CPU reader costs: one picture, prompt to first token, nothing else using the CPU, owner PC (6 cores / 12 threads, Inkling SQ-10 + Vision, engine 0.1.67; measured
+# 11-24, rel02212/RESULTS-02212.md section 6): (megapixels, seconds).  Between two points the time is read on a log-log line, beyond the last one it grows as the square
+# (the measured exponent from 2 to 3 MP is 2.1).  A request with pictures on that path gets an allowance of ALLOW_MARGIN times the sum of its pictures' times, plus
+# ALLOW_BASE_S, at least the server's own engine_silence_s (the person's value stays when it is larger) and at most ALLOW_MAX_S, so a big picture is slow and answered,
+# never ended by the silence watchdog.  DEFAULT_MAX_PIXELS (0.8 MP) is where the table says about a minute.
+READ_CURVE = ((0.04, 3.1), (0.25, 14.9), (0.499, 32.0), (0.749, 55.0), (0.999, 74.0), (1.499, 159.8), (2.066, 333.9), (2.996, 743.2))
+ALLOW_MARGIN = 3.0
+ALLOW_BASE_S = 60.0
+ALLOW_MAX_S = 3 * 3600.0
+
+
+def cpu_picture_reader(cfg: dict | None) -> bool:
+    """True where the engine reads pictures on the CPU (CUDA, cpu); HIP, SYCL and Metal have a GPU encoder."""
+    return (cfg or {}).get("backend") not in GPU_PICTURE_BACKENDS
+
+
+def picture_pixels(data: bytes) -> int:
+    """The pixels of a picture (0 when Pillow cannot say)."""
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            return int(im.size[0]) * int(im.size[1])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def picture_read_seconds(pixels: int) -> float:
+    """The measured time of the CPU reader for one picture of this many pixels (READ_CURVE)."""
+    import math
+    mp = max(pixels, 0) / 1e6
+    pts = READ_CURVE
+    if mp <= 0:
+        return 0.0
+    if mp <= pts[0][0]:
+        return pts[0][1] * mp / pts[0][0]
+    for (x0, t0), (x1, t1) in zip(pts, pts[1:]):
+        if mp <= x1:
+            k = math.log(t1 / t0) / math.log(x1 / x0)
+            return t0 * (mp / x0) ** k
+    x, t = pts[-1]
+    return t * (mp / x) ** 2.1
+
+
+def picture_allowance_s(pixel_counts, cap: int = 0) -> float:
+    """How long the engine may stay silent while it reads these pictures (the sizes the engine will get).  A picture whose size could not be read
+    counts as the cap in pixels, or 4096 x 4096 (the engine's own limit) when there is no cap."""
+    total = 0.0
+    for px in pixel_counts:
+        total += picture_read_seconds(px if px > 0 else (cap or 4096 * 4096))
+    return min(ALLOW_MAX_S, ALLOW_MARGIN * total + ALLOW_BASE_S) if total > 0 else 0.0
+
+
 def write_images(sources, load, normalize, cancel=None, folder=None) -> list[str]:
     """Write normalized request images under unique per-request names (`strata-inkling-images`)."""
     import hashlib

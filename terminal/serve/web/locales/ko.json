@@ -236,6 +236,7 @@
   "toast.httpAnswer": "서버가 HTTP {code}로 응답했습니다.",
   "toast.keyAbout": "이 서버에는 키가 필요합니다. 정보 > 설정에 입력하세요.",
   "toast.keyAbout2": "API 키가 필요합니다. 정보 > 설정에 입력하세요.",
+  "toast.keyFrom": "서버를 시작할 때 사용한 키입니다. --api-key, STRATA_API_KEY, 실행 설정의 api_key, 또는 이 컴퓨터 밖으로 공유할 때 strata launch가 만든 sk-strata- 키입니다.",
   "toast.keyNeeded": "이 서버에는 API 키가 필요합니다. 정보 > 설정에 입력하세요.",
   "toast.requestFailed": "요청이 실패했습니다",
   "tool.arguments": "인수",

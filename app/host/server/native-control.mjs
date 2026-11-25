@@ -22,7 +22,7 @@ import { componentsDirectory, installerEnvironment, controlEnvironment, sourceSe
 import { createEngineStep } from './engine-step.mjs';
 import { dataFolderFromPick, isDriveRoot, makeFolder, rememberDataFolder, syncDataFolder, terminalSettingsFile } from './model-folder.mjs';
 import { createAutoTune, withTuneConfig } from './native-autotune.mjs';
-import { plainError, PHASE_TEXT, UPDATE_WAITING_FOR_LOCK, APP_UPDATER_NOT_READY, APP_CHECK_FAILED } from './update-messages.mjs';
+import { plainError, PHASE_TEXT, UPDATE_WAITING_FOR_LOCK, APP_UPDATER_NOT_READY, APP_CHECK_FAILED, CONTROL_UPDATED } from './update-messages.mjs';
 import { checkAndParseRunConfig, checkRunConfig, describeIssues } from './run-config-check.mjs';
 import { openTextFile } from './open-text-file.mjs';
 import { markEngine, engineRefusal } from './engine-version.mjs';
@@ -72,7 +72,7 @@ function savedKv(config,model,catalog){
 
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
 export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → About.';
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeUpdate=async()=>{},beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,lockWaitMs=60000,lockPollMs=2000,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeUpdate=async()=>{},afterUpdate=async()=>{},beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,lockWaitMs=60000,lockPollMs=2000,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});
@@ -727,11 +727,21 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /* FIX-APP A7: a model whose load FAILED stays listed in state error (its engine process is gone or was stopped), and it made both Settings -> Updates jobs refuse with "Unload native models before changing engine files."
     for the person who went there to fix the failure. An instance in error holds no engine file open: it is unloaded here, so the update goes on. A model that is loading, ready or unloading still refuses. */
  async function dropFailedInstances(){for(const [id,instance] of [...instances]){if(instance.status!=='error')continue;try{await unload(id,true);}catch{instances.delete(id);processes.delete(id);}}}
+ /* "Update Strata" pauses the agent first (beforeUpdate), because an app install ends the app. Most updates end without one (a Control-only release, "already up to date", a failed or cancelled
+    job), and this app keeps running: the agent works again at once (afterUpdate), instead of staying paused until the next start (#7099). Only a finished app install (appInstalledFor) keeps the pause. */
+ const appInstalledFor=new Set();
  async function program(job,args){
-  if(job.kind==='update-strata'){
+  if(job.kind!=='update-strata')return programRun(job,args);
+  try{
    await beforeUpdate();
    if(closing || job.state!=='running') throw new Error('The Strata update was cancelled.');
+   return await programRun(job,args);
+  }finally{
+   if(appInstalledFor.delete(job.id))updateLog('the app installer took over; agent work stays paused until the restart');
+   else{try{await afterUpdate();}catch(error){updateLog(`could not resume agent work after the update: ${String(error?.message??error).slice(0,200)}`);}}
   }
+ }
+ async function programRun(job,args){
   if(packaged)return componentProgram(job,args);if(externalRunning().length)throw new Error('Stop the native server running outside this UI before changing engine files.');await dropFailedInstances();if(instances.size)throw new Error('Unload native models before changing engine files.');const folder=repo();let {command,args:prefix}=python(),argv;
   if(job.kind==='calibrate'||job.kind==='tune'){if(!state().capabilities.calibration)throw new Error('This installation calibrates NVIDIA GPUs only. Use the short benchmark on other devices.');const model=args.model??snapshot.installed?.models?.[0]?.model;const chosen=record(model);if(!chosen.entry.ready)throw new Error('Prepare this model before calibrating.');command=venvPython(folder);prefix=[];if(!existsSync(command))throw new Error('Prepare the Python environment first.');argv=['-c','import sys; from pathlib import Path; import setup; sys.exit(0 if setup.calibrate_config(Path(sys.argv[1])) else 1)',chosen.path];}
   else if(job.kind==='rollback'){if(!previousEngine())throw new Error('No saved previous engine is available.');argv=[join(folder,'setup.py'),'--rollback-engine'];}
@@ -826,7 +836,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     else if(!controlChanged){notes.length=0;notes.push(unavailable?APP_UPDATER_NOT_READY:APP_CHECK_FAILED);}
    }
    if(!checkProblem)updateLog(`app check: ${verdict.available?`version ${verdict.version} is available`:'no newer app version'}`);
-   if(verdict.available){job.appUpdateFrom=thisAppVersion();job.appUpdateTo=verdict.version??null;emit();updateLog(`app update to ${verdict.version??'?'} starting; the installer will end this app`);await appUpdater.install({signal:job.abort.signal,onProgress:p=>{if(p.total){job.summary=`Downloading the app update: ${Math.round(100*p.downloaded/p.total)}%`;job.result={install:{step:job.summary,download:{file:'Strata app',percent:Math.round(100*p.downloaded/p.total)}}};emit();}}});notes.push('The app update is installed. Strata will restart.');}
+   if(verdict.available){job.appUpdateFrom=thisAppVersion();job.appUpdateTo=verdict.version??null;emit();updateLog(`app update to ${verdict.version??'?'} starting; the installer will end this app`);await appUpdater.install({signal:job.abort.signal,onProgress:p=>{if(p.total){job.summary=`Downloading the app update: ${Math.round(100*p.downloaded/p.total)}%`;job.result={install:{step:job.summary,download:{file:'Strata app',percent:Math.round(100*p.downloaded/p.total)}}};emit();}}});appInstalledFor.add(job.id);if(notes[0]===CONTROL_UPDATED)notes[0]='Strata is updated.';notes.push('The app update is installed. Strata will restart.');}
   }
   return {summary:notes.filter(Boolean).join(' '),result:done};
  }
@@ -871,7 +881,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return {summary:`${labels.join(' and ')} ${labels.length>1?'are':'is'} running again with the same settings.`};
  }
  function dismissRestart(){stoppedForUpdate=null;emit();return state();}
- function updateSummary(done){const isEngine=c=>c==='engine'||(typeof c==='string'&&c.startsWith('strata-')&&c!=='strata-control');const r=[...new Set((done.results??[]).filter(x=>x.status==='updated').map(x=>isEngine(x.component)?'The engine is updated and ready.':'Strata is updated. It takes effect the next time you open the app.'))];return r.length?r.join(' '):'Everything is already up to date.';}
+ function updateSummary(done){const isEngine=c=>c==='engine'||(typeof c==='string'&&c.startsWith('strata-')&&c!=='strata-control');const r=[...new Set((done.results??[]).filter(x=>x.status==='updated').map(x=>isEngine(x.component)?'The engine is updated and ready.':CONTROL_UPDATED))];return r.length?r.join(' '):'Everything is already up to date.';}
  function execute(cmd,args,cwd){return new Promise((resolve,reject)=>{let output='';const process=spawnProcess(cmd,args,{cwd,stdio:['ignore','pipe','pipe']});process.stdout.on('data',c=>{output+=c;if(output.length>100000)process.kill();});process.stderr.on('data',c=>append('update',c.toString()));process.on('error',reject);process.on('exit',code=>code===0?resolve(output):reject(new Error('Git could not update this installation. Open diagnostics.')));});}
  /* The run config as it is on disk now (the load wrote its Drafting choice there, prepareDrafter / rememberSetting, after this load read the file): the write at ready starts from it, so a chosen Off, MTP or DFlash2 is kept for the next start (0.2.15 release test T6-app). */
  function savedNow(path,fallback){try{return checkedSettingsConfig(readFileSync(path,'utf8'));}catch{return fallback;}}

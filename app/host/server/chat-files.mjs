@@ -165,6 +165,20 @@ export function previewFile(root, rawPath, sessionId) {
   return { ...base, text };
 }
 
+/** Types a browser can run script from when it is opened as a page (a picture that is really a document, or an HTML/XML page). */
+const ACTIVE_TYPES = /^(image\/svg\+xml|text\/html|application\/xhtml\+xml|text\/xml|application\/xml)\b/i;
+
+/**
+ * The response headers for a person's file served from the app's own address (a chat folder's picture, a dropped file). Such a file is not ours: an SVG or
+ * HTML file opened as a page there would run its script as the app itself. `sandbox` gives that page an opaque origin and no script, while a picture still
+ * draws in an <img>; `nosniff` keeps the browser from deciding on another type.
+ */
+export function fileResponseHeaders(mime, length) {
+  const headers = { 'content-type': mime, 'content-length': length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
+  if (ACTIVE_TYPES.test(String(mime))) headers['content-security-policy'] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:";
+  return headers;
+}
+
 /** The bytes of a picture or PDF inside the chat's folder. */
 export function rawFile(root, rawPath) {
   const file = resolveChatFile(root, rawPath);

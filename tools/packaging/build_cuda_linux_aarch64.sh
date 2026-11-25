@@ -27,12 +27,15 @@ commit=${COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}
 [ -n "$commit" ] || { echo "build_cuda_linux_aarch64.sh: set COMMIT=<hex> (no .git here)" >&2; exit 2; }
 export COMMIT=$commit
 . "$repo/tools/packaging/shape_build.sh"; shape_setup "$repo"
+. "$repo/tools/packaging/symbols_build.sh"
 req=""
 if [ -n "${SHAPE:-}" ]; then req=$shape_pkg; fi
 stage=$(mktemp -d "${TMPDIR:-/tmp}/strata-engine-stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 OUT=$stage/engine BUILD_VISION=${BUILD_VISION:-1} sh engine/spark/build_engine.sh
 shape_check "$stage/engine/strata"
+# the symbol files (owner decision 2026-11-25): split off the stage copies, before package_engine.py hashes them; stored outside the package
+symbols_keep elf "$repo" "$(if [ -n "${SHAPE:-}" ]; then echo "strata-$(echo "$SHAPE" | tr _ -)"; else echo strata-engine; fi)-$ver-linux-aarch64-cuda-cuda13" "$stage/engine/strata" $( [ -f "$stage/engine/strata-vision" ] && echo "$stage/engine/strata-vision" )
 cudafull=$(sed -n 's/.*"cuda": "\([^"]*\)".*/\1/p' "$stage/engine/BUILD.json")
 id="release-${ver}-cuda13-${cudafull}-aarch64-$(printf '%s' "$commit" | cut -c1-12)"
 mkdir -p "$out"

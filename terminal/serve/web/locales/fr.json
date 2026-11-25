@@ -251,6 +251,7 @@
   "toast.httpAnswer": "Le serveur a répondu HTTP {code}.",
   "toast.keyAbout": "Ce serveur a besoin d’une clé : ajoutez-la dans À propos > Paramètres.",
   "toast.keyAbout2": "Clé API requise : ajoutez-la dans À propos > Paramètres.",
+  "toast.keyFrom": "C’est la clé avec laquelle le serveur a été démarré : --api-key, STRATA_API_KEY, api_key de la configuration d’exécution, ou la clé sk-strata- créée par strata launch lors d’un partage au-delà de cet ordinateur.",
   "toast.keyNeeded": "Ce serveur a besoin d’une clé API : ajoutez-la dans À propos > Paramètres.",
   "toast.requestFailed": "La requête a échoué",
   "tool.arguments": "Arguments",
