@@ -474,6 +474,13 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         i = args.index("--expert-profile") + 1
         if args[i].replace("\\", "/").rsplit("/", 1)[-1] == "expert-profile.bin":
             args[i] = args[i][:-len("expert-profile.bin")] + SYCL_PROFILE
+    if "--expert-profile" not in args:
+        # A config written by hand often has no profile, and then serve refuses at the verifier ("needs the
+        # profile-filled VRAM expert tier", verify.cpp) - reported from an Arc Pro B60 on PR #3607.  The ranking
+        # changes which experts the cache holds, so speed and not tokens; i915 keeps the general one, as above.
+        prof = ROOT.parent / "terminal" / "data" / (SYCL_PROFILE if driver != "i915" else "expert-profile.bin")
+        if prof.is_file():
+            args += ["--expert-profile", str(prof)]
     for f in ("--pack", "--native", "--ple-gguf", "--expert-profile", "--mtp", "--control-vector-scaled"):
         if f in args:
             v = args[args.index(f) + 1]

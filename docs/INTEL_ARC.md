@@ -475,6 +475,15 @@ found on the way: a config from before the Level Zero V2 investigation needs `SY
 and on this machine the 40 GiB import itself costs the device (`UR_RESULT_ERROR_DEVICE_LOST` at the first profile
 fill), so the arena here runs with `STRATA_ARENA_COPY_REGISTER=0`.
 
+**Serve needs an expert profile, and a mirror that holds everything.** The verifier refuses to start without the
+profile-filled VRAM expert tier: with `--expert-cache auto` and no `--expert-profile`, the start ends with `verify:
+needs the profile-filled VRAM expert tier (--expert-profile and --expert-cache)`. Setup passes
+`terminal/data/expert-profile-sycl.bin`, a ranking of expert pairs that changes speed and not tokens, and adds it when
+a config has none; a config written by hand should pass it too, or let the engine write one with
+`--expert-profile-save`. On a 24 GiB card under `STRATA_VERIFY_NO_HOST` the pinned mirror must hold every expert the
+cache does not: IQ3_S's 24,576 experts need `STRATA_MIRROR_MIB=61440` (53.3 GiB), while 30,720 MiB left 10,749 of
+them unplaced and the start was refused (report on #3607, Arc Pro B60 24 GB).
+
 What has **not** been run on Windows: pictures, two cards, and the Docker path. The Arc A-series **has** now been run
 (an A770 16 GB, below). WSL2 with an Arc has been used by one tester (the B580 row above), but setup cannot detect the
 card there, because it reads `/sys/class/drm`, which WSL2 does not have.
