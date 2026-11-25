@@ -7925,9 +7925,11 @@ int main(int argc, char** argv) {
     // STRATA_PIPED_MTP, a group's rows: its slots, each its token and its proposals ((slots) * (1 + proposals), one slot
     // per group = at most --spec rows).  A function, not a number: --batch (the slots that fit) and the groups are final
     // only after this point, at the verifiers' init, and the plain value must stay what it was there.
+    const bool batch_mtp_wide = batch_mtp && !piped_mtp && stages.empty() &&
+                                strata::kernels::kVerifyMaxT > strata::kernels::kVerifyNarrowT &&
+                                (std::getenv("STRATA_BATCH_MTP_WIDE") != nullptr && std::getenv("STRATA_BATCH_MTP_WIDE")[0] != 0 && std::getenv("STRATA_BATCH_MTP_WIDE")[0] != 48);
     auto batch_max_t = [&]() -> int {
-        // (--batch-mtp and STRATA_PIPED_MTP draft with the draft layer's kernels, built for the narrow window: their windows
-        // stay at most kVerifyNarrowT rows; only the plain batch windows are wide)
+        if (batch_mtp_wide) return std::min<int>(std::max(o.spec, 2 * o.batch), (int) strata::kernels::kVerifyMaxT);
         if (batch_mtp && !piped_mtp) return (int) strata::kernels::kVerifyNarrowT;
         const int plain = std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT));
         const int group_rows = (piped_mtp && o.batch_groups > 1 && o.batch > 0)
@@ -7951,6 +7953,16 @@ int main(int argc, char** argv) {
         o.batch = asked;
         return n;
     };
+    struct ElasticSlotState {
+        strata::core::VmmRange base_vmm;
+        strata::core::VmmRange idx_vmm;
+        int64_t idx_layer_chunks = 0;
+        int64_t idx_mapped_chunks = 0;
+        bool base_mapped = false;
+    };
+    std::deque<ElasticSlotState> eslot_vmm;
+    bool eslot_enabled = false;
+    uint64_t eslot_idx_stride = 0;
     std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
     if (o.batch != 0) {
         const int cap = strata::kernels::kVerifyMaxT;
@@ -8062,7 +8074,54 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        {
+            const char* es_env = std::getenv("STRATA_ELASTIC_SLOTS");
+            const bool es_asked = es_env != nullptr && es_env[0] != 0 && es_env[0] != 48;
+            bool remote_c = false;
+            for (const int r : o.expert_cache_remote) remote_c = remote_c || r > 0;
+            if (es_asked && !multi_gpu && stages.empty() && o.kv_resident > 0 && !o.expert_profile.empty() &&
+                !o.resident_cpu_experts && o.expert_cache != 0 && !remote_c && !o.vram_elastic && o.peer_device < 0 &&
+                strata::core::vmm_available()) {
+                eslot_enabled = true;
+                strata::core::ExpertCache::set_vmm(true);
+            }
+        }
         uint64_t bytes0 = 0;
+        if (eslot_enabled) {
+            const strata::core::OnDevice on_0(0);
+            const uint64_t G = strata::core::vmm_granularity();
+            const strata::core::QsaState* rope_src = g.n_qsa_layers() > 0 ? &ss.qsa_states[ss.qsa_primary()] : nullptr;
+            const uint64_t base_bytes = strata::core::session_bytes(g, o.max_context, K, 0, -1, rope_src != nullptr, true, true);
+            const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
+            const int64_t pooled_rows = o.max_context / qs.idx_block + 2;
+            const uint64_t idx_layer_raw = (uint64_t) pooled_rows * (uint64_t) qs.idx_dim * 4;
+            eslot_idx_stride = ((idx_layer_raw + G - 1) / G) * G;
+            const int64_t idx_layer_chunks = (int64_t) (eslot_idx_stride / G);
+            const uint64_t idx_total_bytes = (uint64_t) g.n_qsa_layers() * eslot_idx_stride;
+            eslot_vmm.resize((size_t) fit);
+            bytes0 = 0;   // 0 physical VRAM at startup (all reserved in VMM!)
+            for (int b = 0; b < fit; ++b) {
+                auto u = std::make_unique<strata::core::SessionState>();
+                eslot_vmm[(size_t) b].idx_layer_chunks = idx_layer_chunks;
+                if (!eslot_vmm[(size_t) b].base_vmm.reserve(base_bytes) ||
+                    !eslot_vmm[(size_t) b].idx_vmm.reserve(idx_total_bytes) ||
+                    strata::core::session_init(g, o.max_context, K, eslot_vmm[(size_t) b].base_vmm.base(), *u, 0, -1,
+                                               rope_src, true, eslot_vmm[(size_t) b].idx_vmm.base(), eslot_idx_stride, true) == 0) {
+                    eslot_vmm[(size_t) b].base_vmm.release();
+                    eslot_vmm[(size_t) b].idx_vmm.release();
+                    fit = b;
+                    break;
+                }
+                bslot_ss[0].push_back(std::move(u));
+            }
+            eslot_vmm.resize((size_t) fit);
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            std::fprintf(stderr, "strata generate: STRATA_ELASTIC_SLOTS=1: %d VMM slot sessions reserved on CUDA0 "
+                                 "(0.00 GiB physical at startup; %.0f MiB base + %.0f MiB/16K idx on demand); %.2f GiB free\n",
+                         fit, (double) base_bytes / 1048576.0, (double) (g.n_qsa_layers() * G) / 1048576.0,
+                         (double) fb / 1073741824.0);
+        } else
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
             const int dev = k == 0 ? 0 : stages[k - 1]->dev;
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
@@ -8259,7 +8318,9 @@ int main(int argc, char** argv) {
         // the next window's drafts), and the round/step graphs carry the forcing kernel
         // (--lookup-max-t past kVerifyNarrowT: the drafter keeps kVerifyNarrowT rows, MtpDrafter::draft_long catches a
         // longer window up in parts)
-        const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyNarrowT : std::min(o.spec, (int) strata::kernels::kVerifyNarrowT);
+        const char* bmf_e = std::getenv("STRATA_BATCH_MTP_FUSED");
+        const bool bmf_want = batch_mtp && bmf_e != nullptr && bmf_e[0] != 0 && bmf_e[0] != 48;
+        const int mtp_t = (o.pipeline_windows >= 2 || bmf_want) ? strata::kernels::kVerifyNarrowT : std::min(o.spec, (int) strata::kernels::kVerifyNarrowT);
         if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str()); return 1; }
         if (!o.mtp.empty()) mtp.set_ple_session(&ss);
@@ -11744,6 +11805,223 @@ int main(int argc, char** argv) {
                              "the profile\n", (long long) kvg.cells, (long long) (kvg.lo - lo0));
         return true;
     };
+    // ---- Elastic VMM Batch Slots (STRATA_ELASTIC_SLOTS=1): borrow physical 2 MiB chunks from ExpertCache tail
+    // on demand when batch slots become active, and return them to ExpertCache when returning to solo mode.
+    struct {
+        bool on = false;
+        bool from_cache = false;
+        int64_t top = 0, lo = 0, floor = 256;
+        std::vector<strata::core::VmmChunk> spare;
+    } esm;
+    auto eslot_start = [&](int64_t top) {
+        if (!eslot_enabled || eslot_vmm.empty()) return;
+        esm.on = true;
+        esm.from_cache = (xcache.vmm_range() != nullptr && d_res != nullptr && !host_res.empty() && srcp != nullptr && top > esm.floor);
+        esm.top = esm.lo = top;
+        std::fprintf(stderr, "strata generate: elastic batch slots ready: expert cache (%lld slots) lends below slot %lld (floor %lld)\n",
+                     (long long) xcache.slots(), (long long) top, (long long) esm.floor);
+    };
+    auto eslot_any_mapped = [&]() -> bool {
+        if (!esm.on) return false;
+        for (const auto& s : eslot_vmm) if (s.base_mapped || s.idx_mapped_chunks > 0) return true;
+        return false;
+    };
+    auto eslot_mapped_cells = [&](int b) -> int64_t {
+        if (!esm.on || b < 0 || b >= (int) eslot_vmm.size() || !eslot_vmm[(size_t) b].base_mapped) return 0;
+        const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
+        const uint64_t G = strata::core::vmm_granularity();
+        const int64_t rows = (int64_t) ((uint64_t) eslot_vmm[(size_t) b].idx_mapped_chunks * G / ((uint64_t) qs.idx_dim * 4));
+        return rows * qs.idx_block;
+    };
+    auto eslot_ensure = [&](int b, int64_t cells, const std::function<void()>& quiesce) -> bool {
+        if (!esm.on || b < 0 || b >= (int) eslot_vmm.size()) return true;
+        ElasticSlotState& es = eslot_vmm[(size_t) b];
+        const uint64_t G = strata::core::vmm_granularity();
+        const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
+        const int64_t n_qsa = g.n_qsa_layers();
+        const int64_t need_rows = std::min<int64_t>(o.max_context / qs.idx_block + 2, (std::max<int64_t>(cells, 1) + 512) / qs.idx_block + 4);
+        const uint64_t need_idx_bytes = (uint64_t) need_rows * (uint64_t) qs.idx_dim * 4;
+        const int64_t want_idx_c = std::min<int64_t>(es.idx_layer_chunks, std::max<int64_t>(1, (int64_t) ((need_idx_bytes + G - 1) / G)));
+        const int64_t need_base = es.base_mapped ? 0 : es.base_vmm.chunks();
+        const int64_t add_idx_c = want_idx_c > es.idx_mapped_chunks ? (want_idx_c - es.idx_mapped_chunks) : 0;
+        const int64_t need = need_base + n_qsa * add_idx_c;
+        if (need <= 0) return true;
+        quiesce();
+        const auto t0 = Clock::now();
+        int64_t gave = 0, moved = 0;
+        if (esm.from_cache) {
+            strata::core::VmmRange& r = *xcache.vmm_range();
+            std::vector<int32_t> owner, rank;
+            std::vector<std::pair<float, int32_t>> cold;
+            auto heat = [&](int32_t i) -> float {
+                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[(size_t) i];
+                return u * 1048576.0f - (float) rank[(size_t) i];
+            };
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            auto freeable = [&]() -> int64_t {
+                const int64_t c0 = (int64_t) ((xcache.slot_offset(esm.lo) + G - 1) / G);
+                const int64_t c1 = (int64_t) (xcache.slot_offset(esm.top) / G);
+                int64_t k = 0;
+                for (int64_t c = c0; c < c1; ++c) k += r.mapped(c) ? 1 : 0;
+                return k;
+            };
+            while ((int64_t) esm.spare.size() + freeable() < need && esm.lo > esm.floor) {
+                if (owner.empty()) {
+                    owner.assign((size_t) xcache.slots(), -1);
+                    for (size_t i = 0; i < host_res.size(); ++i)
+                        if (host_res[i] >= 0 && host_res[i] < xcache.slots()) owner[(size_t) host_res[i]] = (int32_t) i;
+                    rank.assign(host_res.size(), (int32_t) profile.size());
+                    for (size_t ri = 0; ri < profile.size(); ++ri)
+                        rank[(size_t) profile[ri].first * (size_t) g.n_expert + (size_t) profile[ri].second] = (int32_t) ri;
+                    for (size_t i = 0; i < host_res.size(); ++i)
+                        if (host_res[i] >= esm.top) cold.emplace_back(heat((int32_t) i), (int32_t) i);
+                    std::sort(cold.begin(), cold.end(), [](const auto& a, const auto& b2) { return a.first > b2.first; });
+                }
+                --esm.lo;
+                ++gave;
+                if (const int32_t oi = owner[(size_t) esm.lo]; oi >= 0) {
+                    const int64_t layer = oi / g.n_expert;
+                    int32_t vi = -1;
+                    if (!cold.empty() && cold.back().first < heat(oi)) {
+                        vi = cold.back().second;
+                        const int32_t vs = host_res[(size_t) vi];
+                        if (xcache.slot_offset(vs + 1) - xcache.slot_offset(vs) < lay.blob_bytes(layer) ||
+                            cudaMemcpy(xcache.device_slot(vs), xcache.device_slot((int32_t) esm.lo),
+                                       (size_t) lay.blob_bytes(layer), cudaMemcpyDeviceToDevice) != cudaSuccess)
+                            vi = -1;
+                        else {
+                            cold.pop_back();
+                            host_res[(size_t) oi] = vs;
+                            host_res[(size_t) vi] = strata::core::kNotResident;
+                            ++moved;
+                        }
+                    }
+                    if (vi < 0) host_res[(size_t) oi] = strata::core::kNotResident;
+                }
+            }
+            if (gave > 0 && cudaDeviceSynchronize() != cudaSuccess) return false;
+            {
+                const int64_t c0 = (int64_t) ((xcache.slot_offset(esm.lo) + G - 1) / G);
+                const int64_t c1 = (int64_t) (xcache.slot_offset(esm.top) / G);
+                for (int64_t c = c0; c < c1; ++c)
+                    if (r.mapped(c))
+                        if (const strata::core::VmmChunk h = r.unmap(c)) esm.spare.push_back(h);
+            }
+            if (gave > 0 && cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess)
+                return false;
+        }
+        auto take_chunk = [&]() -> strata::core::VmmChunk {
+            if (esm.spare.empty()) return 0;
+            const strata::core::VmmChunk h = esm.spare.back();
+            esm.spare.pop_back();
+            return h;
+        };
+        const bool was_base = es.base_mapped;
+        if (!es.base_mapped) {
+            if (!es.base_vmm.map_range(0, es.base_vmm.chunks(), take_chunk)) return false;
+            es.base_mapped = true;
+        }
+        const int64_t old_idx_c = es.idx_mapped_chunks;
+        if (add_idx_c > 0) {
+            for (int64_t l = 0; l < n_qsa; ++l) {
+                const int64_t c0 = l * es.idx_layer_chunks + old_idx_c;
+                if (!es.idx_vmm.map_range(c0, c0 + add_idx_c, take_chunk)) return false;
+                cudaMemsetAsync(es.idx_vmm.base() + (uint64_t) c0 * G, 0, (size_t) ((uint64_t) add_idx_c * G), nullptr);
+            }
+            es.idx_mapped_chunks = want_idx_c;
+            const int64_t mrows = (int64_t) ((uint64_t) want_idx_c * G / ((uint64_t) qs.idx_dim * 4));
+            strata::core::SessionState& sb = *bslot_ss[0][(size_t) b];
+            for (int64_t l = 0; l < sb.qsa_alloc; ++l)
+                sb.qsa_states[sb.qsa_ord0 + l].idx_pooled_mapped_rows = std::min(sb.qsa_states[sb.qsa_ord0 + l].idx_pooled_rows, mrows);
+        }
+        if (!was_base) {
+            strata::core::session_zero(*bslot_ss[0][(size_t) b], g, nullptr, nullptr);
+        }
+        if (cudaDeviceSynchronize() != cudaSuccess) return false;
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        std::fprintf(stderr, "strata elastic: slot %d mapped (%s+%lld idx chunks = %.0f MiB; cache gave %lld slots, moved %lld, live %lld/%lld) in %.1f ms\n",
+                     b, was_base ? "" : "base", (long long) add_idx_c,
+                     (double) ((uint64_t) (es.base_vmm.mapped_count() + es.idx_vmm.mapped_count()) * G) / 1048576.0,
+                     (long long) gave, (long long) moved, (long long) (esm.lo + (xcache.slots() - esm.top)),
+                     (long long) xcache.slots(), ms);
+        return true;
+    };
+    auto eslot_reclaim_all = [&](const std::function<void()>& quiesce, const std::function<void(int)>& on_unmap) -> bool {
+        if (!esm.on || !eslot_any_mapped()) return true;
+        quiesce();
+        const auto t0 = Clock::now();
+        int reclaimed_slots = 0;
+        for (int b = 0; b < (int) eslot_vmm.size(); ++b) {
+            ElasticSlotState& es = eslot_vmm[(size_t) b];
+            if (!es.base_mapped && es.idx_mapped_chunks == 0) continue;
+            on_unmap(b);
+            for (int64_t c = 0; c < es.base_vmm.chunks(); ++c)
+                if (const strata::core::VmmChunk h = es.base_vmm.unmap(c)) esm.spare.push_back(h);
+            for (int64_t c = 0; c < es.idx_vmm.chunks(); ++c)
+                if (const strata::core::VmmChunk h = es.idx_vmm.unmap(c)) esm.spare.push_back(h);
+            es.base_mapped = false;
+            es.idx_mapped_chunks = 0;
+            strata::core::SessionState& sb = *bslot_ss[0][(size_t) b];
+            for (int64_t l = 0; l < sb.qsa_alloc; ++l)
+                sb.qsa_states[sb.qsa_ord0 + l].idx_pooled_mapped_rows = 0;
+            ++reclaimed_slots;
+        }
+        if (!esm.from_cache) {
+            for (const strata::core::VmmChunk h : esm.spare) strata::core::vmm_chunk_free(h);
+            esm.spare.clear();
+            return true;
+        }
+        strata::core::VmmRange& r = *xcache.vmm_range();
+        const uint64_t G = strata::core::vmm_granularity();
+        const int64_t c1 = (int64_t) (xcache.slot_offset(esm.top) / G);
+        if (!esm.spare.empty() && esm.lo < esm.top) {
+            const int64_t c0 = (int64_t) (xcache.slot_offset(esm.lo) / G);
+            int64_t cend = c0, need = (int64_t) esm.spare.size();
+            for (; cend < c1 && need > 0; ++cend) if (!r.mapped(cend)) --need;
+            r.map_range(c0, cend, [&]() -> strata::core::VmmChunk {
+                if (esm.spare.empty()) return 0;
+                const strata::core::VmmChunk h = esm.spare.back();
+                esm.spare.pop_back();
+                return h;
+            });
+        }
+        const int64_t lo0 = esm.lo;
+        while (esm.lo < esm.top) {
+            const int64_t a = (int64_t) (xcache.slot_offset(esm.lo) / G);
+            const int64_t b2 = (int64_t) ((xcache.slot_offset(esm.lo + 1) + G - 1) / G);
+            bool all = true;
+            for (int64_t c = a; c < b2 && all; ++c) all = r.mapped(c);
+            if (!all) break;
+            ++esm.lo;
+        }
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        std::vector<std::pair<size_t, int32_t>> filled;
+        size_t pi = 0;
+        for (int64_t s = lo0; s < esm.lo; ++s) {
+            const uint64_t room = xcache.slot_offset(s + 1) - xcache.slot_offset(s);
+            for (; pi < profile.size(); ++pi) {
+                const int32_t l = profile[pi].first, e = profile[pi].second;
+                const size_t i = (size_t) l * (size_t) g.n_expert + (size_t) e;
+                if (host_res[i] >= 0 || lay.blob_bytes(l) > room) continue;
+                const uint8_t* blob = srcp->blob_stable(l, e);
+                if (blob == nullptr) continue;
+                cudaMemcpyAsync(xcache.device_slot((int32_t) s), blob, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, nullptr);
+                filled.emplace_back(i, (int32_t) s);
+                ++pi;
+                break;
+            }
+        }
+        if (cudaDeviceSynchronize() != cudaSuccess) return false;
+        for (const auto& [i, s] : filled) host_res[i] = s;
+        if (res_put(d_res) != cudaSuccess) return false;
+        for (const strata::core::VmmChunk h : esm.spare) strata::core::vmm_chunk_free(h);
+        esm.spare.clear();
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        std::fprintf(stderr, "strata elastic: solo switch reclaimed %d batch slot(s) -> +%lld expert slots restored (live %lld/%lld) in %.1f ms\n",
+                     reclaimed_slots, (long long) (esm.lo - lo0), (long long) (esm.lo + (xcache.slots() - esm.top)),
+                     (long long) xcache.slots(), ms);
+        return true;
+    };
     // ---- the resident RAM mode (--resident-experts / --resident-cpu-experts): the experts the GPU cache does not
     // hold are copied from experts.bin into RAM once, so no decode or prompt step reads the file (the plain mmap
     // mode reads them through the OS file cache, which a small-RAM PC keeps giving back to the SSD).  Built here,
@@ -12558,6 +12836,10 @@ int main(int argc, char** argv) {
                 if (c == 0 && cap < strata::prefill::Prefill::ring_default_slots()) c = probe(kRingMin);
                 return std::max(c, small);   // never a smaller chunk than 0.1.39's
             };
+            if (const char* fko = std::getenv("STRATA_PF_FUSED_KERNELS_ONLY"); fko != nullptr && fko[0] != 0 && fko[0] != 48) {
+                strata::prefill::pf_fused_override().store(strata::prefill::kPfFusedKernelsOnly);
+                std::fprintf(stderr, "strata prefill: STRATA_PF_FUSED_KERNELS_ONLY=1 (fused kernels + layer-major co-read layout)\n");
+            }
             int64_t chunk = scan(nullptr);
             // The small-card prompt path (strata::small_card_prompt_path; owner's yes 2026-11-02): this chunk is what the DEFAULT prompt path got from the cache.
             // Below 8,192 tokens the default streams every expert again for every chunk, and the unfused experts plus (from two chunks) the layer-major walk
@@ -13206,6 +13488,7 @@ int main(int argc, char** argv) {
             }
         }
         kvg_start(borrow != nullptr ? (int64_t) lend_first : xcache.slots());
+        eslot_start(borrow != nullptr ? (int64_t) lend_first : xcache.slots());
         // the penalty-history buffer: one row per verify-window row (`penalty_rows`), each the last
         // `penalty_last_n` tokens that row's pick follows, -1 padded in front.  Allocated once at the cap for
         // the widest window; a request without penalties gets a null buffer and takes the byte-for-byte
@@ -13488,7 +13771,8 @@ int main(int argc, char** argv) {
         }
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
-        if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (const char* bgl = std::getenv("STRATA_BATCH_GRAPH_LIMIT"); bgl != nullptr && std::atoi(bgl) > 0) ver.set_batch_graph_limit((size_t) std::atoi(bgl));
+        else if (batch_mtp) ver.set_batch_graph_limit(64);   // LRU bound for captured batch graphs
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
@@ -16903,6 +17187,7 @@ int main(int argc, char** argv) {
         };
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
+            if (esm.on && !eslot_ensure(b, upto + 256, adapt_quiesce)) { e = "elastic slot VRAM grow failed"; return false; }
 #if defined(STRATA_GPU_METAL)
             // the running state and the K/V of the Metal window, not the session's device buffers
             return strata::metal_engine::window_slot_copy_main(true, b, upto, false, e);
@@ -17118,8 +17403,7 @@ int main(int argc, char** argv) {
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
-            // (--batch-mtp: two rows a slot, at most kVerifyNarrowT; the plain windows hold up to kVerifyMaxT)
-            const int win_cap = batch_mtp ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
+            const int win_cap = (batch_mtp && !batch_mtp_wide) ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
             int nrow[strata::kernels::kVerifyMaxT] = {};   // the rows slot a (the a-th active) holds: its token and its drafts
             // DFlash2 slots: the rows beyond one a slot are SPARE; they carry the slots' drafts, shared evenly in slot order (so the layout of a window
             // depends on which slots are active, not on the drafts: the captured batch graphs are reused).  More slots than rows: no drafts, the slots
@@ -17178,6 +17462,10 @@ int main(int argc, char** argv) {
                 const int extra = batch_df2 ? (b < (int) (sizeof df2_extra / sizeof df2_extra[0]) ? df2_extra[b] : 0) : batch_mtp ? 1 : 0;
                 if (S + 1 + extra > win_cap) break;
                 BSlot& q = bs[(size_t) b];
+                if (esm.on && q.p + 64 > eslot_mapped_cells(b) && !eslot_ensure(b, q.p + 256, adapt_quiesce)) {
+                    err = "elastic slot idx_pooled grow failed";
+                    return false;
+                }
                 if (batch_mtp && !q.draft_ready && !batch_df2) {
                     err = "batch MTP: a live slot has no draft";
                     return false;
@@ -17236,8 +17524,17 @@ int main(int argc, char** argv) {
                 const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
                 ver.set_slot_history(rows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
             }
+            static const int batch_pcie_num = [] {
+                const char* v = std::getenv("STRATA_BATCH_PCIE_FRAC");
+                if (v == nullptr || v[0] == 0) return -1;
+                return std::max(0, std::min(256, (int) (std::atof(v) * 256.0 + 0.5)));
+            }();
+            const int saved_pcie_num = drive.d.pcie_num;
+            if (batch_pcie_num >= 0 && stages.empty()) drive.d.pcie_num = (S >= 2 ? batch_pcie_num : 0);
             const Clock::time_point w0 = Clock::now();
-            if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
+            const bool slot_ok = ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err);
+            drive.d.pcie_num = saved_pcie_num;
+            if (!slot_ok || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
             }
@@ -19408,6 +19705,10 @@ int main(int argc, char** argv) {
                     BSlot& sl = bs[(size_t) b];
                     const bool from_ck = rd_ck != nullptr;
                     if (!pmtp_settle()) return 1;   // (what the slots' last windows queued - commits, chains - has run)
+                    if (esm.on && !eslot_ensure(b, n + 256, adapt_quiesce)) {
+                        std::printf("ERR elastic slot VRAM grow failed\n");
+                        return 1;
+                    }
                     if (from_ck)
                         for (size_t k = 0; k < bslot_ss.size(); ++k) {
                             const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
@@ -20065,7 +20366,6 @@ int main(int argc, char** argv) {
             // so cells past this prompt's are no longer anyone's - far more than it needs go back to the cache
             if (kvg.on) {
                 kv_quiesce();
-                // STRATA_KV_GROW_HOLD=1 (opt-in): keep the K/V as long as the longest parked conversation; default: trim to this request alone, as 0.1.40
                 static const bool hold_on = [] { const char* v = std::getenv("STRATA_KV_GROW_HOLD"); return v != nullptr && std::atoi(v) != 0; }();
                 if (!kvg_trim(n + 256, hold_on ? conversations.longest_tokens() + 256 : 0)) {
                     std::printf("ERR the K/V could not give its VRAM back to the expert cache\n");
@@ -20161,6 +20461,21 @@ int main(int argc, char** argv) {
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
             tr("request", n, geni ? 1 : 0);
+            if (esm.on && admit_slot < 0 && eslot_any_mapped()) {
+                bool any_busy = false;
+                for (const BSlot& sb : bs) if (sb.active || sb.partial) { any_busy = true; break; }
+                if (!any_busy) {
+                    auto unmap_cb = [&](int b) {
+                        if (bs[(size_t) b].cached) park_slot(b);
+                        bs[(size_t) b] = BSlot{};
+                    };
+                    if (!eslot_reclaim_all(kv_quiesce, unmap_cb)) {
+                        std::printf("ERR elastic slots could not return VRAM to expert cache\n");
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                }
+            }
             req_times = ReqTimes{};
             if (use_mtp) mtp.set_prompt_len(n);
             // KVA: the draft layer's first real cell for the state this request continues from (0 for a cold read - the
@@ -20822,6 +21137,7 @@ int main(int argc, char** argv) {
                     lead.pos0 = q;
                     segs.push_back(lead);
                     std::vector<const CoReq*> used;
+                    std::vector<int64_t> used_pos0;
                     for (const CoReq& c : co_set) {
                         if (c.slot < 0 || c.slot >= (int) bs.size() || c.slot == admit_slot || bs[(size_t) c.slot].active ||
                             bs[(size_t) c.slot].partial)
@@ -20829,23 +21145,44 @@ int main(int argc, char** argv) {
                         bool dup = false;
                         for (const CoReq* u : used) dup = dup || u->slot == c.slot;
                         if (dup) continue;
+                        int64_t c_pos0 = 0;
+                        if (q > 0 && (int64_t) c.ids.size() > q + 1 &&
+                            std::equal(ids.begin(), ids.begin() + q, c.ids.begin())) {
+                            c_pos0 = q;   // shares lead's exact cached prefix [0, q) already loaded in ss!
+                        }
                         PSeg sg;
-                        sg.tokens = c.ids.data();
-                        sg.n = (int64_t) c.ids.size() - 1;   // (the last token goes through the slot's own first window)
-                        sg.pos0 = 0;
+                        sg.tokens = c.ids.data() + c_pos0;
+                        sg.n = (int64_t) c.ids.size() - 1 - c_pos0;
+                        sg.pos0 = c_pos0;
                         for (size_t k = 0; k < bslot_ss.size(); ++k) sg.stage_ss.push_back(bslot_ss[k][(size_t) c.slot].get());
                         segs.push_back(sg);
                         used.push_back(&c);
+                        used_pos0.push_back(c_pos0);
                     }
                     if (segs.size() < 2) return sp.run(lead.tokens, lead.n, lead.pos0, ce);
-                    for (const CoReq* c : used) {
-                        park_slot(c->slot);   // the conversation the slot holds, before this read overwrites it
-                        for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                            const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                            strata::core::session_zero(*bslot_ss[k][(size_t) c->slot], g, nullptr, nullptr);
-                            cudaDeviceSynchronize();
+                    std::vector<int32_t> shared_prefix_ids;
+                    if (q > 0) {
+                        shared_prefix_ids.resize((size_t) q);
+                        for (int64_t pi = 0; pi < q; ++pi) shared_prefix_ids[(size_t) pi] = (int32_t) ids[(size_t) pi];
+                    }
+                    for (size_t ui = 0; ui < used.size(); ++ui) {
+                        const CoReq* c = used[ui];
+                        const int64_t c_pos0 = used_pos0[ui];
+                        if (esm.on && !eslot_ensure(c->slot, (int64_t) c->ids.size() + 256, adapt_quiesce)) {
+                            ce = "elastic slot VRAM grow failed in co-read";
+                            return false;
                         }
-                        bs[(size_t) c->slot] = BSlot{};   // (it holds nothing until the read is done)
+                        park_slot(c->slot);
+                        if (c_pos0 > 0) {
+                            if (!copy_to_slot(c->slot, shared_prefix_ids, ce)) return false;
+                        } else {
+                            for (size_t k = 0; k < bslot_ss.size(); ++k) {
+                                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                                strata::core::session_zero(*bslot_ss[k][(size_t) c->slot], g, nullptr, nullptr);
+                                cudaDeviceSynchronize();
+                            }
+                        }
+                        bs[(size_t) c->slot] = BSlot{};
                     }
                     const auto tco = Clock::now();
                     std::fprintf(stderr, "strata batch: co-read starting: %zu more prompt(s) with this request's %lld tokens\n",

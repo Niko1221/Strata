@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (338)
+## Switches you can turn on (344)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -31,9 +31,12 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_AUX_CPUS` | text | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_AUX_STAGER` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md) |
 | `STRATA_BATCH_DECODE_SHARE` | number | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md) |
+| `STRATA_BATCH_GRAPH_LIMIT` | number | NVIDIA and AMD | - |
 | `STRATA_BATCH_MTP` | on / off | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md) |
 | `STRATA_BATCH_MTP_ATTN_SLOTS` | number | NVIDIA and AMD | - |
 | `STRATA_BATCH_MTP_FUSED` | on / off | NVIDIA and AMD | - |
+| `STRATA_BATCH_MTP_WIDE` | on / off | NVIDIA and AMD | - |
+| `STRATA_BATCH_PCIE_FRAC` | number | NVIDIA and AMD | - |
 | `STRATA_BATCH_QSA_STREAM_OPT` | on / off | NVIDIA and AMD | - |
 | `STRATA_BATCH_SIDE_MIXER` | on / off | NVIDIA and AMD | - |
 | `STRATA_BATCH_YIELD_CHUNKS` | number | NVIDIA and AMD | [BATCHING.md](BATCHING.md) |
@@ -61,6 +64,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_DOWN_WS` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_DUMP_FIRST_LOGITS` | on / off | NVIDIA and AMD, Intel Arc | [DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) |
 | `STRATA_DUMP_MOE_INPUT` | text | NVIDIA and AMD | [NVFP4.md](NVFP4.md) |
+| `STRATA_ELASTIC_SLOTS` | on / off | NVIDIA and AMD | - |
 | `STRATA_EMBED_VRAM` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_EXCHANGE_ROTATE` | on / off | NVIDIA and AMD, Intel Arc, CPU | [DETAILS.md](DETAILS.md), [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md), [README.md](bench-results/2026-10-06-community-2x-rx-7900-gre/README.md) |
 | `STRATA_EXPDEC_MINB` | number | NVIDIA and AMD | [EXPERTDEC.md](EXPERTDEC.md) |
@@ -181,6 +185,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_MMVQ_IL_ROWS` | on / off | NVIDIA and AMD | [MMVQ_IL_TABLE.md](MMVQ_IL_TABLE.md) |
 | `STRATA_MMVQ_WIDE_32` | number | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_MTP_KEEP` | on / off | NVIDIA and AMD | [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_MTP_KV_INT8` | on / off | NVIDIA and AMD | - |
 | `STRATA_MTP_Q8_SM60` | on / off | NVIDIA and AMD | [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_MTP_ROOM_MIN` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_NIB_GU_PROTO` | number | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |
@@ -211,6 +216,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PF_DMA_PAGEABLE` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_PF_FUSED_F16` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_IQ2S` | text | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
+| `STRATA_PF_FUSED_KERNELS_ONLY` | on / off | NVIDIA and AMD | - |
 | `STRATA_PF_FUSED_NATIVE` | on / off | NVIDIA and AMD | [AMD_HIP.md](AMD_HIP.md), [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_NT` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_Q2N` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
@@ -355,7 +361,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (123)
+## Switches that go back to earlier behaviour (124)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -384,7 +390,7 @@ version made it the default.
 | `STRATA_GR_V3` | number | NVIDIA and AMD, Intel Arc | v0.2.16 | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-03-community-rx7900xtx-rocm102-nightly/README.md), [README.md](bench-results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md) |
 | `STRATA_HC_Q8_ALL_STAGES` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_HIPBLASLT` | number | AMD | v0.2.19 | - |
-| `STRATA_HIP_CPU_SPLIT` | on / off | AMD | - | - |
+| `STRATA_HIP_CPU_SPLIT` | on / off | AMD | v0.2.21 | - |
 | `STRATA_HIP_EXP8` | text | AMD | v0.2.20 | - |
 | `STRATA_HIP_MAPPED_COHERENT` | on / off | NVIDIA and AMD | v0.2.19 | - |
 | `STRATA_HIP_QUEUE_PRIME` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [release-notes-0.2.1.md](release-notes-0.2.1.md), [release-notes-0.2.2.md](release-notes-0.2.2.md) |
@@ -392,21 +398,21 @@ version made it the default.
 | `STRATA_IGPU_DEFAULTS` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_IGPU_PROMPT_SET` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [RADEON_780M.md](RADEON_780M.md), [release-notes-0.2.1.md](release-notes-0.2.1.md) |
 | `STRATA_IL_PAD` | number | NVIDIA and AMD | v0.2.16 | - |
-| `STRATA_INK_CHUNK_AUTO` | number | NVIDIA and AMD | - | - |
-| `STRATA_INK_EXACT_GRAPH` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_EXACT_ROWS` | on / off | AMD | - | - |
-| `STRATA_INK_KEEP_MAPPED_PAGES` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_MOE_V1` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | - | - |
-| `STRATA_INK_PF_TILE` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_PIN_GB` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_PROMOTE_ASYNC` | text | AMD | - | - |
-| `STRATA_INK_Q80_TC` | number | NVIDIA and AMD | - | - |
-| `STRATA_INK_Q8_0_DENSE` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_SM120_PF` | number | NVIDIA | - | - |
-| `STRATA_INK_SPLIT` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_INK_TIER` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_CHUNK_AUTO` | number | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_EXACT_GRAPH` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_EXACT_ROWS` | on / off | AMD | v0.2.21 | - |
+| `STRATA_INK_KEEP_MAPPED_PAGES` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_MOE_V1` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_PF_TILE` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_PIN_GB` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_PROMOTE_ASYNC` | text | AMD | v0.2.21 | - |
+| `STRATA_INK_Q80_TC` | number | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_Q8_0_DENSE` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_SM120_PF` | number | NVIDIA | v0.2.21 | - |
+| `STRATA_INK_SPLIT` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_TIER` | on / off | NVIDIA and AMD | v0.2.21 | - |
 | `STRATA_IQ_MT_MIN` | on / off | NVIDIA and AMD, CPU | v0.2.16 | [BATCHING.md](BATCHING.md), [DETAILS.md](DETAILS.md), [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_KEEP_MAPPING` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_KV_HOST_DMA` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
@@ -464,7 +470,8 @@ version made it the default.
 | `STRATA_SM60_TABLE` | number | NVIDIA and AMD | v0.2.16 | [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_SM70_PERF` | text | NVIDIA and AMD | v0.2.20 | [DETAILS.md](DETAILS.md), [NVIDIA_V100.md](NVIDIA_V100.md) |
 | `STRATA_SPLIT_CHUNK16K` | number | NVIDIA and AMD | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md) |
-| `STRATA_SPLIT_FEWER_PCT` | number | NVIDIA and AMD | - | [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_SPLIT_FEWER_PCT` | number | NVIDIA and AMD | v0.2.21 | [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_SPLIT_LEND_RESERVE` | text | NVIDIA and AMD | - | [DETAILS.md](DETAILS.md) |
 | `STRATA_SPLIT_OWN` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md), [README.md](bench-results/2026-10-02-community-2x5060ti/README.md), [README.md](bench-results/2026-10-06-community-2x-rx-7900-gre/README.md) |
 | `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |
 | `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.16 | - |
