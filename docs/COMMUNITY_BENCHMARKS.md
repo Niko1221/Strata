@@ -141,6 +141,55 @@ python terminal/tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FO
 The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
 checks](#optional-correctness-checks); for A/B tests of two builds use `terminal/tools/ab_engine.py`.
 
+To compare Strata releases, each with its own defaults, give `terminal/tools/ab_engine.py` a model and the versions. Stop the
+normal Strata server and close the Strata app first. The tool downloads the packages into `~/strata-ab` and runs each
+version in a fresh home there, so it does not change your models, settings or engines:
+
+```bash
+python terminal/tools/ab_engine.py --model-path /path/to/model.gguf --engines 0.1.55,0.1.56 --rounds 3   # add --tune quick to tune each version once
+```
+
+It writes `results.json`, `report.html` and `report.png` to `~/strata-ab/runs/<timestamp>/`. The `configs` folder next to
+it can contain the API key of the test home, so do not attach it to an issue. Each engine is kept in
+`~/strata-ab/packages` and copied again into each run's home under `~/strata-ab/homes`, so every run adds to the disk use. The tool never deletes anything there;
+delete old homes by hand. Details: the top of `terminal/tools/ab_engine.py`.
+
+`results.json` is saved after every finished start. If a run stops (Ctrl-C, a crash, a reboot), the same command
+continues it in the same folder and runs only the starts that are missing; a start that did not finish runs again from its
+beginning. A run continues only when every setting that changes the requests is the same; `--rounds` may grow and
+`--engines` may add versions. A finished run is never continued. `--fresh` starts a new run. When a run was stopped hard,
+the check of the real install did not happen for that part, and the report says so.
+
+Every version starts with its own defaults; variables that start with `STRATA_` are not passed on. When one version does
+not start that way and a variable works around it, `--env 0.1.66:STRATA_HC_Q8_TC=0,STRATA_HC_Q8_BF16TC=0` starts only that
+version with them. Repeat `--env` for more versions. The report names the variables next to that version, so its numbers are
+not read as its defaults. A version that has not finished a start yet may join a run this way; a version that already ran
+keeps the variables it ran with, or a new run starts.
+
+Three optional test suites go beyond the four short requests. They need a git checkout of Strata that has the tag `v0.2.12`,
+because their texts are read from it, so every version and every run sees the same bytes. Every request uses temperature 0
+and seed 7. Each version gets a second start with one shared `--context` (default: the model's maximum), so the suites compare
+the same context:
+
+```bash
+python terminal/tools/ab_engine.py --model-path /path/to/model.gguf --engines 0.1.55,0.1.56 --rounds 3 --suite ladder,think,agent
+```
+
+- `--suite` picks the suites. `ladder` reads prompts of 8K, 16K, 32K and so on up to the context and asks for four codes
+  hidden in the text. `think` runs six tasks with thinking on. `agent` replays the 23 turns of the coding-agent sessions.
+- `--context N` sets the context of that second start. A version that cannot start with it does not run the suites, and the
+  report says why. There is no automatic step down.
+- `--think-tokens N` is the token limit of each `think` task (default 8192).
+- `--run-code` adds two `think` tasks that write code, and then runs the code the model wrote. It runs on your PC with your user
+  rights, in an empty temporary folder with a 20 second limit and no environment variables except `PATH` and `SYSTEMROOT`.
+  This is not isolation: the code can still read and write elsewhere and reach the network. Without the flag no model code runs.
+
+The report gets one section per suite, with `richtig x/y` (correct answers) per version. A version with a lower share of correct answers than
+the best one is marked red and its speeds are never highlighted as faster. A version that served a smaller context is marked
+`anderer Kontext`. `report-all.png` is the release card with one more bar per suite (median decode over its requests). With `ladder`, `report-ladder.png` is a card with the two charts. The time is an estimate, not measured: on an RTX
+3090, with the model of the versions comparison and context 256K, all three suites take about 20 to 25 minutes per version and
+round, so two versions with three rounds take about 2 to 2.5 hours. Before the first start the tool prints how many ladder steps, tasks and turns it will run (not a time).
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
