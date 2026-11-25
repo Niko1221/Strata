@@ -22,9 +22,9 @@
  "ui21": "O que o Enter faz quando você envia uma mensagem enquanto o assistente ainda está respondendo.",
  "ui22": "Esperar a resposta",
  "ui23": "Enviar depois da resposta",
- "ui24": "Interromper a resposta",
+ "ui24": "Enviar uma mensagem em direto",
  "ui25": "O Enter envia quando a resposta terminar.",
- "ui26": "O Enter para a resposta aqui e envia agora.",
+ "ui26": "Enter envia a mensagem no próximo passo ou, se necessário, depois da resposta.",
  "ui27": "Aguardando envio",
  "ui28": "Desfazer",
  "ui29": "Citar",
@@ -39,5 +39,13 @@
  "ui38": "Digite a sua própria resposta",
  "ui39": "Enviar resposta",
  "ui40": "Perguntas para você",
- "ui41": "Permite que o assistente pare e faça uma pergunta, com respostas para escolher, quando precisa da sua decisão."
+ "ui41": "Permite que o assistente pare e faça uma pergunta, com respostas para escolher, quando precisa da sua decisão.",
+ "ui42": "Selecione todas as opções aplicáveis",
+ "ui43": "Escolha uma opção",
+ "ui44": "Adicionar uma nota ou detalhe extra (opcional)",
+ "ui45": "Parar o assistente agora",
+ "ui46": "Pular esta pergunta e deixar o assistente continuar",
+ "ui47": "Pulando…",
+ "ui48": "Enviando…",
+ "ui49": "Responda à pergunta acima para continuar…"
 }

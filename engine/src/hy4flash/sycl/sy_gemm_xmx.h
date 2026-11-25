@@ -561,33 +561,42 @@ inline void k_gemm_xmx_i8(const uint8_t* W, int N, int K, const int8_t* Xq, cons
 }
 #endif  // !HY4S_DISABLE_SG8
 
-// ---- Path 3: Xe2 Battlemage SG=16 XMX GEMM (8x16x16 fp16 -> fp32) ----
+// ---- Path 3: Xe2 Battlemage SG=16 XMX GEMM (8x16x16 fp16 -> fp32, BM_TILE in {64, 128}) ----
 #ifdef HY4S_ENABLE_SG16_XMX
-template <int FMT, bool RP>
+template <int FMT, bool RP, int BM_TILE>
 inline void k_gemm_xmx_sg16(const uint8_t* W, int N, int K, const half* X, float* Y, int M) {
     constexpr int SB = sk_sb_bytes(FMT);
     constexpr int PB = FMT == FMT_S4 ? 128 : FMT == FMT_S5 ? 160 : 256;
-    const int nbm = (M + 63) / 64, nbn = N / 64;
+    constexpr int RM = BM_TILE / 64;  // 1 (BM=64) or 2 (BM=128) M-tiles of 8 per subgroup -> 2x SLM weight reuse!
+    const int nbm = (M + BM_TILE - 1) / BM_TILE, nbn = N / 64;
     const size_t pay_off = RP ? rp_pay_off(N, K >> 8) : 0;
     Q().submit([&](sycl::handler& h) {
-        sycl::local_accessor<half, 1> sB(64 * 64, h);
+        sycl::local_accessor<half, 1> sB(32 * xmx_detail::SB_FP16_LD, h);
         h.parallel_for(sycl::nd_range<1>((size_t)nbm * nbn * 128, 128), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(16)]] {
             const int gid = (int)it.get_group(0);
             const int bn = gid % nbn, bm = gid / nbn;
             const int tid = (int)it.get_local_id(0);
             auto sg = it.get_sub_group();
-            const int sgi = tid >> 4;  // 0..7 (each subgroup owns 8 M-rows x 64 N-cols = 4 tiles of 8x16)
+            const int sgi = tid >> 4;  // 0..7 (each subgroup owns RM x 8 M-rows x 64 N-cols = 4 tiles of 8x16)
             const int nsb = K >> 8;
             const int row_local = tid >> 1, half_idx = tid & 1;
             const int n_row = bn * 64 + row_local;
-            const int m0 = bm * 64 + sgi * 8;
-            const bool active = (m0 + 8 <= M);
 
-            xm::joint_matrix<sycl::sub_group, half, xm::use::a, 8, 16, xm::layout::row_major> ma;
-            xm::joint_matrix<sycl::sub_group, half, xm::use::b, 16, 16, xm::layout::ext_intel_packed> mb;
-            xm::joint_matrix<sycl::sub_group, float, xm::use::accumulator, 8, 16> mc[4];
+            int m_base[RM];
+            bool act[RM];
 #pragma unroll
-            for (int j = 0; j < 4; ++j) xm::joint_matrix_fill(sg, mc[j], 0.0f);
+            for (int mi = 0; mi < RM; ++mi) {
+                m_base[mi] = bm * BM_TILE + (mi * 8 + sgi) * 8;
+                act[mi] = (m_base[mi] + 8 <= M);
+            }
+
+            xm::joint_matrix<sycl::sub_group, half, xm::use::a, 8, 16, xm::layout::row_major> ma[RM];
+            xm::joint_matrix<sycl::sub_group, half, xm::use::b, 16, 16, xm::layout::ext_intel_packed> mb;
+            xm::joint_matrix<sycl::sub_group, float, xm::use::accumulator, 8, 16> mc[RM][4];
+#pragma unroll
+            for (int mi = 0; mi < RM; ++mi)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) xm::joint_matrix_fill(sg, mc[mi][j], 0.0f);
 
             half* sb_ptr = &sB[0];
             auto sB_mp = sycl::address_space_cast<sycl::access::address_space::local_space, sycl::access::decorated::no>(sb_ptr);
@@ -602,29 +611,38 @@ inline void k_gemm_xmx_sg16(const uint8_t* W, int N, int K, const half* X, float
                 for (int g = 0; g < 4; ++g) {
                     xmx_detail::dq_half_group_fp16<FMT, RP>(pl, effs[g], g, half_idx, sb_ptr, row_local);
                     sycl::group_barrier(it.get_group());
-                    if (active) {
-                        const int k0 = sbi * 256 + g * 64;
+                    const int k0 = sbi * 256 + g * 64;
 #pragma unroll
-                        for (int s = 0; s < 4; ++s) {
-                            auto xp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
-                                const_cast<half*>(X + (size_t)m0 * K + k0 + s * 16));
-                            xm::joint_matrix_load(sg, ma, xp, (size_t)K);
+                    for (int s = 0; s < 4; ++s) {
 #pragma unroll
-                            for (int j = 0; j < 4; ++j) {
-                                xm::joint_matrix_load(sg, mb, sB_mp + (size_t)(s * 8) * 128 + (size_t)j * 32, (size_t)128);
-                                xm::joint_matrix_mad(sg, mc[j], ma, mb, mc[j]);
+                        for (int mi = 0; mi < RM; ++mi) {
+                            if (act[mi]) {
+                                auto xp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
+                                    const_cast<half*>(X + (size_t)m_base[mi] * K + k0 + s * 16));
+                                xm::joint_matrix_load(sg, ma[mi], xp, (size_t)K);
+                            }
+                        }
+#pragma unroll
+                        for (int j = 0; j < 4; ++j) {
+                            xm::joint_matrix_load(sg, mb, sB_mp + (size_t)(s * 8) * xmx_detail::SB_FP16_LD + (size_t)j * 32, (size_t)xmx_detail::SB_FP16_LD);
+#pragma unroll
+                            for (int mi = 0; mi < RM; ++mi) {
+                                if (act[mi]) xm::joint_matrix_mad(sg, mc[mi][j], ma[mi], mb, mc[mi][j]);
                             }
                         }
                     }
                     sycl::group_barrier(it.get_group());
                 }
             }
-            if (active) {
 #pragma unroll
-                for (int j = 0; j < 4; ++j) {
-                    auto yp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
-                        Y + (size_t)m0 * N + bn * 64 + j * 16);
-                    xm::joint_matrix_store(sg, mc[j], yp, (size_t)N, xm::layout::row_major);
+            for (int mi = 0; mi < RM; ++mi) {
+                if (act[mi]) {
+#pragma unroll
+                    for (int j = 0; j < 4; ++j) {
+                        auto yp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
+                            Y + (size_t)m_base[mi] * N + bn * 64 + j * 16);
+                        xm::joint_matrix_store(sg, mc[mi][j], yp, (size_t)N, xm::layout::row_major);
+                    }
                 }
             }
         });
@@ -641,7 +659,7 @@ inline void k_gemm_simt_sg32(const uint8_t* W, int N, int K, const half* X, floa
     const int nbm = (M + 31) / 32, nbn = N / 64;
     const size_t pay_off = RP ? rp_pay_off(N, K >> 8) : 0;
     Q().submit([&](sycl::handler& h) {
-        sycl::local_accessor<half, 1> sB(64 * 64, h);
+        sycl::local_accessor<half, 1> sB(32 * xmx_detail::SB_FP16_LD, h);
         h.parallel_for(sycl::nd_range<1>((size_t)nbm * nbn * 128, 128), [=](sycl::nd_item<1> it) REQD_SG32 {
             const int gid = (int)it.get_group(0);
             const int bn = gid % nbn, bm = gid / nbn;
@@ -669,7 +687,7 @@ inline void k_gemm_simt_sg32(const uint8_t* W, int N, int K, const half* X, floa
                     sycl::group_barrier(it.get_group());
                     const int k0 = sbi * 256 + g * 64;
                     for (int kp = 0; kp < 32; ++kp) {
-                        const half* bp0 = sb_ptr + kp * 128 + nc * 2;
+                        const half* bp0 = sb_ptr + kp * xmx_detail::SB_FP16_LD + nc * 2;
                         const float b00 = (float)bp0[0], b01 = (float)bp0[1];
                         const float b10 = (float)bp0[2], b11 = (float)bp0[3];
 #pragma unroll
@@ -914,7 +932,8 @@ inline void dispatch_xmx_fmt(const uint8_t* W, int N, int K, const half* X, floa
 #endif
 #ifdef HY4S_ENABLE_SG16_XMX
     if (caps.has_xmx_sg16) {
-        k_gemm_xmx_sg16<FMT, RP>(W, N, K, X, Y, M);
+        if (M >= 128) k_gemm_xmx_sg16<FMT, RP, 128>(W, N, K, X, Y, M);
+        else k_gemm_xmx_sg16<FMT, RP, 64>(W, N, K, X, Y, M);
         return;
     }
 #endif

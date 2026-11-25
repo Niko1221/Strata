@@ -96,8 +96,10 @@ def resolved_drafting(drafting: str | None, family: str | None, *, model_name: s
 
 
 def drafting_for_family(choice: str | None, family: str | None) -> str | None:
-    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (Coder;
-    Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
+    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth);
+    native .strata models (Inkling-2-Mini, Hy4-Flash) keep 'off' or 'auto'; any other model (Coder, Swift, NVFP4) goes back to Auto (None)."""
+    if family in ("inkling-2-mini", "hy4-flash"):
+        return choice if choice in ("auto", "off") else None
     from strata_control import drafting as _d
     return choice if (not family or family in _d.SUPPORTED_FAMILIES) else None
 
@@ -130,6 +132,9 @@ def mmproj_name(catalog, family: str | None) -> str:
     if family == "hy4-flash":
         from strata_control import hy4_family
         return hy4_family.VISION_FILE
+    if family == "inkling-2-mini":
+        from strata_control import inkling_family
+        return inkling_family.VISION_FILE
     try:
         _m, families, _c, _s = catalog.tables()
         name = (families.get(family or "") or {}).get("mmproj")
@@ -156,12 +161,13 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     data = Path(data_dir) if data_dir else None
     if model_path:
         st.own_files = True
-        if family == "hy4-flash":
-            from strata_control import hy4_family
+        if family in ("hy4-flash", "inkling-2-mini"):
+            from strata_control import hy4_family, inkling_family
+            fam_mod = inkling_family if family == "inkling-2-mini" else hy4_family
             p = Path(model_path)
             own_dir = p if p.is_dir() else p.parent
             if wants_pictures and not reader_present(catalog, family, [data, *data_places(catalog, data)], own=own_dir):
-                st.parts.append(Part("mmproj", "the picture reader", round(hy4_family.FILES[hy4_family.VISION_FILE][0] / 1e9, 2)))
+                st.parts.append(Part("mmproj", "the picture reader", round(fam_mod.FILES[fam_mod.VISION_FILE][0] / 1e9, 2)))
             return st
         first = _first_gguf(Path(model_path))
         beside = discovery.prepared_beside(first, data_places(catalog, data)) if first else {}     # the model folder's own layout, then --data-dir and the remembered folder (where setup writes the draft layer)
@@ -194,6 +200,9 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
         if family == "hy4-flash":
             from strata_control import hy4_family
             v_gb = round(hy4_family.FILES[hy4_family.VISION_FILE][0] / 1e9, 2)
+        elif family == "inkling-2-mini":
+            from strata_control import inkling_family
+            v_gb = round(inkling_family.FILES[inkling_family.VISION_FILE][0] / 1e9, 2)
         for m in fp.missing():
             if m.kind == "mtp" and mtp != "off":
                 st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
@@ -201,7 +210,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
                 st.parts.append(Part("mmproj", "the picture reader", v_gb))
         images = (desc or {}).get("images") if desc is not None else ("cpu" if fp.mmproj else "off")
         if wants_pictures and (images in (None, "off")) and not any(p.kind == "mmproj" for p in st.parts):
-            if family == "hy4-flash":
+            if family in ("hy4-flash", "inkling-2-mini"):
                 own_dir = fp.weights[0].parent if fp.weights else None
                 if not reader_present(catalog, family, [st.folder, *data_places(catalog, data)], own=own_dir):
                     st.parts.append(Part("mmproj", "the picture reader", v_gb))
@@ -215,13 +224,14 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     if family and model:
         base = data or Path(catalog.data_dir())
         folder = catalog.model_folder(base, family, model)
-        if family == "hy4-flash":
-            from strata_control import hy4_family
-            weight_names = hy4_family.files_of(model, False)
+        if family in ("hy4-flash", "inkling-2-mini"):
+            from strata_control import hy4_family, inkling_family
+            fam_mod = inkling_family if family == "inkling-2-mini" else hy4_family
+            weight_names = fam_mod.files_of(model, False)
             got_weights = 0
             missing_weights = 0
             for n in weight_names:
-                expected = hy4_family.FILES[n][0]
+                expected = fam_mod.FILES[n][0]
                 p = folder / n
                 part = folder / (n + ".part")
                 try:
@@ -234,11 +244,11 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
                         missing_weights += expected
                 except OSError:
                     missing_weights += expected
-            v_size = hy4_family.FILES[hy4_family.VISION_FILE][0]
+            v_size = fam_mod.FILES[fam_mod.VISION_FILE][0]
             v_have = False
             if wants_pictures:
-                vp = folder / hy4_family.VISION_FILE
-                vpart = folder / (hy4_family.VISION_FILE + ".part")
+                vp = folder / fam_mod.VISION_FILE
+                vpart = folder / (fam_mod.VISION_FILE + ".part")
                 try:
                     if vp.is_file() and vp.stat().st_size == v_size and not vpart.exists():
                         v_have = True

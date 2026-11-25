@@ -1,0 +1,352 @@
+{
+ "hf_revisions": {
+  "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "bba88856f8c3c0c9e40e45f82d05e228b814ac43",
+  "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",
+  "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",
+  "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+  "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66"
+ },
+ "models": {
+  "hy4/SQ-64": {
+   "files": [
+    {
+     "bytes": 62030467072,
+     "name": "Hy4-Flash-SQ-64.strata",
+     "sha256": "b2cc38fe4bded35df82a701f9e868ea09c6fcd9be52c8446289e394f804417b2",
+     "url": "https://huggingface.co/strata-engine/Hy4-Flash-Strata/resolve/main/Hy4-Flash-SQ-64.strata"
+    },
+    {
+     "bytes": 67584905216,
+     "name": "Hy4-Flash-Engram-Q8.strata",
+     "sha256": "ab0cf9b3f9c64bd25f6212d4508e7443ab8b9bc133fbccc7bdfb83510a20c2c1",
+     "url": "https://huggingface.co/strata-engine/Hy4-Flash-Strata/resolve/main/Hy4-Flash-Engram-Q8.strata"
+    }
+   ],
+   "folder": "Hy4-Flash-SQ-64"
+  },
+  "ink/SQ-10": {
+   "files": [
+    {
+     "bytes": 10471526400,
+     "name": "Inkling-2-Mini-SQ-10.strata",
+     "sha256": "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934",
+     "url": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-SQ-10.strata"
+    }
+   ],
+   "folder": "Inkling-2-Mini-SQ-10"
+  },
+  "ink/SQ-15": {
+   "files": [
+    {
+     "bytes": 14348316672,
+     "name": "Inkling-2-Mini-SQ-15.strata",
+     "sha256": "2ea32eed533afba257e2cbee7b073dc2c3da80fe55d1d2d794779b5498e30737",
+     "url": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-SQ-15.strata"
+    }
+   ],
+   "folder": "Inkling-2-Mini-SQ-15"
+  },
+  "ink/SQ-20": {
+   "files": [
+    {
+     "bytes": 19346685952,
+     "name": "Inkling-2-Mini-SQ-20.strata",
+     "sha256": "0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97",
+     "url": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-SQ-20.strata"
+    }
+   ],
+   "folder": "Inkling-2-Mini-SQ-20"
+  },
+  "ink/UD-IQ1_M": {
+   "files": [
+    {
+     "bytes": 8024441024,
+     "name": "Inkling-2-Mini-UD-IQ1_M.gguf",
+     "sha256": "544e0b2412ba2392272b0510b0c8f53a1ab872b73c2ba4f7488de0d5d61467d9",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-IQ1_M.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-IQ1_M"
+  },
+  "ink/UD-IQ1_S": {
+   "files": [
+    {
+     "bytes": 7764291776,
+     "name": "Inkling-2-Mini-UD-IQ1_S.gguf",
+     "sha256": "c09c028b050c108624682baeb28ac6e0cdb936af021ac637c8c3609f923ea4b8",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-IQ1_S.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-IQ1_S"
+  },
+  "ink/UD-IQ2_XXS": {
+   "files": [
+    {
+     "bytes": 8486236352,
+     "name": "Inkling-2-Mini-UD-IQ2_XXS.gguf",
+     "sha256": "4fe958f73a667d8082f911a4347e52bc34696a7816cf3d5b9f7c8a81d5c5ceaa",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-IQ2_XXS.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-IQ2_XXS"
+  },
+  "ink/UD-IQ3_XXS": {
+   "files": [
+    {
+     "bytes": 11663309504,
+     "name": "Inkling-2-Mini-UD-IQ3_XXS.gguf",
+     "sha256": "bd7ef0865adf119b5183e45e741c629bafa649769b33b5ebf689bb4bcc4690d6",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-IQ3_XXS.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-IQ3_XXS"
+  },
+  "ink/UD-IQ4_XS": {
+   "files": [
+    {
+     "bytes": 15733755232,
+     "name": "Inkling-2-Mini-UD-IQ4_XS.gguf",
+     "sha256": "a861d21e7c6d7bc69d8cdcdfb9eb195fd37ef1cd2ab31499db61cd7d30d9b3a1",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-IQ4_XS.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-IQ4_XS"
+  },
+  "ink/UD-Q2_K_XL": {
+   "files": [
+    {
+     "bytes": 9138715328,
+     "name": "Inkling-2-Mini-UD-Q2_K_XL.gguf",
+     "sha256": "20292e8142b69535ca88a5d04439d0fdeb4dc698d44c002dca706dcf92901441",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q2_K_XL.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-Q2_K_XL"
+  },
+  "ink/UD-Q3_K_XL": {
+   "files": [
+    {
+     "bytes": 13631778016,
+     "name": "Inkling-2-Mini-UD-Q3_K_XL.gguf",
+     "sha256": "f72f396d1b479b14d76346df80baa449c8b1f399653bff38fa4764b359a40048",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q3_K_XL.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-Q3_K_XL"
+  },
+  "ink/UD-Q4_K_M": {
+   "files": [
+    {
+     "bytes": 16610543328,
+     "name": "Inkling-2-Mini-UD-Q4_K_M.gguf",
+     "sha256": "f90c5a4df44d335ac9f9eea2a15c31d6c5a377b1b3cd9ff7fc2cf123f3cdf7e1",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q4_K_M.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-Q4_K_M"
+  },
+  "ink/UD-Q4_K_XL": {
+   "files": [
+    {
+     "bytes": 17629759456,
+     "name": "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+     "sha256": "e62d463c135ffe283df8d94b279a96ca145ac128b52ce854478613045bf4de15",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q4_K_XL.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-Q4_K_XL"
+  },
+  "ink/UD-Q8_K_XL": {
+   "files": [
+    {
+     "bytes": 22867451616,
+     "name": "Inkling-2-Mini-UD-Q8_K_XL.gguf",
+     "sha256": "dfb04bf37bee457f98800989dedf93ec442ede8636dbea9433992f1e527e9a41",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q8_K_XL.gguf"
+    },
+    {
+     "bytes": 402278560,
+     "name": "dspark-Inkling-2-Mini-Q8_0.gguf",
+     "sha256": "2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/dspark-Inkling-2-Mini-Q8_0.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-UD-Q8_K_XL"
+  },
+  "ink/Vision": {
+   "files": [
+    {
+     "bytes": 636526592,
+     "name": "Inkling-2-Mini-Vision.strata",
+     "sha256": "6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677",
+     "url": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-Vision.strata"
+    }
+   ],
+   "folder": "Inkling-2-Mini-Vision"
+  },
+  "ink/mmproj-BF16": {
+   "files": [
+    {
+     "bytes": 641805760,
+     "name": "mmproj-BF16.gguf",
+     "sha256": "2c165c78790e78a3f45a2d1e9e931083e52ee69d45ff2a0dc9c281fdf1a666e7",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/mmproj-BF16.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-mmproj-BF16"
+  },
+  "qwen/IQ2_XS": {
+   "files": [
+    {
+     "bytes": 39225954592,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+     "sha256": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf"
+    },
+    {
+     "bytes": 28800138432,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf"
+    }
+   ],
+   "folder": "IQ2_XS"
+  },
+  "qwen/IQ3_S": {
+   "files": [
+    {
+     "bytes": 54817524224,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+    },
+    {
+     "bytes": 28800138432,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+    }
+   ],
+   "folder": "IQ3_S"
+  },
+  "qwen/IQ3_XXS": {
+   "files": [
+    {
+     "bytes": 47039860096,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+     "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+    },
+    {
+     "bytes": 28800138432,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
+    }
+   ],
+   "folder": "IQ3_XXS"
+  },
+  "qwen/Q2_0": {
+   "files": [
+    {
+     "bytes": 37623740192,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+     "sha256": "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
+    },
+    {
+     "bytes": 28800138432,
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+     "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf"
+    }
+   ],
+   "folder": "Q2_0"
+  },
+  "qwen/UD-Q4_K_XL": {
+   "files": [
+    {
+     "bytes": 10946624,
+     "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+     "sha256": "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082",
+     "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+    },
+    {
+     "bytes": 49859583136,
+     "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+     "sha256": "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9",
+     "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
+    },
+    {
+     "bytes": 49376141504,
+     "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+     "sha256": "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3",
+     "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
+    },
+    {
+     "bytes": 12087983520,
+     "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+     "sha256": "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a",
+     "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
+    }
+   ],
+   "folder": "UD-Q4_K_XL"
+  }
+ },
+ "note": "generated by `fetch_models.py pin` from the product's own pin tables; do not edit by hand"
+}

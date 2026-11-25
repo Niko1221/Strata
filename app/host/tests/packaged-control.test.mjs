@@ -156,8 +156,12 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
     contexts: [8192, 32768], recommendation: { family: 'qwen', model: 'IQ3_XXS', context: 32768 }, context_note: '' };
   const hardware = { ram_gb: 63, cpu: { name: 'cpu', cores: 12 }, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5070', vram_gb: 11.9, usable: true }] };
   let installJob = null;
+  const tunedConfigs = [];
   const spawnProcess = (command, args, options) => {
     spawned.push({ command, args, options });
+    if (args[1] === 'presets' && args[2] === 'status' && typeof args[3] === 'string' && existsSync(args[3])) {
+      try { tunedConfigs.push(JSON.parse(readFileSync(args[3], 'utf8'))); } catch {}
+    }
     if (!String(args[0]).endsWith('strata_mcp.py')) throw new Error('no process but the installer may be started by the host in packaged mode: ' + command + ' ' + args.join(' '));
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.exitCode = null;
     child.kill = () => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0)); return true; };
@@ -182,7 +186,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, saved, spawned, others, rpc, setStatus: v => { statusAnswer = v; }, setMetricsDown: v => { metricsDown = v; }, setHealthDown: v => { healthDown = v; }, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { if (earlierInstallEnv === undefined) delete process.env.STRATA_INSTALL_DIR; else process.env.STRATA_INSTALL_DIR = earlierInstallEnv; rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, saved, tunedConfigs, spawned, others, rpc, setStatus: v => { statusAnswer = v; }, setMetricsDown: v => { metricsDown = v; }, setHealthDown: v => { healthDown = v; }, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { if (earlierInstallEnv === undefined) delete process.env.STRATA_INSTALL_DIR; else process.env.STRATA_INSTALL_DIR = earlierInstallEnv; rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -552,6 +556,30 @@ test('packaged: the install job also fetches the engine through Control (merge o
   } finally { await g.native.close(); g.cleanup(); }
 });
 
+test('#6875: picking a model (a download, or adopting files the person already has) never fetches a newer engine over the one the person chose in Settings', async () => {
+  const chosen = { engine: { status: 'available', installed: { version: '0.1.63' }, offered: { version: '0.1.66' }, download_bytes: 5e8, pinned: '0.1.63-windows-x86_64-cuda-cuda13' } };
+  const f = packagedFixture({ engineUsable: true, updater: { report: chosen, async update() { throw new Error('the engine updater must not run for a chosen engine'); } } });
+  try {
+    await f.native.refresh(true);
+    for (const args of [{ family: 'qwen', model: 'Q2_0' }, { family: 'qwen', model: 'IQ3_S', gguf_dir: 'D:/models/iq3s' }]) {      // a model to download, and the person's own GGUF folder
+      const job = await finish(f.native, f.native.operation('install', args).id);
+      assert.equal(job.state, 'done', job.error);
+      assert.equal(job.result.install.engine.state, 'current');
+      assert.match(job.result.install.engine.message, /^The engine you chose \(0\.1\.63\) stays in use\./);
+    }
+    assert.deepEqual(f.calls.filter(c => c[0] === 'update'), [], 'no engine download');
+  } finally { await f.native.close(); f.cleanup(); }
+  // an engine nobody chose still follows the feed with the model (#4823), also when the model is adopted
+  const free = { engine: { ...chosen.engine, pinned: null } };
+  const g = packagedFixture({ engineUsable: true, updater: { report: free, async update() { return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.66' } }] }; } } });
+  try {
+    await g.native.refresh(true);
+    const job = await finish(g.native, g.native.operation('install', { family: 'qwen', model: 'IQ3_S', gguf_dir: 'D:/models/iq3s' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.deepEqual(g.calls.filter(c => c[0] === 'update'), [['update', true, false]]);
+  } finally { await g.native.close(); g.cleanup(); }
+});
+
 test('packaged: a model install that fails does not cancel the engine download it started (DL99: a retry would fail the same way again)', async () => {
   const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
   const seen = { finished: false, aborted: null };
@@ -653,8 +681,9 @@ test('packaged: a tune measures the engine a load starts: same start args, slots
     try {
       await f.native.refresh(true);
       const args = { model: 'iq2_xs', resourceProfile: 'work', vision: 'no' };
-      await f.native.tuneStatus(args).catch(() => {});      // the fake host cannot run Control's tuner; the config it would measure is written first
-      const tuned = JSON.parse(readFileSync(join(f.root, 'data', 'native-tune', 'iq2_xs.json'), 'utf8'));
+      await f.native.tuneStatus(args).catch(() => {});      // the fake host cannot run Control's tuner; the config it would measure is captured before withTuneConfig cleans it up
+      const tuned = f.tunedConfigs.at(-1);
+      assert.ok(tuned, 'tuneStatus wrote a config for Control to measure');
       const job = await finish(f.native, f.native.operation('load', args).id);
       assert.equal(job.state, 'done', job.error);
       const loaded = { ...f.saved.at(-1) }; delete loaded.port; delete loaded.api_key;

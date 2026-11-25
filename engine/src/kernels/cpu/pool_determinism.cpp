@@ -67,7 +67,20 @@ void fill_blob(std::vector<uint8_t>& blob, const kc::NativeFmt& f, std::mt19937_
     }
 }
 
-bool same_bits(const std::vector<float>& a, const std::vector<float>& b) { return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * 4) == 0; }
+// Bit-for-bit, except that two NaNs are equal whatever their sign and payload.  The blobs below carry random bytes where a format has fields beyond its
+// first fp16 scale (Q4_K's dmin, ...), so some rows are Inf / NaN.  Which NaN an x86 FMA chain returns when several operands are NaN depends on the operand
+// slot the compiler picked, and that differs between the 4-row kernels (dot_x4, taken for the rows of a group of four) and the one-row kernels (taken for the
+// tail rows of a chunk), so a chunk boundary moved a NaN's payload (#6754: Q4_K gate/up, AVX2 tier).  Every finite and Inf result is still compared bit for bit.
+long g_cmp_finite = 0, g_cmp_nan = 0;   // results compared bit for bit / as NaN-equal (reported at the end, so a test that went all-NaN would show)
+bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::isnan(a[i]) && std::isnan(b[i])) { ++g_cmp_nan; continue; }
+        if (std::memcmp(&a[i], &b[i], 4) != 0) return false;
+        ++g_cmp_finite;
+    }
+    return true;
+}
 
 struct Case {
     kc::NativeFmt f;
@@ -239,6 +252,7 @@ int main(int argc, char** argv) {
             if (g_checks != before) ++pairs;
         }
     for (const auto& k : g_kinds) std::printf("  %6d x %s\n", k.second, k.first.c_str());
+    std::printf("pool_determinism: results compared bit for bit %ld, as NaN-equal %ld\n", g_cmp_finite, g_cmp_nan);
     std::printf("pool_determinism: %d format pairs, %ld checks, %d failures -> %s\n", pairs, g_checks, g_fail, g_fail ? "FAIL" : "PASS");
     return g_fail ? 1 : 0;
 }

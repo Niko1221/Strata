@@ -42,19 +42,9 @@ struct ServeOpts {
     std::string vision;
     int64_t image_max_pixels = 1048576;
     bool vision_requested = false;
+    int primary_gpu = 0;
+    std::vector<int> peer_devs;
     SpecCfg spec;
-};
-
-struct SampleOpts {
-    float temperature = 0.f;  // 0 = greedy
-    float top_p = 1.f;
-    int top_k = 64;
-    float min_p = 0.f;
-    float rep = 1.f, freq = 0.f, pres = 0.f;
-    int last_n = 64;
-    uint64_t seed = 0;
-    bool greedy() const { return temperature <= 0.f; }
-    bool penalties() const { return rep != 1.f || freq != 0.f || pres != 0.f; }
 };
 
 #ifndef _MSC_VER
@@ -268,6 +258,7 @@ inline int hy4s_serve_main(const ServeOpts& o) {
         const int max_ctx = o.max_ctx;
         hy4::CpuExperts ucx;
         SyVramExpertCache vcache;
+        SyPeerExperts peers;
         Runner r(g, ucx, max_ctx, std::max(o.chunk, 1), want_spec ? 8 : 1);
         r.index_topk = o.index_topk;
         r.index_on = o.no_index ? 0 : 1;
@@ -289,11 +280,12 @@ inline int hy4s_serve_main(const ServeOpts& o) {
         // Size VRAM expert cache + unified CPU expert pool AFTER trunk/KV/DFly2 are allocated!
         const size_t gx_reserve = o.gx_mb > 0 ? ((size_t)o.gx_mb * 2 / 3 + 220) * (1ull << 20) : 0;
         const size_t host_oh = r.kv_host_bytes + g.host_bytes_total + ((size_t)std::max(o.gx_mb, 0) << 20) + (640ull << 20);
-        if (!setup_experts_unified(o.model, o.threads, o.vram_experts_gb, o.ram_experts_gb, gx_reserve, host_oh, o.hi_act, vcache, ucx, err)) {
+        if (!setup_experts_unified(o.model, o.threads, o.vram_experts_gb, o.ram_experts_gb, gx_reserve, host_oh, o.hi_act, vcache, ucx, err, o.peer_devs, &peers)) {
             proto("ERR experts: %s", err.c_str());
             return 1;
         }
         r.vcache = vcache.active() ? &vcache : nullptr;
+        r.peers = peers.active() ? &peers : nullptr;
         GpuExperts gxe;
         if (o.gx_mb > 0) {
             std::string gerr;
@@ -314,8 +306,10 @@ inline int hy4s_serve_main(const ServeOpts& o) {
             spec.reset(new Spec(r, df, sc));
             spec_set_batch_invariant();
         }
-        fprintf(stderr, "[load] total %.1f s, device allocated %.2f GiB of %.2f GiB\n", now_s() - t_load0,
-                (dev_bytes_allocated() + (r.gx ? gxe.device_bytes() : 0)) / 1073741824.0, dev_caps().global_mem / 1073741824.0);
+        fprintf(stderr, "[load] total %.1f s, GPU%d allocated %.2f GiB of %.2f GiB%s%s\n", now_s() - t_load0,
+                o.primary_gpu,
+                (dev_bytes_allocated() + (r.gx ? gxe.device_bytes() : 0)) / 1073741824.0, dev_caps().global_mem / 1073741824.0,
+                peers.active() ? ", peers: " : "", peers.active() ? peers.describe().c_str() : "");
         // pictures need the Vision shard: probe it now (cheap, no GPU) so INFO tells serve the truth; it is read into pinned host memory on the first picture request, not at start
         bool images_ok = false;
         VisionEncoder venc;
@@ -411,9 +405,19 @@ inline int hy4s_serve_main(const ServeOpts& o) {
                 fprintf(stderr, "[vision] %zu picture(s), %d image rows, encoded in %.2f s\n", recs.size(), vctx.n_rows, vctx.t_encode);
                 r.vis = &vctx;
             }
-            // KV reuse: only a pure extension of what is resident
+            // KV reuse: pure extension OR LCP prefix rollback (4-token IndexPool-aligned, within SWA ring safety bound)
             int start = 0;
-            if (!has_images && o.session_reuse && fwd > 0 && fwd < T0 && (int)tok.size() >= fwd && std::equal(tok.begin(), tok.begin() + fwd, q.ids.begin())) start = fwd;
+            if (!has_images && o.session_reuse && fwd > 0 && (int)tok.size() >= fwd) {
+                int lcp = 0;
+                const int lim = std::min(fwd, T0);
+                while (lcp < lim && tok[lcp] == q.ids[lcp]) ++lcp;
+                if (lcp == fwd && fwd < T0) {
+                    start = fwd;  // exact pure extension: zero wasted tokens
+                } else if (lcp >= 4) {
+                    const int s = std::min(lcp, T0 - 1) & ~3;  // align to 4-token IndexPool group so ivg rebuilds cleanly
+                    if (s > 0 && std::max(0, s - r.c.window + 1) >= std::max(0, fwd - r.ring)) start = s;
+                }
+            }
             tok.assign(q.ids.begin(), q.ids.end());
             fwd = 0;
             if (start > 0) proto("RESUME %d", start);
@@ -461,11 +465,11 @@ inline int hy4s_serve_main(const ServeOpts& o) {
             const int limit = std::min(q.max_new, std::max(0, room));
             bool nonfinite = false;
             const bool greedy_fast = q.s.greedy() && !q.s.penalties();
-            const bool spec_path = use_spec && greedy_fast && limit > 0 && !has_images;  // the drafter does not apply the 3D picture positions
+            const bool spec_path = use_spec && limit > 0 && !has_images;  // lossless for both greedy AND probabilistic (temperature/penalties)!
             long acc0 = spec ? spec->S.accepted : 0, off0 = spec ? spec->S.drafted : 0;
             if (spec_path) {
                 std::string fin, e2;
-                fwd = spec->run(tok, limit, max_ctx, EOS, EOT, [&](int t) { proto("T %d", t); return !in.stop.load(); }, fin, e2, made);
+                fwd = spec->run(tok, limit, max_ctx, EOS, EOT, [&](int t) { proto("T %d", t); return !in.stop.load(); }, fin, e2, made, &q.s, &rng);
                 if (fin == "error") {
                     proto("ERR spec: %s", e2.c_str());
                     return 1;

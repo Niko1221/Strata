@@ -1,6 +1,7 @@
-import {USER_KEY,flagValue,capture} from './native-user-args.mjs';
+import {USER_KEY,flagValue,setFlag,capture} from './native-user-args.mjs';
 import {parseEngineVersion} from './engine-version.mjs';
 import {isHy4} from './hy4.mjs';
+import {isInkling} from './inkling.mjs';
 
 /** The engine's own default reserve, and the one setup writes for pictures read on the GPU: neither is a choice of the person. */
 const ENGINE_DEFAULT_RESERVE_MIB=700;
@@ -63,8 +64,8 @@ const computeOnly=g=>g?.drives_display===false;
 /** Headroom is a worker/memory budget, not a hard utilisation throttle. */
 export function resourceSettings(config,hardware,profile,model={},values={}){
  if(!['work','performance'].includes(profile))throw new Error('Choose a resource preference.');
- /* Hy4-Flash (strata-hy4) takes none of these Flash-Next options and refuses a flag it does not know: its arguments stay as setup wrote them (server/hy4.mjs). */
- if(isHy4(config))return {args:[...(config.args??[])],ui_resource_baseline:{}};
+ /* Hy4-Flash (strata-hy4) and Inkling-2-Mini (strata-inkling) take none of these Flash-Next options: their arguments stay as setup wrote them. */
+ if(isHy4(config)||isInkling(config))return {args:[...(config.args??[])],ui_resource_baseline:{}};
  const args=[...(config.args??[])];
  const remove=flag=>{for(let at=args.indexOf(flag);at>=0;at=args.indexOf(flag))args.splice(at,2);};
  const value=flag=>{const at=args.indexOf(flag);return at>=0?Number(args[at+1])||0:0;};
@@ -129,6 +130,22 @@ export function launchBudgetArgs(cfg,profile){
 /** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
  *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. It is sent as the env variable STRATA_RAM_KEEP_GIB. */
 export const ramKeepGib=ram=>Math.min(8,Math.max(5,Math.ceil((Number(ram)||0)*.2)));
+
+export function validRamReserve(value) {
+ return Number.isSafeInteger(value)&&value>0;
+}
+
+/** Apply the shared reserve to the launch copy. Clearing it restores the saved model options. */
+export function withRamReserve(config,reserve) {
+ if(!validRamReserve(reserve))return config;
+ const env={...config.env,STRATA_RAM_KEEP_GIB:String(reserve)};
+ if(env.STRATA_RESIDENT_HEADROOM_GIB!==undefined&&Number(env.STRATA_RESIDENT_HEADROOM_GIB)<reserve)
+  env.STRATA_RESIDENT_HEADROOM_GIB=String(reserve);
+ const flag='--ram-keep-gib';
+ const args=setFlag(config.args,flag,null);
+ const user=Array.isArray(config[USER_KEY])?{[USER_KEY]:setFlag(config[USER_KEY],flag,null)}:{};
+ return {...config,...user,args,env};
+}
 
 /** The first engine version that reads STRATA_RAM_KEEP_GIB / --ram-keep-gib (the setting was added in 0.1.56, the engine of the 0.2.9 update; the released 0.2.9 engine is 0.1.55). An engine older than this, or one whose version cannot be read, gets the
  *  rule of 0.2.9 instead. Lower it (or raise the engine's version) only together with the release that carries the setting. */

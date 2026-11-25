@@ -39,6 +39,12 @@ def is_hy4_exe(exe) -> bool:
     return _base(exe).startswith(EXE_PREFIX)
 
 
+def is_hy4_model_path(path) -> bool:
+    """True when a model path names a Tencent Hy4-Flash `.strata` file (even if the run config's arch/exe was miswritten)."""
+    name = _base(path)
+    return name.startswith("hy4-flash") and name.endswith(".strata")
+
+
 NO_DRAFTER_NOTE = "Hy4-Flash: this engine has no drafter (DFly2) yet, so it starts without it"
 NO_IMAGES_NOTE = "Hy4-Flash: this engine does not read images yet, so it starts without the image reader"
 NO_IMAGES_REPLY = ("this Hy4-Flash engine does not read images yet; send the text of the picture, or update Strata (an engine that reads images says images=1 at its start)")
@@ -96,14 +102,44 @@ def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
 
 
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
-    """The arguments of a Hy4-Flash start: the config's (setup wrote --native, --engram, --vision, --max-context, ...), the options the person set by hand over them, the drafter
-    (on by default, when the engine has it) and nothing else (the card is chosen by the environment: child_env).  What the engine says it cannot do (`--info`) is left out with
-    one line: no drafter yet, no image reader yet: a start never fails because of them."""
+    """The arguments of a Hy4-Flash start: the config's (setup wrote --native, --engram, --vision, --max-context, ...), the options the person set by hand over them, `--gpus`
+    for multi-GPU expert parallelism (Main first, Helpers after, matching child_env's Helper..Main visibility order), the drafter (on by default, when the engine has it) and
+    nothing else.  What the engine says it cannot do (`--info`) is left out with one line: no drafter yet, no image reader yet: a start never fails because of them."""
+    from serve.server_parts.engines import gpu_list
     from strata_control import user_args
     args = list(cfg["args"])
     mine = user_args.capture(cfg)
     if mine:
         args = user_args.merge(args, mine)
+    # #6497: honor a configured CPU thread limit (`--pool-workers N`) on Hy4 by translating it to `--threads N`.
+    if "--pool-workers" in args:
+        pw_val = None
+        out_args: list[str] = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--pool-workers":
+                if i + 1 < len(args) and not str(args[i + 1]).startswith("--"):
+                    pw_val = str(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            else:
+                out_args.append(args[i])
+                i += 1
+        args = out_args
+        if pw_val and pw_val.isdigit() and int(pw_val) > 0 and "--threads" not in args:
+            args += ["--threads", pw_val]
+    # child_env exposes Helper..Main in CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES / ZE_AFFINITY_MASK,
+    # so inside the child local device N-1 is Main and local devices 0..N-2 are Helpers.
+    # strata-hy4 --gpus <csv> takes primary_gpu FIRST and peer_devs after.
+    n_gpus = len(gpu_list(cfg))
+    if n_gpus >= 2 and "--gpus" not in args:
+        local_order = [str(n_gpus - 1)] + [str(i) for i in range(n_gpus - 1)]
+        args += ["--gpus", ",".join(local_order)]
+    if n_gpus >= 2 and "--layer-split" not in args and cfg.get("layer_split"):
+        args += ["--layer-split", str(cfg["layer_split"])]
+    if "--session-reuse" not in args:            # the engine keeps the longest common prefix of a conversation: on unless the config says 0
+        args += ["--session-reuse", "1"]
     wants_images = "--vision" in args
     need_draft = "--draft" not in args and wants_drafter(cfg)
     info = probe(exe, args, cfg) if (exe and (wants_images or need_draft)) else None

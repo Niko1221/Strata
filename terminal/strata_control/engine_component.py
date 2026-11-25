@@ -700,8 +700,11 @@ WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 
                        0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
                        0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73A1: "gfx1030", 0x73DF: "gfx1031",
                        0x73FF: "gfx1032", 0x73EF: "gfx1032", 0x73E3: "gfx1032"}
-WIN_AMD_UMA_IDS = {0x1586: "gfx1151"}                                   # Strix Halo: unified memory, supported
-WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x1901, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
+WIN_AMD_UMA_IDS = {0x1586: "gfx1151",                                   # Strix Halo (8060S/8050S/8040S): unified memory, supported
+                   0x150E: "gfx1150",                                   # Strix Point (890M/880M): unified memory, supported
+                   0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",  # Phoenix (780M/760M/740M): unified memory, supported
+                   0x1900: "gfx1103", 0x1901: "gfx1103"}                # Hawk Point (780M/760M): unified memory, supported
+WIN_AMD_IGPU_IDS = {0x1114, 0x1902, 0x164E, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
 _WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -842,23 +845,33 @@ def _windows_display_adapters_registry() -> list[dict]:
 
 
 def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
-    """The AMD graphics cards (not an integrated Radeon) among the Windows display adapters, each with the architecture Strata
-    runs it as ("" when the id is not in the table but the adapter has 3 GB or more of its own memory, so it is no APU)."""
-    cards = []
+    """The AMD graphics devices Strata supports among the Windows display adapters. Discrete Radeon cards always take
+    precedence over integrated UMA APUs when both are present; when only a supported UMA APU (Strix Halo gfx1151,
+    Strix Point 890M/880M gfx1150, or Radeon 780M/760M/740M gfx1103) is present, it is returned."""
+    discrete = []
+    uma = []
     for adapter in (windows_display_adapters() if adapters is None else adapters):
         if adapter.get("vendor") != "1002":
             continue
         device = adapter.get("device")
-        arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
-        if not arch and device not in WIN_AMD_IGPU_IDS:
+        d_arch = WIN_AMD_DEVICE_ARCH.get(device) or ""
+        u_arch = WIN_AMD_UMA_IDS.get(device) or ""
+        if d_arch:
+            discrete.append({"arch": d_arch, "name": adapter.get("name", ""), "device": device})
+            continue
+        if u_arch:
+            uma.append({"arch": u_arch, "name": adapter.get("name", ""), "device": device})
+            continue
+        if device not in WIN_AMD_IGPU_IDS:
             guess = gfx_from_name(adapter.get("name", ""))              # a card whose id is not in the table: its name says
-            if guess in ("gfx1103", "gfx1150", "gfx1152"):               # (those are integrated Radeons)
+            if guess in ("gfx1151", "gfx1150", "gfx1103"):
+                uma.append({"arch": guess, "name": adapter.get("name", ""), "device": device})
                 continue
-            arch = guess
-        if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
-            continue                                                    # an integrated Radeon (512 MB of carve-out)
-        cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})
-    return cards
+            if guess == "gfx1152":                                      # Krackan Point: still unvalidated
+                continue
+            if guess or float(adapter.get("vram_gb") or 0) >= 3.0:
+                discrete.append({"arch": guess, "name": adapter.get("name", ""), "device": device})
+    return discrete if discrete else uma
 
 
 def _windows_vendor_backend(adapters: list[dict] | None = None) -> str | None:
@@ -938,7 +951,10 @@ def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> 
                             ids.append(int(found.group(1), 16))
             except (OSError, subprocess.SubprocessError):
                 pass
-    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+    discrete = sorted({WIN_AMD_DEVICE_ARCH[i] for i in ids if i in WIN_AMD_DEVICE_ARCH})
+    if discrete:
+        return discrete
+    return sorted({WIN_AMD_UMA_IDS[i] for i in ids if i in WIN_AMD_UMA_IDS})
 
 
 _SMI_CACHE: dict = {}
@@ -1065,7 +1081,7 @@ def driver_notice(have: str | None, need: str) -> str:
 
 #: The AMD card families a person knows by the box they bought, for the one plain line when a build is for another family.
 HIP_FAMILIES = (("RX 9000", ("gfx1200", "gfx1201")), ("RX 7000", ("gfx1100", "gfx1101", "gfx1102")), ("RX 6000", ("gfx1030", "gfx1031", "gfx1032")),
-                ("Ryzen AI Max", ("gfx1151",)))
+                ("Ryzen AI Max", ("gfx1151",)), ("Ryzen AI 300", ("gfx1150",)), ("Radeon 780M", ("gfx1103",)))
 
 
 def hip_family(arch: str) -> str:
@@ -1091,6 +1107,79 @@ def hip_preference(archs) -> int:
     RX 6000 package (gfx103x code only) never wins over another family's, so adding it changed nothing for a PC that was served before."""
     archs = [str(a) for a in archs or ()]
     return 0 if archs and all(a.startswith("gfx103") for a in archs) else 1
+
+
+#: AMD chips that share the system memory (an iGPU): a card with memory of its own is preferred over them, and an engine build that has
+#: code only for such a chip does not "fit" a PC that also has a discrete card (#6650: an RX 7900 build chosen for an R9700 beside a 780M).
+HIP_IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+
+
+def _gfx_base(arch) -> str:
+    return str(arch or "").split(":", 1)[0].strip().lower()
+
+
+def hip_counted(present, main: str = "") -> list[str]:
+    """The AMD architectures an engine build has to cover on this PC: the discrete cards, or every card when the PC has only integrated
+    ones (a Strix Halo alone), or just  when that is an integrated chip the person chose. An iGPU beside a discrete card does not count: the model runs on the discrete card, and a build with code for the
+    iGPU only would start and give garbage or be refused there (#6650)."""
+    base = [a for a in (_gfx_base(x) for x in present or ()) if a]
+    if _gfx_base(main) in HIP_IGPU_ARCHS and _gfx_base(main) in base:      # the person pointed the model at the integrated chip (HIP_VISIBLE_DEVICES)
+        return [_gfx_base(main)]
+    discrete = [a for a in base if a not in HIP_IGPU_ARCHS]
+    return discrete or base
+
+
+def hip_covers_main(archs, main: str) -> int:
+    """1 when the build has code for the card the model will run on (`hip_main_arch`), else 0 (also 0 when that card is not known)."""
+    wanted = _gfx_base(main)
+    return 1 if wanted and any(_gfx_base(a) == wanted for a in archs or ()) else 0
+
+
+def hip_cards_present(kfd_root: str | None = None) -> list[dict]:
+    """Linux: ``[{"index", "arch", "vram_gb"}]`` for each AMD GPU of the kernel driver's topology, numbered as the HIP runtime numbers them
+    (GPU nodes in node order). ``vram_gb`` is 0.0 when the memory banks cannot be read. Empty when there is no topology."""
+    root = Path(kfd_root or "/sys/class/kfd/kfd/topology/nodes")
+    try:
+        nodes = sorted((n for n in root.iterdir() if n.name.isdigit()), key=lambda n: int(n.name))
+    except OSError:
+        return []
+    cards: list[dict] = []
+    for node in nodes:
+        try:
+            props = dict(line.split(None, 1) for line in (node / "properties").read_text(encoding="utf-8").splitlines() if len(line.split(None, 1)) == 2)
+            version, simd = int(props.get("gfx_target_version", "0")), int(props.get("simd_count", "0"))
+        except (OSError, ValueError):
+            continue
+        if version <= 0 or simd <= 0:
+            continue
+        vram = 0
+        try:
+            for bank in sorted((node / "mem_banks").iterdir()):
+                text = dict(line.split(None, 1) for line in (bank / "properties").read_text(encoding="utf-8").splitlines() if len(line.split(None, 1)) == 2)
+                if str(text.get("heap_type", "")).strip() in ("1", "2"):
+                    vram += int(str(text.get("size_in_bytes", "0")).strip() or 0)
+        except (OSError, ValueError):
+            pass
+        cards.append({"index": len(cards), "arch": f"gfx{version // 10000}{version // 100 % 100:x}{version % 100:x}", "vram_gb": vram / 2 ** 30})
+    return cards
+
+
+def hip_main_arch(cards: list[dict], environ=None) -> str:
+    """The architecture of the card the model runs on when the person has not said otherwise: the first card of HIP_VISIBLE_DEVICES /
+    ROCR_VISIBLE_DEVICES, else a discrete card before an integrated one, then the most memory (the order setup's ``amd_rank`` uses).
+    "" when `cards` is empty."""
+    cards = [c for c in cards or () if isinstance(c, dict) and c.get("arch")]
+    if not cards:
+        return ""
+    env = os.environ if environ is None else environ
+    for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        first = str(env.get(name) or "").split(",", 1)[0].strip()
+        if first.isdigit():
+            picked = [c for c in cards if int(c.get("index", -1)) == int(first)]
+            if picked:
+                return _gfx_base(picked[0]["arch"])
+    best = min(cards, key=lambda c: (_gfx_base(c["arch"]) in HIP_IGPU_ARCHS, -round(float(c.get("vram_gb") or 0)), int(c.get("index", 0))))
+    return _gfx_base(best["arch"])
 
 
 def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
@@ -1138,6 +1227,10 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
     hip_here = hip_archs_present() if wanted == "hip" else []
+    if wanted == "hip" and not hip_here and os.name != "nt":
+        hip_here = hip_archs_from_pci()
+    hip_here_base = set(hip_counted(hip_here))            # the discrete cards; the iGPU only when it is the only one (#6650)
+    hip_main = hip_main_arch(hip_cards_present()) if (wanted == "hip" and len(hip_here_base) > 1) else ""
     have_runtime = runtime if runtime is not None else runtime_version()
     for item in found:
         label = f"{item.version} {item.platform}-{item.backend}"
@@ -1159,7 +1252,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
             reasons.append(f"{label} has code for {', '.join(item.cuda_archs)}, this PC's GPU is "
                            f"{', '.join(archs_here)}")
             continue
-        if item.hip_archs and hip_here and not set(item.hip_archs) & set(hip_here):
+        if item.hip_archs and hip_here_base and not ({a.split(":", 1)[0].lower() for a in item.hip_archs} & hip_here_base):
             reasons.append(f"{label} has code for {', '.join(item.hip_archs)}, this PC's GPU is "
                            f"{', '.join(hip_here)}")
             arch_blocked.append(item)
@@ -1209,7 +1302,8 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
                             base, problems=problems)
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
     return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0")),
-                                         hip_preference(item.hip_archs), arch_native(item.cuda_archs, archs_here)))
+                                         hip_covers_main(item.hip_archs, hip_main), hip_preference(item.hip_archs),
+                                         arch_native(item.cuda_archs, archs_here)))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the

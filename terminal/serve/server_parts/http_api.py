@@ -269,6 +269,24 @@ def key_matches(given: str, key) -> bool:
     return ok
 
 
+def matched_key(given: str, key):
+    """The configured key a request's header presents, or None.  The same comparison as key_matches (both header
+    byte-forms, #725; every key compared whatever the outcome, #213), but it answers WHICH key passed: #5004's
+    per-key limits ("api_keys") need the key's identity, not only its right to be here.  A hit on several keys
+    (the same key written twice) keeps the first - a policy is looked up by the key string either way."""
+    raw = given.encode("latin-1", "replace")
+    hit = None
+    for k in key_list(key):
+        ok = hmac.compare_digest(raw, k.encode())
+        try:
+            ok |= hmac.compare_digest(raw, k.encode("latin-1"))
+        except UnicodeEncodeError:
+            pass
+        if ok and hit is None:
+            hit = k
+    return hit
+
+
 def origin_allowed(origin: str, host, names, origins=()) -> bool:
     """A browser page's Origin that may use the model without an API key: this server's own page (the Origin is the
     request's own Host), a page on one of the names this server answers to (any port), or an origin the config lists
@@ -315,7 +333,7 @@ SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "to
                "experimental_speed_projection", "lora")
 
 
-def load_shared_settings(path, warn=print) -> dict:
+def load_shared_settings(path, warn=print, *, hy4: bool = False) -> dict:
     """The Chat settings kept next to a config between starts, read so that one bad key cannot erase the others.
 
     The strict reader below belongs to POST /settings, where a client is there to be told which key is wrong and can
@@ -340,13 +358,13 @@ def load_shared_settings(path, warn=print) -> dict:
     out = {}
     for key, value in doc.items():
         try:
-            out.update(clean_shared_defaults({key: value}))
+            out.update(clean_shared_defaults({key: value}, hy4=hy4))
         except ValueError as e:
             warn(f"[strata] one Chat setting in {path} is skipped ({e}); the others still apply")
     return out
 
 
-def clean_shared_defaults(d) -> dict:
+def clean_shared_defaults(d, hy4: bool = False) -> dict:
     """The Chat settings other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
     if d is None:
         return {}
@@ -358,8 +376,13 @@ def clean_shared_defaults(d) -> dict:
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
-            if value not in ("none", "low", "medium", "high"):
-                raise ValueError("reasoning_effort: none, low, medium or high")
+            if hy4 and value == "xhigh":
+                value = "max"
+            elif hy4 and value == "no_think":
+                value = "none"
+            if value not in ("none", "low", "medium", "high") + (("max",) if hy4 else ()):    # Hy4's template also has max
+                raise ValueError("reasoning_effort: none, low, medium, high or max" if hy4
+                                 else "reasoning_effort: none, low, medium or high")
         elif key == "temperature":
             if not number or not 0 <= value <= 2:
                 raise ValueError("temperature: 0..2")
@@ -619,11 +642,28 @@ MODEL_CARD_SAMPLING = {
     # Qwen3.6-35B-A3B: the general-task sets (the card's precise-coding set is temperature 0.6, presence_penalty 0)
     "qwen35moe": {"thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
+    # Hy4-Flash (HY-4-Flash-200B): HuggingFace model card defaults when request/config omits sampling
+    "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
+                 "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)
 CARD_PENALTIES = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+SAMPLING_PARAM_KEYS = (
+    "temperature", "top_p", "top_k", "min_p",
+    "presence_penalty", "frequency_penalty", "repetition_penalty",
+)
+
+
+def request_asks_sampling(*layers) -> bool:
+    """True when any layer explicitly specifies any sampling or penalty parameter."""
+    for layer in layers:
+        if isinstance(layer, dict):
+            for k in SAMPLING_PARAM_KEYS:
+                if layer.get(k) is not None:
+                    return True
+    return False
 
 
 def model_card_sampling(arch, thinking, greedy=False) -> dict:

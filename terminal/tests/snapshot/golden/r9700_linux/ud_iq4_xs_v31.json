@@ -148,7 +148,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -187,7 +188,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
@@ -249,7 +251,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -292,7 +295,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
@@ -354,7 +358,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -398,7 +403,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",

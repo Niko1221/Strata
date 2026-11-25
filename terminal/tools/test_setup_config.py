@@ -290,5 +290,61 @@ class VisionTokens(unittest.TestCase):
         self.assertIn("images are off", out)
 
 
+class MissingInstallFolder(unittest.TestCase):
+    """#7012: the Terminal's install folder (~/.local/share/strata/install) did not exist on a fresh Linux install, and the first
+    run config written into it stopped setup with FileNotFoundError on the .tmp file.  Everything setup writes there makes it first."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.folder = Path(self._tmp.name) / "share" / "strata" / "install"      # none of these exist
+        self.assertFalse(self.folder.parent.exists())
+
+    def test_write_config_makes_the_folder(self):
+        cfg_path = self.folder / "strata-inkling-2-mini-sq-15.json"
+        before = list(setup._RUN_CONFIGS)
+        try:
+            setup.write_config(cfg_path, {"exe": "component:strata-engine", "args": []})
+        finally:
+            setup._RUN_CONFIGS[:] = before
+        self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8"))["exe"], "component:strata-engine")
+        self.assertEqual([p.name for p in self.folder.iterdir()], [cfg_path.name], "no .tmp left behind")
+
+    def test_write_config_takes_a_string_path(self):
+        cfg_path = self.folder / "strata-a.json"
+        before = list(setup._RUN_CONFIGS)
+        try:
+            setup.write_config(str(cfg_path), {"args": []})
+        finally:
+            setup._RUN_CONFIGS[:] = before
+        self.assertTrue(cfg_path.is_file())
+
+    def test_write_setup_config_first_install(self):
+        cfg_path = self.folder / "strata-inkling-2-mini-sq-15.json"
+        before = list(setup._RUN_CONFIGS)
+        try:
+            _, out = quiet(setup.write_setup_config, cfg_path, {"exe": "component:strata-engine", "args": ["--port", "8080"]})
+        finally:
+            setup._RUN_CONFIGS[:] = before
+        self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8"))["args"], ["--port", "8080"])
+        self.assertFalse(cfg_path.with_name(cfg_path.name + ".bak").exists(), out)
+
+    def test_write_setup_config_over_an_earlier_one_keeps_the_bak(self):
+        cfg_path = self.folder / "strata-x.json"
+        before = list(setup._RUN_CONFIGS)
+        try:
+            quiet(setup.write_setup_config, cfg_path, {"exe": "e", "args": ["--a"]})
+            quiet(setup.write_setup_config, cfg_path, {"exe": "e", "args": ["--b"]})
+        finally:
+            setup._RUN_CONFIGS[:] = before
+        self.assertTrue(cfg_path.with_name(cfg_path.name + ".bak").is_file())
+
+    def test_write_run_script_makes_the_folder(self):
+        with unittest.mock.patch.object(setup, "_CONTROL_HOME", self.folder):
+            script = setup.write_run_script("inkling-2-mini-sq-15", self.folder / "strata-x.json", 8080)
+        self.assertTrue(script.is_file())
+        self.assertEqual(script.parent, self.folder)
+
+
 if __name__ == "__main__":
     unittest.main()

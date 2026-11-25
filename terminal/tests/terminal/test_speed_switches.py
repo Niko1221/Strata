@@ -172,7 +172,7 @@ class Terminal(unittest.TestCase):
             base = QWEN
             cfg = self.config(base, S.settings_from_pairs([f"{k}={v}" for k, v in entries.items()]))
             self.assertEqual(cfg["env"], {**base["env"], **entries}, sid)
-            self.assertEqual(cfg["args"], base["args"], "no engine flag changes")
+            self.assertEqual(cfg["args"], self.config(base)["args"], "no engine flag changes")
 
     def test_off_again_puts_the_default_back(self):
         cfg = self.config(QWEN, S.settings_from_pairs(["STRATA_KVA=off"]))

@@ -21,6 +21,9 @@
 #ifndef HY4_CUDA
 #define HY4_CUDA 1
 #endif
+#ifndef HY4_HAS_GRAPHS
+#define HY4_HAS_GRAPHS 1
+#endif
 #ifndef HY4_GFX12
 #define HY4_GFX12 0
 #endif
@@ -31,6 +34,15 @@
 #define hipSuccess cudaSuccess
 #define hipStream_t cudaStream_t
 #define hipEvent_t cudaEvent_t
+#define hipGraph_t cudaGraph_t
+#define hipGraphExec_t cudaGraphExec_t
+#define hipStreamCaptureModeThreadLocal cudaStreamCaptureModeThreadLocal
+#define hipStreamBeginCapture cudaStreamBeginCapture
+#define hipStreamEndCapture cudaStreamEndCapture
+#define hipGraphInstantiate cudaGraphInstantiate
+#define hipGraphDestroy cudaGraphDestroy
+#define hipGraphExecDestroy cudaGraphExecDestroy
+#define hipGraphLaunch cudaGraphLaunch
 #define hipDeviceProp_t cudaDeviceProp
 #define hipGetErrorString cudaGetErrorString
 #define hipGetDeviceProperties cudaGetDeviceProperties
@@ -56,9 +68,11 @@
 #define hipEventSynchronize cudaEventSynchronize
 #define hipEventElapsedTime cudaEventElapsedTime
 #define hipHostMallocDefault cudaHostAllocDefault
+#define hipHostMallocPortable cudaHostAllocPortable
 #define hipHostMalloc(p, n, f) cudaHostAlloc((p), (n), (f))
 #define hipHostFree cudaFreeHost
 #define hipSetDevice cudaSetDevice
+#define hipDeviceGetPCIBusId cudaDeviceGetPCIBusId
 #define hipHostMallocMapped cudaHostAllocMapped
 #define hipHostRegister cudaHostRegister
 #define hipGetLastError cudaGetLastError
@@ -66,6 +80,13 @@
 #define hipStreamWaitEvent cudaStreamWaitEvent
 #define hipHostGetDevicePointer cudaHostGetDevicePointer
 #define hipDeviceSynchronize cudaDeviceSynchronize
+#define hipDeviceCanAccessPeer cudaDeviceCanAccessPeer
+#define hipDeviceEnablePeerAccess cudaDeviceEnablePeerAccess
+#define hipDeviceDisablePeerAccess cudaDeviceDisablePeerAccess
+#define hipErrorPeerAccessAlreadyEnabled cudaErrorPeerAccessAlreadyEnabled
+#define hipMemcpyPeer cudaMemcpyPeer
+#define hipMemcpyPeerAsync cudaMemcpyPeerAsync
+#define hipGetDeviceCount cudaGetDeviceCount
 
 #include <cstddef>
 #include <cstdint>
@@ -305,6 +326,13 @@ __device__ __forceinline__ const void* shfl_ptr(const void* p, int src) {
 #ifndef HY4_CUDA
 #define HY4_CUDA 0
 #endif
+// HY4_HIP_PEERS: 1 builds the multi-GPU expert split (`--gpus 0,1`; experts on peer AMD GPUs) by default on HIP.
+#ifndef HY4_HIP_PEERS
+#define HY4_HIP_PEERS 1
+#endif
+#ifndef HY4_HAS_GRAPHS
+#define HY4_HAS_GRAPHS 1
+#endif
 // RDNA2 (gfx103x) has no WMMA instructions; guard WMMA cleanly and route to custom Wave32 sdot4/fdot2 kernels.
 #if defined(__gfx1030__) || defined(__gfx1031__) || defined(__gfx1032__) || defined(__gfx1034__) || defined(__gfx1035__) || defined(__gfx1036__)
 #undef HY4_MMA
@@ -340,6 +368,23 @@ __device__ __forceinline__ const void* shfl_ptr(const void* p, int src) {
 #endif
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
+
+#if defined(_WIN32)
+#include <cstdlib>
+namespace hy4 {
+inline hipError_t hy4_hip_host_malloc_wddm(void** ptr, size_t size, unsigned int flags) {
+    if ((flags & hipHostMallocMapped) != 0u) {
+        static const bool coherent_win = [] {
+            const char* v = std::getenv("STRATA_HIP_MAPPED_COHERENT");
+            return v == nullptr || v[0] != '0';
+        }();
+        if (coherent_win) flags |= hipHostMallocCoherent;
+    }
+    return hipHostMalloc(ptr, size, flags);
+}
+}  // namespace hy4
+#define hipHostMalloc(p, n, f) ::hy4::hy4_hip_host_malloc_wddm((p), (n), (f))
+#endif
 
 #include <cstdint>
 #include <cstring>

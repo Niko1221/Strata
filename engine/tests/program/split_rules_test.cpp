@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "strata/program/split_rules.hpp"
+#include "strata/program/stage_reserve.hpp"
 
 using namespace strata::program::split_rules;
 
@@ -157,6 +158,118 @@ int main() {
         CHECK(trim_credit(2, 3000 * MiB) == 0);
         CHECK(trim_credit(0, 0) == 0);
         CHECK(trim_credit(0, -5) == 0);   // trim off: trim_frees is 0 (never negative); a negative figure is no credit
+    }
+    // The gate-off fallback keeps to placements whose later stages hold an expert slot.  2x 8 GB (RTX 3060 Ti + RTX 3070 Ti),
+    // 48 layers, serve with DFlash2 on CUDA1 and --vram-reserve-later-mib 5800: no placement could start the prompt path, so
+    // auto chose by decode speed alone, and the PCIe probe decided K.  CUDA0 read 10.6-12.6 GB/s and CUDA1 2.9, a gap of
+    // 3.66-4.34 on both sides of kLinkScaleMin: below it K=45 (CUDA1 runs 45-47), which stopped at "CUDA1 expert cache: no
+    // room"; above it K=47, which loaded with 28 slots.
+    {
+        const int64_t MiB = 1 << 20;
+        CHECK(link_miss_scale({10.6, 2.9})[1] == 1.0);   // gap 3.66: unscaled, K=45 is the faster
+        CHECK(link_miss_scale({12.6, 2.9})[1] > 4.0);    // gap 4.34: scaled, K=47 is the faster
+        // CUDA1's room before its session carve, planned as the cache step will size it: 7578 MiB free, 5800 + 256 + 96
+        // reserved, 1000 for the drafter and the head, DFlash2's drafter over that (112) and what it binds after the cache
+        // (160 MiB in serve)
+        strata::program::stage_reserve::Inputs in;
+        in.base_reserve_mib = 5800 + 256;
+        in.later = true;
+        in.drafter = true;
+        in.df2_bind_mib = strata::program::stage_reserve::df2_search_mib(true);
+        const int64_t room = strata::program::stage_reserve::room_bytes(7578 * MiB, in);
+        // each placement's session and weights on CUDA1: the search logged 143 MiB left at K=45 and 294 at K=47 of 426, and
+        // (with the after-cache term alone booked) 57 at K=46 of 266
+        const int64_t carve45 = (426 - 143) * MiB, carve46 = (266 - 57) * MiB, carve47 = (426 - 294) * MiB;
+        const int64_t slot = 13 * MiB / 10;   // an expert slot, ~1.3 MiB
+        auto held = [&](int64_t k) {          // CUDA0's cache held 400 slots at either K
+            const int64_t left = room - (k == 45 ? carve45 : k == 46 ? carve46 : carve47);
+            return std::vector<int64_t>{400, left > 0 ? left / slot : 0};
+        };
+        CHECK(later_stage_empty(held(45)));    // K=45: -129 MiB planned (the cache step found 0.00 GiB, 6.06 GiB free)
+        CHECK(later_stage_empty(held(46)));    // K=46: -55 MiB planned (the cache step found 0.00 GiB, 6.13 GiB free)
+        CHECK(!later_stage_empty(held(47)));   // K=47: 22 MiB planned (the cache step found 0.04 GiB: 28 slots)
+        // the fallback's pick: the fastest whose later stages hold a slot, else the fastest
+        auto pick = [&](const std::vector<int64_t>& by_speed) {
+            for (const int64_t k : by_speed)
+                if (!later_stage_empty(held(k))) return k;
+            return by_speed.front();
+        };
+        CHECK(pick({45, 46, 47}) == 47);   // gap 3.66
+        CHECK(pick({46, 45, 47}) == 47);   // the pick with the after-cache term alone booked (gap 4.15, STRATA_SPLIT_LINK_MIN=4.5)
+        CHECK(pick({47, 46, 45}) == 47);   // gap 4.34
+        std::printf("split_rules_test: DFlash2 on CUDA1, gate off: K=45 holds %lld slots, K=46 %lld, K=47 %lld; pick K=%lld at "
+                    "gap 3.66, K=%lld at 4.34\n", (long long) held(45)[1], (long long) held(46)[1], (long long) held(47)[1],
+                    (long long) pick({45, 46, 47}), (long long) pick({47, 46, 45}));
+        // nothing with a slot: the pick is as before; the first stage and a single card are not this rule's
+        CHECK(later_stage_empty({400, 0}) && later_stage_empty({400, 5, 0}));
+        CHECK(!later_stage_empty({0, 5}) && !later_stage_empty({0}) && !later_stage_empty({}));
+    }
+    // ---- #6758: fewer cards.  The search predicts only placements of all the cards.  A much slower card can cost more time
+    // per decode window than its expert cache saves.  The rule compares the predicted time of fewer cards with the time of
+    // the chosen placement.  It returns the number of first stages to remove.
+    {
+        // These checks are for the placement without its first stages.  Each removed stage gets a cut of 0, thus its layers go
+        // to the next stage.
+        CHECK((without_first({10}, 1) == std::vector<int64_t>{0}));
+        CHECK((without_first({11, 24, 36}, 1) == std::vector<int64_t>{0, 24, 36}));
+        CHECK((without_first({11, 24, 36}, 2) == std::vector<int64_t>{0, 0, 36}));
+        CHECK((without_first({11, 24, 36}, 3) == std::vector<int64_t>{0, 0, 0}));   // only the last card stays
+        CHECK((without_first({11, 24, 36}, 0) == std::vector<int64_t>{11, 24, 36}));
+        CHECK((without_first({11, 24, 36}, 9) == std::vector<int64_t>{0, 0, 0}));   // `drop` can be more than the number of cuts
+        CHECK((without_first({11, 24, 36}, -1) == std::vector<int64_t>{11, 24, 36}));
+        CHECK(without_first({}, 1).empty());                                         // one card has no stage to remove
+
+        // The example of #6758 is an RTX 4090 (PCIe x16) with an RTX 3060 (PCIe x4), IQ3_S and 48 layers.  The search chose
+        // K=10.  The engine log shows 1.43 ms per layer for the RTX 3060 and 0.22 ms for the RTX 4090.  The model predicts
+        // 27.0 ms per decode window for K=10 and 17.5 ms for the RTX 4090 alone.
+        CHECK(fewer_cards(27.0, {17.5}, 20.0) == 1);
+        // Here the predicted time is almost equal with and without the first card.  The rule keeps the two cards.
+        CHECK(fewer_cards(76.0, {78.0}, 20.0) == 0);
+        CHECK(fewer_cards(27.0, {25.0}, 20.0) == 0);    // 7% less is below the threshold
+        CHECK(fewer_cards(27.0, {21.6}, 20.0) == 1);    // exactly 20% less is sufficient
+        CHECK(fewer_cards(27.0, {21.7}, 20.0) == 0);
+        // This case has four different cards.  The rule selects the lowest time.  Here it is the time without the first two
+        // stages.
+        CHECK(fewer_cards(30.0, {24.0, 21.0, 26.0}, 20.0) == 2);
+        CHECK(fewer_cards(30.0, {24.0, 25.0, 26.0}, 20.0) == 1);
+        CHECK(fewer_cards(30.0, {29.0, 28.0, 20.0}, 20.0) == 3);   // only the last card alone is 20% faster
+        // This case has ten cards (one fast, nine slow).  The time decreases while the rule removes slow cards.  It increases
+        // when the caches become too small.
+        CHECK(fewer_cards(45.0, {41.0, 38.0, 35.0, 33.0, 31.0, 30.0, 29.5, 31.0, 36.0}, 20.0) == 7);
+        // For equal times, the rule keeps more cards.
+        CHECK(fewer_cards(30.0, {20.0, 20.0, 20.0}, 20.0) == 1);
+        // The result is 0 for no candidate, for a placement without a prediction, and for a disabled rule.
+        CHECK(fewer_cards(27.0, {}, 20.0) == 0);
+        CHECK(fewer_cards(0.0, {17.5}, 20.0) == 0);
+        CHECK(fewer_cards(27.0, {0.0}, 20.0) == 0);     // a value of 0 or less has no prediction
+        CHECK(fewer_cards(27.0, {17.5}, 0.0) == 0);
+        CHECK(fewer_cards(27.0, {17.5}, -5.0) == 0);
+
+        // STRATA_SPLIT_FEWER_PCT sets the threshold in percent.  0 disables the rule.  An invalid value gives the default.
+        CHECK(fewer_cards_pct_resolve(nullptr) == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("") == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("35") == 35.0);
+        CHECK(fewer_cards_pct_resolve("0") == 0.0);
+        CHECK(fewer_cards_pct_resolve("x") == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("-5") == kFewerCardsPct);
+        // the line names the exact setting (#6758): one kept card -> `--gpu N` without `--layer-split`; several -> hide the others and keep `--layer-split auto`
+        {
+            const std::string one = fewer_cards_advice("CUDA0 (NVIDIA GeForce RTX 3060)", "CUDA1 (NVIDIA GeForce RTX 4090)", {1}, 17.5, 27.0, "10");
+            CHECK(one.find("FEWER CARDS - without CUDA0 (NVIDIA GeForce RTX 3060)") != std::string::npos);
+            CHECK(one.find("predicts 17.5 ms") != std::string::npos);
+            CHECK(one.find("35% less than K=10 (27.0 ms)") != std::string::npos);
+            CHECK(one.find("`--gpu 1` and no `--layer-split`") != std::string::npos);
+            CHECK(one.find("strata launch --gpu-roles") != std::string::npos);
+            CHECK(one.find("STRATA_SPLIT_FEWER_PCT=0") != std::string::npos);
+            const std::string two = fewer_cards_advice("CUDA0 (A)", "CUDA1 (B), CUDA2 (C)", {1, 2}, 20.0, 30.0, "5,9");
+            CHECK(two.find("CUDA_VISIBLE_DEVICES=1,2") != std::string::npos);
+            CHECK(two.find("keep `--layer-split auto`") != std::string::npos);
+            CHECK(two.find("`--gpu ") == std::string::npos);
+        }
+        std::printf("split_rules_test: fewer cards: RTX 4090 + RTX 3060 (27.0 and 17.5 ms) removes %d stage, 4 cards remove %d, "
+                    "10 cards remove %d\n",
+                    fewer_cards(27.0, {17.5}, kFewerCardsPct), fewer_cards(30.0, {24.0, 21.0, 26.0}, kFewerCardsPct),
+                    fewer_cards(45.0, {41.0, 38.0, 35.0, 33.0, 31.0, 30.0, 29.5, 31.0, 36.0}, kFewerCardsPct));
     }
     if (failed == 0) std::printf("split_rules_test: ok\n");
     return failed ? 1 : 0;

@@ -1,0 +1,445 @@
+name: Intel runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20) inkspeed (Inkling speed: branch against 96113f298) or inkmix (Inkling mix and router groups split per kernel, UD-Q4_K_XL, branch against 5ef71af9b)"
+        required: false
+        default: "hy4"
+        type: choice
+        options: [hy4, inkling, inkspeed, inkmix]
+  push:
+    branches: [ci/intel-runner]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-runner-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  b70-hy4-sycl-verify:
+    name: Arc Pro B70 HY-4 Flash SYCL (#6572 Greedy + Unit + AB/BA)
+    if: ${{ github.event_name == 'push' || inputs.job == 'hy4' || inputs.job == '' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 10
+
+      - name: 1. Build strata-hy4-opt (bmg_g31), sy_opt_test (bmg_g31), and strata-hy4-base (v0.2.19 c6f6427d9)
+        run: |
+          set -euo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          unset OMP_PLACES OMP_PROC_BIND GOMP_CPU_AFFINITY KMP_AFFINITY
+          set -u
+          BUILD="$RUNNER_TEMP/b70-hy4-0220"
+          mkdir -p "$BUILD/opt" "$BUILD/base" "$BUILD/base-src" "$BUILD/zstd"
+          echo "icpx=$(icpx --version | head -1)"
+          echo "MKLROOT=${MKLROOT:-unset}"
+          df -h "$RUNNER_TEMP"
+          free -h
+          sycl-ls || true
+
+          # Build bundled zstd-dec static lib so link works regardless of system libzstd-dev
+          ZDEC="engine/third_party/zstd-dec"
+          ZOBJS=""
+          for c in common/debug.c common/entropy_common.c common/error_private.c common/fse_decompress.c common/xxhash.c common/zstd_common.c decompress/huf_decompress.c decompress/zstd_ddict.c decompress/zstd_decompress.c decompress/zstd_decompress_block.c; do
+            o="$BUILD/zstd/$(basename "$c" .c).o"
+            gcc -O3 -fPIC -DZSTD_DISABLE_ASM=1 -DXXH_NAMESPACE=ZSTD_ -I"$ZDEC" -I"$ZDEC/common" -c "$ZDEC/$c" -o "$o" &
+            ZOBJS="$ZOBJS $o"
+          done
+          wait
+          ar rcs "$BUILD/libzstd_dec.a" $ZOBJS
+
+          MKL_FLAGS=""
+          MKL_LIBS=""
+          if [ -n "${MKLROOT:-}" ] && [ -f "$MKLROOT/include/oneapi/mkl/blas.hpp" ]; then
+            MKL_FLAGS="-DHY4S_USE_ONEMKL -I$MKLROOT/include"
+            MKL_LIBS="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -lmkl_sycl_blas -lmkl_intel_lp64 -lmkl_sequential -lmkl_core"
+          fi
+          SYCL_FLAGS="-fsycl -fsycl-targets=intel_gpu_bmg_g31,spir64 -DHY4S_DISABLE_SG8 -DHY4S_ENABLE_SG16_XMX"
+
+          build_tree() {
+            local SRC="$1"
+            local OUT="$2"
+            local INC="-I$SRC/engine/include -I$SRC/engine/src/hy4flash/sycl -I$SRC/engine/src/hy4flash/run -I$SRC/engine/third_party/stb -I$SRC/engine/third_party/zstd-dec"
+            mkdir -p "$OUT/obj"
+            g++ -O3 -std=c++17 -fPIC $INC -c "$SRC/engine/src/artifact/strata_reader.cpp" -o "$OUT/obj/strata_reader.o" &
+            g++ -O3 -march=native -std=c++17 -fPIC $INC -c "$SRC/engine/src/quant/sk_codecs.cpp" -o "$OUT/obj/sk_codecs.o" &
+            g++ -O3 -std=c++17 -fPIC $INC -c "$SRC/engine/src/ngram/hy4_engram_reader.cpp" -o "$OUT/obj/hy4_engram_reader.o" &
+            g++ -O3 -std=c++17 -fPIC $INC -c "$SRC/engine/src/hy4flash/run/hy4_engram.cpp" -o "$OUT/obj/hy4_engram.o" &
+            g++ -O3 -std=c++17 -fPIC -pthread $INC -c "$SRC/engine/src/hy4flash/run/hy4_cpu_experts.cpp" -o "$OUT/obj/hy4_cpu_experts.o" &
+            wait
+            local HOBJS="$OUT/obj/strata_reader.o $OUT/obj/sk_codecs.o $OUT/obj/hy4_engram_reader.o $OUT/obj/hy4_engram.o $OUT/obj/hy4_cpu_experts.o"
+            icpx -O3 -std=c++17 -fiopenmp $SYCL_FLAGS $MKL_FLAGS $INC \
+              "$SRC/engine/src/hy4flash/sycl/sy_main.cpp" \
+              "$SRC/engine/src/hy4flash/sycl/sy_mla.cpp" \
+              "$SRC/engine/src/hy4flash/sycl/sy_gpuexp.cpp" \
+              $HOBJS $MKL_LIBS "$BUILD/libzstd_dec.a" -lpthread -lm -o "$OUT/strata-hy4-sycl"
+          }
+
+          echo "== Build opt (HEAD) =="
+          build_tree "$PWD" "$BUILD/opt"
+
+          echo "== Build sy_opt_test (bmg_g31 GPU) =="
+          INC_OPT="-I$PWD/engine/include -I$PWD/engine/src/hy4flash/sycl -I$PWD/engine/src/hy4flash/run -I$PWD/engine/third_party/stb -I$PWD/engine/third_party/zstd-dec"
+          HOBJS_OPT="$BUILD/opt/obj/strata_reader.o $BUILD/opt/obj/sk_codecs.o $BUILD/opt/obj/hy4_engram_reader.o $BUILD/opt/obj/hy4_engram.o $BUILD/opt/obj/hy4_cpu_experts.o"
+          icpx -O3 -std=c++17 -fiopenmp $SYCL_FLAGS $MKL_FLAGS $INC_OPT \
+            "$PWD/engine/src/hy4flash/sycl/sy_opt_test.cpp" \
+            "$PWD/engine/src/hy4flash/sycl/sy_mla.cpp" \
+            "$PWD/engine/src/hy4flash/sycl/sy_gpuexp.cpp" \
+            $HOBJS_OPT $MKL_LIBS "$BUILD/libzstd_dec.a" -lpthread -lm -o "$BUILD/opt/sy_opt_test"
+
+          echo "== Build base (v0.2.19 c6f6427d9) =="
+          git archive c6f6427d9 | tar -x -C "$BUILD/base-src"
+          build_tree "$BUILD/base-src" "$BUILD/base"
+
+          ls -lh "$BUILD/opt/strata-hy4-sycl" "$BUILD/opt/sy_opt_test" "$BUILD/base/strata-hy4-sycl"
+          "$BUILD/opt/strata-hy4-sycl" --version
+          "$BUILD/opt/strata-hy4-sycl" --info
+
+      - name: 2. Run sy_opt_test LIVE on Intel Arc Pro B70 32 GB GPU
+        run: |
+          set -euo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          set -u
+          BUILD="$RUNNER_TEMP/b70-hy4-0220"
+          echo "== Live Arc Pro B70 GPU sy_opt_test =="
+          UR_LOADER_USE_LEVEL_ZERO_V2=0 ONEAPI_DEVICE_SELECTOR=level_zero:gpu \
+            stdbuf -oL -eL "$BUILD/opt/sy_opt_test"
+
+      - name: 3. Live Arc Pro B70 Hy4-Flash-SQ-64 #6572 Greedy Coherence, --spec-check, LCP Serve, and AB/BA
+        run: |
+          set -euo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          set -u
+          BUILD="$RUNNER_TEMP/b70-hy4-0220"
+          MODEL="$BUILD/Hy4-Flash-SQ-64.strata"
+          TOKDIR="$BUILD/tok"
+          mkdir -p "$TOKDIR" "$BUILD/out-opt" "$BUILD/out-base"
+
+          AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
+          echo "Available disk on RUNNER_TEMP: ${AVAIL_GB} GB"
+          if [ "$AVAIL_GB" -lt 68 ]; then
+            echo "Not enough disk for 62 GB Hy4-Flash-SQ-64.strata (${AVAIL_GB} GB avail)"
+            exit 1
+          fi
+
+          echo "== Downloading Hy4-Flash-SQ-64.strata =="
+          t0=$(date +%s)
+          curl -fsSL --connect-timeout 30 --speed-limit 1000 --speed-time 60 --retry 2 \
+            "https://huggingface.co/strata-engine/Hy4-Flash-Strata/resolve/main/Hy4-Flash-SQ-64.strata" \
+            -o "$MODEL"
+          t1=$(date +%s)
+          echo "Downloaded $(ls -lh "$MODEL") in $((t1 - t0)) s"
+
+          "$BUILD/opt/strata-hy4-sycl" --info "$MODEL"
+          "$BUILD/opt/strata-hy4-sycl" --export-tokenizer "$MODEL" "$TOKDIR"
+          ls -lh "$TOKDIR"
+
+          python3 - "$MODEL" "$TOKDIR" "$BUILD/opt/strata-hy4-sycl" "$BUILD/base/strata-hy4-sycl" "$BUILD" << 'PY'
+          import json, os, subprocess, sys, time
+
+          model, tokdir, opt_bin, base_bin, build_dir = sys.argv[1:6]
+          tj = json.load(open(os.path.join(tokdir, "tokenizer.hf.json"), encoding="utf-8"))
+          vocab = dict(tj["model"]["vocab"])
+          for at in tj.get("added_tokens", []):
+              vocab[at["content"]] = at["id"]
+          id2tok = {v: k for k, v in vocab.items()}
+
+          # Simple byte-level BPE decoder for readable verification
+          def bytes_to_unicode():
+              bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+              cs = bs[:]
+              n = 0
+              for b in range(256):
+                  if b not in bs:
+                      bs.append(b)
+                      cs.append(256 + n)
+                      n += 1
+              return dict(zip(bs, [chr(c) for c in cs]))
+
+          u2b = {v: k for k, v in bytes_to_unicode().items()}
+          def decode_ids(ids):
+              raw = bytearray()
+              for tid in ids:
+                  s = id2tok.get(int(tid), f"<{tid}>")
+                  if s.startswith("<") and s.endswith(">"):
+                      raw.extend(s.encode("utf-8"))
+                  else:
+                      for ch in s:
+                          if ch in u2b:
+                              raw.append(u2b[ch])
+                          else:
+                              raw.extend(ch.encode("utf-8"))
+              return raw.decode("utf-8", errors="replace")
+
+          # Build clean greedy prompt token IDs directly from vocab ("The capital of France is")
+          # Use exact byte-level pieces from vocab
+          def find_tok(s):
+              if s in vocab:
+                  return vocab[s]
+              raise KeyError(s)
+
+          # Try exact tokens for "The capital of France is"
+          prompt_words = ["The", "Ġcapital", "Ġof", "ĠFrance", "Ġis"]
+          prompt_ids = [find_tok(w) for w in prompt_words]
+          print("Greedy prompt IDs:", prompt_ids, "decoded:", repr(decode_ids(prompt_ids)), flush=True)
+
+          # Build a 512-token and 2048-token code-like prompt from valid vocab tokens
+          code_seed = [vocab[w] for w in ["def", "Ġcompute", "(", "x", ",", "Ġy", "):", "Ċ", "ĠĠĠĠ", "return", "Ġx", "Ġ+", "Ġy", "Ċ"] if w in vocab]
+          toks_512 = (code_seed * (512 // len(code_seed) + 1))[:512]
+          toks_2048 = (code_seed * (2048 // len(code_seed) + 1))[:2048]
+          open(os.path.join(build_dir, "p512.ids"), "w").write(" ".join(map(str, toks_512)) + "\n")
+          open(os.path.join(build_dir, "p2048.ids"), "w").write(" ".join(map(str, toks_2048)) + "\n")
+
+          def run_serve_check(binp, label, draft_mode, unset_l0=False):
+              env = os.environ.copy()
+              env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:gpu"
+              if unset_l0:
+                  env.pop("UR_LOADER_USE_LEVEL_ZERO_V2", None)
+              else:
+                  env["UR_LOADER_USE_LEVEL_ZERO_V2"] = "0"
+              cmd = [binp, "--serve", "--native", model, "--no-engram", "--max-context", "4096",
+                     "--vram-experts-gb", "18", "--ram-experts-gb", "14", "--draft", draft_mode]
+              proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
+              got_ready = False
+              for line in proc.stdout:
+                  line = line.rstrip("\n")
+                  if line.startswith(("INFO ", "READY ", "ERR ")):
+                      print(f"[{label}] {line}", flush=True)
+                  if line.startswith("READY "):
+                      got_ready = True
+                      break
+              if not got_ready:
+                  err = proc.stderr.read()
+                  rc = proc.wait(timeout=30)
+                  print(f"[{label}] EXITED BEFORE READY rc={rc}\n{err}", flush=True)
+                  raise RuntimeError(f"{label} exited before READY (rc={rc})")
+              def gen(ids, max_new=32):
+                  t0 = time.time()
+                  proc.stdin.write(f"GEN {max_new} temperature=0.0 {','.join(map(str, ids))}\n")
+                  proc.stdin.flush()
+                  out, done, res = [], "", ""
+                  for ln in proc.stdout:
+                      ln = ln.rstrip("\n")
+                      if ln.startswith("T "): out.append(int(ln.split()[1]))
+                      elif ln.startswith("RESUME "): res = ln
+                      elif ln.startswith("DONE "): done = ln; break
+                      elif ln.startswith("ERR "): raise RuntimeError(ln)
+                  return out, done, res, time.time() - t0
+              out1, d1, r1, dt1 = gen(prompt_ids, 32)
+              txt1 = decode_ids(out1)
+              print(f"[{label}] #6572 greedy ({draft_mode}): {d1} | text={txt1!r}", flush=True)
+              # Also test LCP resume on opt
+              if label == "opt-dfly2":
+                  out_a, da, ra, dta = gen(toks_512, 16)
+                  out_b, db, rb, dtb = gen(toks_512[:400] + prompt_ids, 16)
+                  print(f"[{label}] LCP resume test: cold512=({da}) -> lcp400=({rb} {db})", flush=True)
+              proc.stdin.write("QUIT\n")
+              proc.stdin.flush()
+              proc.stdin.close()
+              err = proc.stderr.read()
+              proc.wait(timeout=60)
+              for ln in err.splitlines():
+                  if any(k in ln for k in ("[gpu]", "[vram-cache]", "[load]", "[runner]", "[spec]", "ERR", "error")):
+                      print(f"[{label} stderr] {ln}", flush=True)
+              assert "Paris" in txt1, f"[{label}] #6572 FAILED: 'Paris' not in {txt1!r}!"
+              return out1, txt1
+
+          base_plain, _ = run_serve_check(base_bin, "base-plain", "off", unset_l0=False)
+          opt_plain, _ = run_serve_check(opt_bin, "opt-plain", "off", unset_l0=True)
+          opt_dfly2, _ = run_serve_check(opt_bin, "opt-dfly2", "dfly2", unset_l0=True)
+          print("Greedy parity opt_plain vs opt_dfly2:", opt_plain == opt_dfly2, flush=True)
+          print("Greedy parity base_plain vs opt_plain:", base_plain == opt_plain, flush=True)
+          assert opt_plain == opt_dfly2, f"plain vs dfly2 mismatch! {opt_plain} != {opt_dfly2}"
+          print("#6572 GREEDY COHERENCE & PARITY PASS!", flush=True)
+          PY
+
+          echo "== [1] opt --spec-check (bmg_g31 GPU, UR_LOADER_USE_LEVEL_ZERO_V2 UNSET) =="
+          env -u UR_LOADER_USE_LEVEL_ZERO_V2 ONEAPI_DEVICE_SELECTOR=level_zero:gpu \
+            stdbuf -oL -eL "$BUILD/opt/strata-hy4-sycl" --model "$MODEL" --no-engram --ctx 4096 \
+            --vram-experts-gb 18 --ram-experts-gb 14 --tokens "$BUILD/p512.ids" --out "$BUILD/out-opt" \
+            --gen 32 --draft dfly2 --spec-check 2>&1 | grep -E "gpu|vram-cache|runner|prefill|decode|spec|check|ERR|FAIL" || true
+
+          echo "== [2] Interleaved AB/BA (base vs opt) on 1024-tok prompt, gen=64 (plain + dfly2) =="
+          head -c 100000 "$BUILD/p2048.ids" | awk '{for(i=1;i<=1024;i++) printf "%s%s",$i,(i<1024?" ":"\n")}' > "$BUILD/p1024.ids"
+          for round in A1_base B1_opt B2_opt A2_base; do
+            if [[ "$round" == *base* ]]; then
+              BIN="$BUILD/base/strata-hy4-sycl"
+              ENV_PREFIX="UR_LOADER_USE_LEVEL_ZERO_V2=0 ONEAPI_DEVICE_SELECTOR=level_zero:gpu"
+            else
+              BIN="$BUILD/opt/strata-hy4-sycl"
+              ENV_PREFIX="env -u UR_LOADER_USE_LEVEL_ZERO_V2 ONEAPI_DEVICE_SELECTOR=level_zero:gpu"
+            fi
+            echo "--- $round plain (1024 prompt, gen=64) ---"
+            eval $ENV_PREFIX stdbuf -oL -eL "$BIN" --model "$MODEL" --no-engram --ctx 4096 \
+              --vram-experts-gb 18 --ram-experts-gb 14 --tokens "$BUILD/p1024.ids" --out "$BUILD/out-opt" \
+              --gen 64 --draft off 2>&1 | grep -E "vram-cache|prefill|decode|\[spec\]" || true
+            echo "--- $round dfly2 (1024 prompt, gen=64) ---"
+            eval $ENV_PREFIX stdbuf -oL -eL "$BIN" --model "$MODEL" --no-engram --ctx 4096 \
+              --vram-experts-gb 18 --ram-experts-gb 14 --tokens "$BUILD/p1024.ids" --out "$BUILD/out-opt" \
+              --gen 64 --draft dfly2 2>&1 | grep -E "vram-cache|prefill|decode|\[spec\]" || true
+          done
+          echo "B70_HY4_VERIFY_ALL_PASS=1"
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-hy4-0220" || true
+
+  b70-inkling-sycl:
+    name: "Arc Pro B70 Inkling 2 Mini SYCL (UD-Q4_K_XL + SQ-20: chat, C1 / C32, 5-run fingerprint, needles)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkling' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      HF_STRATA: https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main
+      HF_UNSLOTH: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: 1. Build strata-inkling (SYCL, bmg_g31 + spir64), Python venv, tokenizer
+        run: |
+          set -euo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          unset OMP_PLACES OMP_PROC_BIND GOMP_CPU_AFFINITY KMP_AFFINITY
+          set -u
+          W="$RUNNER_TEMP/b70-ink"
+          mkdir -p "$W/tok" "$W/models" "$W/logs"
+          echo "icpx=$(icpx --version | head -1)"; echo "MKLROOT=${MKLROOT:-unset}"
+          df -h "$RUNNER_TEMP"; free -h; sycl-ls || true
+          python3 -m venv "$W/venv"
+          "$W/venv/bin/pip" install -q --disable-pip-version-check -r terminal/requirements.txt cmake ninja
+          "$W/venv/bin/python" -c "import numpy, jinja2, regex, yaml; print('python deps ok')"
+          export PATH="$W/venv/bin:$PATH"
+          cmake -S engine/src/inkling2 -B "$W/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
+            -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_TARGETS=spir64,intel_gpu_bmg_g31 > "$W/logs/cmake.log" 2>&1 || { tail -30 "$W/logs/cmake.log"; exit 1; }
+          cmake --build "$W/build" --target strata-inkling -j "$(nproc)" > "$W/logs/build.log" 2>&1 || { tail -40 "$W/logs/build.log"; exit 1; }
+          ls -l "$W/build/strata-inkling"; "$W/build/strata-inkling" --version
+          for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json chat_template.jinja; do
+            curl -fsSL --retry 3 -o "$W/tok/$f" "$HF_STRATA/$f"
+          done
+          ls -l "$W/tok"
+
+      - name: 2. UD-Q4_K_XL (GGUF) + dspark drafter gate
+        run: |
+          set -uo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          set -u
+          W="$RUNNER_TEMP/b70-ink"
+          AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
+          echo "free disk ${AVAIL_GB} GB"
+          [ "$AVAIL_GB" -ge 40 ] || { echo "not enough disk for the 17.6 GB UD-Q4_K_XL"; exit 1; }
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$HF_UNSLOTH/Inkling-2-Mini-UD-Q4_K_XL.gguf"
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/dspark-Inkling-2-Mini-Q8_0.gguf" "$HF_UNSLOTH/dspark-Inkling-2-Mini-Q8_0.gguf"
+          ls -l "$W/models"
+          bash .github/ci/inkling/b70_gate.sh q4kxl "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$W/build/strata-inkling" "$W/tok" \
+            "$W/venv/bin/python" "$PWD" "$W/logs/q4kxl" "$W/models/dspark-Inkling-2-Mini-Q8_0.gguf" 2>&1 | tee "$W/logs/q4kxl.summary"
+          rc=${PIPESTATUS[0]}
+          rm -f "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf"
+          echo "GATE_Q4KXL_RC=$rc"
+          [ "$rc" -eq 0 ]
+
+      - name: 3. SQ-20 (.strata, embedded drafter) gate
+        if: always()
+        run: |
+          set -uo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          set -u
+          W="$RUNNER_TEMP/b70-ink"
+          AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
+          echo "free disk ${AVAIL_GB} GB"
+          [ "$AVAIL_GB" -ge 40 ] || { echo "not enough disk for the 19.3 GB SQ-20"; exit 1; }
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-SQ-20.strata" "$HF_STRATA/Inkling-2-Mini-SQ-20.strata"
+          echo "0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97  $W/models/Inkling-2-Mini-SQ-20.strata" | sha256sum -c -
+          bash .github/ci/inkling/b70_gate.sh sq20 "$W/models/Inkling-2-Mini-SQ-20.strata" "$W/build/strata-inkling" "$W/tok" \
+            "$W/venv/bin/python" "$PWD" "$W/logs/sq20" 2>&1 | tee "$W/logs/sq20.summary"
+          rc=${PIPESTATUS[0]}
+          rm -f "$W/models/Inkling-2-Mini-SQ-20.strata"
+          echo "GATE_SQ20_RC=$rc"
+          [ "$rc" -eq 0 ]
+
+      - name: 4. Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b70-inkling-logs
+          path: ${{ runner.temp }}/b70-ink/logs
+          retention-days: 7
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-ink" || true
+
+  b70-inkspeed:
+    name: "Arc Pro B70 Inkling 2 Mini SYCL speed (branch against 96113f298: UD-Q4_K_XL and SQ-20, decode / prefill / C8 / C32, profiler, graph)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkspeed' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Build branch and base, run the speed matrix on both models
+        run: |
+          mkdir -p "$RUNNER_TEMP/b70-ink-speed"
+          bash .github/ci/inkspeed/b70_speed.sh "$PWD" 96113f298 "$RUNNER_TEMP/b70-ink-speed" 2>&1 | tee "$RUNNER_TEMP/b70-ink-speed.log"
+          echo "---- RESULT lines ----"
+          grep -E '^(RESULT|PROF|INFO|B70_INKSPEED|dmesg|downloaded|==)' "$RUNNER_TEMP/b70-ink-speed.log" || true
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-ink-speed" || true
+
+  b70-inkmix:
+    name: "Arc Pro B70 Inkling 2 Mini SYCL mix/router split per kernel (UD-Q4_K_XL, branch against 5ef71af9b)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkmix' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Build branch and base, split the mix and router groups
+        run: |
+          mkdir -p "$RUNNER_TEMP/b70-ink-mix"
+          bash .github/ci/inkspeed/b70_mixsplit.sh "$PWD" 5ef71af9b "$RUNNER_TEMP/b70-ink-mix" 2>&1 | tee "$RUNNER_TEMP/b70-ink-mix.log"
+          echo "---- RESULT lines ----"
+          grep -E '^(RESULT|PROF|IDENT|B70_INKMIX|downloaded|==)' "$RUNNER_TEMP/b70-ink-mix.log" || true
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-ink-mix" || true

@@ -67,6 +67,21 @@ class SpawnEnvironments(unittest.TestCase):
         self.assertEqual(server.vision_env({"vision": {"cuda_device": 1}}, env)[NO_BACKTRACE], "1")     # the copy for a reader on its own card
         self.assertEqual(server.child_env({}, offline=True)[NO_BACKTRACE], "1")
 
+    def test_the_vision_section_env_reaches_the_reader_alone(self):
+        import serve.server as server
+        cfg = {"env": {"STRATA_X": "engine"}, "vision": {"env": {"GPU_MAX_HW_QUEUES": 1, "STRATA_X": "reader"}}}
+        env = server.child_env(cfg)
+        reader = server.vision_env(cfg, env)
+        self.assertEqual(reader["GPU_MAX_HW_QUEUES"], "1")          # numbers become strings, as the top-level env's
+        self.assertEqual(reader["STRATA_X"], "reader")              # the section's value wins for the reader
+        self.assertNotIn("GPU_MAX_HW_QUEUES", env)                  # and the engine's environment is untouched
+        self.assertEqual(env["STRATA_X"], "engine")
+        self.assertEqual(reader[NO_BACKTRACE], "1")
+        both = {"backend": "hip", "vision": {"cuda_device": 1, "env": {"GPU_MAX_HW_QUEUES": "1"}}}
+        reader = server.vision_env(both, server.child_env(both))
+        self.assertEqual((reader["HIP_VISIBLE_DEVICES"], reader["GPU_MAX_HW_QUEUES"]), ("1", "1"))
+        self.assertIs(server.vision_env({"vision": {}}, env), env)  # no section env, no card: the engine's mapping, unchanged
+
     def test_the_developer_switch_reaches_the_engine_environment(self):
         import serve.server as server
         with mock.patch.dict(os.environ, {DEVELOPER_SWITCH: "1"}):
@@ -146,11 +161,12 @@ class EntryPointsSetItForEveryChild(unittest.TestCase):
 # listed here (and, when it starts a Strata program - the engine, the picture reader, sd-cli, setup, a worker - it builds its environment with
 # quiet_crash_env or inherits the one an entry point set).
 STRATA_PROGRAMS = {
-    "serve/server.py": 5,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands
+    "serve/server.py": 6,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands, --export-tokenizer (quiet_crash_env)
     "serve/server_parts/engines.py": 2,   # (moved out of serve/server.py unchanged, file split)
     "serve/images.py": 1,              # sd-cli (image_env)
     "serve/lifeline.py": 4,            # the wrapper every child goes through (ps, a watcher); no program of ours of its own
     "serve/winjob.py": 2,              # lifeline.popen's Windows start inside the job (suspended, then resumed) + the plain Popen off Windows: the caller's env as given
+    "strata_control/inkling_probe.py": 1,   # the launch-time drafting probe: the engine (quiet_crash_env on its environment)
     "strata_control/runtime.py": 4,    # the runtime host (inherits) and the server (quiet_crash_env on its environment); taskkill
     "strata_control/tune_api.py": 1,   # tuning worker (wrapped)
     "strata_control/tune_engine.py": 2,  # tuning engine (wrapped) + ps
@@ -158,6 +174,7 @@ STRATA_PROGRAMS = {
     "strata_control/tuning.py": 2,     # engine --help and the bare-flag probe of an undocumented flag (#4652), both engine_env
     "strata_control/shape_engine.py": 2,  # engine --version / --geometry (inherit)
     "serve/hy4_kind.py": 1,            # `strata-hy4 --info <model>` before a Hy4-Flash start (what the engine can do: drafter, images); env through quiet_crash_env
+    "serve/inkling_kind.py": 1,        # `strata-inkling --info <model>` before an Inkling-2-Mini start (drafter, images); env through quiet_crash_env
     "strata_control/native_helpers.py": 1,  # an opted-in native helper (strata-<name>, no ggml; inherits)
     "strata_control/local_engine.py": 1,  # the added build's --version check (#5114, quiet_crash_env)
     "strata_control/updater.py": 4,       # --version probes and the AMD test start's strata-device probe (inherit)
@@ -165,8 +182,9 @@ STRATA_PROGRAMS = {
     "strata_cli/launch/runner.py": 2,     # setup.py and the other children (_env)
     "strata_cli/launch/params.py": 2,     # engine --help (inherits)
     "strata_cli/cli.py": 2,               # setup.py, the revise command
-    "setup.py": 20,                       # builds, engine probes, the helpers it runs (main sets it); the update's git calls (P6: symbolic-ref) and the
-                                          # re-run of the pulled setup.py (it inherits main's environment, Q6)
+    "setup.py": 21,                       # builds, engine probes, the helpers it runs (main sets it); the update's git calls (P6: symbolic-ref) and the
+                                          # re-run of the pulled setup.py (it inherits main's environment, Q6); vm_stat on macOS (free RAM for the
+                                          # Inkling planner, #6662: read-only, nothing of ours)
 }
 OTHER_PROGRAMS = {
     "serve/oomd_pacer.py": 1,            # systemctl (read-only: is systemd-oomd active, its limit)
