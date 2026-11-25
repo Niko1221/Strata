@@ -4083,6 +4083,26 @@ def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
 # src/core/arch_defaults.cpp, generate.cpp, metal window.cpp.  Nothing here sets them.)
 
 
+_PRE26_SAID: set = set()
+
+
+def pre26_metal_defaults(env: dict, cfg: dict, *, platform_name: str | None = None, version: str | None = None) -> list[str]:
+    """#7082: the Qwen Metal engine on macOS below 26 (no MetalPerformancePrimitives header) starts with the prompt through the decode
+    windows, no prompt GEMM and no matmul layout probe, unless the person set those.  Inkling and Hy4 have their own guards (Inkling asks
+    supports_metal4(), Hy4 compiles with a fallback) and are left alone.  Says why, once per process and macOS version.  Returns the names added."""
+    if (platform_name or sys.platform) != "darwin" or cfg.get("backend") != "metal":
+        return []
+    if hy4_kind.is_hy4(cfg) or inkling_kind.is_inkling(cfg):
+        return []
+    from strata_control import mac_fit
+    ver = mac_fit.macos_version() if version is None else version
+    added = mac_fit.pre26_metal_env(env, ver)
+    if added and ver not in _PRE26_SAID:
+        _PRE26_SAID.add(ver)
+        print(mac_fit.pre26_metal_note(ver, added), flush=True)
+    return added
+
+
 def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -4113,6 +4133,7 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     # 0.2.17 (owner 11-19): the route tail skip is Off unless the person turned it on (STRATA_ROUTE_TAIL_SKIP=7 in the config or in their own environment).
     # The engine's own rule for an unset value is rank 7, so an unset one is set to 0 here, for a config made before 0.2.17 too.
     speed_switches.engine_env_defaults(env)
+    pre26_metal_defaults(env, cfg)
     # Strict offline reaches children through the environment, because a tool subprocess or a model
     # loader is code this server does not own. Applied last so a profile's own `env` cannot remove
     # the policy by naming the same variable.
