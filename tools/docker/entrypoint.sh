@@ -114,8 +114,8 @@ done
 [ -n "$legacy_moved" ] && say "Found model files from the older image in the volume and moved them into /data/Strata-data (no copy, nothing is downloaded again):$legacy_moved"
 
 # ---- run settings made by an image for another card or another engine version name that image's engine folder
-# (/opt/strata/components/engine/<package>/...): in this image that folder is not there, so the server would stop at the start. Drop
-# them; the next step writes them again from the model files, which are kept.
+# (/opt/strata/components/engine/<package>/...): in this image that folder is not there, so the server would stop at the start.
+# Move the old settings aside so setup can write them again from the model files and the user can recover their edits.
 for c in /data/install/strata-*.json; do
   [ -f "$c" ] || continue
   gone=$("$PYBIN" -c '
@@ -139,8 +139,12 @@ for s in walk(cfg):
         break
 ' "$c" 2>/dev/null)
   if [ -n "$gone" ]; then
-    say "The saved run settings $(basename "$c") name $gone, which this image does not have (made by an image for another card or engine version): making them again. The model files are kept."
-    rm -f "$c"
+    previous=$(mktemp "$c.before-image.XXXXXX") || die "Could not back up $c. The saved settings are still there." 2
+    if ! mv -f "$c" "$previous"; then
+      rm -f "$previous"
+      die "Could not move $c aside. The saved settings are still there." 2
+    fi
+    say "The saved run settings $(basename "$c") name $gone, which this image does not have (made by an image for another card or engine version): making them again. The model files are kept. The earlier settings are saved at $previous."
   fi
 done
 
