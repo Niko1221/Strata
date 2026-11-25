@@ -397,6 +397,74 @@ inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int*
     });
 }
 
+// One subgroup keeps all 128 candidates in registers. Resolve ties by expert ID.
+inline void k_sq20_decode_top8(const float *logits, const float *bias, int *ids, float *weights,
+                               float scale, int rows = 1) {
+    Q().parallel_for(NR(rows, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int row = it.get_group(0), lane = it.get_local_id(0);
+        const auto sg = it.get_sub_group();
+        float p[8], score[8], my_weight = 0.f, sum = 0.f;
+        int my_id = 0;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int e = 16 * j + lane;
+            const float raw = 1.f / (1.f + sycl::exp(-logits[row * 128 + e]));
+            p[j] = sycl::isfinite(raw) ? raw : 0.f;
+            const float s = p[j] + bias[e];
+            score[j] = sycl::isfinite(s) ? s : -1e29f;
+        }
+        for (int rank = 0; rank < 8; ++rank) {
+            float best = -1e30f;
+            int local_id = 128;
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                if (score[j] > best) {
+                    best = score[j];
+                    local_id = 16 * j + lane;
+                }
+            const float maximum = sycl::reduce_over_group(sg, best, sycl::maximum<float>());
+            int id = sycl::reduce_over_group(sg, best == maximum ? local_id : 128, sycl::minimum<int>());
+            if (id == 128)
+                id = rank;
+            const int j = id / 16;
+            const float chosen = sycl::select_from_group(sg, p[j], sycl::id<1>(id % 16));
+            if (rank == lane) {
+                my_id = id;
+                my_weight = chosen;
+            }
+            sum += chosen;
+            if (lane == id % 16)
+                score[j] = -1e30f;
+        }
+        const float inv = scale / (sum + 1e-20f);
+        if (lane < 8) {
+            ids[row * 8 + lane] = my_id;
+            weights[row * 8 + lane] = my_weight * inv;
+        }
+    });
+}
+
+// Single-token MLP ShortConv has static taps and consumes exactly one history slot.
+inline void k_sq20_decode_tail(const float *weighted, const float *taps, float *history, const int *slots,
+                               const float *residual, float *out) {
+    Q().parallel_for(NR(9, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        constexpr int D = 2304;
+        const int d = it.get_global_id(0);
+        float cur = 0.f;
+        for (int k = 0; k < 8; ++k)
+            cur += weighted[k * D + d];
+        float *h = history + (size_t)slots[0] * 3 * D + d;
+        const float *sw = taps + 4 * d;
+        const float h1 = h[D], h2 = h[2 * D];
+        const float acc = h[0] * sw[0] + h1 * sw[1] + h2 * sw[2] + cur * sw[3];
+        h[0] = h1;
+        h[D] = h2;
+        h[2 * D] = cur;
+        const float conv = (cur + acc) * 0.4472135954999579f;
+        out[d] = residual[d] + conv;
+    });
+}
+
 inline void k_softcap_sg16(float* logits, int total, float cap) {
     const float inv = 1.0f / cap;
     Q().parallel_for(NR((total + 255) / 256, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
