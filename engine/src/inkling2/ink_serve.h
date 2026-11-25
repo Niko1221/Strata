@@ -504,6 +504,17 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
     bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
     if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
+    // STRATA_INK_MIX_DECODE=N: while a slot decodes and another prefills, alternate N decode-only steps with one
+    // prefill-only step, so the decoding slot is not limited to one token per chunk-sized step and its rows never go
+    // through the prefill kernels (its output matches running alone). Default 0 = off.
+    int mix_decode = 0;
+    if (const char* ev = std::getenv("STRATA_INK_MIX_DECODE")) mix_decode = std::max(0, std::atoi(ev));
+    int mix_dec_left = 0;   // decode-only steps still owed before the next prefill-only step
+    // STRATA_INK_PREFILL_ONE=1: while two or more slots read a prompt, one step reads only one of them (the earliest request
+    // first, until its prompt is read), so the step stays one slot's contiguous rows and keeps the backend's prefill path
+    // (on HIP the WMMA flash-prefill attention needs exactly that). Default 0 = off: the budget is shared among them, as before.
+    const char* pf_one_env = std::getenv("STRATA_INK_PREFILL_ONE");
+    const bool prefill_one = pf_one_env && pf_one_env[0] == '1';
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
@@ -1010,8 +1021,28 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         std::vector<int> prefill_fed(P, 0);
         double t_step0 = now_s();
 
+        // STRATA_INK_MIX_DECODE: while slots decode and others prefill, run mix_decode decode-only steps, then one
+        // prefill-only step. Decode rows never share a step with prefill rows.
+        bool hold_prefill = false, hold_decode = false;
+        if (mix_decode > 0) {
+            bool any_pf = false, any_dec = false;
+            for (int s = 0; s < P; ++s) {
+                if (!reqs[s].active) continue;
+                if (reqs[s].prefill_pos < reqs[s].prompt_len) any_pf = true; else any_dec = true;
+            }
+            if (any_pf && any_dec) {
+                if (mix_dec_left > 0) {
+                    hold_prefill = true;
+                    --mix_dec_left;
+                } else {
+                    hold_decode = true;
+                    mix_dec_left = mix_decode;
+                }
+            }
+        }
+
         // First schedule 1 decode token for every decoding slot (zero head-of-line blocking!)
-        for (int s = 0; s < P; ++s) {
+        for (int s = 0; s < P && !hold_decode; ++s) {
             auto& rq = reqs[s];
             if (!rq.active || rq.prefill_pos < rq.prompt_len) continue;
             if (rq.cur_pos >= eff_max_ctx) {
@@ -1026,10 +1057,17 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         // that chunk, so the decoding slots keep their cadence while a long prompt is read (a 2048-token chunk was ~0.5 s per decode token).
         if (prefill_cap > 0 && !logit_slots.empty()) token_budget = std::min(token_budget, prefill_cap);
 
+        if (hold_prefill && batch.n_tokens == 0) hold_prefill = false;   // no decode row left (context limit reached)
+
         // Then fill remaining budget with chunked-prefill tokens across prefilling slots (round-robin!)
-        if (token_budget > 0) {
+        if (token_budget > 0 && !hold_prefill) {
             std::vector<int> pf_slots;
             for (int s = 0; s < P; ++s) if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) pf_slots.push_back(s);
+            if (prefill_one && pf_slots.size() > 1) {
+                int first = pf_slots[0];
+                for (int s : pf_slots) if (reqs[s].t_start < reqs[first].t_start) first = s;
+                pf_slots.assign(1, first);
+            }
             if (!pf_slots.empty()) {
                 const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
                 for (int s : pf_slots) {

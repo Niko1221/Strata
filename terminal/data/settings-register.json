@@ -16844,6 +16844,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_MIX_DECODE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 511,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "d06833f77f",
+   "first_date": "2026-11-24",
+   "since": null,
+   "last_commit": "d06833f77f",
+   "last_date": "2026-11-24",
+   "status": "opt-in",
+   "owner": "inkling2",
+   "note": "strata-inkling serve (#7021): N = decode-only steps between prefill-only steps while one request decodes and another reads its prompt (default 0 = off). Decode and prefill rows never share a step; tokens per slot do not change.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_MOE_V1",
    "backends": [
     "cuda-hip"
@@ -17110,6 +17143,39 @@
    "status": "opt-in",
    "owner": "inkling2",
    "note": "strata-inkling serve (0221 INKSPEED, #6779): N = most prompt tokens read per step while another request decodes (default 0 = off). Moves time between the reader and the decoders; tokens do not change.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_PREFILL_ONE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 516,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e3ee11c8a1",
+   "first_date": "2026-11-24",
+   "since": null,
+   "last_commit": "e3ee11c8a1",
+   "last_date": "2026-11-24",
+   "status": "opt-in",
+   "owner": "inkling2",
+   "note": "strata-inkling serve: 1 = while two or more requests read a prompt, a step reads only the earliest request's prompt, so the step stays one slot's rows and keeps the backend's single-slot prefill path (WMMA flash prefill on HIP). Default off = the budget is shared, as before. First come, first served: a short prompt waits behind a long one.",
    "retire_after": "",
    "retired_in": ""
   },
