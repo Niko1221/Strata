@@ -98,6 +98,10 @@ inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, in
 #define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
 #define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
+#define cudaDeviceGetP2PAttribute hipDeviceGetP2PAttribute
+#define cudaDeviceP2PAttr hipDeviceP2PAttr
+#define cudaDevP2PAttrNativeAtomicSupported hipDevP2PAttrNativeAtomicSupported
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
 #define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaDriverGetVersion hipDriverGetVersion
 #define cudaRuntimeGetVersion hipRuntimeGetVersion
