@@ -614,10 +614,10 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 
 .chatsplit { position:relative; }
 .chatsplit[data-preview='true'] { transition:none; }
-.preview-resize-handle { position:absolute; top:0; bottom:0; width:12px; z-index:5; cursor:col-resize; touch-action:none; outline:none; }
-.preview-resize-handle > span { position:absolute; left:5px; top:0; bottom:0; width:2px; background:transparent; transition:background 120ms ease; }
+.preview-resize-handle { position:absolute; top:0; bottom:0; width:12px; transform:translateX(100%); z-index:5; cursor:col-resize; touch-action:none; outline:none; }
+.preview-resize-handle > span { position:absolute; left:0; top:0; bottom:0; width:2px; background:transparent; transition:background 120ms ease; }
 .preview-resize-handle:hover > span, .preview-resize-handle:focus-visible > span, [data-preview-resizing='true'] .preview-resize-handle > span { background:var(--st-accent-text); }
-.preview-resize-handle:focus-visible { outline:2px solid var(--st-accent-text); outline-offset:-2px; }
+.preview-resize-handle:focus-visible > span { width:3px; }
 [data-preview-resizing='true'], [data-preview-resizing='true'] * { cursor:col-resize!important; user-select:none!important; }
 [data-preview-resizing='true'] .artifact-panel iframe { pointer-events:none; }
 .chat-toolbar__conversation { container-type:inline-size; container-name:chat-controls; }
