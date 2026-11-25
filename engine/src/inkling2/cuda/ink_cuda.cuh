@@ -123,7 +123,16 @@ inline strata::inkling2::ArchProfile current_arch_profile(int dev = 0) {
 // cudaMemGetInfo subtracts reclaimable OS page cache (like the 19 GB .strata file just read!),
 // so take max(cuda_free, /proc/meminfo MemAvailable) to prevent false hybrid spill!
 inline cudaError_t ink_cuda_mem_info(size_t* vfree, size_t* vtot, int dev = -1) {
+    // #7093: cudaMemGetInfo answers for the CURRENT device, so `dev` has to be made current for the call: the layer split asked for
+    // a peer card's memory while the primary card was current and got the primary's, so the peer's expert budget was far too small
+    // (an RTX 3060 pair, SQ-20: the peer was budgeted 7.2 GiB with 10.8 GiB free), and its overflow became host experts it cannot compute.
+    int prev_dev = -1;
+    if (dev >= 0) {
+        int cur_dev = -1;
+        if (cudaGetDevice(&cur_dev) == cudaSuccess && cur_dev != dev && cudaSetDevice(dev) == cudaSuccess) prev_dev = cur_dev;
+    }
     cudaError_t ce = cudaMemGetInfo(vfree, vtot);
+    if (prev_dev >= 0) cudaSetDevice(prev_dev);
     if (ce != cudaSuccess) return ce;
 #if defined(__linux__)
     int cur = dev;

@@ -223,6 +223,26 @@ All signing happens on the release PC, on the finished files.
 `set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
 signing, stops the release. The Mac dmg is not in `latest.json` (the updater uses `Strata.app.tar.gz`) and needs no Tauri signature; it is downloaded by hand.
 
+### Symbols (kept from 0.2.22; owner decision 2026-11-25)
+
+Every engine package of a release keeps a **symbol file**: what turns an address from a crash report or a minidump of the user's engine back into a source line.
+The symbol files are never part of a package and never a release asset; they live on the release PC in `C:\r0222\symbols\<package name>\` (one folder per package,
+named like the package folder: `strata-engine-0.1.69-windows-x86_64-cuda-cuda13`, `strata-inkling-0.1.69-linux-x86_64-cuda-cuda13`) and are kept for good.
+
+* The build scripts do it: they configure with `-DSTRATA_KEEP_SYMBOLS=ON` (`engine/cmake/strata_symbols.cmake`: host code only, `-g`, or `/Z7` + `/DEBUG /OPT:REF /OPT:ICF` and no build path in the exe on
+  Windows; nvcc `-G` and device debug are never used, so the machine code is the code of a build without it) and call `tools/packaging/keep_symbols.py` on the file that is about to be packaged.
+  `STRATA_KEEP_SYMBOLS=0` builds without (a test build); a release build whose binary has no debug information stops. `SYMBOLS_DIR` names where the folders are written (default `<repo>/symbols`).
+  * Windows (`build_cuda_windows.py`, and the Windows scripts of a release for HIP and Inkling): `keep_symbols.py pe` copies `<exe>.pdb` after checking its GUID against the exe's CodeView record.
+  * Linux (`build_cuda_linux.sh`, `build_cuda_linux_aarch64.sh`, `build_sycl_linux.sh`, `build_hip_linux.sh`): `keep_symbols.py elf` writes `<binary>.debug` (`objcopy --only-keep-debug`), strips the debug
+    information from the stage copy (`--strip-debug`: the function symbols stay, as before) and links the two with `.gnu_debuglink`; it checks that `.text` and `.nv_fatbin` are byte-equal before and after.
+  * Mac (`tools/packaging/mac/build_engine.sh`): `keep_symbols.py macho` makes `<binary>.dSYM` with `dsymutil`, then `strip -S` (before the owner signs).
+  Each folder has a `symbols.json`: file, kind, the id the symbol file must match (ELF build-id, PE GUID and age, Mach-O UUID), sha256 of the shipped binary, the symbol file and its sha256.
+* Checklist step, after the packages are built and before the cleanup of a build folder: copy every `symbols/<package name>/` to `C:\r0222\symbols\` (keep the file names), check that each package
+  folder shipped has one with an entry for every exe and dll of the package that we built (`keep_symbols.py show <binary>` prints the id to find it by), and write the sha256 of the folder's files into the
+  release's `SHA256SUMS-symbols.txt` there. A package that is carried over from an earlier release (the same file, an absolute url in the feed) keeps the symbols of the release that built it.
+* The `.text` check of a new toolchain or flag: build the same commit with and without `STRATA_KEEP_SYMBOLS` (one architecture is enough) and run `keep_symbols.py check <with> <without>`: it compares `.text`
+  and the CUDA fatbin section; both must be equal.
+
 ### The Mac app
 
 `tauri build` signs its installers with the Tauri key before anything else touches them. On a Mac that is too early: `sign-and-notarize.sh` then re-signs every

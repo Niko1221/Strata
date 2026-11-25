@@ -51,7 +51,7 @@ for %%A in (%ARCHS:;= %) do (
   set "LAST=%%A"
   if defined REAL (set "REAL=!REAL!;%%A-real") else (set "REAL=%%A-real")
 )
-cmake -G Ninja -S "%SRC%\terminal\tools\vision" -B "%VISION_BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release ^
+cmake -G Ninja -S "%SRC%\terminal\tools\vision" -B "%VISION_BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release %STRATA_SYM_CMAKE% ^
   -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON ^
   "-DCMAKE_CUDA_ARCHITECTURES=!REAL!;!LAST!-virtual" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl ^
   "-DCMAKE_CUDA_COMPILER=%CUDA_PATH%/bin/nvcc.exe" "-DCUDAToolkit_ROOT=%CUDA_PATH%" || exit /b 1

@@ -38,9 +38,9 @@ class VersionBump(unittest.TestCase):
         # 0.2.21.1 (Control-only: the Inkling planner on HIP #7022, the install folder #7012): the Terminal is 0.2.21.1 and Control 0.1.68; the app stays 0.2.21 and every engine package 0.1.67 (the v0.2.21 files).
         # 0.2.21.2 (Control-only again: Inkling reads the config's thinking level #7035 and names its tool results #7051, the engine READY wait follows the load #7060, the page says where the API key comes from #7063, the conversation cache grows with the RAM #7044): the Terminal is 0.2.21.2 and Control 0.1.68.1 (0.1.68.1, not 0.1.69: the next engine number stays free, as 0.1.60.1 did); the app stays 0.2.21 and every engine package 0.1.67.
         self.assertEqual(strata_cli.PRODUCT_VERSION, "0.2.21.2")
-        self.assertEqual(strata_cli.version(), "0.1.68.1")            # the CMake project version: Control
-        self.assertEqual(first("../engine/CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.68.1")
-        self.assertIn('STRATA_VERSION="0.1.67-metal"', (ROOT.parent / "engine" / "metal" / "CMakeLists.txt").read_text(encoding="utf-8"))
+        self.assertEqual(strata_cli.version(), "0.1.69")             # the CMake project version: Control
+        self.assertEqual(first("../engine/CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.69")
+        self.assertIn('STRATA_VERSION="0.1.69-metal"', (ROOT.parent / "engine" / "metal" / "CMakeLists.txt").read_text(encoding="utf-8"))
 
     def test_every_place_the_app_version_lives_says_0_2_3(self):
         self.assertEqual(first("../app/desktop/src-tauri/Cargo.toml", r'^version = "([^"]+)"'), "0.2.21")
@@ -62,7 +62,7 @@ class VersionBump(unittest.TestCase):
     def test_version_prints_the_product_and_the_build(self):
         done = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True, cwd=str(ROOT),
                               env={**os.environ, "STRATA_NO_HANDOVER": "1"})
-        self.assertTrue(done.stdout.startswith("strata 0.2.21.2 (build 0.1.68.1;"), done.stdout)
+        self.assertTrue(done.stdout.startswith("strata 0.2.21.2 (build 0.1.69;"), done.stdout)
 
 
 class UpdateFromTheLastRelease(test_updater.UpdaterCase):

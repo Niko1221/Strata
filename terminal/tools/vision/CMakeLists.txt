@@ -16,6 +16,7 @@
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "the oldest macOS the binaries run on")
 project(strata_vision C CXX)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../../engine/cmake/strata_symbols.cmake)   # -DSTRATA_KEEP_SYMBOLS=ON: host debug information, same machine code
 
 if(DEFINED CACHE{GGML_CCACHE})
   option(GGML_CCACHE "ggml: use ccache if available" ON)
