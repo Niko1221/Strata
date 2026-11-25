@@ -8495,11 +8495,19 @@ def make_handler(svc: Service):
             def events():
                 yield from asm.start()
                 done = None
+                quiet = time.monotonic()                     # #7132: the last time a byte went out
                 for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force):
                     if kind == "ping":
+                        quiet = time.monotonic()
                         yield None
                     elif kind == "event":
-                        yield from asm.feed(x)
+                        out = asm.feed(x)
+                        if out:
+                            quiet = time.monotonic()
+                            yield from out
+                        elif time.monotonic() - quiet >= KEEPALIVE_S:   # a custom tool's input is held until its end
+                            quiet = time.monotonic()
+                            yield None
                     elif kind == "done":
                         done = x
                 if done is not None and done["finish"] != "cancel" and not cancel.is_set():
