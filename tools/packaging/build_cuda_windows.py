@@ -75,7 +75,14 @@ def configure_args(src: Path, build: Path, variant: str, cuda: Path, extra: list
             "-DCUDAToolkit_ROOT=" + cu]
     if ggml_dir:
         args.append("-DSTRATA_GGML_DIR=" + ggml_dir.replace("\\", "/"))
+    if keep_symbols():
+        args.append("-DSTRATA_KEEP_SYMBOLS=ON")        # /Z7 + /DEBUG (+ /OPT:REF /OPT:ICF): the machine code is the one without it; the PDBs are kept below
     return args + extra
+
+
+def keep_symbols() -> bool:
+    """The release keeps a PDB per exe (owner decision 2026-11-25); STRATA_KEEP_SYMBOLS=0 builds without (a test build)."""
+    return os.environ.get("STRATA_KEEP_SYMBOLS", "1") != "0"
 
 
 def engine_targets(cmake: str, build: Path, env=None) -> list[str]:
@@ -175,6 +182,11 @@ def main(argv: list[str]) -> int:
     targets = engine_targets(cmake, build, env)
     print("engine targets: " + " ".join(targets), flush=True)
     run([cmake, "--build", str(build), "-j", jobs, "--target", *targets], env)
+    symbols = Path(os.environ.get("SYMBOLS_DIR") or src / "symbols") / ("strata-engine-%s-windows-x86_64-cuda-%s" % (version, variant))
+    if keep_symbols():
+        # the PDBs of the exes this package ships, copied out of the build folder before anything cleans it (never into the package)
+        run([sys.executable, str(PACKAGING / "keep_symbols.py"), "pe", "--out", str(symbols), "--pdb-dir", str(build), "--require",
+             *[str(build / n) for n in ("strata.exe", "strata_kq.dll") if (build / n).is_file()]], env)
 
     stage = Path(tempfile.mkdtemp(prefix="strata-engine-stage-"))
     try:
@@ -187,7 +199,12 @@ def main(argv: list[str]) -> int:
                                                       "archs": list(archs), "ptx": True, "cuda": cu, "vision": "gpu-cuda" + cu.split(".")[0],
                                                       "portable": True}, indent=1), encoding="utf-8")
         venv = dict(env, VISION_BUILD_DIR=str(vision_dir), BUILD_JOBS=jobs, VISION_ARCHS=";".join(str(a) for a in archs))
+        if keep_symbols():
+            venv["STRATA_SYM_CMAKE"] = "-DSTRATA_KEEP_SYMBOLS=ON"
         run(["cmd", "/d", "/c", str(PACKAGING / "build_vision_windows.bat"), variant, str(stage)], venv)   # writes vision_archs
+        if keep_symbols():
+            run([sys.executable, str(PACKAGING / "keep_symbols.py"), "pe", "--out", str(symbols), "--pdb-dir", str(vision_dir / "bin"), "--require",
+                 str(vision_dir / "bin" / "strata-vision.exe")], env)
         out.mkdir(parents=True, exist_ok=True)
         py = sys.executable
         cmd = [py, str(PACKAGING / "package_engine.py"), "--src", str(stage), "--backend", "cuda", "--version", version, "--out", str(out),

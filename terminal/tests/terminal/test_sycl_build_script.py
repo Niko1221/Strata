@@ -14,7 +14,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT.parent / "engine" / "sycl" / "tools" / "build.sh"
-BASH = shutil.which("bash")      # the full path: on Windows a bare "bash" can start the WSL launcher in System32 instead of Git bash
+def _working_bash() -> str | None:
+    b = shutil.which("bash")
+    if not b:
+        return None
+    try:
+        r = subprocess.run([b, "-c", "exit 0"], capture_output=True, timeout=15)
+        return b if r.returncode == 0 else None
+    except OSError:
+        return None
+
+
+BASH = _working_bash()      # skip when bash is missing or is the Windows System32 WSL stub with no installed distro
 CYGPATH = shutil.which("cygpath")
 
 

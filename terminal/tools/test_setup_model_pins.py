@@ -247,7 +247,13 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
                     'https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF',   # the credit link in drafting.py's comment and drafting_fetch.py's docstring (nothing opens it)
                     'HF_DEFAULT = "https://huggingface.co"',
-                    'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
+                    'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)',
+                    'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"',  # hy4_family.py tokenizer_sources (used by setup/fetch behind acquisition.require)
+                    '#: Unsloth Dynamic GGUF files hosted on huggingface.co/unsloth/Inkling-2-Mini-GGUF (exact byte sizes & LFS SHA-256 digests).',
+                    'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned drafter source, only setup.py opens it (behind acquisition.require)  # inkling_family.py comment (nothing opens it)
+                    '"""True when `hostname` is Hugging Face (huggingface.co / hf.co) or the configured HF_ENDPOINT host."""',  # transfer.py _hf_host() host check for HF_TOKEN scoping (opens nothing)
+                    'if h == "huggingface.co" or h.endswith(".huggingface.co") or h == "hf.co" or h.endswith(".hf.co"):',
+                    'ep = (env.get("HF_ENDPOINT") or "").strip()')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):

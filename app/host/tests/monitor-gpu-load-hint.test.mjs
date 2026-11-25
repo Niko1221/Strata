@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const TEXT = 'Share of the time the GPU had work to do. It does not say how much of its compute is in use.';
-const read = (p) => readFile(new URL(p, import.meta.url), 'utf8');
+// a checkout with CRLF line ends (Git for Windows' default, GitHub's Windows runner) must read the same as one with LF
+const read = async (p) => (await readFile(new URL(p, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('the app Monitor gives the GPU load label its tooltip, translated', async () => {
   const src = await read('../src/screens/Monitor.tsx');
@@ -26,7 +27,7 @@ test('the sentence is in all nine catalogs, translated in eight', async () => {
 });
 
 test('the web Monitor shows the same sentence on its GPU load label', async () => {
-  const app = await read('../../../terminal/serve/web/app.js');
+  const app = (await read('../../../terminal/serve/web/app.js')).replace(/\r\n/g, '\n');
   assert.ok(app.includes(`{key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100,\n   hint: "${TEXT}"}`));
   // #4968 gave each card's label an id (ml-<key>) for the Model card's own title
   assert.ok(app.includes('<span class="st-metric__label" id="ml-${m.key}"${m.hint ? ` title="${esc(m.hint)}"` : ""}>'));

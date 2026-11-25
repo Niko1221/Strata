@@ -94,6 +94,33 @@ class DefaultSource(unittest.TestCase):
             self.assertEqual(self.source(remembered="https://mirror.example/f.json"), "https://mirror.example/f.json")
 
 
+class ArmCopyFollowsLaterPasses(unittest.TestCase):
+    """make_local_feed.py copies strata-feed.json to strata-feed-linux-aarch64.json after its own build-feed pass; a later pass (the shape engines) must
+    refresh that copy, or the ARM64 Terminal reads a feed without the engines (GRID's Spark cell: "the update feed has no engine for Inkling-2-Mini")."""
+
+    def test_a_later_pass_rewrites_the_arm_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feed_tool.keygen(root / "keys")
+            key = feed_tool._load_key(root / "keys" / "feed-key.json")
+            out = root / "feed"
+            feed_tool.build_feed(out, key=key, sequence=1)
+            for suffix in ("", ".sig"):
+                shutil.copy2(out / (COMMON + suffix), out / (ARM + suffix))       # what make_local_feed.py does
+            feed_tool.build_feed(out, key=key, sequence=2)                         # the later pass
+            for suffix in ("", ".sig"):
+                self.assertEqual((out / (ARM + suffix)).read_bytes(), (out / (COMMON + suffix)).read_bytes())
+            self.assertIn(b'"sequence": 2', (out / ARM).read_bytes())
+
+    def test_a_folder_without_an_arm_copy_gets_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feed_tool.keygen(root / "keys")
+            key = feed_tool._load_key(root / "keys" / "feed-key.json")
+            feed_tool.build_feed(root / "feed", key=key, sequence=1)
+            self.assertFalse((root / "feed" / ARM).exists())                       # the release builds its ARM feed as a feed of its own
+
+
 class ReadsTheRightFile(unittest.TestCase):
     """feed.fetch against a folder and against a release address: which file is asked for."""
 

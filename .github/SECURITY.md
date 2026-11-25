@@ -17,7 +17,7 @@ Supported: the latest release. Fixes go into the next release, not into older on
 ## What the server exposes
 
 Strata runs a model on your PC and serves it over HTTP (`terminal/serve/server.py`). Out of the box it is reachable from
-this PC only. The details and every setting are in [docs/DETAILS.md](../docs/DETAILS.md) ("From other devices",
+this PC only. The details and every setting are in [docs/DETAILS.md](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md) ("From other devices",
 "Host names", "Web pages without an API key", "Tools from MCP servers").
 
 - **Where it listens.** `127.0.0.1` by default. `--host 0.0.0.0` (or `"host"` in `strata-<model>.json`) opens it to
@@ -50,7 +50,13 @@ Strata comes in three parts that share one engine: the **desktop app**, the **Te
 the model. The section above is about the engine's HTTP server. This is what the other two add.
 
 - **The app's host listens on this PC only.** The app serves its page from a local host process on `127.0.0.1` (port 8791 unless
-  changed). A request to its `/api/` endpoints that carries a browser `Origin` from any other site gets 403. The app shell holds a
+  changed). It answers only a `Host` that names this PC (`localhost`, `127.x.x.x`, `[::1]`), so a web site that points its own name at
+  this PC gets 403. A request to its `/api/` endpoints that carries a browser `Origin` must come from the host's own page (its own
+  address and port): another site, **another port of localhost** and a page that was framed or sent by another site get 403, and so
+  does a request the browser marks cross-site or same-site. Every change a browser sends to `/api/` must also carry this launch's random
+  token, which the host puts in the page it serves; `/api/` and the page answer no other origin (CORS is open for `/v1` only, so local
+  web UIs can use the model, and `/v1` with MCP tools still needs an API key). Scripts and the Terminal send no `Origin` and are not
+  asked for the token. A development run (`STRATA_PACKAGED` not 1) also accepts Vite on port 5199. The app shell holds a
   random secret (32 characters or more, compared in constant time) that is needed to quit the host or tell it which window is open,
   and the host gives its own helper processes a second random secret. By default the models the app starts are served on this PC only.
 - **Sharing is a separate, key-protected listener.** "Share with other devices" (and the Cloudflare tunnel) will not start until an
@@ -68,7 +74,7 @@ the model. The section above is about the engine's HTTP server. This is what the
   one it accepted (a replayed old feed) or expired, and checks every engine package against its SHA-256, its signed manifest and the
   card in your PC before it test-starts it and switches to it. Any failure keeps the engine you had. The app installer itself is signed
   with a separate key (Tauri's minisign key) that the app and the Terminal both check. The private keys are kept offline by the owner.
-  See [packaging/UPDATES.md](../tools/packaging/UPDATES.md).
+  See [packaging/UPDATES.md](https://github.com/Niko1221/Strata/blob/main/tools/packaging/UPDATES.md).
 
 ### How far to trust `curl | sh` and `irm | iex`
 
@@ -93,4 +99,4 @@ If that is not enough: save the script (`curl -fsSLO --connect-timeout 15 --max-
 run it from the file; or install the desktop app or build from source instead and check the code you build.
 
 Strata has not had an outside security audit yet.
-What Strata downloads, when it uses the internet, what stays on your PC and how downloads are checked is written up in [docs/SAFETY.md](../docs/SAFETY.md).
+What Strata downloads, when it uses the internet, what stays on your PC and how downloads are checked is written up in [docs/SAFETY.md](https://github.com/Niko1221/Strata/blob/main/docs/SAFETY.md).

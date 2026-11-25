@@ -168,7 +168,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -201,6 +202,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -216,7 +218,8 @@
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",
@@ -303,7 +306,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -340,6 +344,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -355,7 +360,8 @@
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",
@@ -426,7 +432,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -464,6 +471,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -479,7 +487,8 @@
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",

@@ -31,7 +31,7 @@ import re
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, cut_arguments, declared_parameters, effort_kwargs
+from serve.frontend import Event, _late_system_to_user, _name_tool_results, _parts_of, cut_arguments, declared_parameters, effort_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -292,6 +292,20 @@ def input_messages(req: dict) -> list[dict]:
             (held if unanswered else messages).append(message)
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
+        elif kind == "compaction_trigger":
+            # #6459 (Codex): remote compaction trigger input item; accept cleanly instead of HTTP 400 so long sessions
+            # can compact without aborting. Preserve any explicit prompt/content if supplied, otherwise ignore the marker.
+            if item.get("content") not in (None, "", []):
+                open_turn = None
+                thinking.clear()
+                messages.append({"role": "user", "content": _content(item.get("content"), param + ".content")})
+            else:
+                text = item.get("prompt") or item.get("text")
+                if isinstance(text, str) and text.strip():
+                    open_turn = None
+                    thinking.clear()
+                    messages.append({"role": "user", "content": text})
+            continue
         elif kind == "item_reference":
             raise ResponsesError("item references need stored responses, and this server keeps none: send the items "
                                  "themselves", param, "unsupported_parameter")
@@ -318,7 +332,8 @@ def input_messages(req: dict) -> list[dict]:
 def _order_tool_results(messages):
     """The template places tool results by position: each run of tool messages is put in the order of the calls of
     the assistant turn before it (a client may send the results in the order they finished), then the private call
-    ids are dropped."""
+    ids are dropped (Inkling: after each result has been given the name of its call, #7051)."""
+    _name_tool_results(messages)
     i = 0
     while i < len(messages):
         if messages[i]["role"] != "tool":

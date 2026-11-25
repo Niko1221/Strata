@@ -12,6 +12,10 @@ macro(strata_quant_layer)
                          ${_sq}/src/quant/act_ref.cpp ${_sq}/src/quant/dot_generic.cpp ${_sq}/src/quant/dequant.cpp)
   add_library(strata_quant STATIC ${_strata_quant_srcs})
   target_include_directories(strata_quant PUBLIC ${_sq}/include PRIVATE ${_sq}/src/quant)
+  if(NOT STRATA_CPU_X86)
+    # arm64 and the rest: the S_K / SF4 / MX8 codecs are one compile-time-selected TU (NEON dotprod is checked at run time inside it); x86 builds them as run-time tiers below
+    target_sources(strata_quant PRIVATE ${_sq}/src/quant/sk_codecs.cpp)
+  endif()
   if(NOT MSVC)
     # the Generic contract is ggml's _generic C code, summed in order: no contraction into FMA whatever the target's baseline
     set_source_files_properties(${_sq}/src/quant/dot_generic.cpp ${_sq}/src/quant/act_ref.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
@@ -20,14 +24,38 @@ macro(strata_quant_layer)
     # the x86 tiers: ggml's own x86 code ported, each file compiled with its flavour's instruction-set flags so the #if __AVX2__ / __AVX__ branches
     # select what ggml-cpu selects for that flavour (the release builds are AVX2; STRATA_ISA_FLOOR=avx is the AVX-only one)
     target_sources(strata_quant PRIVATE ${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp ${_sq}/src/quant/x86/dot_avx.cpp
-                                       ${_sq}/src/quant/x86/act_avx.cpp ${_sq}/src/quant/x86/dot_avx512.cpp)
+                                       ${_sq}/src/quant/x86/act_avx.cpp ${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp)
     target_compile_definitions(strata_quant PRIVATE STRATA_QUANT_X86_TIERS=1)
+    # The S_K / SF4 / MX8 codecs (sk_codecs.cpp) as three tiers (base / avx2 / avx512) chosen at run time by sk_dispatch.cpp from caps() (src/quant/sk_tiers.hpp):
+    # a CPU without AVX2 never executes an AVX2 instruction of them, and a -march=native host cannot leak wide code into the base tier.  The tier files are
+    # -ffp-contract=off: the float steps are the base tier's in the base tier's order and the integer sums are exact, so the S_K dots are bit-identical per tier.
+    target_sources(strata_quant PRIVATE ${_sq}/src/quant/sk_dispatch.cpp ${_sq}/src/quant/sk_codecs_base.cpp
+                                       ${_sq}/src/quant/x86/sk_codecs_avx2.cpp ${_sq}/src/quant/x86/sk_codecs_avx512.cpp)
+    target_compile_definitions(strata_quant PRIVATE STRATA_SK_X86_TIERS=1)
+    if(MSVC)
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni;/clang:-ffp-contract=off")
+      else()
+        set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+      endif()
+    else()
+      set_source_files_properties(${_sq}/src/quant/sk_codecs_base.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-mno-avx;-mno-avx2;-mno-fma;-mno-f16c")
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-ffp-contract=off")
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES
+                                  COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx2;-mfma;-mf16c;-ffp-contract=off")
+    endif()
     if(MSVC)
       # MSVC contracts neither ggml-cpu's C nor these files' intrinsics (measured: 0 differences from its own ggml in all three flavours); the Windows bits
-      # differ from GCC's in the Q5_K and IQ1_S dots, see below
+      # differ from GCC's in the Q5_K and IQ1_S dots, see below.  Under clang-cl (MSVC frontend + Clang compiler), /arch:AVX512 enables Skylake-X only,
+      # so pass /clang:-mavx512vnni explicitly so dot_avx512.cpp emits VPDPBUSD.
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
-      set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni")
+      else()
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+      endif()
     else()
       # What is pinned, and against what: the reference is ggml-cpu as GCC 13.3 builds it (C, gnu11, where GCC contracts a multiply and an add into an
       # FMA wherever it can, the intrinsics' `_mm256_add_ps(_mm256_mul_ps(a, b), c)` patterns included).  -ffp-contract=fast keeps this C++ (-std=c++20,
@@ -43,7 +71,7 @@ macro(strata_quant_layer)
       # AVX2, FMA and F16C explicitly off: a -march=native build host must not leak wider code into the AVX-only tier
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "-mavx;-mno-avx2;-mno-fma;-mno-f16c;-ffp-contract=fast")
       # the 512-bit kernels of the Avx2 contract: F/DQ/BW/VL + VNNI (what Isa::Avx512 means), called only behind caps()
-      set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp PROPERTIES COMPILE_OPTIONS
+      set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                   "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx2;-mfma;-mf16c;-ffp-contract=fast")
     endif()
   endif()
@@ -81,6 +109,13 @@ macro(strata_quant_layer)
     add_executable(quant_selftest ${_sq}/tests/quant/quant_selftest.cpp)
     target_link_libraries(quant_selftest PRIVATE strata_quant)
     add_test(NAME quant_selftest COMMAND quant_selftest)
+    if(STRATA_CPU_X86)
+      # the run-time ISA tiers of the S_K / SF4 / MX8 codecs against each other: S_K bit-identical (no GPU); run it under qemu -cpu EPYC-Genoa for the avx512 tier
+      add_executable(sk_tier_test ${_sq}/tests/quant/sk_tier_test.cpp)
+      target_include_directories(sk_tier_test PRIVATE ${_sq}/src/quant)
+      target_link_libraries(sk_tier_test PRIVATE strata_quant)
+      add_test(NAME sk_tier_test COMMAND sk_tier_test)
+    endif()
     # the CPU model of the fused prompt kernels' NVFP4 weight decode against the layer's dequantizer (no GPU; tests/cuda/prefill_decode_golden.cu is the GPU side)
     add_executable(nvfp4_decode_model_test ${_sq}/tests/quant/nvfp4_decode_model_test.cpp)
     target_link_libraries(nvfp4_decode_model_test PRIVATE strata_quant)

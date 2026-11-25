@@ -79,6 +79,27 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
 /// outstanding at once (the split verify window keeps two).
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
+/// BW-5 (STRATA_L2_PF=1): device ranges to pull into the L2 cache.  `l2_prefetch_ranges` issues a prefetch hint for every
+/// byte of them (`cp.async.bulk.prefetch.L2` on sm_90+, `prefetch.global.L2` below); it reads and writes nothing, so every
+/// value the window computes is unchanged.  A no-op on HIP.
+struct L2PrefetchSet {
+    static constexpr int kMax = 32;
+    unsigned long long ptr[kMax];
+    unsigned long long bytes[kMax];
+    unsigned first_chunk[kMax + 1];   ///< filled by l2_prefetch_finish
+    int n = 0;
+    unsigned long long total_bytes = 0;
+    void add(const void* p, unsigned long long b) {
+        if (p == nullptr || b < 16 || n >= kMax) return;
+        const unsigned long long a = (unsigned long long) (uintptr_t) p;
+        const unsigned long long lo = a & ~15ull;
+        ptr[n] = lo;
+        bytes[n] = (b + (a - lo)) & ~15ull;
+        total_bytes += bytes[n];
+        ++n;
+    }
+};
+void l2_prefetch_ranges(const L2PrefetchSet& set, void* stream);
 /// wait_flag_ge and copy_i32_from_mapped in ONE launch (143-amdk): thread 0 spins on *flag >= value, the block then
 /// copies dst[0, n) = src[0, n) (mapped host memory, volatile reads).  One kernel node fewer per layer: a dependent
 /// kernel costs ~2.4 us on a gfx1201 graph whatever it does.  n <= 128 * k for any k (a strided loop).
@@ -118,6 +139,17 @@ void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, in
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err = nullptr);
+/// Partial-VRAM on-device hit plan (`STRATA_VERIFY_DEVICE_HITS=1`, `--pcie-frac 0`, CUDA / HIP): groups only the
+/// resident routed experts (`res_layer[e] >= 0`) in first-occurrence routing order into `plan` (`counts = {hit_groups,
+/// hit_entries, 0}`), matching `expert_pool_dispatch_multi` when `fetches == 0` without waiting on `m_flagA_`/`m_flagB_`.
+void resident_hits_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
+                        const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
+                        long long capx, void* stream);
+/// Opt-in `STRATA_ROUTE_TAIL_RENORM=1` (CUDA / HIP): zeroes routing weights of missed experts (`res_layer[e] < 0`)
+/// routed exclusively at rank >= `tail_rank` across the `n_tok` rows of the window, and rescales each row's remaining
+/// weights so their sum equals the row's original router weight sum.
+void route_tail_renorm(const int32_t* ids, float* weights, const int32_t* res_layer, int n_tok, int k, int n_expert,
+                       int tail_rank, void* stream);
 /// wait_flag_ge that also returns when *skip == value (device memory).
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream);
 /// copy_i32_from_mapped unless *skip == value.
@@ -188,6 +220,14 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
 /// so).  Graph-capturable.
 uint64_t argmax_rows_scratch_bytes(int n_rows);
 void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream);
+/// Same reduction as argmax_rows, adding `idx_offset` to each winning index and optionally writing each row's winning logit to `out_val`.
+void argmax_rows_val_idx(const float* logits, int n_rows, int n, int idx_offset, void* scratch, float* out_val,
+                         int32_t* out_idx, void* stream);
+/// Merge two half-vocabulary argmax results while preserving lower-index tie breaking (`b > a`).
+void argmax_merge_halves(const float* v0, const int32_t* i0, const float* v1, const int32_t* i1, int n_rows,
+                         int32_t* out, void* stream);
+/// Bitwise OR `src[0..n)` into `dst[0..n)`.
+void or_u32_rows(uint32_t* dst, const uint32_t* src, int n, void* stream);
 /// row_top_prob over 8 blocks a row, each computing 4 of its 32 warps' sums, the row's last block adding the 32 in
 /// order: bitwise row_top_prob.  `scratch`: row_top_prob_scratch_bytes(n_rows), zero before the first launch.
 uint64_t row_top_prob_scratch_bytes(int n_rows);

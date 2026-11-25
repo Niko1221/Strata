@@ -64,6 +64,9 @@
     "log": "<REPO>/strata-unsloth-ud-iq4_xs-v31.log",
     "lib_dirs": [],
     "port": 8080,
+    "env": {
+     "STRATA_ROUTE_TAIL_SKIP": "0"
+    },
     "backend": "hip"
    },
    "engine": {
@@ -97,7 +100,8 @@
      "700"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
@@ -163,7 +167,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -197,6 +202,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -211,7 +217,8 @@
      "0.35"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",
@@ -300,7 +307,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -338,6 +346,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -352,7 +361,8 @@
      "0.35"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",
@@ -425,7 +435,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -464,6 +475,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -478,7 +490,8 @@
      "0.35"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)",

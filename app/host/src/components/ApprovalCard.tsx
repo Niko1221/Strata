@@ -56,7 +56,7 @@ export function ApprovalDock({ sessionId }: {
     const asks = useStore(s => (sessionId ? s.agentAsks[sessionId] : undefined)) ?? NO_ASKS;
     if (!items.length && !asks.length)
         return null;
-    return <section className="approvaldock" role="group" aria-label={tr("Waiting for your answer")} data-count={items.length}>
+    return <section className="approvaldock" role="group" aria-label={tr("Waiting for your answer")} data-count={items.length + asks.length}>
       {asks.map(a => <QuestionCard key={a.callId} sessionId={sessionId!} ask={a}/>)}
       {items.map(({ messageId, tool }) => <ApprovalCard key={tool.id} messageId={messageId} tool={tool}/>)}
     </section>;

@@ -5,7 +5,7 @@
 #   VARIANT=cuda13 tools/packaging/build_cuda_linux.sh     # CUDA 13: RTX 20 and newer (sm_75 .. sm_120)
 #   SHAPE=q4_lite tools/packaging/build_cuda_linux.sh      # the engine of a model shape, its own component (tools/packaging/shape_build.sh)
 #
-# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc) and a Python 3 venv with requirements.txt and
+# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc; CUDA_HOME=<toolkit> names its lib64 for the library bundle when it is not /usr/local/cuda) and a Python 3 venv with requirements.txt and
 # requirements-build.txt. ggml comes from the vendored engine/third_party/strata-ggml: nothing is downloaded. STRATA_GGML_DIR=<llama.cpp checkout>
 # builds from that checkout instead (an override, kept for two releases).
 # The package lands in $OUT (default ./out-engine-<variant>). Nothing is uploaded.
@@ -37,12 +37,13 @@ last=$(echo "$archs" | tr ';,' '  ' | awk '{print $NF}')
 cd "$repo"
 ggml=""; [ -z "${STRATA_GGML_DIR:-}" ] || ggml="-DSTRATA_GGML_DIR=$STRATA_GGML_DIR"
 . "$repo/tools/packaging/shape_build.sh"; shape_setup "$repo"
+. "$repo/tools/packaging/symbols_build.sh"
 # STRATA_CMAKE_EXTRA: more configure arguments for the engine build, e.g. the model shape of a new family:
 #   STRATA_CMAKE_EXTRA="-DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp"   (or -DSTRATA_GEOMETRY=<name>)
 # shellcheck disable=SC2086
 cmake -G Ninja -S engine -B "$build" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_EXPERIMENTAL_SM60=$sm60 -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON \
-    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake
+    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake
 # (llama.cpp's MMQ and strata_kq left the tree in 0.2.16; MMQ comparison builds come from the v0.2.15 tag)
 . "$repo/tools/packaging/engine_targets.sh"
 targets=$(engine_targets cmake "$build")
@@ -55,7 +56,7 @@ vision_dir=${BUILD_VISION_DIR:-$repo/build-vision-$variant}
 if [ "${BUILD_VISION:-1}" = 1 ]; then
   # strata-vision is Strata's own reader (terminal/tools/vision/own): no llama.cpp source, STRATA_GGML_DIR does not reach it
   cmake -G Ninja -S terminal/tools/vision -B "$vision_dir" -DCMAKE_BUILD_TYPE=Release \
-      -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"
+      -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $sym_cmake
   cmake --build "$vision_dir" --target strata-vision -j "$(nproc)"
 fi
 
@@ -70,7 +71,9 @@ if [ -f "$vision_dir/bin/strata-vision" ]; then
   vision_json=", \"vision_archs\": \"$archs\""        # package_engine.py refuses a reader whose archs do not cover the engine's
 fi
 echo "{\"version\": \"$ver\", \"source\": \"tools/packaging/build_cuda_linux.sh\", \"archs\": \"$archs\", \"cuda\": \"$cudafull\", \"portable\": true$vision_json}" > "$stage/BUILD.json"
-"$py" tools/packaging/collect_libs.py --binary "$build/strata" --search /usr/local/cuda/lib64 --out "$stage" --also 'libcublasLt.so*'
+# the symbol files (owner decision 2026-11-25): split off the stage copies, before package_engine.py hashes them; stored outside the package
+symbols_keep elf "$repo" "$(if [ -n "${SHAPE:-}" ]; then echo "strata-$(echo "$SHAPE" | tr _ -)"; else echo strata-engine; fi)-$ver-linux-x86_64-cuda-$variant" "$stage/strata" $( [ -f "$stage/strata-vision" ] && echo "$stage/strata-vision" )
+"$py" tools/packaging/collect_libs.py --binary "$build/strata" --search "${CUDA_HOME:-/usr/local/cuda}/lib64" --out "$stage" --also 'libcublasLt.so*'
 shape_check env LD_LIBRARY_PATH="$stage" "$stage/strata"
 arch_args=""; for a in $(echo "$archs" | tr ';,' '  '); do arch_args="$arch_args --arch sm_$a"; done
 mkdir -p "$out"

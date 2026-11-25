@@ -46,7 +46,7 @@ Strix Point (890M / 880M, gfx1150) and Krackan (860M / 840M, gfx1152) are named 
 ## Ready-made packages
 
 The Terminal one-liner and `strata update` pick the package whose GPU code covers the card. The app installer
-(`Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage`) has no engine inside: on its first start the app
+(`Strata-0.2.22-windows-x64-setup.exe`, `Strata-0.2.22-linux-x86_64.AppImage`) has no engine inside: on its first start the app
 downloads the matching package for the card. You can also press **Update engine** in Settings (or run `strata update`).
 
 | Package (variant) | OS | GPU code inside | ROCm |
@@ -101,7 +101,7 @@ prompt-speed run with `on` and `off` from an RX 7000 or Strix Halo card.
 | Step | What setup does |
 | --- | --- |
 | Detection | Finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not supported (Strix Halo has its own page). |
-| ROCm | Uses a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS when present. Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
+| ROCm | Uses a system ROCm 7 with hipcc and hipBLAS when present: `/opt/rocm` (or `$ROCM_PATH`) as AMD installs it, or the layout a distribution's packages use, where hipcc is in `<prefix>/bin`, the libraries in `<prefix>/lib64` or a multiarch folder and the headers in `<prefix>/include` (Fedora, Arch, Debian). Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
 | Engine | Compiles it for the card's architecture (10-20 minutes, once; again when you pick another architecture). Needs a C++ compiler and git (`sudo apt install build-essential git`). |
 | Tuning table | Uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the architecture and the installed hipBLASLt version. Otherwise it says so and uses plain hipBLAS. On gfx103x the same role falls to a rocBLAS table. |
 | Pictures | On by default. CPU reader under 24 GB of VRAM, GPU reader from 24 GB; `--vision gpu` / `--vision cpu` switch it. If the GPU reader cannot start, the CPU reader is used. |
@@ -128,7 +128,7 @@ reused. The Monitor shows the card's load, VRAM, temperature and power from Linu
 
 ## Windows
 
-Install the [app](INSTALL.md) (`Strata-0.2.16-windows-x64-setup.exe` from the
+Install the [app](INSTALL.md) (`Strata-0.2.22-windows-x64-setup.exe` from the
 [release page](https://github.com/Niko1221/Strata/releases/latest); it downloads the engine for the card), or
 install the [Terminal](INSTALL.md#the-terminal) and run `strata launch`. You need Windows 10 or 11 (64-bit), a supported card
 and a current AMD driver. No ROCm or HIP SDK, no compiler, no admin rights. `START-HERE.bat --backend hip` is a
@@ -213,6 +213,12 @@ ctest --test-dir build-hip --output-on-failure --timeout 60 -E '^(ple_parity|pla
 
 `ple_parity` needs an external model fixture. `platform_memory_test` needs a memlock limit above the shell's default.
 
+### Hy4-Flash: experts on multiple AMD GPUs
+
+`strata-hy4 --gpus 0,1` (or `--gpus 2` / `--devices 0,1`) distributes routed experts across all selected AMD GPUs by default (`HY4_HIP_PEERS=1`). When PCIe peer access (`hipDeviceCanAccessPeer`) is available, partial activations transfer directly with `hipMemcpyPeerAsync`; when peer access is unavailable (or disabled with `HY4_PEER_NO_P2P=1`), the runner falls back automatically to async pinned host bounce buffers.
+
+Each peer card reserves workspace memory sized automatically for the active prefill chunk (`Tc`); set `HY4_PEER_RESERVE_MB` to override the per-peer reserve explicitly.
+
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime with the existing tools. For OrcaRouter IQ3_XXS, follow the
@@ -264,7 +270,7 @@ machine then swaps or stalls, raise it. Re-check after a ROCm update.
 | --- | --- | --- |
 | `STRATA_SH_STREAM=1` | Off on HIP, except the gfx1151 table | Shared-expert fork on its own stream. Output is identical; speed goes both ways by PC. `./setup.sh --calibrate` measures it and writes it to the config's `"env"` only when it wins by more than 3%. |
 | `STRATA_MTP_SIDE_STREAM` | Off on HIP, on for gfx103x | `=0` turns it off on gfx103x, `=1` creates it on another HIP card |
-| `STRATA_DENSE_MMQ=1` | Off | Dense GGUF prompt projections through int8 MMQ kernels instead of dequantize + hipBLAS. Greedy text can diverge after a few dozen tokens (q8_1 rounding). |
+| `STRATA_DENSE_MMQ=1` | No effect since 0.2.16 | The engine has no MMQ kernels any more, so the dense prompt projections always run as dequantize + hipBLAS. Before 0.2.16 this switched them to int8 MMQ kernels. The engine says so at start-up when the setting is on. |
 | `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Off | Adaptive-tier swaps copied by a kernel instead of the SDMA engine; a workaround for a gfx1030 hang with MMQ prompts and adaptive swaps (untested by the reporter) |
 
 **Why `STRATA_SH_STREAM` goes both ways.** The fork has to hide something. With experts on the CPU in the window, the shared expert forks
@@ -295,7 +301,7 @@ them in the server config's `env`, or in the shell.
 | Switch | Cards | Default | Effect |
 | --- | --- | --- | --- |
 | `STRATA_HIP_WMMA` | gfx12; gfx11 on request | gfx12 Linux: on with int8 KV. Windows and gfx11: `=1` | QSA prompt attention on the matrix cores. `=0` off; `=auto` takes it only for batches of `STRATA_HIP_WMMA_MIN_Q` (64) or more queries. Not bitwise: greedy text can differ from about token 50 on. |
-| `STRATA_PF_FUSED` | gfx12 native IQ packs; integrated gfx11 | gfx12 Linux: on for IQ3_S, IQ3_XXS and Q2_0 gate/up. Integrated gfx11 on Linux (Radeon 780M / 760M gfx1103, 890M / 880M gfx1150, Strix Halo gfx1151): on. IQ2 formats on gfx12, discrete gfx11 and Windows (the Strix Halo on Windows has it in its own set): `=1` | Prompt experts on int8 matrix-core kernels instead of MMQ. `=0` keeps MMQ; `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set. Radeon 780M, Q2_0: prompt x1.30 at 2K tokens and x1.13 at 8K, no change at 300 and 1,000 tokens; forced-token KL against the FP16 path (24 prompts of 2,048 tokens, 64 tokens each) 0.0060 against 0.0054 for MMQ (ratio 1.10, 95% CI 0.93 to 1.37). The 890M / 880M and Strix Halo take it by the same rule and were not run. |
+| `STRATA_PF_FUSED` | gfx12 native IQ packs; integrated gfx11 | gfx12 Linux: on for IQ3_S, IQ3_XXS and Q2_0 gate/up. Integrated gfx11 on Linux (Radeon 780M / 760M gfx1103, 890M / 880M gfx1150, Strix Halo gfx1151): on. IQ2 formats on gfx12, discrete gfx11 and Windows (the Strix Halo on Windows has it in its own set): `=1` | Prompt experts on int8 matrix-core kernels instead of MMQ. `=0` keeps MMQ in a build that has it (the release builds of 0.2.16 and later have none: `=0` there runs the prompt experts on the native int8 kernels, #6251); `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set. Radeon 780M, Q2_0: prompt x1.30 at 2K tokens and x1.13 at 8K, no change at 300 and 1,000 tokens; forced-token KL against the FP16 path (24 prompts of 2,048 tokens, 64 tokens each) 0.0060 against 0.0054 for MMQ (ratio 1.10, 95% CI 0.93 to 1.37). The 890M / 880M and Strix Halo take it by the same rule and were not run. |
 | `STRATA_SCORES_THREAD` | gfx12, gfx1100 | gfx12: on; gfx1100: `=1` | Exact long-prompt QSA scorer (below). `=0` off. |
 | `STRATA_SELECT_WMMA=1` | gfx12 | Off | Matrix-core block scorer for the QSA top-k; selects slightly differently |
 | `STRATA_HC_Q8` | gfx12, gfx1151 | On | 8-bit hyper-connection weights; `=0` restores the bf16 read ([below](#strix-halo-8-bit-hyper-connection-weights-default-on-gfx1151)) |
@@ -554,6 +560,7 @@ Other gfx103x and RDNA2-adjacent cards (community reports):
 | --- | --- |
 | gfx1031, RX 6700 XT 12 GB (#524, #1027) | Setup knows it (`gfx103X-all` wheels, unvalidated). IQ2_XS on ROCm 7.2.4: decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6 needles. The default list of `build_windows.bat` includes it. |
 | RX 6800M 12 GB, Windows, self-built (#915, #1078) | Q2_0: decode 9-27 tok/s, prompt 50-114 tok/s; experts stream from disk with 31 GB RAM |
+| gfx1030, Radeon Pro V620 32 GB, Windows 11 | Windows names it "AMD Radeon Pro V620", which no name rule maps; setup and Control read its PCI id 0x73A1 as gfx1030. Ryzen 7 7840HS, 62 GB RAM, driver 32.0.12033.5037, the card on a 2.8 GB/s host-to-device link (the engine's PCIe probe). GSQ-RCO IQ2_XS, `--max-context 262144 --kv k8v4 --kv-resident 32768`, MTP with `--spec 4 --spec-min-p 0.5`, `--conversation-cache-mib 23000`, a speed-projection control vector (`--cvec-mode project`). Engine 0.1.41: decode 47-60 tok/s, prompts of 43K-118K tokens 308-324 tok/s. Engine 0.1.44.1: decode 39-55 tok/s; a 20K-token prompt 395 tok/s; with `STRATA_HIP_PROMPT_F16=1`, prompts of 44K and 46K tokens 650 and 534 tok/s. Read from the server log, not a benchmark run |
 | gfx1032, RX 6600 / 6600 XT / 6650 XT (#1375) | Unvalidated. In the ready-made RX 6000 engine from 0.2.16 (built, not tested on a real RX 6600). One RX 6650 XT 8 GB (Fedora, ROCm 7.1.1) built the engine for gfx1032 and served a model end to end; no parity or KL run. Ran under Windows as the helper expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)): +8-18% decode over the 6800 alone. |
 | gfx1150, Radeon 890M (#1217) | Builds and runs as an unvalidated target. MINISFORUM N5 PRO, 96 GB, TheRock ROCm 7.14.1, IQ3_XXS: decode 15-19 tok/s, prompts 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `gfx1150-hipblaslt-100401.txt`. Setup does not install for it: build with `-DCMAKE_HIP_ARCHITECTURES=gfx1150` and point `STRATA_HIPBLASLT_TUNING` at the table. [Report](bench-results/2026-10-07-community-gfx1150/README.md). |
 | gfx1152, Radeon 860M / 840M (#1625) | Builds with a warning; portable kernels; no report; setup does not install for it |
@@ -674,23 +681,31 @@ clocks are still ramping. The first fresh prompt after a model loads is also not
 ### rocBLAS table (gfx103x)
 
 On RDNA2 the prompt GEMMs run through rocBLAS in FP16, and hipBLASLt has no gfx1030 kernels. The rocBLAS table does for
-rocBLAS what the table above does for hipBLASLt. A table is valid for one architecture and one rocBLAS build (the full
-version string, tweak hash included), so calibrate it on the card with the rocBLAS the engine loads (`/opt/rocm/lib` is
-rocBLAS 5.6.0.8d1ae90e on ROCm 10.0.0):
+rocBLAS what the table above does for hipBLASLt. A table is valid for one architecture and one rocBLAS build - packaged
+builds make that identity easy to mistake, see below - so calibrate it on the card with the rocBLAS the engine loads
+(`/opt/rocm/lib` is rocBLAS 5.6.0.8d1ae90e on ROCm 10.0.0):
 
 ```sh
 cmake --build build-hip --target tune_rocblas
-LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 8 token buckets, about 5 min
+LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 12 token buckets, about 15 min
 ```
 
-The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 8192 (`--case
+The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 16384 (`--case
 T,N,K,ldy` adds a shape, `--tokens` changes the buckets), checks the fastest against the default's output, and writes one row
 per shape and bucket: the winning solution where it beats the default by `--min-gain` (1.05), `default` otherwise. The header
 names the architecture and version (`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e`). Save it as
 `tools/hip/<arch>-rocblas-<version>.txt` (trailing dots dropped) for setup, or point `STRATA_ROCBLAS_TUNING` at the file.
-`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape and a `tuned_launches=... fallbacks=...` summary at exit. A
+`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape (or `default kernel; no row for T=... N=... K=... ldy=...`) and a `tuned_launches=... fallbacks=...` summary at exit; a read at the prompt lengths you use lists every (T, N, K, ldy) the engine calls, which is the way to check that a table covers them (a row matches N, K and ldy exactly; T goes to the nearest bucket). A
 solution rocBLAS refuses at run time falls back to the default kernel for that call, and after three refusals for good.
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
+
+**Build identity.** A packaged rocBLAS can report a bare version string: a ROCm-distribution or Nixpkgs rocBLAS 7.2.x
+reports `5.2.0.` on every rebuild, with no tweak hash, and the table's version gate matches exactly that string. Solution
+**indices are per-build** - they index the kernel set the library was built with - so a rebuilt library under an unchanged
+version string can move every index. A table calibrated against the previous build then keeps loading (the gate passes)
+while its indices name the wrong kernels: the symptom is `rocBLAS solution ... refused (status 11)` at each tuned shape, a
+default-kernel fallback after three refusals, and no wrong results. Re-run `tune_rocblas` against the exact library the
+engine loads after any rebuild of the rocBLAS package, even when the version string did not change, and replace the table.
 
 Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT.
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5

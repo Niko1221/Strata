@@ -58,7 +58,14 @@ export function SkillsScreen() {
         if (!editing)
             return;
         if (!editing.id) {
-            await api.post('/api/skills', { name: editing.name.trim(), description: editing.description.trim(), body: editing.body ?? '', enabled: editing.enabled, triggers: triggers.split(',').map(t => t.trim()).filter(Boolean) });
+            await api.post('/api/skills', {
+                name: editing.name.trim(),
+                description: editing.description.trim(),
+                body: editing.body ?? '',
+                enabled: editing.enabled,
+                triggers: triggers.split(',').map(t => t.trim()).filter(Boolean),
+                onlyIn: editing.onlyIn ?? null,
+            });
             await loadSkills();
             setEditing(null);
             return;

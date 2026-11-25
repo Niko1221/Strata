@@ -28,7 +28,12 @@ Intel engines are unchanged.
 ## What you need
 
 - **An Apple Silicon Mac (M1 or newer).**
-- **macOS 15 or newer.** The engine keeps its buffers resident through a residency set, which macOS 15 introduced.
+- **macOS 15 or newer.** macOS 15 is supported. The engine keeps its buffers resident through a residency set, which macOS 15
+  introduced. The fast prompt kernels use Metal's MetalPerformancePrimitives, which only macOS 26 ships. **On macOS 15 the Qwen engine
+  reads prompts more slowly (about 10x on our measurement: 635 against 60 tokens a second) because that macOS 26 feature is off.**
+  Strata starts the engine with the prompt read through the decode windows instead (see [Limits](#limits-this-version)); the measured
+  generation speed is the same with and without it. This has not been run on a Mac with macOS 15: it was checked on macOS 27 by
+  confirming that the engine then compiles none of those kernels. (On macOS 14 only a source build starts.)
 - **For a source build only:** Command Line Tools (`xcode-select --install`).
 - **Enough unified memory for the pack.** The GPU maps the model's main file and keeps it in memory while the model runs. Metal
   lets one program keep about 3/4 of the memory resident (107.5 GB of 128 GB on the M5 Max).
@@ -69,8 +74,8 @@ rule.
   together, so the SSD reads an expert with one request. On the 32 GB M4 that is about 17% faster decoding and 30% faster prompts
   with the same tokens. Setup writes it only when the disk has room for it plus 10 GB, otherwise it warns, and it does not write
   it on a Mac with 96 GB or more.
-- Setup configures such a Mac without the draft layer (one token per step is faster there). A streaming Mac with 96 GB or more
-  keeps the draft layer and writes `--spec 3`.
+- Setup skips the MTP draft layer on such a Mac. DFlash2 is still available for compatible packs. If neither drafter is
+  available, the model generates one token per step. A streaming Mac with 96 GB or more keeps the MTP layer and writes `--spec 3`.
 - Prompts stream in chunks of 4096 on a streaming Mac with 96 GB or more, and 1024 on a smaller one. `STRATA_METAL_PROMPT_CHUNK=N`
   sets it.
 - The model's file must be on the internal SSD. An external disk is untested and likely much slower.
@@ -93,12 +98,14 @@ What the first run does (each step is skipped when it is already done):
 3. **Python packages** into `.venv`. CMake and Ninja come from pip too, installed just before the build.
 4. **Builds the engine** (`build-metal/strata`) with Apple's metal-cpp headers (pinned by SHA-256).
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
-6. **Prepares the model:** the pack (seconds) and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that
-   streams, the experts' copy takes the draft layer's place (about 3 minutes on the M4).
-   For UD-Q4_K_XL and UD-IQ4_XS-v31 it also downloads the DFlash2 drafter (0.34 GB, from Strata's signed update feed): the server then drafts
-   with DFlash2 instead of the MTP layer (`--spec 6`, `--draft-conf 0.7`; Apache-2.0, a copy of incoai/Qwen3.8-Flash-Next-DFlash2 that Strata
-   tuned, notice in `data/dflash2-tuned/`). With no internet the download is skipped without a word and the MTP runs as before;
-   `./setup.sh --setup` fetches it later. IQ3_S and the other sets keep the MTP.
+6. **Prepares the model.** Setup makes the pack (seconds) and prepares the MTP draft layer where it fits (about 5 GB of the
+   original checkpoint). A streaming Mac below 96 GB skips MTP and makes the experts' copy (about 3 minutes on the M4).
+   Auto also fetches DFlash2 for compatible Qwen3.8-Flash-Next packs. Q2_0 and IQ3_XXS get the stock drafter (1.2 GB).
+   UD-Q4_K_XL and UD-IQ4_XS-v31 prefer the tuned drafter (0.34 GB from Strata's signed update feed) and can use the stock drafter
+   if the tuned one is unavailable. The tuned drafter uses `--spec 6` and `--draft-conf 0.7`. It is based on
+   incoai/Qwen3.8-Flash-Next-DFlash2 and licensed under Apache-2.0. IQ3_S selects MTP.
+   If DFlash2 is missing, the server uses MTP when it is available. `./setup.sh --setup` can fetch the drafter later.
+   [DFlash2 license notice](../terminal/data/dflash2-tuned/NOTICE.md)
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
 After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC: the OpenAI-compatible
@@ -137,6 +144,14 @@ code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +
 JSON +9.3%, agent turn +12.5%; the other sets are not measured),
 and the Q8_0 hyper-connection read. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read. The Mac engine is
 deterministic: two runs give identical numbers.
+
+### Longer context (`--rope-scaling`)
+
+`--rope-scaling linear|yarn` with `--rope-scale`, `--rope-freq-scale` and the `--yarn-*` options changes the RoPE table of the
+attention, as on a PC. Flash-Next is trained to 262,144 tokens: `--context 524288 --rope-scaling yarn --rope-scale 2` gives it
+512K. The table keeps the model file's frequency base, and the engine logs the table it built (`rope scaling yarn in the window
+table: ...`). Without `--rope-scaling` the table is the original one, bit for bit. The DFlash2 drafter keeps its own unscaled
+table: it only proposes tokens, so the scaling changes how many it gets accepted, not the output.
 
 ### Gyro-S and Gyro-M (agentionai's trellis experts)
 
@@ -228,6 +243,14 @@ The first request after a model loads also waits once while the engine builds it
   | 260 tokens (640x400) | 0.45 s | 50.7 s |
   | 972 tokens (1600x1200) | 2.4 s | 194 s |
 
+- **macOS 15 (below macOS 26): the prompt is slower.** The prompt kernels need MetalPerformancePrimitives (macOS 26), and the engine
+  ends at start when they do not compile (#7082, #3915). Strata therefore adds `STRATA_METAL_PROMPT=window`,
+  `STRATA_METAL_PROMPT_GEMM=0` and `COOP_K4=0` to the engine's environment on macOS below 26 (for each one you have not set), says so
+  in one line at the start, and reads the prompt through the decode windows. A user of an M1 Max measured 8.1 tokens a second of
+  generation on macOS 15 with these settings (#3915). On macOS 27, on an M5 Max, Q2_0, the same engine with and without them
+  generated at the same speed (20.7 against 20.8 tokens a second, 5 interleaved pairs, resident; 14.0 against 14.1 streaming, 3 pairs;
+  another user's work shared that GPU) and read a 1,970-token prompt at 60 tokens a second instead of 635 (46 against 643 streaming).
+  Set your own value of any of the three to keep it. Not tested on a Mac with macOS 15.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
   be set, but it is not measured.
 - **Several requests at once.** `--parallel N` keeps N sequences side by side in the engine, each with its own running state and K/V (0.65 GB each at a 36,864-token context). Measured on an M5 Max with IQ3_S, the MTP draft layer and `--spec 2`, N requests of 150 tokens sent at the same time, tokens a second over all of them: 1 request 85, 2 requests 95 to 102, 3 requests 115, 4 requests 119 to 125. One request alone decodes at 96 to 100; with 2, 3 and 4 at once each decodes at 53 to 61, 41 to 48 and 32 to 40. The engine uses 8.3, 12.0, 14.0 and 16.0 GB for 1 to 4.
@@ -255,7 +278,9 @@ For testing. All are off unless set; the defaults are described above.
 | Variable | Effect |
 | --- | --- |
 | `STRATA_HC_Q8=0` | The BF16 hyper-connection read (exact) instead of Q8_0 |
-| `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (slow, exact fallback; about 190 tok/s) |
+| `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (slow, exact fallback; about 190 tok/s in an earlier measurement, 58 to 61 on an M5 Max shared with another user in the macOS 15 check). Set by Strata on macOS below 26 |
+| `STRATA_METAL_PROMPT_GEMM=0` | A streaming Mac: no prompt GEMM kernels (they need macOS 26). Set by Strata on macOS below 26 |
+| `COOP_K4=0` | Skip the matrix-layout probe (it compiles a macOS 26 kernel); the M4 tile choice is used. Set by Strata on macOS below 26 |
 | `STRATA_METAL_PROMPT_CHUNK=N` | Prompt chunk size (default 2048 resident; see streaming above) |
 | `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
 | `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |

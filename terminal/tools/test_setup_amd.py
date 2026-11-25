@@ -69,8 +69,14 @@ class KfdDetection(unittest.TestCase):
         self.assertEqual(setup.amd_gpus(str(self.root)), [])
 
     def test_rocm_index_per_family(self):
+        # gfx906 (Instinct MI50 / MI60 / Radeon VII) is the one supported arch without wheels: it runs from a source
+        # build on a system ROCm 6.x, not driven by setup (docs/AMD_HIP.md, the gfx906 section)
         for arch in setup.AMD_ARCHS:
+            if arch == "gfx906":
+                continue
             self.assertIn(arch, setup.ROCM_INDEXES)
+        self.assertNotIn("gfx906", setup.ROCM_INDEXES)
+        self.assertIsNone(setup.amd_problem({"arch": "gfx906"}))
         self.assertTrue(setup.ROCM_INDEXES["gfx1101"].endswith("/gfx110X-dgpu/"))
         self.assertTrue(setup.ROCM_INDEXES["gfx1200"].endswith("/gfx120X-all/"))
         self.assertEqual(setup.ROCM_INDEXES["gfx1101"], setup.ROCM_INDEXES["gfx1100"])
@@ -286,6 +292,29 @@ class WindowsDetection(unittest.TestCase):
         self.assertAlmostEqual(g[0]["vram_gb"], 16.0)                           # the registry's 64-bit size
         self.assertEqual(g[0]["driver"], "32.0.21013.1000")
         self.assertEqual([setup.amd_problem(x) is None for x in g], [True, False, True])
+
+    def test_stale_driver_instance_without_a_size_does_not_hide_vram(self):
+        """#6801: a driver upgrade leaves an older display-class key for the same card (same PCI id and name) with no
+        qwMemorySize.  It came first, was taken, and the plan counted WMI's 4 GB on a 16 GB RX 6800."""
+        adapters = [{"name": "AMD Radeon RX 6800", "pnp": r"PCI\VEN_1002&DEV_73BF&SUBSYS_1&REV_C3\6&1", "ram": 4293918720,
+                     "driver": "32.0.21045.29003"}]
+        stale = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                 "DriverVersion": "32.0.21041.1000"}
+        older = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                 "HardwareInformation.qwMemorySize": 8 << 30, "DriverVersion": "32.0.21043.7012"}
+        live = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                "HardwareInformation.qwMemorySize": 17163091968, "DriverVersion": "32.0.21045.29003"}
+        ghost = {"DriverDesc": "AMD FirePro W5100", "MatchingDeviceId": r"PCI\VEN_1002&DEV_6649",
+                 "HardwareInformation.qwMemorySize": 4 << 30}
+        g = setup.amd_gpus_windows(adapters, [ghost, stale, older, live])
+        self.assertEqual(len(g), 1)
+        self.assertAlmostEqual(g[0]["vram_gb"], 15.98, places=1)          # the installed driver's key, not the stale 0002 and not 4 GB
+        self.assertEqual(g[0]["driver"], "32.0.21045.29003")
+        g = setup.amd_gpus_windows(adapters, [stale])                     # nothing with a size at all: WMI's figure, as before
+        self.assertAlmostEqual(g[0]["vram_gb"], 4293918720 / 2 ** 30)
+        adapters[0]["driver"] = ""                                        # no driver version from WMI: a key with a size still wins
+        g = setup.amd_gpus_windows(adapters, [stale, live])
+        self.assertAlmostEqual(g[0]["vram_gb"], 15.98, places=1)
 
     def test_rx_6800m_is_gfx1031(self):
         """#881: PCI 73DF (RX 6700 XT / 6750 XT / 6800M) is gfx1031, not an unknown id."""
@@ -742,6 +771,99 @@ class TdrPointer(unittest.TestCase):
         for env in ("STRATA_PF_STEP_SYNC", "STRATA_KV_HOST_DMA"):
             self.assertIn(env, doc)
             self.assertIn(env, (Path(setup.__file__).resolve().parent.parent / "engine" / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
+
+
+class RocmSplitLayout(unittest.TestCase):
+    """#6376: a distro ROCm whose pieces are not under one root (Fedora: hipcc in /usr/bin, libraries in
+    /usr/lib64, headers in /usr/include) is used like AMD's /opt/rocm.  Every prefix below is a temp folder:
+    no ROCm, no AMD card, no downloads."""
+
+    def prefix(self, d, *, hipcc=True, libs=("lib64/libhipblas.so.3",), dev=True, version=(7, 2)):
+        p = Path(d)
+        rels = (["bin/hipcc"] if hipcc else []) + list(libs)
+        if dev:
+            rels += ["lib64/cmake/hip-lang/hip-lang-config.cmake", "include/hip/hip_runtime.h"]
+        if version:
+            rels.append("include/rocm-core/rocm_version.h")
+        for rel in rels:
+            f = p / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(f"#define ROCM_VERSION_MAJOR {version[0]}\n#define ROCM_VERSION_MINOR {version[1]}\n"
+                         if rel.endswith("rocm_version.h") else "")
+        if hipcc:
+            (p / "bin/hipcc").chmod(0o755)              # shutil.which only answers for an executable file
+        return p
+
+    def env(self, **kw):
+        env = {k: v for k, v in setup.os.environ.items() if k not in ("ROCM_PATH",)}
+        env.update(kw)
+        env.setdefault("PATH", str(self._empty_bin))   # no hipcc on PATH unless a test puts one there
+        return mock.patch.dict(setup.os.environ, env, clear=True)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._empty_bin = Path(self._tmp.name) / "empty-bin"
+        self._empty_bin.mkdir()
+
+    def test_fedora_rocm_path_usr(self):
+        """ROCM_PATH=/usr: the compiler is in /usr/bin and the libraries in /usr/lib64."""
+        base = Path(self._tmp.name) / "fedora"
+        usr = self.prefix(base / "usr")
+        with self.env(ROCM_PATH=str(usr)):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_fedora_rocm_path_inside_the_library_folder(self):
+        """ROCM_PATH=/usr/lib64/rocm (where Fedora keeps rocm's own clang): that folder holds neither the compiler
+        nor the libraries, so the prefix above it is the one used."""
+        base = Path(self._tmp.name) / "fedora2"
+        usr = self.prefix(base / "usr")
+        (usr / "lib64/rocm/llvm/bin").mkdir(parents=True)
+        (usr / "lib64/rocm/llvm/bin/clang++").write_text("")
+        with self.env(ROCM_PATH=str(usr / "lib64/rocm")):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_hipcc_on_path_without_rocm_path(self):
+        """No ROCM_PATH at all (a distro package install): the hipcc on PATH names the prefix."""
+        base = Path(self._tmp.name) / "nopath"
+        usr = self.prefix(base / "usr")
+        with self.env(PATH=str(usr / "bin")):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_debian_multiarch_library_folder(self):
+        """A Debian ROCm keeps the libraries in lib/x86_64-linux-gnu, not in lib/."""
+        base = Path(self._tmp.name) / "debian"
+        root_ = self.prefix(base / "usr-new", libs=("lib/x86_64-linux-gnu/libhipblas.so.2",),
+                            dev=False)
+        (root_ / "lib64/cmake/hip-lang").mkdir(parents=True)
+        (root_ / "lib64/cmake/hip-lang/hip-lang-config.cmake").write_text("")
+        (root_ / "include/hip").mkdir(parents=True)
+        (root_ / "include/hip/hip_runtime.h").write_text("")
+        with self.env(ROCM_PATH=str(root_)):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, root_)
+        self.assertEqual(dirs, [str(root_ / "lib/x86_64-linux-gnu")])
+
+    def test_a_prefix_without_the_libraries_is_not_used(self):
+        """hipcc alone is not a system ROCm: the wheels path follows (here it stops at the two-family check)."""
+        base = Path(self._tmp.name) / "partial"
+        usr = self.prefix(base / "usr", libs=())
+        with self.env(ROCM_PATH=str(usr)):
+            with self.assertRaises(SystemExit):
+                setup.rocm_root(["gfx1100", "gfx1201"])
+
+    def test_clang_under_lib64_rocm(self):
+        """Fedora's compiler: <prefix>/lib64/rocm/llvm/bin/clang++ (rocm_clang had only llvm/ and lib/llvm/)."""
+        root_ = Path(self._tmp.name) / "usr-clang"
+        (root_ / "lib64/rocm/llvm/bin").mkdir(parents=True)
+        (root_ / "lib64/rocm/llvm/bin/clang++").write_text("")
+        self.assertEqual(setup.rocm_clang(root_), root_ / "lib64/rocm/llvm/bin/clang++")
 
 
 if __name__ == "__main__":

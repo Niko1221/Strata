@@ -23,12 +23,14 @@ import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
+import { readHistoryPictures, lostPicturesNote } from './history-pictures';
 import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
 import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { copyChatFolder, folderCopied } from './chat-folder';
 import { mcpToolsPatch } from './mcp-tools-switch';
 import { createSessionWriter, exportSessions, readBrowserSessions, HOST_FLAG_KEY, PENDING_KEY, type SaveResult, type StorageLike } from './session-persist';
 import { createHttpTransport, hydrateChats, keepLastMomentCopy, WINDOW_ID } from './chat-sync';
@@ -118,7 +120,7 @@ export interface AppState {
   shareTelemetry: boolean;
   paletteOpen: boolean;
   shortcutsOpen: boolean;
-  settingsSection: 'Appearance' | 'Models' | 'Tools' | 'Storage' | 'Engine' | 'About';
+  settingsSection: 'Appearance' | 'Models' | 'Context and memory' | 'Tools' | 'Storage' | 'Engine' | 'About';
   hardware: Hardware | null;
   library: ModelLibrary | null;
   imageModels: ImageModelLibrary | null;
@@ -639,8 +641,10 @@ function rememberShellLanguage(language:Language){api.post('/api/shell/prefs',{l
 /** The shell started on another port than it wanted: the chats and settings saved on that port are not here, so say so once (#3402). */
 async function announcePortNotice(){
   try{
-    const shell=await api.get<{portNotice:{wanted:number;used:number}|null}>('/api/shell');
-    if(shell.portNotice)pushToast('warn',tr('Strata could not use its port'),tr('Port {0} is used by another program, so Strata started on port {1}. Chats and settings saved on port {0} are not shown until Strata can use it again. Close the other program and restart Strata.',[shell.portNotice.wanted,shell.portNotice.used]));
+    const shell=await api.get<{portNotice:{wanted:number;used:number;terminal?:boolean}|null}>('/api/shell');
+    /* A model started from the Terminal holds the port (#6278): say that, and that the Terminal's page there needs its own key. */
+    if(shell.portNotice?.terminal)pushToast('warn',tr('A model is already running from the Terminal'),tr('A model started with strata launch is using port {0}, so Strata opened on port {1} instead. The Terminal’s page on port {0} asks for its own API key, and this app does not use that page. To load a model here, stop the Terminal’s one first (strata launch --stop). Chats and settings saved on port {0} are not shown here.',[shell.portNotice.wanted,shell.portNotice.used]));
+    else if(shell.portNotice)pushToast('warn',tr('Strata could not use its port'),tr('Port {0} is used by another program, so Strata started on port {1}. Chats and settings saved on port {0} are not shown until Strata can use it again. Close the other program and restart Strata.',[shell.portNotice.wanted,shell.portNotice.used]));
   }catch{/* a browser or an older host has no shell */}
 }
 export function setFontFamily(fontFamily:string){set({fontFamily:fontFamily.trim().slice(0,128).replace(/[\x00-\x1f]/g,'')});savePrefs();}
@@ -734,11 +738,45 @@ export function setWhileBusy(whileBusy: WhileBusy) {
   savePrefs();
 }
 
-/** A message sent while an answer is being written waits here; the chat sends it when the answer is done (it is also where Interrupt leaves it). */
+/** A message sent while an answer is being written waits here until the answer is done. */
 export function parkMessage(sessionId: string, text: string) {
   const clean = text.trim();
   if (!clean) return;
   set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
+}
+
+/** Put a live follow-up between the current reply and a new continuation. The
+ * Harness keeps one streaming turn, but its transcript must retain the actual
+ * order: text written before the follow-up, the follow-up, then later text. */
+function recordAgentFollowUp(sessionId: string, value: { id?: unknown; text?: unknown; at?: unknown } | null | undefined, replyId: string): string | null {
+  if (typeof value?.id !== 'string' || typeof value.text !== 'string' || typeof value.at !== 'string') return null;
+  const { id, text, at } = value;
+  const message: ChatMessage = { id, role: 'user', content: text, at };
+  const continuationId = uid('m');
+  let recorded = false;
+  patchSession(sessionId, session => {
+    if (session.messages.some(existing => existing.id === message.id)) return session;
+    const quotes = takeQuoteSources(message.content);
+    const next = quotes ? { ...message, quotes } : message;
+    const replyIndex = session.messages.findIndex(existing => existing.id === replyId);
+    if (replyIndex < 0) return { ...session, updatedAt: new Date().toISOString(), messages: [...session.messages, next] };
+    const reply = session.messages[replyIndex];
+    const continuation: ChatMessage = { id: continuationId, role: 'assistant', content: '', at, streaming: true };
+    recorded = true;
+    return { ...session, updatedAt: new Date().toISOString(), messages: [...session.messages.slice(0, replyIndex), { ...reply, streaming: false }, next, continuation, ...session.messages.slice(replyIndex + 1)] };
+  });
+  return recorded ? continuationId : null;
+}
+
+/** Tell the parent in its own live session. A plain chat or a turn that just ended can accept it as a regular follow-up instead. */
+export async function steerMessage(sessionId: string, message: string): Promise<boolean> {
+  try {
+    await api.post('/api/chat/steer', { sessionId, message });
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) return false;
+    throw error;
+  }
 }
 function setAsks(sessionId: string, list: AgentAsk[]) {
   const next = { ...state.agentAsks };
@@ -746,7 +784,7 @@ function setAsks(sessionId: string, list: AgentAsk[]) {
   set({ agentAsks: next });
 }
 /** The agent asked the person something (a frame of the host), or the question ended without an answer. */
-export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
+export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown; agentName?: unknown }) {
   const ask = readAsk(frame);
   // A /loop runs without anyone there: the question is skipped at once, so the loop never waits for an answer.
   if (ask && loopScheduler.isRunning(sessionId)) { void answerAgentAsk(sessionId, ask.callId, null).catch(() => {}); return; }
@@ -760,10 +798,20 @@ export function removeAgentAsk(sessionId: string, callId?: string) {
   const rest = callId === undefined ? [] : (state.agentAsks[sessionId] ?? []).filter(a => a.callId !== callId);
   if ((state.agentAsks[sessionId]?.length ?? 0) !== rest.length) setAsks(sessionId, rest);
 }
-/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words. */
+/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words.
+ *  A 409 (already answered / assistant moved on) clears the stale card instead of leaving a dead card behind (#6668). */
 export async function answerAgentAsk(sessionId: string, callId: string, answers: AgentAnswer[] | null) {
-  await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
-  removeAgentAsk(sessionId, callId);
+  try {
+    await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
+    removeAgentAsk(sessionId, callId);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      removeAgentAsk(sessionId, callId);
+      pushToast('info', 'Question closed', error.message || 'That question was already answered, or the assistant moved on.');
+      return;
+    }
+    throw error;
+  }
 }
 
 /** Puts a turn or a selected passage above the message box. */
@@ -1605,6 +1653,10 @@ function patchSession(id: string, fn: (s: Session) => Session) {
   set({ sessions });
 }
 
+export function dismissAgent(sessionId: string, agentId: string) {
+  patchSession(sessionId, s => ({ ...s, agents: (s.agents ?? []).filter(a => a.id !== agentId), dismissedAgentIds: [...new Set([...(s.dismissedAgentIds ?? []), agentId])].slice(-200) }));
+}
+
 // The demo clock belongs to the session, so hiding the sidebar or navigating
 // away never pauses it. Only start and completion are written to storage.
 const timeSkipTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1806,6 +1858,24 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
   document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
 }
 
+/** Stop a specific chat's turn (used by QuestionCard's Stop button and stopStreaming). */
+export function stopSession(sessionId: string) {
+  const turn = liveTurns.get(sessionId);
+  if (!sessionId || !turn) {
+    removeAgentAsk(sessionId);
+    return;
+  }
+  const abort = () => { turn.abort.abort(); removeAgentAsk(sessionId); };
+  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId }).then(
+    result => {
+      if (!result.stopped && result.ended !== 'unconfirmed') abort();
+      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
+      else setTimeout(() => { if (liveTurns.get(sessionId) === turn) abort(); }, 30000);
+    },
+    abort,
+  );
+}
+
 /**
  * Stop the open chat's turn. The host is asked first: for an agent turn it cancels exactly this chat's
  * Harness session and answers only once the turn has ended, and the stream then closes by itself with
@@ -1813,17 +1883,7 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
  */
 export function stopStreaming() {
   const id = state.activeSession;
-  const turn = id ? liveTurns.get(id) : undefined;
-  if (!id || !turn) return;
-  const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
-    result => {
-      if (!result.stopped) abort();
-      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
-      else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000);
-    },
-    abort,
-  );
+  if (id) stopSession(id);
 }
 
 /**
@@ -1843,6 +1903,7 @@ export async function retryLast(messageId?: string) {
   if (prompt !== null) {
     // Retry sends immediately; only Edit should leave the prompt in the composer.
     sessionStorage.setItem(`strata.chat-draft.${state.activeSession}`, '');
+    await folderCopied(state.activeSession);
     await sendMessage(prompt);
   }
 }
@@ -1933,6 +1994,7 @@ export function branchFrom(messageId: string): string | null {
   // while the transcript still shows the original, which reads as a broken
   // button rather than a created branch.
   navigate('chat', branch.id);
+  void copyChatFolder(source.id, branch.id);
   return branch.id;
 }
 
@@ -2021,8 +2083,8 @@ export function stopChat(id: string) {
   const turn = liveTurns.get(id);
   if (!turn) return;
   const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
-    result => { if (!result.stopped) abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
+  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId: id }).then(
+    result => { if (!result.stopped && result.ended !== 'unconfirmed') abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
     abort,
   );
 }
@@ -2203,7 +2265,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         sessionId,
         ...(planStart ? { planId: planStart } : {}),
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
-        history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
+        history:await (async()=>{
+          /* A picture the browser no longer has (storage cleared, another browser) is left out and named; it used to stop every later message of the chat (GUI-TUI 0.2.17). */
+          let missing=false;
+          const built=await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const {found,lost}=await readHistoryPictures(included,photoData);if(lost.length)missing=true;const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'')+lostPicturesNote(lost);return {role:m.role,content:found.length?[{type:'text',text},...found.map(f=>({type:'image_url',image_url:{url:f.url}}))]:text};}));
+          if(missing)pushToast('warn','Some earlier pictures are missing','Pictures from earlier messages are no longer stored in this browser, so the model does not see them in this answer. Attach them again if they matter.');
+          return built;
+        })(),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
@@ -2211,7 +2279,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         // A chat set to plain talk (preferences.agent === false) never runs a tool: the host answers it directly.
         ...(state.sessions.find(s=>s.id===sessionId)?.preferences?.agent===false?{agent:false}:{}),
-        thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'Medium',
+        thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??((()=>{/* Inkling-2-Mini's default level is Low (0.2.21), the menu shows the same */const n=nativeState();const i:any=n?.instances.find((x:any)=>x.id===n.defaultId)??n?.instances[0];return !state.remoteModel&&!!i&&(i.arch==='inkling2_loop'||/^inkling-2-mini/i.test(String(i.model??i.apiModelId??'')));})()?'Low':'Medium'),
         thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
@@ -2242,6 +2310,14 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           });
         } else if (type === 'status') {
           applyStatusFrame(sessionId, frame as Record<string, unknown>);
+          // The banner is only the current state. Keep each meaningful change on
+          // the reply too, so a quiet non-thinking turn is still inspectable.
+          const text = typeof frame.text === 'string' ? frame.text.trim() : '';
+          if (text) patchAssistant(m => {
+            const activity = [...(m.activity ?? [])];
+            if (activity.at(-1)?.text !== text) activity.push({ text, at: Date.now() });
+            return { ...m, activity: activity.slice(-80) };
+          });
           // Manual mode waits for the person: a notification when they have opted in and Strata is in the background (#3477), once per question.
           if (frame.code === 'waiting-approval' && lastApprovalNotice !== `${sessionId}:${String(frame.seq)}`) {
             lastApprovalNotice = `${sessionId}:${String(frame.seq)}`;
@@ -2255,6 +2331,10 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
           if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+        } else if (type === 'agent-follow-up') {
+          const { id, text, at } = (frame.message ?? {}) as { id?: unknown; text?: unknown; at?: unknown };
+          const continuation = recordAgentFollowUp(sessionId, { id, text, at }, assistantId);
+          if (continuation) assistantId = continuation;
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;
@@ -2277,7 +2357,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           const code = String(frame.code ?? 'notice');
           if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
         } else if (type === 'agent-question') {
-          addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
+          addAgentAsk(sessionId, frame);
         } else if (type === 'agent-question-end') {
           removeAgentAsk(sessionId, String(frame.callId ?? ''));
         } else if (type === 'agent-tool-draft') {
@@ -2298,7 +2378,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             return { ...m, tools: existing ? m.tools!.map(t => t.id === tool.id ? next : t) : [...(m.tools ?? []), next] };
           });
         } else if (type === 'agent') {
-          patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
+          const id = typeof (frame.agent as { id?: unknown } | undefined)?.id === 'string' ? (frame.agent as { id: string }).id : '';
+          patchSession(sessionId, s => id && s.dismissedAgentIds?.includes(id) ? s : ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
           /* applied through queueText above */
         } else if (type === 'deliverable') {

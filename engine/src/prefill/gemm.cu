@@ -2,6 +2,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 #include "strata/core/arch_defaults.hpp"   // prompt_f16_resolve (inline)
+#include "strata/core/emulate.hpp"
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
 #include "strata/prefill/mmq_ids_margin.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -14,6 +15,12 @@
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#if !defined(__HIPCC__)
+#include "strata/prefill/dense_fp4_tc.hpp"
+#endif
+#if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
+#include "gemm_mxfp8.cuh"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -40,6 +47,7 @@
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
+#include <filesystem>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -294,7 +302,8 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
 
     auto state = std::make_unique<HipLtState>();
     state->workspace = workspace;
-    state->workspace_bytes = workspace_bytes;
+    // ROCm 10.2.0 Known Issue: hipBLASLt 1.5.0 workspace sizes > UINT32_MAX trigger 32-bit internal overflow / UB.
+    state->workspace_bytes = std::min<size_t>(workspace_bytes, static_cast<size_t>(UINT32_MAX));
     if (hipblasLtCreate(&state->handle) != HIPBLAS_STATUS_SUCCESS) {
         std::fprintf(stderr, "prefill gemm: hipBLASLt handle creation failed; using hipBLASEx\n");
         return nullptr;
@@ -315,18 +324,70 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     const auto suffix = arch.find(':');
     if (suffix != std::string::npos) arch.resize(suffix);
 
+    bool cwsr_safe = true;
+#if defined(__linux__)
+    if (arch == "gfx1103") {
+        auto read_small = [](const char* file) -> std::string {
+            std::ifstream in(file);
+            if (!in) return {};
+            std::ostringstream os;
+            os << in.rdbuf();
+            return os.str();
+        };
+        const int cwsr_val = strata::prefill::hipblaslt::parse_cwsr_enable_value(
+            read_small("/sys/module/amdgpu/parameters/cwsr_enable"));
+        const bool cmd_off = strata::prefill::hipblaslt::cmdline_has_cwsr_disabled(read_small("/proc/cmdline"));
+        cwsr_safe = strata::prefill::hipblaslt::gfx1103_hipblaslt_cwsr_safe(arch, true, cwsr_val, cmd_off);
+    }
+#endif
+
     if (from_package) {
-        // Unset or "auto": only Strix Halo (gfx1151) takes the packaged table by itself, the owner's decision of 2026-10-19 (the same
-        // rule as AUTO_ARCHS in strata_control/hipblaslt_tuning.py): on other cards the table changes the answers' last digits for ~1%
-        // (gfx1201), so they take it with STRATA_HIPBLASLT_TABLE=on only.
-        if (!table_forced && arch != "gfx1151") return nullptr;
+        // Unset or "auto": gfx11 matrix-core parts (RX 7000 discrete RDNA3 + Strix Halo / 780M / 890M gfx1150) take a matching
+        // packaged tuning table automatically unless STRATA_GFX11_DEFAULTS=0 (on RX 7900 XTX, 128K prompt +82%: 926 -> 1,687 tok/s);
+        // gfx12 parts keep the opt-in STRATA_HIPBLASLT_TABLE=on rule.
+        const char* off11 = std::getenv("STRATA_GFX11_DEFAULTS");
+        const bool g11_auto = !(off11 != nullptr && off11[0] == '0') && strata::kernels::gfx_arch_is_gfx11_wmma(arch.c_str());
+        if (!table_forced && arch != "gfx1151" && !g11_auto) return nullptr;
+        if (!table_forced && !cwsr_safe) {
+            std::fprintf(stderr, "prefill gemm: gfx1103 hipBLASLt tuning table skipped because amdgpu.cwsr_enable is not 0 "
+                                 "(#6132/#6574); add amdgpu.cwsr_enable=0 to kernel cmdline or set STRATA_HIPBLASLT_TABLE=on "
+                                 "to force; using hipBLASEx\n");
+            return nullptr;
+        }
         const std::string dir = own_tuning_dir();
         if (dir.empty()) return nullptr;
         path_own = dir + arch + "-hipblaslt-" + std::to_string(version) + ".txt";
         std::FILE* f = std::fopen(path_own.c_str(), "rb");
-        if (f == nullptr) return nullptr;       // no table for this card and hipBLASLt version beside the engine: plain hipBLAS as before
-        std::fclose(f);
+        if (f != nullptr) {
+            std::fclose(f);
+        } else {
+            // ROCm 10.2+ (hipBLASLt >= 100500): allow a V2 kernel-name table calibrated on >= 100500 when no exact version file exists.
+            path_own.clear();
+            int best_v = -1;
+            const std::string prefix = arch + "-hipblaslt-";
+            std::error_code ec;
+            if (version >= 100500) {
+                for (const auto& ent : std::filesystem::directory_iterator(dir, ec)) {
+                    if (!ent.is_regular_file(ec)) continue;
+                    const std::string nm = ent.path().filename().string();
+                    if (nm.rfind(prefix, 0) != 0 || nm.size() <= prefix.size() + 4 || nm.substr(nm.size() - 4) != ".txt") continue;
+                    const int fv = std::atoi(nm.c_str() + prefix.size());
+                    if (fv < 100500 || fv <= best_v) continue;
+                    strata::prefill::hipblaslt::TuningTable probe;
+                    std::string perr;
+                    if (probe.load(ent.path().string(), arch, version, perr) && probe.format_version() == 2) {
+                        best_v = fv;
+                        path_own = ent.path().string();
+                    }
+                }
+            }
+            if (path_own.empty()) return nullptr;
+        }
         path = path_own.c_str();
+    }
+    if (!cwsr_safe) {
+        std::fprintf(stderr, "prefill gemm: WARNING: loading hipBLASLt tuning table on gfx1103 while amdgpu.cwsr_enable is not 0 "
+                             "(#6132/#6574); if warm-up resets the GPU, add amdgpu.cwsr_enable=0 to kernel cmdline\n");
     }
     std::string error;
     if (!state->table.load(path, arch, version, error)) {
@@ -366,7 +427,7 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
 
     std::vector<int> solution_ids{row->solution_id};
     std::vector<hipblasLtMatmulHeuristicResult_t> candidates;
-    if (hipblaslt_ext::getAlgosFromIndex(state.handle, solution_ids, candidates) != HIPBLAS_STATUS_SUCCESS ||
+        if (hipblaslt_ext::getAlgosFromIndex(state.handle, solution_ids, candidates) != HIPBLAS_STATUS_SUCCESS ||
         candidates.empty() || candidates.front().state != HIPBLAS_STATUS_SUCCESS ||
         hipblaslt_ext::getIndexFromAlgo(candidates.front().algo) != row->solution_id) {
         if (verbose) {
@@ -376,9 +437,22 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
         return state.cache.emplace(key, resolved).first->second;
     }
 
+    auto algo = candidates.front().algo;
+#if defined(HIPBLASLT_VERSION_MAJOR) && (HIPBLASLT_VERSION_MAJOR * 100000 + HIPBLASLT_VERSION_MINOR * 100 + HIPBLASLT_VERSION_PATCH >= 100500)
+    if (!row->kernel_name.empty()) {
+        const std::string actual_name = hipblaslt_ext::getKernelNameFromAlgo(state.handle, algo);
+        if (!actual_name.empty() && actual_name != row->kernel_name) {
+            if (verbose) {
+                std::fprintf(stderr, "prefill gemm: Lt fallback; solution %d kernel '%s' != V2 expected '%s'\n",
+                             row->solution_id, actual_name.c_str(), row->kernel_name.c_str());
+            }
+            return state.cache.emplace(key, resolved).first->second;
+        }
+    }
+#endif
+
     const float alpha = 1.0f;
     size_t required_workspace = 0;
-    auto algo = candidates.front().algo;
     if (hipblaslt_ext::matmulIsAlgoSupported(state.handle, desc.op, &alpha, desc.a, desc.b, &beta, desc.c, desc.c,
                                              algo, required_workspace) != HIPBLAS_STATUS_SUCCESS) {
         if (verbose) {
@@ -447,8 +521,10 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
         return true;
     }
 
-    std::fprintf(stderr, "prefill gemm: hipBLASLt launch failed with status %d\n", (int) status);
-    if (beta != 0.0f) {
+    std::fprintf(stderr, "prefill gemm: hipBLASLt launch failed with status %d for T=%lld N=%lld K=%lld ldy=%lld; "
+                         "dropping shape and falling back to hipBLASEx\n",
+                 (int) status, (long long) t, (long long) n, (long long) k, (long long) ldy);
+    if (beta != 0.0f && !strata::prefill::hipblaslt::hipblaslt_prelaunch_error((int) status)) {
         std::fprintf(stderr, "prefill gemm: refusing a fallback after hipBLASLt failed with nonzero beta\n");
         std::exit(1);
     }
@@ -684,6 +760,9 @@ Gemm::~Gemm() {
 #if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
     delete static_cast<RocBlasState*>(rocblas_state_);
 #endif
+#if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
+    delete static_cast<strata::prefill::mxfp8::State*>(mxfp8_state_);
+#endif
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
     if (tc_w_) cudaFree(tc_w_);
     if (tc_x_) cudaFree(tc_x_);
@@ -706,6 +785,7 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
     external_ = true;
     note(cublasSetStream(h, (cudaStream_t) stream), "cublasSetStream");
     workspace_ = workspace;
+    ws_bytes_ = ws_bytes;
     note(cublasSetWorkspace(h, workspace_, ws_bytes), "cublasSetWorkspace");
     note(cublasSetMathMode(h, CUBLAS_DEFAULT_MATH), "cublasSetMathMode");
     scratch_ = scratch;
@@ -723,12 +803,18 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
     workspace_ = workspace;
+    ws_bytes_ = ws_bytes;
     cublasSetWorkspace((cublasHandle_t) handle_, workspace_, ws_bytes);
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (hipblaslt_state_) {
         auto* state = static_cast<HipLtState*>(hipblaslt_state_);
         state->workspace = workspace_;
         state->workspace_bytes = ws_bytes;
+    }
+#endif
+#if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
+    if (mxfp8_state_) {
+        static_cast<strata::prefill::mxfp8::State*>(mxfp8_state_)->rebind_ws(workspace_, ws_bytes);
     }
 #endif
 }
@@ -781,6 +867,7 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
         err = std::string("prefill gemm: workspace of 32 MiB: ") + cudaGetErrorString(e);
         return false;
     }
+    ws_bytes_ = ws;
     note(cublasSetWorkspace(h, workspace_, ws), "cublasSetWorkspace");
     note(cublasSetMathMode(h, CUBLAS_DEFAULT_MATH), "cublasSetMathMode");
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
@@ -852,7 +939,7 @@ int current_cc() {
             cudaGetLastError();
             return 0;
         }
-        v = 10 * major + minor;
+        v = strata::cc_of(major, minor);
         cc[dev].store(v, std::memory_order_relaxed);
     }
     return v;
@@ -1184,6 +1271,27 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         return;
     }
 #endif
+#if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
+    if ((ldx == 0 || ldx == K) && T >= 128 && N >= 128 && K >= 128 && (N & 15) == 0 && (K & 31) == 0 &&
+        strata::prefill::mxfp8::enabled()) {
+        auto* ms = static_cast<strata::prefill::mxfp8::State*>(mxfp8_state_);
+        if (ms == nullptr) {
+            ms = new strata::prefill::mxfp8::State();
+            mxfp8_state_ = ms;
+        }
+        if (ms->init(workspace_, ws_bytes_) &&
+            ms->run_16(X, !x_f16, W, -2, W, true, Y, T, N, K, ldy, beta, (cudaStream_t) stream_, nullptr, nullptr,
+                       nullptr)) {
+            const int64_t T_al = T & ~15ll;
+            const int64_t T_rem = T - T_al;
+            if (T_rem > 0) {
+                const int64_t ldy_eff = ldy > 0 ? ldy : N;
+                bf16(X + T_al * K, W, Y + T_al * ldy_eff, T_rem, N, K, ldy, beta, ldx, x_f16);
+            }
+            return;
+        }
+    }
+#endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) (ldx ? ldx : K), &beta, Y, CUDA_R_32F, (int) ldy,
@@ -1427,6 +1535,54 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     }
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
+#endif
+#if !defined(__HIPCC__)
+    if (ggml_type == 40 && (ldx == 0 || ldx == K) &&
+        strata::prefill::dense_fp4_tc::gemm_f16_nvfp4(X, W_blocks, Y, T, N, K, ldy, beta, stream_)) {
+        return;
+    }
+#endif
+#if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
+    if ((ldx == 0 || ldx == K) && T >= 128 && N >= 128 && K >= 128 && (N & 15) == 0 && (K & 31) == 0 &&
+        N * K <= scratch_elems_ && strata::prefill::mxfp8::enabled()) {
+        auto* ms = static_cast<strata::prefill::mxfp8::State*>(mxfp8_state_);
+        if (ms == nullptr) {
+            ms = new strata::prefill::mxfp8::State();
+            mxfp8_state_ = ms;
+        }
+        struct DeqCtx {
+            int type;
+            const void* w;
+            int64_t n, k;
+            void* st;
+            void* side_ready;
+            void* side_free;
+            bool used_scratch = false;
+        } dctx{ggml_type, W_blocks, N, K, stream_, side_scratch_ ? side_ready_[0] : nullptr,
+               side_scratch_ ? side_free_[0] : nullptr, false};
+        auto deq_fn = [](void* p, uint16_t* dst) -> bool {
+            auto* c = static_cast<DeqCtx*>(p);
+            if (c->side_ready) (void) cudaStreamWaitEvent((cudaStream_t) c->st, (cudaEvent_t) c->side_ready, 0);
+            strata::kernels::dequant_f16(c->type, c->w, 0, c->n, c->k, dst, c->st);
+            c->used_scratch = true;
+            return true;
+        };
+        if (ms->init(workspace_, ws_bytes_) &&
+            ms->run_16(X, false, W_blocks, ggml_type, nullptr, false, Y, T, N, K, ldy, beta, (cudaStream_t) stream_,
+                       deq_fn, &dctx, scratch_)) {
+            if (dctx.used_scratch && dctx.side_free)
+                (void) cudaEventRecord((cudaEvent_t) dctx.side_free, (cudaStream_t) stream_);
+            const int64_t T_al = T & ~15ll;
+            const int64_t T_rem = T - T_al;
+            if (T_rem > 0) {
+                const int64_t ldy_eff = ldy > 0 ? ldy : N;
+                native(X + T_al * K, ggml_type, W_blocks, Y + T_al * ldy_eff, T_rem, N, K, ldy, beta, ldx);
+            }
+            return;
+        }
+        if (dctx.used_scratch && dctx.side_free)
+            (void) cudaEventRecord((cudaEvent_t) dctx.side_free, (cudaStream_t) stream_);
+    }
 #endif
 #ifndef STRATA_USE_HIP
     // The FP16 weight kept on the device after its first dequant.  NOT bit-exact against the uncached sliced form on every

@@ -4,6 +4,7 @@ import { useNative } from './native';
 import { appVersionLabel } from './app-version';
 import { shownEngineVersion } from './engine-version';
 import { readUpdateCache, saveUpdateCache, type InstalledVersions } from './update-cache';
+import { strataUpdateWaiting } from './update-waiting';
 import type { UpdateCheckResult } from './types';
 
 /** The installed versions the cached check belongs to. Same values the Settings version rows show. */
@@ -29,6 +30,13 @@ const EVENT = 'strata:update-check';
 export function publishUpdateCheck(result: UpdateCheckResult, now: InstalledVersions) {
   saveUpdateCache(result, now);
   try { window.dispatchEvent(new Event(EVENT)); } catch { /* No window, nothing to refresh. */ }
+}
+
+/** True while a new Strata (app or Control) is waiting, from what the app already knows (see strataUpdateWaiting). Never touches the network. */
+export function useStrataUpdateWaiting(): boolean {
+  const native = useNative();
+  const last = useLastUpdateCheck(useInstalledVersions());
+  return strataUpdateWaiting(last, native);
 }
 
 /** The last known check result, read from this computer. Never touches the network. */
