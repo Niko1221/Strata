@@ -279,6 +279,39 @@ def record(out: Path, entry: dict) -> None:
     path.write_text(json.dumps(items, indent=1) + "\n", encoding="utf-8")
 
 
+def pe_text_shift(pa: Path, pb: Path):
+    """For two PE files whose .text have the same size but different bytes: (number of differing 32-bit fields, the one delta they all share) when EVERY
+    differing byte lies in a 32-bit field that differs by the same constant (rip-relative displacements to a data section that moved because the debug
+    directory was added in front of it); None when anything else differs (another instruction)."""
+    ia, ib = pe_info(pa), pe_info(pb)
+    if not ia or not ib or ".text" not in ia[0] or ".text" not in ib[0]:
+        return None
+    (oa, sa), (ob, sb) = ia[0][".text"], ib[0][".text"]
+    if sa != sb:
+        return None
+    a, b = ia[2][oa:oa + sa], ib[2][ob:ob + sb]
+    diff = [i for i in range(sa) if a[i] != b[i]]
+    delta, fields, covered = None, 0, -1
+    for i in diff:
+        if i <= covered:
+            continue
+        cands = []
+        for st in range(max(0, i - 3), i + 1):
+            if st + 4 > sa:
+                continue
+            d = (int.from_bytes(a[st:st + 4], "little") - int.from_bytes(b[st:st + 4], "little")) & 0xFFFFFFFF
+            small = d if d < 0x80000000 else (1 << 32) - d     # the size of the move, either way
+            if d != 0 and small < 0x100000 and (delta is None or d == delta):
+                cands.append((small, st, d))
+        if not cands:
+            return None
+        _small, st, d = min(cands)                              # the narrowest reading: the field that really moved
+        delta = d if delta is None else delta
+        covered = st + 3
+        fields += 1
+    return fields, (delta if delta is not None and delta < 0x80000000 else (delta or 0) - (1 << 32))
+
+
 def do_check(a) -> int:
     pa, pb = Path(a.a), Path(a.b)
     if elf_sections(pa) is not None:
@@ -295,6 +328,11 @@ def do_check(a) -> int:
         same = x == y
         must = n in (".text", ".nv_fatbin", ".nv_fatb")
         print("%-10s %s  A=%s  B=%s%s" % (n, "EQUAL " if same else "DIFFER", x, y, "" if must else "  (informational: may hold paths and the debug directory)"))
+        if n == ".text" and not same and pe_info(pa) is not None:
+            shift = pe_text_shift(pa, pb)
+            if shift is not None:
+                print("           .text differs only in %d rip-relative displacement fields, all moved by %d bytes (the debug directory in .rdata): same instructions" % shift)
+                same = True
         if must and not same and not (x is None and y is None):
             bad += 1
     print("check: %s" % ("code sections equal" if not bad else "CODE DIFFERS"))
