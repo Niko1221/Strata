@@ -42,7 +42,7 @@ mkdir -p "$out"
 # the engine package
 "$py" tools/packaging/package_engine.py --src "$stage/engine" --backend cuda --version "$ver" --out "$out" --arch sm_121 --arch compute_121 \
     --min-driver nvidia=$mindriver --variant cuda13 --platform linux-aarch64 --build-id "$id" $req \
-    --include SYSTEM-LIBS.txt --include 'libstrata_kq*'
+    --include SYSTEM-LIBS.txt --include 'libstrata_kq*' --include 'licenses/*'
 for d in "$out"/*/; do
   [ -f "$d/engine-component.json" ] || continue
   "$py" tools/packaging/package_engine.py --verify "$d"

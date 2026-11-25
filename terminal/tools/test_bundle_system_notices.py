@@ -57,6 +57,26 @@ class BundledSystemLibraries(unittest.TestCase):
                 with self.subTest(script=p.name):
                     self.assertIn("--include 'licenses/*'", text)
 
+    def test_a_script_with_collect_libs_packs_the_notices_of_the_built_in_list(self):
+        """libatomic.so.1 and libgomp.so.1 are bundled by collect_libs.py without any flag (BUNDLE_FROM_SYSTEM): whatever packs its output
+        has to pass --include 'licenses/*', or the copy ships without its notice (#7189: strata-inkling needs libgomp.so.1)."""
+        seen = 0
+        for p in scripts():
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if "collect_libs.py" in text and "package_engine.py --src" in text and "--tree" not in text:
+                seen += 1
+                with self.subTest(script=p.name):
+                    self.assertIn("--include 'licenses/*'", text)
+        self.assertGreaterEqual(seen, 2)           # build_cuda_linux.sh, build_cuda_linux_aarch64.sh, build_sycl_linux.sh
+
+    def test_every_package_in_the_source_dockerfile_packs_the_notices(self):
+        text = (PACK.parent / "docker" / "Dockerfile.src").read_text(encoding="utf-8")
+        calls = [s for s in re.split(r";\s*\\?\n|;", text.replace("\\\n", " ")) if "package_engine.py --src" in s]
+        self.assertEqual(len(calls), 3, "the engine, Hy4 and Inkling packages")
+        for call in calls:
+            with self.subTest(call=call.strip()[:90]):
+                self.assertIn("--include 'licenses/*'", call)
+
     def test_the_notices_are_text_that_names_their_library(self):
         for n in sorted(NOTICES.glob("*.txt")):
             with self.subTest(notice=n.name):
