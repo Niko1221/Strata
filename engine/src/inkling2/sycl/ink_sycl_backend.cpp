@@ -115,12 +115,16 @@ public:
             if (!runner_.vis.load(opts.vision_path, err)) return false;
         }
         slot_used_.assign((size_t)par, 0);
+        const size_t ckpt_cap = (size_t)std::min(par, kMaxCkptSlots);
+        prompt_ckpts_.assign(ckpt_cap, PromptCkpt{});
+        shared_ckpts_.assign(ckpt_cap, PromptCkpt{});
         return true;
     }
 
     bool alloc_slot(int slot, int /*max_ctx*/, KvDtype /*kv_dtype*/, std::string& err) override {
         if (slot < 0 || slot >= runner_.max_slots) { err = "sycl slot out of range"; return false; }
         if (!slot_used_[slot]) { slot_used_[slot] = 1; ++active_slots_; }
+        clear_slot_ckpts(slot);
         runner_.reset_slot(slot);
         return true;
     }
@@ -129,11 +133,131 @@ public:
         if (slot >= 0 && slot < runner_.max_slots && slot_used_[slot]) {
             slot_used_[slot] = 0;
             --active_slots_;
+            clear_slot_ckpts(slot);
             runner_.reset_slot(slot);
         }
     }
 
-    void reset_slot(int slot) override { runner_.reset_slot(slot); }
+    void reset_slot(int slot) override {
+        clear_slot_ckpts(slot);
+        runner_.reset_slot(slot);
+    }
+
+    // Prompt-end & shared-prefix conversation checkpoints (#6627 parity with CUDA/HIP/Metal/CPU):
+    // Global KV at [0..seq_len-1] is append-only and never overwritten by generation; save/restore
+    // only the ShortConv histories (~3.7 MiB), 40 SWA KV rings (<=164 MiB host RAM), and DSpark f_rnn.
+    // Bounded to at most kMaxCkptSlots slots and kMaxHostCkptBytes per slot; reset/free releases host RAM.
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        return save_checkpoint(slot, seq_len, false);
+    }
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        return restore_checkpoint(slot, seq_len, false);
+    }
+    bool supports_shared_checkpoint() const override {
+        return runner_.mod != nullptr && !runner_.sc_hist_k.empty() && runner_.max_slots <= kMaxCkptSlots;
+    }
+    bool save_shared_checkpoint(int slot, int seq_len) override {
+        return save_checkpoint(slot, seq_len, true);
+    }
+    bool restore_shared_checkpoint(int slot, int seq_len) override {
+        return restore_checkpoint(slot, seq_len, true);
+    }
+
+    void clear_slot_ckpts(int slot) {
+        if (slot >= 0 && slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].clear();
+        if (slot >= 0 && slot < (int)shared_ckpts_.size()) shared_ckpts_[slot].clear();
+    }
+
+    bool save_checkpoint(int slot, int seq_len, bool shared) {
+        auto& ckpts = shared ? shared_ckpts_ : prompt_ckpts_;
+        if (slot < 0 || slot >= (int)ckpts.size() || seq_len <= 0 || seq_len > runner_.max_ctx ||
+            runner_.mod == nullptr || runner_.sc_hist_k.empty()) return false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
+        const size_t sc_kv_elems = 3ul * 1024;
+        const size_t sc_d_elems = 3ul * (size_t)c.hidden;
+
+        // Enforce strict per-slot host memory ceiling before allocating.
+        size_t need_bytes = (size_t)c.n_visits * (2 * sc_kv_elems + 2 * sc_d_elems) * sizeof(float);
+        for (int v = 0; v < c.n_visits; ++v) {
+            if (!c.is_swa[c.phys_for_visit(v)]) continue;
+            const size_t stride = (size_t)runner_.visit_kv_stride[v];
+            const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
+            need_bytes += 2 * n * sizeof(uint16_t);
+        }
+        if (runner_.use_dspark && runner_.dsp_frnn_slot != nullptr) {
+            need_bytes += (size_t)c.hidden * sizeof(float);
+        }
+        if (need_bytes > kMaxHostCkptBytes) return false;
+
+        PromptCkpt& ck = ckpts[slot];
+        ck.valid = false;
+        ck.sc_k.resize((size_t)c.n_visits);
+        ck.sc_v.resize((size_t)c.n_visits);
+        ck.sc_attn.resize((size_t)c.n_visits);
+        ck.sc_mlp.resize((size_t)c.n_visits);
+        ck.swa_k.resize((size_t)c.n_visits);
+        ck.swa_v.resize((size_t)c.n_visits);
+        for (int v = 0; v < c.n_visits; ++v) {
+            ck.sc_k[v].resize(sc_kv_elems);
+            ck.sc_v[v].resize(sc_kv_elems);
+            ck.sc_attn[v].resize(sc_d_elems);
+            ck.sc_mlp[v].resize(sc_d_elems);
+            ink_sycl::d2h(ck.sc_k[v].data(), runner_.sc_hist_k[v] + (size_t)slot * sc_kv_elems, sc_kv_elems * sizeof(float));
+            ink_sycl::d2h(ck.sc_v[v].data(), runner_.sc_hist_v[v] + (size_t)slot * sc_kv_elems, sc_kv_elems * sizeof(float));
+            ink_sycl::d2h(ck.sc_attn[v].data(), runner_.sc_hist_attn[v] + (size_t)slot * sc_d_elems, sc_d_elems * sizeof(float));
+            ink_sycl::d2h(ck.sc_mlp[v].data(), runner_.sc_hist_mlp[v] + (size_t)slot * sc_d_elems, sc_d_elems * sizeof(float));
+            if (!c.is_swa[c.phys_for_visit(v)]) {
+                ck.swa_k[v].clear();
+                ck.swa_v[v].clear();
+                continue;
+            }
+            const size_t stride = (size_t)runner_.visit_kv_stride[v];
+            const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
+            ck.swa_k[v].resize(n);
+            ck.swa_v[v].resize(n);
+            ink_sycl::d2h(ck.swa_k[v].data(), runner_.kv_k[v] + (size_t)slot * stride * row, n * sizeof(uint16_t));
+            ink_sycl::d2h(ck.swa_v[v].data(), runner_.kv_v[v] + (size_t)slot * stride * row, n * sizeof(uint16_t));
+        }
+        if (runner_.use_dspark && runner_.dsp_frnn_slot != nullptr) {
+            ck.frnn.resize((size_t)c.hidden);
+            ink_sycl::d2h(ck.frnn.data(), runner_.dsp_frnn_slot + (size_t)slot * (size_t)c.hidden, (size_t)c.hidden * sizeof(float));
+        } else {
+            ck.frnn.clear();
+        }
+        ink_sycl::wait();
+        ck.seq_len = seq_len;
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_checkpoint(int slot, int seq_len, bool shared) {
+        auto& ckpts = shared ? shared_ckpts_ : prompt_ckpts_;
+        if (slot < 0 || slot >= (int)ckpts.size() || runner_.mod == nullptr || runner_.sc_hist_k.empty()) return false;
+        const PromptCkpt& ck = ckpts[slot];
+        if (!ck.valid || ck.seq_len != seq_len) return false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
+        const size_t sc_kv_elems = 3ul * 1024;
+        const size_t sc_d_elems = 3ul * (size_t)c.hidden;
+        for (int v = 0; v < c.n_visits; ++v) {
+            ink_sycl::h2d(runner_.sc_hist_k[v] + (size_t)slot * sc_kv_elems, ck.sc_k[v].data(), sc_kv_elems * sizeof(float));
+            ink_sycl::h2d(runner_.sc_hist_v[v] + (size_t)slot * sc_kv_elems, ck.sc_v[v].data(), sc_kv_elems * sizeof(float));
+            ink_sycl::h2d(runner_.sc_hist_attn[v] + (size_t)slot * sc_d_elems, ck.sc_attn[v].data(), sc_d_elems * sizeof(float));
+            ink_sycl::h2d(runner_.sc_hist_mlp[v] + (size_t)slot * sc_d_elems, ck.sc_mlp[v].data(), sc_d_elems * sizeof(float));
+            if (ck.swa_k[v].empty()) continue;
+            const size_t stride = (size_t)runner_.visit_kv_stride[v];
+            ink_sycl::h2d(runner_.kv_k[v] + (size_t)slot * stride * row, ck.swa_k[v].data(), ck.swa_k[v].size() * sizeof(uint16_t));
+            ink_sycl::h2d(runner_.kv_v[v] + (size_t)slot * stride * row, ck.swa_v[v].data(), ck.swa_v[v].size() * sizeof(uint16_t));
+        }
+        if (runner_.use_dspark && runner_.dsp_frnn_slot != nullptr && !ck.frnn.empty()) {
+            ink_sycl::h2d(runner_.dsp_frnn_slot + (size_t)slot * (size_t)c.hidden, ck.frnn.data(), ck.frnn.size() * sizeof(float));
+        }
+        runner_.snapshot_slot(slot);
+        if (runner_.last_ver_slot == slot) runner_.last_ver_slot = -1;
+        ink_sycl::wait();
+        return true;
+    }
     void snapshot_slot(int slot) override { runner_.snapshot_slot(slot); }
     void rollback_slot(int slot, int keep_len) override { runner_.rollback_slot(slot, keep_len); }
 
@@ -264,7 +388,29 @@ private:
     friend std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts);
     ink_sycl::InkSyModel mod_;
     ink_sycl::InkSyRunner runner_;
+    static constexpr int kMaxCkptSlots = 8;
+    static constexpr size_t kMaxHostCkptBytes = 256ULL * 1024ULL * 1024ULL;
+    struct PromptCkpt {
+        bool valid = false;
+        int seq_len = 0;
+        std::vector<std::vector<float>> sc_k, sc_v, sc_attn, sc_mlp;
+        std::vector<std::vector<uint16_t>> swa_k, swa_v;
+        std::vector<float> frnn;
+        void clear() {
+            valid = false;
+            seq_len = 0;
+            sc_k.clear(); sc_k.shrink_to_fit();
+            sc_v.clear(); sc_v.shrink_to_fit();
+            sc_attn.clear(); sc_attn.shrink_to_fit();
+            sc_mlp.clear(); sc_mlp.shrink_to_fit();
+            swa_k.clear(); swa_k.shrink_to_fit();
+            swa_v.clear(); swa_v.shrink_to_fit();
+            frnn.clear(); frnn.shrink_to_fit();
+        }
+    };
     std::vector<uint8_t> slot_used_;
+    std::vector<PromptCkpt> prompt_ckpts_;
+    std::vector<PromptCkpt> shared_ckpts_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
     int pending_gpu_index_ = 0;
