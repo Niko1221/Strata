@@ -25,7 +25,7 @@
 #include "ink_sy_dspark.h"
 #include "ink_sy_fit.h"
 #include "ink_sy_hybrid.h"
-#include "ink_sy_ops.h"
+#include "ink_sy_controller.h"
 #include "ink_sy_vision.h"
 
 namespace ink_sycl {
@@ -104,6 +104,7 @@ struct InkSyRunner {
     float* b_in3 = nullptr;
     float* b_cat = nullptr;
     float* b_ctrl_gate = nullptr;
+    float* b_mix_stats = nullptr;  // up to four queries over eight states, two floats per pair
 
     float* b_q = nullptr;
     float* b_k_raw = nullptr;
@@ -164,6 +165,7 @@ struct InkSyRunner {
     int8_t* xq_s8_dev = nullptr;
     float* xsc_dev = nullptr;
 
+    InkControllerCache ctrl_cache;
     InkSyVision vis;
     InkSyHybridEngine hybrid;
 
@@ -179,6 +181,7 @@ struct InkSyRunner {
 #if defined(SYCL_EXT_ONEAPI_GRAPH)
         if (!graphs.empty()) { try { wait(); } catch (...) {} graphs.clear(); }
 #endif
+        ctrl_cache.release();
         hybrid.release();
         for (auto* p : kv_k) dfree(p);
         for (auto* p : kv_v) dfree(p);
@@ -209,7 +212,7 @@ struct InkSyRunner {
         dfree(b_slot_ids); dfree(b_pos); dfree(b_tok_ids); dfree(b_is_img); dfree(b_img_emb);
         dfree(b_active_slots); dfree(b_slot_tok_off); dfree(b_slot_tok_cnt); dfree(b_slot_tok_idx);
         dfree(b_cur); dfree(b_res); dfree(b_blocks); dfree(b_prelude); dfree(b_bank_blk); dfree(b_bank_out);
-        dfree(b_msgs); dfree(b_in3); dfree(b_cat); dfree(b_ctrl_gate);
+        dfree(b_mix_stats); dfree(b_msgs); dfree(b_in3); dfree(b_cat); dfree(b_ctrl_gate);
         dfree(b_q); dfree(b_k_raw); dfree(b_v_raw); dfree(b_k); dfree(b_v); dfree(b_r);
         dfree(b_kd_taps); dfree(b_vd_taps); dfree(b_sinks); dfree(b_gate_attn); dfree(b_attn_out);
         dfree(b_wo_raw); dfree(b_wo);
@@ -291,6 +294,7 @@ struct InkSyRunner {
         b_bank_blk = dalloc<float>(2 * MB * D); b_bank_out = dalloc<float>(MB * D);
         b_msgs = dalloc<float>(4 * MB * D); b_in3 = dalloc<float>(3 * MB * D);
         b_cat = dalloc<float>(3 * MB * 2 * D); b_ctrl_gate = dalloc<float>(3 * MB * c.gate_rank);   // one region per controller (attn, k, v) of a visit
+        if (ink_bmg_dense()) b_mix_stats = dalloc<float>(4 * 8 * 2);
 
         b_q = dalloc<float>(MB * 3072); b_k_raw = dalloc<float>(MB * 1024); b_v_raw = dalloc<float>(MB * 1024);
         b_k = dalloc<float>(MB * 1024); b_v = dalloc<float>(MB * 1024); b_r = dalloc<float>(MB * 384);
@@ -351,6 +355,7 @@ struct InkSyRunner {
 
         wait();
         hybrid.init(m);
+        ctrl_cache.prepare(m);
         // Per-expert SF4 scale tables for the compressed small-expert dots (2 KiB per expert).
         if (ink_bmg_experts() && !hybrid.active && m.sq20_experts && m.n_host_experts == 0 &&
             std::any_of(m.layer_codecs.begin(), m.layer_codecs.end(), [](const auto& f) { return f.sf4_gu && f.sf4_down; })) {
@@ -367,7 +372,9 @@ struct InkSyRunner {
         }
 
         if (ink_battlemage()) {
-            std::fprintf(stderr, "[ink_sycl] Battlemage experts=%s\n", ink_bmg_experts() ? "on" : "off");
+            std::fprintf(stderr, "[ink_sycl] Battlemage experts=%s dense=%s controller cache=%s\n",
+                         ink_bmg_experts() ? "on" : "off", ink_bmg_dense() ? "on" : "off",
+                         ctrl_cache.layers.empty() ? "off" : "ready");
         }
         fprintf(stderr, "[ink_sycl] runner ready: slots=%d ctx=%d batch=%d dspark=%d hybrid=%d | KV=%.1f MiB SC=%.1f MiB DevAlloc=%.2f GiB\n",
                 max_slots, max_ctx, max_batch, (int)use_dspark, (int)hybrid.active,
@@ -694,11 +701,22 @@ struct InkSyRunner {
         }
         const int n_active_slots = (int)h_as.size();
         const int save_ring = (n_active_slots == 1 && M > 1 && M <= 8) ? 1 : 0;
+        static const bool tile_conv = ink_bmg_dense();
         if (save_ring) {
             last_ver_slot = slot_ids[0];
             last_ver_pos0 = positions[0];
             last_ver_m = M;
         }
+
+        auto short_conv = [&](const float* x, const float* weights, const float* dynamic, float* history,
+                              float* output, int width, float* ring) {
+            if (tile_conv && n_active_slots == 1 && M >= 32)
+                k_sconv4_prefill(x, weights, dynamic, history, b_active_slots, output, M, width);
+            else
+                k_sconv4_multi_sg16(x, weights, dynamic, history, b_active_slots, b_slot_tok_off, b_slot_tok_cnt,
+                                    b_slot_tok_idx, output, n_active_slots, width, dynamic != nullptr, ring,
+                                    save_ring);
+        };
 
         h2d(b_tok_ids, tok_ids, (size_t)M * 4);
         h2d(b_slot_ids, slot_ids, (size_t)M * 4);
@@ -756,6 +774,8 @@ struct InkSyRunner {
 
             const std::string p = "model.llm.layers." + std::to_string(ip);
             const bool is_swa = (c.is_swa[ip] != 0);
+            const auto* ctrl = M == 1 && has_msgs && !ctrl_cache.layers.empty()
+                             ? &ctrl_cache.layers[ip - c.core_start] : nullptr;
 
             if (ip == 0) d2d(b_res, b_cur, (size_t)M_stride * 4);   // for ip > 0 the mix kernel below writes the copy
             sy_prof_fmark(FX_RES);
@@ -764,8 +784,8 @@ struct InkSyRunner {
             if (ip > 0) {
                 const int nq = is_swa ? 1 : 3;
                 k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.attn_queries." + std::to_string(ip - 1)),
-                                    b_in3, n_blocks, block_stride, M, nq, b_res);
-                if (is_swa && has_msgs) {
+                                    b_in3, n_blocks, block_stride, M, nq, b_mix_stats, b_res);
+                if (is_swa && has_msgs && !ctrl) {
                     d2d(b_in3 + M_stride, b_in3, (size_t)M_stride * 4);
                     d2d(b_in3 + 2 * M_stride, b_in3, (size_t)M_stride * 4);
                 }
@@ -775,7 +795,9 @@ struct InkSyRunner {
             sy_prof_fmark(FX_ARM);
 
             // Cross-pass loop controllers (attn, k, v) + input RMSNorm
-            if (has_msgs) {
+            if (ctrl) {
+                k_ctrl_decode_batch(ctrl->attention, b_in3, b_msgs, is_swa, b_cat, b_ctrl_gate);
+            } else if (has_msgs) {
                 const char* cnames[3] = {"attn", "k", "v"};
                 const char* nnames[3] = {"q_input_norm.weight", "k_input_norm.weight", "v_input_norm.weight"};
                 // The three controllers of a visit are independent (each one's concat reads only its own stream and message, each apply writes only its
@@ -784,13 +806,23 @@ struct InkSyRunner {
                 const InkTensorInfo& t0 = man.get(p + ".controllers.attn.down_weight");
                 const InkTensorInfo& t1 = man.get(p + ".controllers.k.down_weight");
                 const InkTensorInfo& t2 = man.get(p + ".controllers.v.down_weight");
-                const bool fuse3 = t0.fmt == FMT_F32 && t1.fmt == FMT_F32 && t2.fmt == FMT_F32 &&
-                                   t0.rows() == t1.rows() && t0.rows() == t2.rows() && t0.cols() == t1.cols() && t0.cols() == t2.cols();
+                const auto* w0 = reinterpret_cast<const float*>(t0.dev_ptr);
+                const auto* w1 = reinterpret_cast<const float*>(t1.dev_ptr);
+                const auto* w2 = reinterpret_cast<const float*>(t2.dev_ptr);
+                const int rows = (int)t0.rows(), cols = (int)t0.cols();
+                // At prefill widths the paired kernel exposes the token axis
+                // to the GPU instead of iterating over all tokens per output row.
+                const bool same_f32_shape = t0.fmt == FMT_F32 && t1.fmt == FMT_F32 && t2.fmt == FMT_F32 &&
+                                            t0.rows() == t1.rows() && t0.rows() == t2.rows() &&
+                                            t0.cols() == t1.cols() && t0.cols() == t2.cols();
+                const bool fuse3 = same_f32_shape &&
+                    !(use_f32_prefill_pairs(w0, rows, cols, b_cat, M) &&
+                      use_f32_prefill_pairs(w1, rows, cols, b_cat, M) &&
+                      use_f32_prefill_pairs(w2, rows, cols, b_cat, M));
                 if (fuse3) {
                     for (int j = 0; j < 3; ++j) k_ctrl_cat_rms_sg16(b_in3 + (size_t)j * M_stride, b_msgs + (size_t)j * M_stride, b_cat + j * cat_stride, M);
                     sy_prof_fmark(FX_CCAT);
-                    k_linear_f32x3_sg16(reinterpret_cast<const float*>(t0.dev_ptr), reinterpret_cast<const float*>(t1.dev_ptr),
-                                        reinterpret_cast<const float*>(t2.dev_ptr), (int)t0.rows(), (int)t0.cols(),
+                    k_linear_f32x3_sg16(w0, w1, w2, rows, cols,
                                         b_cat, b_cat + cat_stride, b_cat + 2 * cat_stride,
                                         b_ctrl_gate, b_ctrl_gate + gate_stride, b_ctrl_gate + 2 * gate_stride, M);
                     sy_prof_fmark(FX_CLIN);
@@ -830,12 +862,46 @@ struct InkSyRunner {
             sy_prof_mark(PF_MIX);
 
             // Q, K, V, R, Sinks, GateAttn
-            dispatch_linear(man.get(p + ".attn.wq_du.weight"), in_q, b_q, M);
-            dispatch_linear(man.get(p + ".attn.wk_dv.weight"), in_k, b_k_raw, M);
-            dispatch_linear(man.get(p + ".attn.wv_dv.weight"), in_v, b_v_raw, M);
-            dispatch_linear(man.get(p + ".attn.wr_du.weight"), in_q, b_r, M);
-            dispatch_linear(man.get(p + ".attn.attn_sink_proj.weight"), in_q, b_sinks, M);
-            dispatch_linear(man.get(p + ".attn.gate_attn.weight"), in_q, b_gate_attn, M);
+            const auto& q_weight = man.get(p + ".attn.wq_du.weight");
+            const auto& k_weight = man.get(p + ".attn.wk_dv.weight");
+            const auto& v_weight = man.get(p + ".attn.wv_dv.weight");
+            const auto& rel_weight = man.get(p + ".attn.wr_du.weight");
+            const auto& gate_weight = man.get(p + ".attn.gate_attn.weight");
+            const auto& sink_weight = man.get(p + ".attn.attn_sink_proj.weight");
+#ifdef INK_SYCL_USE_ONEMKL
+            static const bool reuse_attention_input = ink_bmg_dense();
+            const auto bf16 = [&](const InkTensorInfo& weight) {
+                return weight.fmt == FMT_BF16 && weight.cols() == D;
+            };
+            const int tail = M % prefill_tile_rows;
+            const bool keep_tile = !prefill_weight_reuse || M <= prefill_tile_rows || !tail || tail >= 16;
+            if (reuse_attention_input && M >= 512 && keep_tile && xmx_enabled() &&
+                bf16(q_weight) && bf16(k_weight) && bf16(v_weight) && bf16(rel_weight) && bf16(gate_weight)) {
+                auto& scratch = xmx_scratch();
+                const size_t input_elements = in_q == in_k ? M_stride : 3ul * M_stride;
+                scratch.ensure_x(input_elements);
+                k_f32_to_f16_sg16(in_q, scratch.x_f16, input_elements);
+                const int tile_rows = prefill_weight_reuse && M > prefill_tile_rows ? prefill_tile_rows : M;
+                const auto project_packed = [&](const InkTensorInfo& weight, const float* input, float* out) {
+                    ink_xmx_linear_bf16_packed(reinterpret_cast<const uint16_t*>(weight.dev_ptr), weight.rows(),
+                                               D, scratch.x_f16 + (input - in_q), out, M, tile_rows);
+                };
+                project_packed(q_weight, in_q, b_q);
+                project_packed(k_weight, in_k, b_k_raw);
+                project_packed(v_weight, in_v, b_v_raw);
+                project_packed(rel_weight, in_q, b_r);
+                project_packed(gate_weight, in_q, b_gate_attn);
+                dispatch_linear(sink_weight, in_q, b_sinks, M);
+            } else
+#endif
+            {
+                dispatch_linear(q_weight, in_q, b_q, M);
+                dispatch_linear(k_weight, in_k, b_k_raw, M);
+                dispatch_linear(v_weight, in_v, b_v_raw, M);
+                dispatch_linear(rel_weight, in_q, b_r, M);
+                dispatch_linear(sink_weight, in_q, b_sinks, M);
+                dispatch_linear(gate_weight, in_q, b_gate_attn, M);
+            }
             if (!is_swa) {
                 dispatch_linear(man.get(p + ".attn.k_sconv.weight_proj"), in_k, b_kd_taps, M);
                 dispatch_linear(man.get(p + ".attn.v_sconv.weight_proj"), in_v, b_vd_taps, M);
@@ -845,12 +911,10 @@ struct InkSyRunner {
             // 4-tap ShortConv on K & V
             const float* sc_layer = mod->static_sconv_dev + (size_t)ip * InkSyModel::kSconvLayerFloats;
             const int has_dyn = is_swa ? 0 : 1;
-            k_sconv4_multi_sg16(b_k_raw, sc_layer + InkSyModel::kSconvKOff, b_kd_taps, sc_hist_k[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_k, n_active_slots, 1024, has_dyn, sc_ring_k[visit], save_ring);
-            k_sconv4_multi_sg16(b_v_raw, sc_layer + InkSyModel::kSconvVOff, b_vd_taps, sc_hist_v[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_v, n_active_slots, 1024, has_dyn, sc_ring_v[visit], save_ring);
+            short_conv(b_k_raw, sc_layer + InkSyModel::kSconvKOff, has_dyn ? b_kd_taps : nullptr, sc_hist_k[visit],
+                       b_k, 1024, sc_ring_k[visit]);
+            short_conv(b_v_raw, sc_layer + InkSyModel::kSconvVOff, has_dyn ? b_vd_taps : nullptr, sc_hist_v[visit],
+                       b_v, 1024, sc_ring_v[visit]);
 
             // Q/R L2 clip + tau, K L2 clip + V RMSNorm + KV store
             k_qr_clip_tau_sg16(b_q, tf32(p + ".attn.q_l2_clip.scale"),
@@ -861,10 +925,38 @@ struct InkSyRunner {
             sy_prof_mark(PF_SCONV);
 
             // Fused RelPos + Sink 24:8 GQA Flash Attention + sigmoid(gate_attn)
-            k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
-                                   b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
-                                   b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
-                                   c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            static const bool shared_kv = ink_bmg_dense();
+            static const bool split_kv = ink_bmg_dense();
+            if (M == 1 && positions[0] >= 1023 && split_kv && !capturing) {
+                k_relpos_decode_split_kv(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
+                                        b_sinks, b_gate_attn, kv_k[visit], kv_v[visit], slot_ids[0], positions[0],
+                                        b_attn_out, b_moe_yp, is_swa, c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            } else if (M >= 32 && shared_kv) {
+                auto prefill_attention = [&](auto opt) {
+                    k_relpos_prefill_shared_kv<decltype(opt)::value>(
+                        b_q, b_r, mod->rel_proj_pad_dev + size_t(ip) * 16 * 1025,
+                        b_sinks, b_gate_attn, kv_k[visit], kv_v[visit], b_slot_ids, b_pos,
+                        b_attn_out, M, is_swa, c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+                };
+                if (M >= 512) {
+                    auto stream = [&](auto slide) {
+                        constexpr bool sliding = decltype(slide)::value;
+                        k_relpos_prefill_shared_kv<true, sliding ? 1 : 2, sliding>(
+                            b_q, b_r, mod->rel_proj_pad_dev + size_t(ip) * 16 * 1025, b_sinks, b_gate_attn,
+                            kv_k[visit], kv_v[visit], b_slot_ids, b_pos, b_attn_out, M, sliding,
+                            c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+                    };
+                    if (is_swa) stream(std::true_type{});
+                    else stream(std::false_type{});
+                } else {
+                    prefill_attention(std::true_type{});
+                }
+            } else {
+                k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
+                                       b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
+                                       b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
+                                       c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            }
             sy_prof_mark(PF_ATTN);
             if (visit == 0) {
                 dbg_buf("v0_q", b_q, 3072); dbg_buf("v0_k", b_k, 1024); dbg_buf("v0_v", b_v, 1024);
@@ -873,9 +965,8 @@ struct InkSyRunner {
 
             // Output projection + attn_sconv
             dispatch_linear(man.get(p + ".attn.wo_ud.weight"), b_attn_out, b_wo_raw, M);
-            k_sconv4_multi_sg16(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_wo, n_active_slots, D, 0, sc_ring_attn[visit], save_ring);
+            short_conv(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn[visit],
+                       b_wo, D, sc_ring_attn[visit]);
             if (visit == 0) { dbg_buf("v0_wo_raw", b_wo_raw, D); dbg_buf("v0_wo", b_wo, D); }
 
             // Attention-Residual block boundary rule (matches inkling2_loop.py:418!)
@@ -891,9 +982,11 @@ struct InkSyRunner {
             // ---- MoE Sublayer ----
             sy_prof_fmark(FX_RES);
             k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.mlp_queries." + std::to_string(ip)),
-                                b_mlp_in, n_blocks, block_stride, M, 1, b_res);   // also copies b_cur to b_res (the residual of this sublayer)
+                                b_mlp_in, n_blocks, block_stride, M, 1, b_mix_stats, b_res);
             sy_prof_fmark(FX_MARM);
-            if (has_msgs) {
+            if (ctrl) {
+                k_ctrl_decode_batch(ctrl->mlp, b_mlp_in, b_msgs + 3 * M_stride, false, b_cat, b_ctrl_gate);
+            } else if (has_msgs) {
                 const float* mp = b_msgs + 3 * M_stride;
                 k_ctrl_cat_rms_sg16(b_mlp_in, mp, b_cat, M);
                 sy_prof_fmark(FX_MCCAT);
@@ -1081,9 +1174,8 @@ struct InkSyRunner {
                 k_sq20_decode_tail(b_moe_yp, sc_layer + InkSyModel::kSconvMlpOff, sc_hist_mlp[visit],
                                    b_active_slots, b_res, b_cur);
             } else {
-                k_sconv4_multi_sg16(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr, sc_hist_mlp[visit],
-                                    b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                    b_moe_out, n_active_slots, D, 0, sc_ring_mlp[visit], save_ring);
+                short_conv(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr,
+                       sc_hist_mlp[visit], b_moe_out, D, sc_ring_mlp[visit]);
                 k_add_sg16(b_res, b_moe_out, b_cur, M_stride);
             }
             sy_prof_mark(PF_TAILV);
@@ -1117,7 +1209,7 @@ struct InkSyRunner {
                 if (p_idx > 0) {
                     k_attn_res_mix_sg16(b_bank_blk, b_bank_out,
                                         mod->msg_queries_dev + (size_t)(ip - c.core_start) * 4 * D,
-                                        b_msgs, bank_n, block_stride, M, 4);
+                                        b_msgs, bank_n, block_stride, M, 4, b_mix_stats);
                 }
                 run_visit(ip, visit++, p_idx, p_idx > 0);
             }
@@ -1127,7 +1219,7 @@ struct InkSyRunner {
         for (int ip = c.core_end; ip < c.n_phys; ++ip) run_visit(ip, visit++, 0, false);
 
         // 5. Final Output Attention-Residual + model.llm.norm
-        k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.output_query"), b_h_out, n_blocks, block_stride, M, 1);
+        k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.output_query"), b_h_out, n_blocks, block_stride, M, 1, b_mix_stats);
         k_rms_norm_sg16(b_h_out, tf32("model.llm.norm.weight"), b_h_norm, D, M);
 
         // 6. Optional DSpark taps -> context KV + f_rnn

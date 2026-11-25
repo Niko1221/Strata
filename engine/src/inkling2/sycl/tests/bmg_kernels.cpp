@@ -1,6 +1,7 @@
 #include "ink_sy_codecs.h"
-#include "ink_sy_ops.h"
+#include "ink_sy_controller.h"
 #include "ink_sy_xmx.h"
+#include "main_reference.h"
 #include <random>
 #include <stdexcept>
 using namespace ink_sycl;
@@ -20,6 +21,148 @@ static void equal(const char* kind, const float* a, const float* b, size_t n) {
             throw std::runtime_error(kind);
         }
 }
+static void controller_batch_check() {
+    constexpr int d = INK_D, rank = ctrl_rank, dr = ctrl_k * rank, gr = d * rank;
+    Array<float> down(4 * dr), gain(4 * gr), forget(4 * gr), norm(4 * d);
+    constexpr int max_nodes = 12, capacity = 3 * max_nodes * d;
+    Array<float> original(capacity), msg(capacity), ref(capacity), actual(capacity), cat(3 * max_nodes * ctrl_k);
+    Array<float> gates(3 * max_nodes * rank), want_gates(3 * max_nodes * rank);
+    std::mt19937 rng(51);
+    auto draw = [&] { return float(int(rng() % 20001) - 10000) / 15237.0f; };
+    auto weight = [&] { return bf16_to_f32(sycl::bit_cast<uint32_t>(draw()) >> 16); };
+    for (int i = 0; i < 4 * dr; ++i) down.p[i] = weight();
+    for (int i = 0; i < 4 * gr; ++i) { gain.p[i] = weight(); forget.p[i] = weight(); }
+    for (int i = 0; i < 4 * d; ++i) norm.p[i] = draw();
+    for (int i = 0; i < capacity; ++i) { original.p[i] = draw(); msg.p[i] = draw(); }
+
+    InkSyModel model;
+    auto& c = model.man.c;
+    c.n_phys = 2; c.core_start = 1; c.core_end = 2; c.is_swa = {0, 0};
+    auto add = [&](const std::string& name, float* ptr, std::vector<int64_t> shape) {
+        auto& tensor = model.man.T["model.llm.layers.1." + name];
+        tensor.shape = std::move(shape);
+        tensor.dev_ptr = reinterpret_cast<uint8_t*>(ptr);
+        tensor.bytes = tensor.rows() * tensor.cols() * sizeof(float);
+    };
+    const char* names[] = {"attn", "k", "v", "mlp"};
+    const char* norms[] = {"q_input_norm.weight", "k_input_norm.weight", "v_input_norm.weight", "mlp_norm.weight"};
+    for (int j = 0; j < 4; ++j) {
+        const std::string p = std::string("controllers.") + names[j] + ".";
+        add(p + "down_weight", down.p + j * dr, {rank, ctrl_k});
+        add(p + "gain_weight", gain.p + j * gr, {d, rank});
+        add(p + "forget_weight", forget.p + j * gr, {d, rank});
+        add(norms[j], norm.p + j * d, {d});
+    }
+    add("attn_norm.weight", norm.p, {d});
+    sy_setenv("INK_SYCL_BMG_DENSE", "1");
+    InkControllerCache cache;
+    for (int swa : {0, 1}) {
+        c.is_swa[1] = swa;
+        cache.prepare(model);
+        if (cache.layers.size() != 1) throw std::runtime_error("expected exact controller cache");
+        for (int nodes : {1}) {
+            const int span = nodes * d;
+            for (int count : {1, 3}) {
+                std::copy_n(original.p, capacity, actual.p);
+                std::copy_n(original.p, capacity, ref.p);
+                if (count == 3 && swa) {
+                    std::copy_n(original.p, span, ref.p + span);
+                    std::copy_n(original.p, span, ref.p + 2 * span);
+                }
+                for (int j = 0; j < count; ++j) {
+                    const int bank = count == 1 ? 3 : j;
+                    float* row = ref.p + j * span;
+                    const float* message = msg.p + j * span;
+                    float* gate = want_gates.p + j * nodes * rank;
+                    main_reference::k_ctrl_cat_rms_sg16(row, message, cat.p, nodes);
+                    main_reference::k_linear_f32_sg16(down.p + bank * dr, rank, ctrl_k, cat.p, gate, nodes);
+                    main_reference::k_ctrl_apply_norm_sg16(row, message, gate,
+                        gain.p + bank * gr, forget.p + bank * gr, norm.p + (count == 3 && swa ? 0 : bank * d),
+                        row, nodes, 1);
+                }
+                const auto& layer = cache.layers[0];
+                if (count == 3) k_ctrl_decode_batch(layer.attention, actual.p, msg.p, swa, cat.p, gates.p);
+                else k_ctrl_decode_batch(layer.mlp, actual.p, msg.p, false, cat.p, gates.p);
+                wait();
+                equal("controller gate vector", want_gates.p, gates.p, count * nodes * rank);
+                equal("in-place controller output and guard rows", ref.p, actual.p, capacity);
+            }
+        }
+        cache.release();
+    }
+    // A single inexact coefficient in even the last bank must reject the cache.
+    for (float* tail : {down.p + 4 * dr - 1, gain.p + 4 * gr - 1, forget.p + 4 * gr - 1}) {
+        const float saved = *tail;
+        *tail = sycl::bit_cast<float>(sycl::bit_cast<uint32_t>(saved) | 1u);
+        cache.prepare(model);
+        if (cache.storage || !cache.layers.empty()) throw std::runtime_error("inexact controller accepted");
+        *tail = saved;
+    }
+    auto& down_info = model.man.T.at("model.llm.layers.1.controllers.mlp.down_weight");
+    down_info.fmt = FMT_BF16;
+    cache.prepare(model);
+    if (cache.storage || !cache.layers.empty()) throw std::runtime_error("unhandled controller format accepted");
+    down_info.fmt = FMT_F32;
+    sy_setenv("INK_SYCL_BMG_DENSE", "0");
+    cache.prepare(model);
+    if (cache.storage || !cache.layers.empty()) throw std::runtime_error("controller override ignored");
+    sy_setenv("INK_SYCL_BMG_DENSE", "1");
+}
+
+static void single_request_ops_check() {
+    constexpr int d = INK_D, max_rows = 512;
+    std::mt19937 rng(97);
+    auto draw = [&]() { return (int(rng() % 2001) - 1000) / 1531.0f; };
+    Array<float> x(max_rows * d), w(4 * d), taps(max_rows * 32), y(max_rows * d), ref(max_rows * d);
+    Array<float> hist(2 * 3 * d), ref_hist(2 * 3 * d);
+    Array<int> slot(1), off(1), count(1), rows(max_rows);
+    slot.p[0] = 1; off.p[0] = 0;
+    for (int i = 0; i < max_rows; ++i) rows.p[i] = i;
+    for (int i = 0; i < max_rows * d; ++i) x.p[i] = draw();
+    for (int i = 0; i < 4 * d; ++i) w.p[i] = draw();
+    for (int i = 0; i < max_rows * 32; ++i) taps.p[i] = draw();
+    for (int i = 0; i < 6 * d; ++i) hist.p[i] = ref_hist.p[i] = draw();
+    for (int c : {1024, d}) {
+        for (int n : {32, 33, 127, 511, 512}) {
+            count.p[0] = n;
+            const float* dyn = c == 1024 ? taps.p : nullptr;
+            main_reference::k_sconv4_multi_sg16(x.p, w.p, dyn, ref_hist.p, slot.p, off.p, count.p, rows.p, ref.p, 1, c, dyn != nullptr);
+            k_sconv4_prefill(x.p, w.p, dyn, hist.p, slot.p, y.p, n, c);
+            wait();
+            equal("ShortConv output", ref.p, y.p, n * c);
+            equal("ShortConv history, including inactive slot", ref_hist.p, hist.p, 6 * c);
+        }
+    }
+    Array<float> cur(2 * d), msg(2 * d), gate(128), gain(d * 64), forget(d * 64), norm(d);
+    for (int i = 0; i < d * 64; ++i) { gain.p[i] = draw(); forget.p[i] = draw(); }
+    for (int i = 0; i < 128; ++i) gate.p[i] = draw();
+    for (int i = 0; i < d; ++i) norm.p[i] = draw();
+    for (int i = 0; i < 2 * d; ++i) msg.p[i] = draw();
+    for (int normalize : {0, 1}) {
+        for (int i = 0; i < 2 * d; ++i) cur.p[i] = draw();
+        std::copy_n(cur.p, 2 * d, ref.p);
+        // Two independent rows use the original fused kernel and reduction order.
+        main_reference::k_ctrl_apply_norm_sg16(ref.p, msg.p, gate.p, gain.p, forget.p, norm.p, ref.p, 2, normalize);
+        k_ctrl_apply_norm_sg16(cur.p, msg.p, gate.p, gain.p, forget.p, norm.p, cur.p, 1, normalize);
+        wait();
+        equal("in-place controller", ref.p, cur.p, d);
+    }
+    constexpr int max_nodes = 12, stride = (max_nodes + 1) * d;
+    Array<float> blocks(7 * stride), queries(4 * d), stats(4 * max_nodes * 8 * 2);
+    for (int i = 0; i < 7 * stride; ++i) blocks.p[i] = draw();
+    for (int i = 0; i < 4 * d; ++i) queries.p[i] = draw();
+    for (int nodes : {1}) {
+        for (int n : {0, 1, 4, 7}) {
+            for (int nq : {1, 3, 4}) {
+                main_reference::k_attn_res_mix_sg16(blocks.p, x.p, queries.p, ref.p, n, stride, nodes, nq);
+                k_res_mix_decode(blocks.p, x.p, queries.p, y.p, n, stride, nq, stats.p);
+                wait();
+                equal("decode residual mix", ref.p, y.p, nodes * nq * d);
+            }
+        }
+    }
+}
+
 static void routing_and_tail_check() {
     Array<float> logits(128), bias(128), ref(8), weights(8);
     Array<int> a(8), b(8);
@@ -242,6 +385,130 @@ int main(int argc, char** argv) {
     }
     std::mt19937 rng(42);
     auto draw = [&]() { return float(int(rng() % 20001) - 10000) / 8192.f; };
+    int nlinear = 0, nattn = 0;
+    for (auto shape : {std::pair{24, 2304}, {32, 2304}, {64, 4608}, {128, 2304}, {17, 256}, {129, 512}}) {
+        const auto [n, k] = shape;
+        Array<float> w(n * k), x(k), a(n), b(n);
+        Array<uint16_t> wb(n * k);
+        for (int i = 0; i < n * k; ++i) {
+            w.p[i] = draw();
+            uint32_t bits;
+            std::memcpy(&bits, w.p + i, 4);
+            wb.p[i] = bits >> 16;
+        }
+        for (int i = 0; i < k; ++i)
+            x.p[i] = draw();
+#ifdef INK_HAS_GROUP_LOAD
+        if (k % 128 == 0) {
+            main_reference::k_linear_f32_sg16(w.p, n, k, x.p, a.p, 1);
+            k_streaming_gemv<false>(w.p, n, k, x.p, b.p);
+            wait();
+            equal("FP32 GEMV", a.p, b.p, n);
+            if (n % 8 == 0 && n <= 128) {
+                constexpr int rows = 33;
+                Array<float> xx(rows * k), yy(rows * n), ref(rows * n);
+                for (int i = 0; i < rows * k; ++i) xx.p[i] = draw();
+                for (int t = 0; t < rows; ++t)
+                    main_reference::k_linear_f32_sg16(w.p, n, k, xx.p + t * k, ref.p + t * n, 1);
+                k_linear_f32_sg16(w.p, n, k, xx.p, yy.p, rows);
+                wait();
+                equal("FP32 prefill paired rows and tail", ref.p, yy.p, rows * n);
+            }
+            ++nlinear;
+        }
+        if (k % 256 == 0) {
+            main_reference::k_linear_bf16_sg16(wb.p, n, k, x.p, a.p, 1);
+            k_streaming_gemv<true>(wb.p, n, k, x.p, b.p);
+            wait();
+            equal("BF16 GEMV", a.p, b.p, n);
+            ++nlinear;
+        }
+#endif
+    }
+    constexpr int m = 5, nh = 24, hd = 128, stride = 2080;
+    Array<float> q(m * nh * hd), r(m * nh * 16), rp(16 * 1025), s(m * nh), g(m * nh * hd), a(m * nh * hd),
+        b(m * nh * hd);
+    Array<half> k(2 * stride * 8 * hd), v(2 * stride * 8 * hd);
+    Array<int> pos(m), slot(m);
+    for (int i = 0; i < m * nh * hd; ++i) {
+        q.p[i] = draw();
+        g.p[i] = draw();
+    }
+    for (int i = 0; i < m * nh * 16; ++i)
+        r.p[i] = draw();
+    for (int i = 0; i < m * nh; ++i)
+        s.p[i] = draw();
+    for (int i = 0; i < 16 * 1025; ++i)
+        rp.p[i] = (i % 1025 == 1024) ? 0.f : draw();
+    for (int i = 0; i < 2 * stride * 8 * hd; ++i) {
+        k.p[i] = half(draw());
+        v.p[i] = half(draw());
+    }
+    for (int i = 0; i < m; ++i) {
+        pos.p[i] = std::array<int, m>{0, 7, 1023, 1024, 2067}[i];
+        slot.p[i] = i % 2;
+    }
+    for (int swa : {0, 1})
+        for (int extent : {63, 1024}) {
+            pos.p[m - 1] = swa ? stride + 33 : stride - 13;
+            if (swa) {
+                // The frozen reference uses a 1024-row ring. Reconstruct each
+                // node's visible window from the actual batched cache stride.
+                Array<half> rk(1024 * 8 * hd), rv(1024 * 8 * hd);
+                Array<int> zero(1);
+                zero.p[0] = 0;
+                for (int i = 0; i < m; ++i) {
+                    for (int j = std::max(0, pos.p[i] - 1023); j <= pos.p[i]; ++j) {
+                        const int src = (slot.p[i] * stride + j % stride) * 8 * hd;
+                        const int dst = (j % 1024) * 8 * hd;
+                        std::copy_n(k.p + src, 8 * hd, rk.p + dst);
+                        std::copy_n(v.p + src, 8 * hd, rv.p + dst);
+                    }
+                    main_reference::k_relpos_sink_gqa_sg16(q.p + i * nh * hd, r.p + i * nh * 16, rp.p,
+                        s.p + i * nh, g.p + i * nh * hd, rk.p, rv.p, zero.p, pos.p + i, a.p + i * nh * hd,
+                        1, swa, 1024, extent, 1024);
+                    wait();
+                }
+            } else {
+                main_reference::k_relpos_sink_gqa_sg16(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p,
+                                                       a.p, m, swa, 1024, extent, stride);
+            }
+            ++nattn;
+            k_relpos_prefill_shared_kv(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p, b.p, m, swa, 1024,
+                                       extent, stride);
+            wait();
+            equal("shared KV", a.p, b.p, m * nh * hd);
+            k_relpos_prefill_shared_kv<true>(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p, b.p, m,
+                                            swa, 1024, extent, stride);
+            wait();
+            equal("shared KV with one-exp softmax and clipped bias", a.p, b.p, m * nh * hd);
+            Array<float> partial(nh * 8 * 130);
+            for (int i = 0; i < m; ++i)
+                k_relpos_decode_split_kv(q.p + i * nh * hd, r.p + i * nh * 16, rp.p, s.p + i * nh,
+                                         g.p + i * nh * hd, k.p, v.p, slot.p[i], pos.p[i], b.p + i * nh * hd,
+                                         partial.p, swa, 1024, extent, stride);
+            wait();
+            equal("split KV", a.p, b.p, m * nh * hd);
+        }
+    {
+        constexpr int cases = 7;
+        Array<float> inputs(cases), observed(cases * cases * 2), reference(cases * cases * 2);
+        const float values[cases] = {-INFINITY, -12.f, -0.f, 0.f, 12.f, INFINITY, NAN};
+        std::copy_n(values, cases, inputs.p);
+        auto* in = inputs.p; auto* got = observed.p; auto* ref = reference.p;
+        Q().parallel_for(sycl::range<1>(cases * cases), [=](sycl::id<1> id) {
+            const int i = id[0];
+            const float peak = in[i / cases], score = in[i % cases], mx = sycl::fmax(peak, score);
+            const auto f = swa_online_factors(peak, score, mx);
+            got[2*i] = f.x(); got[2*i+1] = f.y();
+            ref[2*i] = sycl::exp(peak - mx); ref[2*i+1] = sycl::exp(score - mx);
+        });
+        wait();
+        for (int i = 0; i < cases * cases * 2; ++i) {
+            if (std::isnan(ref[i]) && std::isnan(got[i])) continue;
+            equal("SWA softmax factor", ref + i, got + i, 1);
+        }
+    }
     Array<float> mx8_ref(256), mx8_out(256);
     float* expected = mx8_ref.p;
     float* actual = mx8_out.p;
@@ -280,6 +547,10 @@ int main(int argc, char** argv) {
         equal("packed expert reduction and separately rounded routing weights", original.p, fused.p, rows * dim);
     }
     std::puts("PASS bitwise: packed expert reduction");
+    single_request_ops_check();
+    std::puts("PASS bitwise: tiled ShortConv and carried history, aliased controller and single-token residual mixing");
+    controller_batch_check();
+    std::puts("PASS bitwise: attention/K/V and MLP controllers, shared SWA input, inexact-weight fallback");
     routing_and_tail_check();
     std::puts("PASS bitwise: top-8 IDs and weights, three consecutive outputs and both histories");
     if (argc == 2) {
@@ -290,4 +561,6 @@ int main(int argc, char** argv) {
         return 77;
 #endif
     }
+    std::printf("PASS bitwise: %d projection cases, %d attention configurations (5 queries each)\n", nlinear,
+                nattn);
 }

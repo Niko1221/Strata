@@ -16,6 +16,10 @@
 #endif
 
 #include "ink_sy_common.h"
+#if __has_include(<sycl/ext/oneapi/experimental/group_load_store.hpp>)
+#include <sycl/ext/oneapi/experimental/group_load_store.hpp>
+#define INK_HAS_GROUP_LOAD 1
+#endif
 
 namespace ink_sycl {
 
@@ -306,8 +310,63 @@ inline void sy_gguf_decode_8(uint32_t t, const uint8_t* row, int col, float ext_
 // 1. Dense Trunk & DSpark Linear Kernels (SG16: BF16, Q8_ROW w/ dp4a, F32, S_K)
 // ============================================================================
 
+#ifdef INK_HAS_GROUP_LOAD
+// A striped subgroup fetch loads consecutive K steps for all 16 lanes.
+// Use integer packets so the native block read preserves float bit patterns.
+template <bool BF16>
+inline void k_streaming_gemv(const std::conditional_t<BF16, uint16_t, float>* weights, int n, int k,
+                             const float* x, float* y) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    constexpr int rows = BF16 ? 4 : 1;
+    Q().parallel_for(NR((n + rows - 1) / rows, rows * 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int row = it.get_global_id(0) / 16, lane = it.get_local_id(0) % 16;
+        if (row >= n)
+            return;
+        auto sg = it.get_sub_group();
+        float acc = 0.f;
+        const auto prop = ex::properties{ex::data_placement_striped, ex::full_group};
+        if constexpr (!BF16) {
+            for (int k0 = 0; k0 < k; k0 += 128) {
+                sycl::vec<uint32_t, 8> w, a;
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(weights + (size_t)row * k + k0), w,
+                               prop);
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(x + k0), a, prop);
+#pragma unroll
+                for (int j = 0; j < 8; ++j)
+                    acc += sycl::bit_cast<float>(static_cast<uint32_t>(w[j])) *
+                           sycl::bit_cast<float>(static_cast<uint32_t>(a[j]));
+            }
+        } else {
+            for (int k0 = 0; k0 < k; k0 += 256) {
+                sycl::vec<uint64_t, 4> w;
+                ex::group_load(sg, reinterpret_cast<const uint64_t*>(weights + (size_t)row * k + k0), w,
+                               prop);
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    auto a = *reinterpret_cast<const sycl::vec<float, 4>*>(x + k0 + 64 * j + lane * 4);
+                    auto b = sycl::bit_cast<sycl::vec<uint16_t, 4>>(static_cast<uint64_t>(w[j]));
+                    acc += bf16_to_f32(b[0]) * a[0] + bf16_to_f32(b[1]) * a[1] + bf16_to_f32(b[2]) * a[2] +
+                           bf16_to_f32(b[3]) * a[3];
+                }
+            }
+        }
+        const float sum = sg_sum(it, acc);
+        if (lane == 0)
+            y[row] = sum;
+    });
+}
+#endif
+
 // BF16 SG16 GEMV (16 SGs = 256 threads/WG -> 16 rows/WG)
 inline void k_linear_bf16_sg16(const uint16_t* W, int N, int K, const float* X, float* Y, int M) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool stream = ink_bmg_dense();
+    if (M == 1 && K % 256 == 0 && stream &&
+        reinterpret_cast<uintptr_t>(W) % 16 == 0 && reinterpret_cast<uintptr_t>(X) % 16 == 0) {
+        k_streaming_gemv<true>(W, N, K, X, Y);
+        return;
+    }
+#endif
     Q().parallel_for(NR((N + 15) / 16, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4;
         const int lane = (int)it.get_local_id(0) & 15;
@@ -484,6 +543,50 @@ inline void k_gemm_q8row_sg16(const uint8_t* W, int N, int K, const float* X, fl
     });
 }
 
+#ifdef INK_HAS_GROUP_LOAD
+// A subgroup reuses four token rows across its adjacent output channels.
+// Striped loads preserve the original order within each FP32 dot.
+template<int Outputs, int Subgroups>
+inline void k_f32_prefill_pairs(const float* weights, int n, int k, const float* x, float* y, int m) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    constexpr int tokens = 4, packet = 8;
+    Q().parallel_for(NR2(n / (Outputs * Subgroups), (m + tokens - 1) / tokens, 16 * Subgroups),
+                     [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const auto sg = it.get_sub_group();
+        const int row = (it.get_group(1) * Subgroups + sg.get_group_linear_id()) * Outputs;
+        const int first = it.get_group(0) * tokens;
+        const auto prop = ex::properties{ex::data_placement_striped, ex::full_group};
+        float acc[tokens][Outputs]{};
+        for (int k0 = 0; k0 < k; k0 += 16 * packet) {
+            sycl::vec<uint32_t, packet> weights_vec[Outputs];
+#pragma unroll
+            for (int o = 0; o < Outputs; ++o)
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(weights + size_t(row + o) * k + k0),
+                               weights_vec[o], prop);
+#pragma unroll
+            for (int t = 0; t < tokens; ++t) {
+                sycl::vec<uint32_t, packet> values;
+                const int tok = sycl::min(first + t, m - 1);
+                ex::group_load(sg, reinterpret_cast<const uint32_t*>(x + size_t(tok) * k + k0), values, prop);
+#pragma unroll
+                for (int j = 0; j < packet; ++j) {
+                    const float a = sycl::bit_cast<float>(static_cast<uint32_t>(values[j]));
+#pragma unroll
+                    for (int o = 0; o < Outputs; ++o)
+                        acc[t][o] += sycl::bit_cast<float>(static_cast<uint32_t>(weights_vec[o][j])) * a;
+                }
+            }
+        }
+        for (int t = 0; t < tokens && first + t < m; ++t)
+#pragma unroll
+            for (int o = 0; o < Outputs; ++o) {
+                const float value = sg_sum(it, acc[t][o]);
+                if (!sg.get_local_linear_id()) y[size_t(first + t) * n + row + o] = value;
+            }
+    });
+}
+#endif
+
 // One output row of an F32 linear by one sub-group (16 lanes, lane l sums the products of k = l, l + 16, ... in ascending k, then sg_sum). The loads of U
 // consecutive products of a lane are issued together before the U multiply-adds, which run in the same order as before, so the value is bit for bit
 // the one of the plain loop; what changes is that a row no longer waits for one memory round trip per product.
@@ -531,8 +634,34 @@ inline void k_linear_f32x3_sg16(const float* W0, const float* W1, const float* W
     });
 }
 
+inline bool use_f32_prefill_pairs(const float* w, int n, int k, const float* x, int m) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool enabled = ink_bmg_dense();
+    return enabled && m >= 32 && n <= 128 && n % 8 == 0 && k % 128 == 0 &&
+           reinterpret_cast<uintptr_t>(w) % 16 == 0 && reinterpret_cast<uintptr_t>(x) % 16 == 0;
+#else
+    (void)w; (void)n; (void)k; (void)x; (void)m;
+    return false;
+#endif
+}
+
 // F32 SG16 Linear (exact FP32 for routers, controllers, dynamic sconv weight_proj, attn_sink_proj)
 inline void k_linear_f32_sg16(const float* W, int N, int K, const float* X, float* Y, int M) {
+#ifdef INK_HAS_GROUP_LOAD
+    static const bool stream = ink_bmg_dense();
+    if (M == 1 && N <= 128 && K % 128 == 0 && stream &&
+        reinterpret_cast<uintptr_t>(W) % 16 == 0 && reinterpret_cast<uintptr_t>(X) % 16 == 0) {
+        k_streaming_gemv<false>(W, N, K, X, Y);
+        return;
+    }
+    if (use_f32_prefill_pairs(W, N, K, X, M)) {
+        if (M >= 512)
+            k_f32_prefill_pairs<4, 2>(W, N, K, X, Y, M);
+        else
+            k_f32_prefill_pairs<2, 4>(W, N, K, X, Y, M);
+        return;
+    }
+#endif
     if (N <= 1024) {
         // Few rows (the loop controllers, the router, the dynamic conv taps): one sub-group per row and one row per work-group, so the rows
         // spread over the whole GPU instead of N/16 work-groups; the arithmetic of a row is the code below, bit for bit.

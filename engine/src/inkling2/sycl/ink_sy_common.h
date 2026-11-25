@@ -356,6 +356,12 @@ inline bool ink_bmg_experts() {
     return enabled;
 }
 
+// Attention, projections, loop controllers, ShortConv and residual mixing.
+inline bool ink_bmg_dense() {
+    static const bool enabled = ink_bmg_option("INK_SYCL_BMG_DENSE");
+    return enabled;
+}
+
 inline size_t& dev_bytes_allocated() { static size_t b = 0; return b; }
 
 template <class T>

@@ -626,11 +626,20 @@ disables it.
   then gives the same bytes as `--chunk 512`, and each expanded expert weight serves all tiles of the step.
 - **Routed experts for a single token.** Fused SF4/MX8 expert dots, a top-8 router that keeps the original order
   of equal scores, and a fused MLP ShortConv and residual.
+- **Attention.** Prompt attention reads each key and value once for the three query heads that share it (32 rows
+  or more) and reuses the clipped relative bias of distant keys. A single query with at least 1,024 positions
+  spreads the eight KV streams over work-groups.
+- **Projections, controllers and mixing.** Single-token FP32 and BF16 projections use SG16 streaming GEMV. Narrow FP32
+  prompt projections reuse four token rows per weight load, and attention projections that share one input convert
+  it to FP16 once. The single-token loop controllers use a packed BF16 copy of their FP32 weights when every weight
+  converts exactly (54 MiB for SQ-20); otherwise the original controller runs. ShortConv, the controller mix and the
+  residual mix are tiled for prompts.
 
 | Process variable | Effect |
 |---|---|
 | `INK_SYCL_BMG_OPT=0` | Use the original Inkling SYCL paths for everything below. |
 | `INK_SYCL_BMG_EXPERTS=0` | Use the original routed-expert paths, including 512-row tiling of larger prompt chunks. |
+| `INK_SYCL_BMG_DENSE=0` | Use the original attention, projection, controller, ShortConv and residual-mix paths. |
 
 Configure the Inkling build with `-DSTRATA_BUILD_TESTS=ON`, build it, then run
 `ctest --test-dir build-inkling -R inkling_bmg_kernels --output-on-failure`. Add
