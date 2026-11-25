@@ -10,7 +10,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -129,6 +131,35 @@ class MainMovesFirst(unittest.TestCase):
                 mock.patch.object(setup, "update_pull", side_effect=lambda argv: order.append("pull") or 0):
             self.assertEqual(setup.main(), 0)
         self.assertEqual(order, ["move", "pull"])
+
+
+@unittest.skipIf(os.name == "nt", "setup.sh is the POSIX launcher")
+class ShellVenvMove(unittest.TestCase):
+    def test_pip_entry_point_survives_the_move_and_runs_on_an_already_moved_venv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp).resolve()
+            terminal = checkout / "terminal"
+            terminal.mkdir()
+            launcher = checkout / "setup.sh"
+            shutil.copyfile(ROOT.parent / "setup.sh", launcher)
+            (terminal / "setup.py").write_text(
+                'import subprocess\nsubprocess.run([".venv/bin/pip", "--version"], check=True)\n',
+                encoding="utf-8",
+            )
+            old = checkout / ".venv"
+            subprocess.run([sys.executable, "-m", "venv", str(old)], check=True, capture_output=True)
+            pip = old / "bin" / "pip"
+            self.assertIn(str(old / "bin"), pip.read_text(encoding="utf-8"))
+
+            for moved in (False, True):
+                with self.subTest(already_moved=moved):
+                    result = subprocess.run(["sh", str(launcher)], capture_output=True, text=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("pip ", result.stdout)
+                    self.assertTrue(old.is_symlink())
+                    self.assertTrue((terminal / ".venv" / "bin" / "pip").is_file())
+                    if not moved:
+                        old.unlink()
 
 
 if __name__ == "__main__":
