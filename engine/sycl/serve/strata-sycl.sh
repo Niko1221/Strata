@@ -3,9 +3,11 @@
 # needs the oneAPI runtime of the dev image, so this runs it there with stdin/stdout attached (the serve protocol is
 # lines on those pipes) and stderr going to the server's log. Paths in the config's args are the container's:
 # the data root is mounted at /work.
-#   STRATA_SYCL_ROOT   host directory mounted at /work        (default: two levels above this script's repo)
+#   STRATA_SYCL_ROOT   host directory mounted at /work        (default: the folder holding the checkout, which
+#                      also holds Strata-data by default, so the engine sees the models too)
 #   STRATA_SYCL_IMAGE  the runtime image                      (default: strata-sycl-dev)
-#   STRATA_SYCL_BIN    the engine binary, relative to the repo (default: build-sycl-aot/strata)
+#   STRATA_SYCL_BIN    the engine binary, relative to the checkout (default: build-sycl-aot/strata, where
+#                      sycl/tools/build.sh puts it)
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
 #   STRATA_SYCL_SHM    1 (default): the host's /dev/shm is the container's /dev/shm. Pictures: the server (on the host) writes the
 #                      image embeddings of a request into /dev/shm and names that file on the engine's GENI line, so the engine in
@@ -15,9 +17,10 @@
 # two-card split, #423), UR_, IGC_, SYCL_ or ZES_. The port's own defaults (below) are overridden the same way,
 # e.g. "env": {"STRATA_VERIFY_NO_HOST": "0"} in the config.
 set -euo pipefail
-here=$(cd "$(dirname "$0")/../.." && pwd)                 # the repo
-root=${STRATA_SYCL_ROOT:-$(dirname "$here")}
-repo_in=/work/$(basename "$here")
+engine=$(cd "$(dirname "$0")/../.." && pwd)               # the checkout's engine/ (sycl/ lives under it)
+repo=$(dirname "$engine")                                 # the Strata checkout
+root=${STRATA_SYCL_ROOT:-$(dirname "$repo")}              # its parent: the checkout plus Strata-data by default
+repo_in=/work/$(basename "$repo")
 name=${STRATA_SYCL_NAME:-strata-sycl-serve}
 docker rm -f "$name" >/dev/null 2>&1 || true              # a container left behind by a killed server
 args=""

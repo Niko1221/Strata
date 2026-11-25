@@ -8766,7 +8766,18 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     component = engine_component.is_reference(cfg["exe"])
     # The server resolves and verifies component engines; the reference itself is not a file.
     files = ([] if component else [cfg["exe"]]) + [a for a in cfg["args"] if a.endswith(".gguf")]
-    missing = [p for p in files if not Path(p).exists()]
+    # The Intel (SYCL) engine's files sit behind its container mount: the config names them as the engine sees
+    # them (/work/...), so this host-side check looks through that same mount (#5395's pattern, for the files
+    # it starts with).  A config without a sycl_root never had a /work path: for it nothing changes here.
+    sycl_root = cfg.get("sycl_root") or os.environ.get("STRATA_SYCL_ROOT")
+
+    def seen(p):
+        p = str(p)
+        if sycl_root and (p == "/work" or p.startswith("/work/")):
+            return str(Path(sycl_root) / p[len("/work/"):]) if p != "/work" else str(Path(sycl_root))
+        return p
+
+    missing = [p for p in files if not Path(seen(p)).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
     keep = {k: v for k, v in (keep or {}).items() if v is not None}

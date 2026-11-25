@@ -204,7 +204,8 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--ple-io") + 1], "ram")
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "300")
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
-        self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+        # #6400 #1: strata-sycl.sh runs the engine from the checkout, so the binary path is relative to it
+        self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "engine/build-sycl/strata")
 
     def test_gyro_memory_warning_reads_the_real_ram(self):
         # setup's RAM rule is fed 1024 GB on the Intel path; Gyro counts VRAM + RAM, so it must see the real RAM
@@ -237,6 +238,46 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.split_likely_short(77.0, [32.0, 32.0]))
         self.assertFalse(m.split_likely_short(0, [24.0]))
         self.assertFalse(m.split_likely_short(40.0, []))
+
+    def test_build_sh_output_needs_no_env_at_all(self):
+        # #6400 #1: the docs' Docker recipe builds to <checkout>/build-sycl-aot/strata - the wrapper's own
+        # default; with that build the config carries neither STRATA_SYCL_BIN nor STRATA_SYCL_ROOT
+        m = self.mod()
+        c = m.to_sycl({"args": ["--max-context", "32768"]}, m.REPO / "build-sycl-aot" / "strata", 64.0, {}, 24.0, "xe")
+        self.assertNotIn("STRATA_SYCL_BIN", c.get("env", {}))
+        self.assertNotIn("STRATA_SYCL_ROOT", c.get("env", {}))
+
+    def test_a_jit_build_in_the_checkout_reaches_the_wrapper(self):
+        m = self.mod()
+        c = m.to_sycl({"args": ["--max-context", "32768"]}, m.REPO / "build-sycl" / "strata", 64.0, {}, 24.0, "xe")
+        self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+
+    def test_the_sycl_build_folders_of_both_roots_are_searched(self):
+        # sycl_engine() finds a build wherever the documented recipes put it, AOT first, the checkout's before engine/'s
+        m = self.mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            names = [root / "repo" / "build-sycl-aot" / "strata", root / "repo" / "engine" / "build-sycl" / "strata"]
+            for p in names:
+                p.parent.mkdir(parents=True)
+                p.write_text("x")
+            with mock.patch.object(m, "BIN_CANDIDATES", tuple(names)), mock.patch.object(m.S, "WIN", False):
+                exe, why = m.sycl_engine()
+            self.assertEqual(exe, names[0])
+            self.assertIsNone(why)
+            names[0].unlink()
+            with mock.patch.object(m, "BIN_CANDIDATES", tuple(names)), mock.patch.object(m.S, "WIN", False):
+                exe, why = m.sycl_engine()
+            self.assertEqual(exe, names[1])
+
+    def test_data_folder_next_to_the_checkout_is_mounted_not_refused(self):
+        # #6400 #2: Strata-data sits beside the checkout; the container mounts the folder holding both
+        m = self.mod()
+        self.assertEqual(str(m.MOUNT), str(m.REPO.parent))
+        self.assertEqual(m.sycl_path(m.REPO.parent / "Strata-data" / "models" / "IQ1_M"),
+                         "/work/Strata-data/models/IQ1_M")
+        self.assertEqual(m.sycl_path(m.REPO / "engine" / "build-sycl-aot" / "strata"),
+                         "/work/Strata/engine/build-sycl-aot/strata")
 
     def test_small_card_rule(self):
         m = self.mod()

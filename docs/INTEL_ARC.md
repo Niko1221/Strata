@@ -110,8 +110,8 @@ cmake --build build-sycl --target strata
 | `-DSTRATA_SYCL_AOT=bmg-g21` | The same for B580, B570 and Pro B60 |
 | `-DSTRATA_SYCL_PARITY=OFF` | Skip the kernel tests (on by default). Run them with `ctest --test-dir build-sycl` on the card. |
 
-`setup_intel.py` looks for `build-sycl-aot/strata` or `build-sycl/strata` in the checkout. With the top-level option the
-engine is at `build-sycl/sycl/strata`, so use `-S sycl` or set `STRATA_SYCL_BIN`.
+`setup_intel.py` finds the engine in either build folder and either nesting: `build-sycl-aot/strata`,
+`build-sycl/strata` or `build-sycl/sycl/strata`, in the checkout or in `engine/`. `STRATA_SYCL_BIN` names one of your own.
 
 ## Setup and running
 
