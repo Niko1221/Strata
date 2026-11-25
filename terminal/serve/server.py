@@ -4272,6 +4272,12 @@ def refuse_for_split(engine, req: dict) -> None:
         raise ValueError("logprobs: not supported by the all-cards split engine; start with --split-engine off")
 
 
+#: #7084: Inkling's thinking budget stays armed after a wrap-up, for a thinking turn the model opens again: at most this many tokens of it (or the budget, when smaller).
+#: 0 spends the budget once, as 0.2.21 did.
+INKLING_REWRAP_BUDGET = 512
+INKLING_ANSWER_OPENER = "<|message_model|><|content_text|>"     # what opens the model's text turn (finish_prompt's, the empty-reply retry's)
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -6207,7 +6213,7 @@ class Service:
                         rate.clear()                    # the previous request's samples must not leak into this one
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
-                    prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    prompt, thought, wraps = ids, 0, 0  # thought: the reasoning tokens so far (the budget's count); wraps: the wrap-ups done
                     # the engine stops at the budget itself (HOLD_KEY), when it can and </think> is one token: a --batch engine
                     # only when its slots say they hold too (READY holdb)
                     hold_end = None
@@ -6506,8 +6512,19 @@ class Service:
                         # A forced call (tool_choice) is opened the same way: after the wrap-up, or where the
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
-                            budget = st["thinking_budget"] = None
-                            text = (getattr(parser, "wrap_up", None) or REASONING_WRAP_UP) + (force or "")
+                            wraps += 1
+                            reached, opener = thought, ""
+                            if self.inkling and INKLING_REWRAP_BUDGET > 0 and budget:
+                                # #7084: the model may open a second thinking turn after the wrap-up; with the budget cleared nothing capped it (32,000 hidden
+                                # tokens, an empty reply).  Keep it armed for such a turn, shorter; the second wrap-up also opens the text turn so the model answers.
+                                budget = min(budget, INKLING_REWRAP_BUDGET)
+                                st["thinking_budget"] = budget
+                                thought = 0
+                                if wraps >= 2 and not force:
+                                    opener = INKLING_ANSWER_OPENER
+                            else:
+                                budget = st["thinking_budget"] = None
+                            text = (getattr(parser, "wrap_up", None) or REASONING_WRAP_UP) + opener + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6518,7 +6535,8 @@ class Service:
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
-                            print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
+                            print(f"[strata] thinking budget reached ({reached} tokens): wrapping up the thinking"
+                                  + (" (a thinking turn the model opened again: the answer is opened too)" if opener else ""),
                                   flush=True)
                         for t in extra:
                             n += 1
