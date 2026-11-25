@@ -4,6 +4,7 @@
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 #include "ink_backend.h"
 #include "ink_batch.h"
+#include "ink_ckpt_lru.h"
 #include "ink_manifest.h"
 
 #include "ink_cuda.cuh"
@@ -369,6 +370,11 @@ public:
         snap_M_.assign(max_slots_, 0);
         prompt_ckpts_.assign(max_slots_, PromptCkpt{});
         shared_ckpts_.assign(max_slots_, PromptCkpt{});
+        prompt_ckpt_use_.assign(max_slots_, 0);
+        prompt_ckpt_slots_ = ink2::ink_prompt_ckpt_slots(max_slots_, std::getenv("STRATA_INK_PROMPT_CKPT_SLOTS"));
+        if (max_slots_ > 8) {
+            std::fprintf(stderr, "[InkCUDA] prompt-end checkpoints: %d of %d slots (STRATA_INK_PROMPT_CKPT_SLOTS)\n", prompt_ckpt_slots_, max_slots_);
+        }
         initialized_ = true;
         return true;
     }
@@ -455,7 +461,18 @@ public:
 
     bool save_checkpoint(int slot, int seq_len, bool shared) {
         if (!initialized_ || slot < 0 || slot >= max_slots_ || (!model_.ls_active && !d_sconv_snap_)) return false;
-        if (seq_len <= 0 || max_slots_ > 8) return false;
+        if (seq_len <= 0) return false;
+        if (shared ? max_slots_ > 8 : prompt_ckpt_slots_ <= 0) return false;
+        if (!shared) {
+            // above 8 slots at most prompt_ckpt_slots_ checkpoints stay; the least recently used other slot gives its one up (and its RAM)
+            std::vector<bool> valid(prompt_ckpts_.size());
+            for (size_t s = 0; s < valid.size(); ++s) valid[s] = prompt_ckpts_[s].valid;
+            for (int v; (v = ink2::ink_prompt_ckpt_victim(valid, prompt_ckpt_use_, slot, prompt_ckpt_slots_)) >= 0;) {
+                prompt_ckpts_[v] = PromptCkpt{};
+                valid[v] = false;
+            }
+            prompt_ckpt_use_[slot] = ++prompt_ckpt_clock_;
+        }
         auto& ck = (shared ? shared_ckpts_ : prompt_ckpts_)[slot];
         ck.valid = false;
         ck.seq_len = seq_len;
@@ -550,6 +567,7 @@ public:
         if (slot >= (int)ckpts.size()) return false;
         const auto& ck = ckpts[slot];
         if (!ck.valid || ck.seq_len != seq_len) return false;
+        if (!shared) prompt_ckpt_use_[slot] = ++prompt_ckpt_clock_;
         snap_active_[slot] = false;
         if (slot == 0) tree_snap_ready_ = false;
         // 1. Restore ShortConv state
@@ -1226,6 +1244,9 @@ private:
     std::vector<int> snap_M_;
     std::vector<PromptCkpt> prompt_ckpts_;
     std::vector<PromptCkpt> shared_ckpts_;
+    int prompt_ckpt_slots_ = 0;                 // slots that may hold a prompt-end checkpoint at once (ink_ckpt_lru.h)
+    std::vector<uint64_t> prompt_ckpt_use_;     // per slot: clock of its checkpoint's last save / restore
+    uint64_t prompt_ckpt_clock_ = 0;
     bool tree_snap_ready_ = false;
     int tree_snap_p0_ = 0;
     int tree_snap_M_ = 0;
