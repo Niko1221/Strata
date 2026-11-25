@@ -4293,8 +4293,8 @@ class Service:
             self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
         except ValueError:
             self.inkling_thinking_budget = None
-        # #7133: a thinking budget a CLIENT asks for (Anthropic budget_tokens, reasoning_budget_tokens and its aliases) is capped at the default budget of the level it
-        # maps to, so Claude Code's 31,999 is 8,192 (high), not minutes of hidden thinking.  STRATA_INKLING_BUDGET_CAP=0 / the config's inkling_budget_cap false: the full budget.
+        # #7133: Claude Code's DEFAULT thinking budget (budget_tokens 31999 on /v1/messages) is held to the default budget of the level it maps to, so 31,999 is 8,192 (high), not
+        # minutes of hidden thinking; any other budget a client sends is used as it is.  STRATA_INKLING_BUDGET_CAP=0 / the config's inkling_budget_cap false: the full budget.
         self.inkling_budget_cap = os.environ.get("STRATA_INKLING_BUDGET_CAP", "").strip().lower() not in ("0", "false", "no", "off")
         self.inkling_budget_cap_said = False          # the line that says a client's budget was lowered is printed once
         self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
@@ -4757,13 +4757,16 @@ class Service:
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
-        if from_client and value > 0 and getattr(self, "inkling", False) and getattr(self, "inkling_budget_cap", True):
-            cap = self.inkling_default_budget(req.get("strata_effort"))          # #7133: a client may lower the level's budget, not raise it (0: no default, so no cap)
+        if (from_client and value > 0 and req.get("strata_default_thinking_budget") is True and getattr(self, "inkling", False)
+                and getattr(self, "inkling_budget_cap", True)):
+            # #7133 (owner, option B): only Claude Code's own default (thinking.budget_tokens 31999 on /v1/messages, marked by the frontend) is held to the default of its level
+            # (0: no default configured, so no cap); every other number a client sends goes through as it was
+            cap = self.inkling_default_budget(req.get("strata_effort"))
             if cap and value > cap:
                 if announce and not self.inkling_budget_cap_said:
                     self.inkling_budget_cap_said = True
-                    print(f"[strata] a client asked for a thinking budget of {value} tokens; Inkling thinks at most {cap} at this level "
-                          "(inkling_budget_cap false in the run config, or STRATA_INKLING_BUDGET_CAP=0, keeps what the client asks for)", flush=True)
+                    print(f"[strata] the client's default thinking budget of {value} tokens is held to {cap} for Inkling at this level "
+                          "(inkling_budget_cap false in the run config, or STRATA_INKLING_BUDGET_CAP=0, keeps the full budget)", flush=True)
                 value = cap
         return value if value > 0 else None
 
@@ -9710,7 +9713,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise SystemExit(f"[strata] config \"inkling_thinking_budget\" must be a whole number of tokens (0: none), not {v!r}")
         svc.inkling_thinking_budget = v
-    if cfg.get("inkling_budget_cap") is not None:          # #7133: false = a client's thinking budget is used as asked (else capped at its level's default); STRATA_INKLING_BUDGET_CAP=0 does the same
+    if cfg.get("inkling_budget_cap") is not None:          # #7133: false = Claude Code's default thinking budget is used as asked (else held to its level's default); STRATA_INKLING_BUDGET_CAP=0 does the same
         if not isinstance(cfg["inkling_budget_cap"], bool):
             raise SystemExit(f"[strata] config \"inkling_budget_cap\" must be true or false, not {cfg['inkling_budget_cap']!r}")
         svc.inkling_budget_cap = cfg["inkling_budget_cap"]

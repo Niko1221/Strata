@@ -222,6 +222,11 @@ def effort_kwargs(value) -> dict:
     return {"enable_thinking": False} if level is None else {"reasoning_effort": level}
 
 
+#: Claude Code's default thinking budget on /v1/messages (`thinking: {type: enabled, budget_tokens: 31999}`; its maximum output tokens, 32,000, less one). Only this exact
+#: number marks a request as "the client's default" (#7133); any other budget is a number somebody chose.
+CLIENT_DEFAULT_THINKING_BUDGET = 31999
+
+
 def budget_effort(tokens) -> dict:
     """Anthropic's thinking budget (budget_tokens) -> a level: under 2K low, under 8K medium, else high (clamped through EFFORT for Hy4-Flash)."""
     try:
@@ -934,6 +939,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     bt = thinking.get("budget_tokens") if isinstance(thinking, dict) and thinking.get("type") != "disabled" else None
     if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0 and req.get("reasoning_budget_tokens") is None:
         req["reasoning_budget_tokens"] = bt
+        if bt == CLIENT_DEFAULT_THINKING_BUDGET:
+            req["strata_default_thinking_budget"] = True       # #7133: Claude Code's own default, not a number somebody chose (Service.reasoning_budget caps only this one)
     if isinstance(thinking, dict) and thinking.get("type") == "disabled":
         kwargs["enable_thinking"] = False
     elif effort:
