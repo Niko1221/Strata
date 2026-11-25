@@ -48,6 +48,9 @@ async function startHost(extraEnv = {}, spawnOptions = {}) {
   });
   let up = false;
   for (let i = 0; i < 120 && !up; i++) { try { up = (await fetch(`http://127.0.0.1:${port}/api/health`)).ok; } catch { await delay(100); } }
+  // A host that is not up yet is still starting (a loaded machine): the caller gets no handle to end it, and a live child keeps this
+  // test file from ever exiting, which held the whole suite. End it here before failing.
+  if (!up) { host.kill('SIGKILL'); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
   assert.ok(up, 'host started');
   return { host, port, home, done: () => rm(home, { recursive: true, force: true }) };
 }

@@ -125,3 +125,32 @@ test('the wait ends as soon as the other chat is done: the restart happens and t
   const text = await sentence(y);
   assert.ok(!text || !/Tools settings are not in use yet/.test(text), text);
 });
+
+test('closing cancels a restart waiting for another chat and stops the current Harness', async t => {
+  const entered = deferred();
+  const release = deferred();
+  const r = rig(t, {
+    hold: async () => { entered.resolve(); await release.promise; },
+  });
+  const active = r.turn('chat-x');
+  await entered.promise;
+  r.tools.update({ blockedFolders: { add: join(r.dir, 'private') } });
+  const waiting = r.turn('chat-y');
+  await new Promise(setImmediate); // allow the restart to reach its wait for chat-x
+
+  let closed = false;
+  const closing = r.bridge.close().then(() => { closed = true; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(closed, true, 'close completed while the other chat was still held');
+    assert.deepEqual(r.stops, [1]);
+    assert.equal((await waiting.done).thrown?.code, 'agent-closed');
+    assert.equal((await r.turn('chat-z').done).thrown?.code, 'agent-closed');
+    assert.equal(r.starts.length, 1, 'the restart never launched a second Harness');
+  } finally {
+    await r.bridge.stop('chat-y');
+    await r.bridge.stop('chat-x');
+    release.resolve();
+    await Promise.all([closing, active.done, waiting.done]);
+  }
+});

@@ -168,10 +168,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const home = join(root, 'home');
   const checkpointDir = join(root, 'update-checkpoints', randomUUID());
   const pauseMarker = join(checkpointDir, 'paused');
+  const lifetime = new AbortController();
+  let closing;
   let updatePaused = false;
   let preparation;
   function allowWork() {
     if (updatePaused) throw new AgentUnavailable('Agent work is paused for the Strata update. Restart Strata to resume.', 'update-paused');
+    lifetime.signal.throwIfAborted();
   }
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
@@ -239,11 +242,18 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     models: 'Another chat is still working and the list of models changed. Try again when it finishes.',
   };
   const waitIdle = (signal, ms, why = 'models') => new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
     if (busyChats() === 0) return resolve();
-    const timer = setTimeout(() => { idleWaiters.delete(done); reject(new AgentUnavailable(BUSY_WORDS[why] ?? BUSY_WORDS.models, 'agent-busy')); }, ms);
-    const done = () => { clearTimeout(timer); resolve(); };
+    const clear = () => {
+      clearTimeout(timer);
+      idleWaiters.delete(done);
+      signal.removeEventListener('abort', abort);
+    };
+    const done = () => { clear(); resolve(); };
+    const abort = () => { clear(); reject(signal.reason); };
+    const timer = setTimeout(() => { clear(); reject(new AgentUnavailable(BUSY_WORDS[why] ?? BUSY_WORDS.models, 'agent-busy')); }, ms);
     idleWaiters.add(done);
-    signal?.addEventListener('abort', () => { clearTimeout(timer); idleWaiters.delete(done); reject(signal.reason ?? new Error('aborted')); }, { once: true });
+    signal.addEventListener('abort', abort, { once: true });
   });
 
   /** The agent's profile now, plus where its shaped routes really lead (read by the forwarding endpoint). */
@@ -309,9 +319,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         for (const c of chats.values()) if (c.turn?.runtime.hp === hp) c.turn.abortFromRuntime('The agent process stopped before this turn finished.');
       },
     });
-    const info = await hp.start({ timeoutMs: startTimeoutMs });
+    const info = await hp.start({ timeoutMs: startTimeoutMs, signal: lifetime.signal });
     const gw = new GatewayClient({ baseUrl: info.baseUrl, token: info.token });
-    try { await gw.connect({ signal: AbortSignal.timeout(controlRpcMs) }); }
+    try {
+      await gw.connect({ signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(controlRpcMs)]) });
+      lifetime.signal.throwIfAborted();
+    }
     catch (e) { gw.close(); await hp.stop(); throw e; }
     const next = { hp, gw, profile, clientId: null, generation: ++generation, events: null };
     next.events = gw.openStream('$events', {}, {
@@ -322,6 +335,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     lastError = null;
     log(`agent · Harness ${h.version ?? ''} ready (pid ${hp.pid}, ${profile.routes.length} route(s))`);
     return next;
+  }
+
+  async function stopRuntime() {
+    const runtime = rt;
+    rt = null;
+    if (!runtime) return;
+    runtime.events?.close();
+    runtime.gw.close();
+    await runtime.hp.stop();
   }
 
   /** The local engine's own speed for this turn's requests (null when it cannot be read: the stream's estimate stays). */
@@ -349,10 +371,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       starting = (async () => {
         if (rt?.hp.running) {
           const why = rt.profile.optimizerKey !== profile.optimizerKey ? 'optimizer' : rt.profile.toolsKey !== profile.toolsKey ? 'tools' : 'models';
-          await waitIdle(signal, restartWaitMs, why);
-          const old = rt; rt = null;
-          old.events?.close(); old.gw.close(); await old.hp.stop();
+          const waitSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+          await waitIdle(waitSignal, restartWaitMs, why);
+          lifetime.signal.throwIfAborted();
+          await stopRuntime();
         }
+        lifetime.signal.throwIfAborted();
         try {
           if (!startRuntimeImpl) return await startRuntime(profile);
           // (tests) a runtime made by the caller, installed the way startRuntime installs its own
@@ -2119,10 +2143,18 @@ ${note.text}
     }
   }
 
-  async function close() {
-    for (const c of chats.values()) { c.wake?.close(); c.wake = null; }
-    const r = rt; rt = null;
-    if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
+  function close() {
+    if (!closing) {
+      closing = Promise.resolve().then(async () => {
+        for (const c of chats.values()) { c.wake?.close(); c.wake = null; }
+        if (starting) await starting.catch(() => {});
+        await stopRuntime();
+      });
+      // A turn's Stop can leave a shared launch running. Closing owns its cancellation
+      // and also releases a restart waiting for other chats to finish.
+      lifetime.abort(new AgentUnavailable('The coding assistant is shutting down.', 'agent-closed'));
+    }
+    return closing;
   }
 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
