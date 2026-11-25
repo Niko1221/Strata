@@ -16,7 +16,7 @@ Model availability, provider preference and API details are in [AI_REFERENCE.md]
 
 - Check OS, CPU architecture, graphics cards, driver, available RAM/VRAM and free disk space.
 - Use the [hardware guides](INSTALL.md#what-you-need). Linux and Windows packages are x86-64; Mac packages are
-  Apple Silicon and need macOS 15 or newer. Older GPUs, Intel Arc and low-memory machines have specific limits.
+  Apple Silicon and need macOS 15 or newer (on macOS 15 the Qwen engine reads prompts about 10x more slowly, see [MAC.md](MAC.md#limits-this-version)). Older GPUs, Intel Arc and low-memory machines have specific limits.
 - Model support is separate from hardware support. <!-- cap:summary:qwen36 -->Qwen3.6-35B-A3B runs in the desktop app and in the Terminal. Hardware: NVIDIA on Windows; NVIDIA on Linux; AMD on Windows; AMD on Linux. Package present but not tested: NVIDIA DGX Spark. Does not run on: Intel Arc on Linux, Apple silicon. Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#qwen36).<!-- /cap -->
 - Check the **chosen pack's** memory and disk needs. Do not reuse a Flash-Next estimate for every family.
   Unified memory is one pool, not RAM plus VRAM. A completed download does not establish that a model can run.

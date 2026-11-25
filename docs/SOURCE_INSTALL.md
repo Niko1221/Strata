@@ -97,7 +97,7 @@ STRATA_PYTHON="$PWD/.venv/bin/python3" terminal/bin/strata monitor --url http://
 
 ## From source: Mac
 
-Use an Apple Silicon Mac with macOS 15 or newer. Install Apple's Command Line Tools once:
+Use an Apple Silicon Mac with macOS 15 or newer (on macOS 15 the Qwen engine reads prompts about 10x more slowly than on macOS 26; see [MAC.md](MAC.md#limits-this-version)). Install Apple's Command Line Tools once:
 
 ```bash
 xcode-select --install
