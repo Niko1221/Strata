@@ -78,6 +78,8 @@ Two invariants were checked rather than assumed, and they are the reason this ta
 
 What this does not cover: Inkling was never built for CUDA (the lane is not in the sm_70 task line), Hy4 was compiled but never loaded on CUDA, the sm_70 leg is a single card with no layer split, and both vision runs are on the AMD arches only. A pre-sm_75 CUDA build of this tree needs `-DSTRATA_EXPERIMENTAL_SM60=ON` and a CUDA 12.x toolkit; CUDA 13 dropped sm_70 and fails the compiler test at `compute_70`. That is a property of the tree rather than of this branch — a control build of stock `d46f5f268` fails identically.
 
+One trap from the sm_70 leg is worth passing on. CUDA's `FASTEST_FIRST` device order does not match `nvidia-smi`'s enumeration, so `CUDA_VISIBLE_DEVICES=1` selected a 4 GiB GTX 1650 rather than the V100 and died in `cudaMalloc` inside the model load. Selecting the card by UUID (`nvidia-smi --query-gpu=uuid -i 1`) fixes it. On a mixed-VRAM box that failure is indistinguishable from an engine defect until you watch the memory delta, so confirm which card you picked before calling a lane broken.
+
 ## 5. Not tested
 
 - **No soak on this tree.** The 12 h soak in §3 ran on 0.1.45; nothing of that length has been run on engine 0.1.67, so leak, drift and sustained-heat behaviour of the current tree are unmeasured.
