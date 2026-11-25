@@ -77,6 +77,7 @@ int main() {
     CHECK(!pcie_auto_hip_default("gfx1030", true, false, "old"));
     CHECK(!pcie_auto_hip_default("gfx1030", true, false, "0"));
     CHECK(!pcie_auto_hip_default("gfx1010", true, false, nullptr));
+    CHECK(!pcie_auto_hip_default("gfx1012", true, false, nullptr));   // RDNA1 keeps the old share: no measurement for it
     CHECK(!pcie_auto_hip_default(nullptr, true, false, nullptr));
     CHECK(pcie_auto_hip_default("gfx1100", true, false, "auto"));
     CHECK(pcie_auto_hip_default("gfx1036", false, true, "auto"));

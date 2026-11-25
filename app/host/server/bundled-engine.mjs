@@ -133,7 +133,7 @@ export function gpuBackendHere(env = process.env, options = {}) {
   return gpuBackendsHere(env, options)[0] ?? null;
 }
 
-const HIP_FAMILIES = [['RX 9000', ['gfx1200', 'gfx1201']], ['RX 7000', ['gfx1100', 'gfx1101', 'gfx1102']], ['RX 6000', ['gfx1030', 'gfx1031']], ['Ryzen AI Max', ['gfx1151']]];
+const HIP_FAMILIES = [['RX 9000', ['gfx1200', 'gfx1201']], ['RX 7000', ['gfx1100', 'gfx1101', 'gfx1102']], ['RX 6000', ['gfx1030', 'gfx1031', 'gfx1032']], ['RX 5000', ['gfx1010', 'gfx1011', 'gfx1012']], ['Ryzen AI Max', ['gfx1151']]];
 const MAKE_NAME = { cuda: 'NVIDIA', hip: 'AMD', sycl: 'Intel' };
 
 /** The plain sentence for a build made for another make of graphics card than this PC has. */

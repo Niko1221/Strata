@@ -337,6 +337,17 @@ class WindowsAmd(unittest.TestCase):
         script = (Path(__file__).resolve().parents[2].parent / "tools" / "packaging" / "build_hip_linux.sh").read_text(encoding="utf-8")
         self.assertIn("rx6000) ARCHS=${ARCHS:-gfx1030;gfx1031;gfx1032}", script)
 
+    def test_the_rx5500xt_is_an_rdna1_card(self):
+        """Navi 14 (gfx1012) is known by its Windows device ids and its name; the Linux rdna1 recipe builds it."""
+        for did in (0x7340, 0x7341, 0x7347, 0x734F):
+            self.assertEqual(ec.WIN_AMD_DEVICE_ARCH[did], "gfx1012")
+        self.assertEqual(ec.gfx_from_name("AMD Radeon RX 5500 XT"), "gfx1012")
+        self.assertEqual(ec.hip_family("gfx1012"), "RX 5000")
+        self.assertEqual([c["arch"] for c in ec.windows_amd_cards([
+            {"vendor": "1002", "device": 0x9999, "name": "AMD Radeon RX 5500 XT", "vram_gb": 8.0}])], ["gfx1012"])
+        script = (Path(__file__).resolve().parents[2].parent / "tools" / "packaging" / "build_hip_linux.sh").read_text(encoding="utf-8")
+        self.assertIn("rdna1)  ARCHS=${ARCHS:-gfx1012}", script)
+
     def test_the_arch_table_is_the_one_setup_uses(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         import setup as strata_setup

@@ -37,7 +37,7 @@ too and cannot hold any of the model.
 | RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated. The #540 attention kernel is the default there (`STRATA_ATTN_PRE75=0` runs the standard kernel). See [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
 | RX 6700 XT | gfx1031 | setup (`--backend hip`), unvalidated; used daily by its reporter on one card |
 | RX 6600 / 6600 XT / 6650 XT | gfx1032 | the ready-made RX 6000 engine (from 0.2.16), unvalidated: built, not tested on a real RX 6600. One RX 6650 XT 8 GB ran a model on a self-built engine (#1375). See [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
-| RX 5500 XT (RDNA1) | gfx1012 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1012` (HIP 5.7 or 7) |
+| RX 5500 XT (RDNA1) | gfx1012 | setup detects it and builds from source on Linux (no package; compiled and device-enumerated on one ROCm 6.4 Windows host, model run unvalidated); see [AMD_HIP.md](AMD_HIP.md#rdna1-gfx1012) |
 | RX 5700 XT (RDNA1) | gfx1010 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1010` on ROCm 7.14's `gfx101X-dgpu` wheels; needs `ROCR_VISIBLE_DEVICES=0` on a PC that also has an AMD iGPU |
 | RX 5700, 6 GB RX 5600 (RDNA1) | gfx1010 | as above; a 6 GB card leaves about 50 expert slots |
 | Radeon PRO V520 / Pro 5600M (RDNA1) | gfx1011 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1011`; builds with 0 errors, untested on hardware |
@@ -305,9 +305,15 @@ Setup does not build these. Build by hand and run `terminal/serve/server.py` wit
   -DCMAKE_HIP_ARCHITECTURES=gfx906` (not `STRATA_ENABLE_HIP`). Current ROCm no longer ships gfx906 libraries; the reporter used a
   community ROCm 7.14 image. Recipe, kernels and measurements:
   [AMD_HIP.md](AMD_HIP.md#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source).
-- **gfx1012** (RX 5500 XT): the wave32 backend, `-DSTRATA_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1012`. HIP 5.7 (Ubuntu's
-  packages) works: older hipBLAS is used through rocBLAS, legacy HIP names and the missing `__syncwarp` are version-gated, and
-  RDNA1's missing signed dot4 uses llama.cpp's SDWA sequence (`-DSTRATA_GFX1012_PORTABLE_DOT=ON`: the portable one).
+- **gfx1012** (RX 5500 XT): the wave32 backend, `-DSTRATA_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1012`. Setup now
+  detects the card by its KFD version (100102) or its Windows adapter (PCI `1002:7340` / the RX 5500 XT name), lists it as
+  usable and, on Linux, installs the `gfx101X-dgpu` ROCm wheels and builds it; no engine package is published for it and the
+  maintainers have not run a model on it. A source build with `-DCMAKE_HIP_ARCHITECTURES=gfx1012` completed on one
+  ROCm 6.4 Windows host and `strata-device.exe --list-devices` reported `gfx1012` / `wave32`. A hand build works too: HIP
+  5.7 (Ubuntu's packages) works, older hipBLAS is used through rocBLAS, legacy HIP names and the missing `__syncwarp` are
+  version-gated, and RDNA1's missing signed dot4 uses llama.cpp's SDWA sequence
+  (`-DSTRATA_GFX1012_PORTABLE_DOT=ON`: the portable one). More details and the report requested are in
+  [AMD_HIP.md](AMD_HIP.md#rdna1-gfx1012).
 
 ## Reports welcome
 

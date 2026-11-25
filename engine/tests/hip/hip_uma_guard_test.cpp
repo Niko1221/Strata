@@ -17,6 +17,10 @@ int main() {
     assert(classify_amd_gen("gfx1103") == AmdGen::Rdna3);
     assert(classify_amd_gen("gfx1030") == AmdGen::Rdna2);
     assert(classify_amd_gen("gfx1031") == AmdGen::Rdna2);
+    // RDNA1 deliberately keeps the Unknown/portable path; promoting it would reach WMMA code it cannot run.
+    assert(classify_amd_gen("gfx1010") == AmdGen::Unknown);
+    assert(classify_amd_gen("gfx1012") == AmdGen::Unknown);
+    assert(classify_amd_gen("gfx1012:xnack-") == AmdGen::Unknown);
 
     // 2. iGPU identification
     assert(is_known_amd_igpu_arch("gfx1103"));

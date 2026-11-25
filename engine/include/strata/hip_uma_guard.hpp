@@ -47,6 +47,9 @@ inline bool arch_is_exact(const char* arch, const char* name) noexcept {
 }
 
 inline AmdGen classify_amd_gen(const char* gcn_arch) noexcept {
+    // RDNA1 (gfx1010 / gfx1011 / gfx1012) deliberately stays Unknown: the portable call sites below treat Unknown
+    // like RDNA2, which is the path gfx101x already took.  Adding an Rdna1 value here would silently promote it to
+    // the RDNA3/RDNA4 WMMA paths, whose instructions do not exist on RDNA1.
     if (!gcn_arch || !*gcn_arch) return AmdGen::Unknown;
     if (arch_is_prefix(gcn_arch, "gfx120")) return AmdGen::Rdna4;
     if (arch_is_prefix(gcn_arch, "gfx115")) return AmdGen::Rdna35;

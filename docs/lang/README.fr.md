@@ -151,6 +151,7 @@ Suivez les invites pour télécharger et démarrer un modèle. [Guide du Termina
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50** | [Installation NVIDIA](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [Installation AMD](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · expérimental** | [Installation RX 6000](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · expérimental, compilation depuis les sources** | [Installation RDNA1](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Installation Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 ou plus récent** | [Installation sur Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Installation Strix Halo](../STRIX_HALO.md) |

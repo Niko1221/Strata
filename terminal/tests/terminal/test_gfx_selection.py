@@ -67,7 +67,8 @@ class Names(unittest.TestCase):
         table = {"AMD Radeon RX 9070 XT": "gfx1201", "AMD Radeon RX 9060 XT": "gfx1200", "AMD Radeon AI PRO R9700": "gfx1201",
                  "AMD Radeon RX 7900 XTX": "gfx1100", "AMD Radeon RX 7800 XT": "gfx1101", "AMD Radeon RX 7700 XT": "gfx1101",
                  "AMD Radeon RX 7600 XT": "gfx1102", "AMD Radeon(TM) 8060S Graphics": "gfx1151", "AMD Radeon 780M Graphics": "gfx1103",
-                 "AMD Radeon 890M Graphics": "gfx1150", "AMD Radeon RX 6800 XT": "gfx1030", "NVIDIA GeForce RTX 4090": "", "": ""}
+                 "AMD Radeon 890M Graphics": "gfx1150", "AMD Radeon RX 6800 XT": "gfx1030",
+                 "AMD Radeon RX 5500 XT": "gfx1012", "NVIDIA GeForce RTX 4090": "", "": ""}
         for name, gfx in table.items():
             self.assertEqual(ec.gfx_from_name(name), gfx, name)
 

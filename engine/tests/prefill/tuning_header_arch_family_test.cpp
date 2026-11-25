@@ -89,6 +89,9 @@ int main() {
         // The pair a five-character prefix match would wrongly group: both are "gfx10", neither is a sibling.
         {"gfx1010", 100202, "gfx1030", 100202, false, "RDNA1 table on RDNA2: a shared prefix is not a family"},
         {"gfx1030", 100202, "gfx1010", 100202, false, "RDNA2 table on RDNA1, symmetric direction"},
+        {"gfx1012", 100202, "gfx1030", 100202, false, "RX 5500 XT's Navi 14 (gfx1012) is RDNA1, not an RDNA2 sibling"},
+        {"gfx1030", 100202, "gfx1012", 100202, false, "RDNA2 table on gfx1012, symmetric direction"},
+        {"gfx1012", 100202, "gfx1012", 100202, true, "exact match works even though no table ships for it"},
         // RDNA3.5 siblings (gfx1150 / gfx1151 / gfx1152 / gfx1153) share the family rule, distinct from RDNA3 (gfx1100..1102).
         {"gfx1151", 100500, "gfx1150", 100500, true, "RDNA3.5 sibling: Strix Halo table on Strix Point"},
         {"gfx1151", 100500, "gfx1153", 100500, true, "RDNA3.5 sibling: Strix Halo table on Ryzen AI 400 (gfx1153)"},

@@ -151,6 +151,7 @@ strata launch
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50 系列** | [NVIDIA 安装](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900、RX 9060 / 9070、AI PRO R9700** | [AMD 安装](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · 实验性** | [RX 6000 安装](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · 实验性，源码编译** | [RDNA1 安装](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Intel 安装](../INTEL_ARC.md) |
 | **Apple Silicon · M1 或更新** | [Mac 安装](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo 安装](../STRIX_HALO.md) |

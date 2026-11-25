@@ -87,6 +87,10 @@ class KfdDetection(unittest.TestCase):
         # #1375: the RX 6600 / 6600 XT / 6650 XT (gfx1032) takes the same RDNA2 wheels and dp4a path as gfx1030/gfx1031
         self.assertEqual(setup.ROCM_INDEXES["gfx1032"], setup.ROCM_INDEXES["gfx1030"])
         self.assertIsNone(setup.amd_problem({"arch": "gfx1032"}))
+        # RDNA1 (RX 5500 XT): the wave32 backend from the gfx101X wheels; setup has no pinned version in that index
+        self.assertTrue(setup.ROCM_INDEXES["gfx1012"].endswith("/gfx101X-dgpu/"))
+        self.assertIsNone(setup.amd_problem({"arch": "gfx1012"}))
+        self.assertNotIn("gfx1012", setup.ROCM_FAMILY_PINS)
 
 
 class Rx6000Detection(KfdDetection):
@@ -122,6 +126,40 @@ class Rx6000Detection(KfdDetection):
             self.assertEqual(setup.win_amd_arch(device, ""), arch)
         self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
         self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")      # an RX 7000 card is not RDNA2
+
+
+class RDNA1Detection(KfdDetection):
+    """The RX 5500 XT (gfx1012): KFD version 100102 names the card, setup builds the engine from source,
+    and the note is for RDNA1 only."""
+
+    def test_rx5500xt_by_gfx_target_version(self):
+        fake_sysfs(self.root, [
+            (100102, 44, 128, None, 8 << 30),                  # Navi 14: 22 CUs, no product_name file
+        ])
+        (g,) = setup.amd_gpus(str(self.root))
+        self.assertEqual(g["arch"], "gfx1012")
+        self.assertEqual(g["name"], setup.AMD_NAMES["gfx1012"])
+        self.assertEqual(g["vram_gb"], 8.0)
+        self.assertIsNone(setup.amd_problem(g))
+        self.assertTrue(setup.is_rdna1(g))
+        self.assertFalse(setup.is_rdna2(g))
+
+    def test_the_note_is_for_gfx1012_only(self):
+        for arch in ("gfx1012", "gfx1012:sramecc-:xnack-"):
+            lines = setup.rdna1_notes({"arch": arch})
+            self.assertEqual(len(lines), 1, arch)
+            self.assertIn("RX 5500 XT", lines[0])
+        for arch in ("gfx1010", "gfx1030", "gfx1100", "gfx1201", "gfx101", "gfx10120", "", None):
+            self.assertEqual(setup.rdna1_notes({"arch": arch}), [], arch)
+        self.assertEqual(setup.rdna1_notes(None), [])
+        self.assertTrue(setup.is_rdna1({"arch": "gfx1012"}))
+        self.assertFalse(setup.is_rdna1({"arch": "gfx1012x"}))
+
+    def test_windows_ids_and_names(self):
+        for device in (0x7340, 0x7341, 0x7347, 0x734F):        # Navi 14, from pci.ids
+            self.assertEqual(setup.win_amd_arch(device, ""), "gfx1012")
+        self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 5500 XT"), "gfx1012")
+        self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")   # not RDNA1
 
 
 class GpuLists(unittest.TestCase):

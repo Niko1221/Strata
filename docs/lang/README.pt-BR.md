@@ -151,6 +151,7 @@ Siga as instruções para baixar e iniciar um modelo. [Guia do Terminal](../TERM
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50** | [Instalação para NVIDIA](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [Instalação para AMD](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · experimental** | [Instalação para RX 6000](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · experimental, compilação do código-fonte** | [Instalação para RDNA1](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Instalação para Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 ou mais novo** | [Instalação para Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Instalação para Strix Halo](../STRIX_HALO.md) |

@@ -699,7 +699,8 @@ def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
 WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 0x747E: "gfx1101", 0x7480: "gfx1102",
                        0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
                        0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73A1: "gfx1030", 0x73DF: "gfx1031",
-                       0x73FF: "gfx1032", 0x73EF: "gfx1032", 0x73E3: "gfx1032"}
+                       0x73FF: "gfx1032", 0x73EF: "gfx1032", 0x73E3: "gfx1032",
+                       0x7340: "gfx1012", 0x7341: "gfx1012", 0x7347: "gfx1012", 0x734F: "gfx1012"}  # Navi 14: RX 5500 (XT)
 WIN_AMD_UMA_IDS = {0x1586: "gfx1151",                                   # Strix Halo (8060S/8050S/8040S): unified memory, supported
                    0x150E: "gfx1150",                                   # Strix Point (890M/880M): unified memory, supported
                    0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",  # Phoenix (780M/760M/740M): unified memory, supported
@@ -742,6 +743,8 @@ def gfx_from_name(name: str) -> str:
             return "gfx1032"
         if number in (6500, 6400):
             return "gfx1034"
+    if re.search(r"\bRX (?:5500|5300)\b", text) or re.search(r"\bW(?:5500|5300)M?\b", text):
+        return "gfx1012"                                        # Navi 14, RDNA1
     return ""
 
 
@@ -1081,6 +1084,7 @@ def driver_notice(have: str | None, need: str) -> str:
 
 #: The AMD card families a person knows by the box they bought, for the one plain line when a build is for another family.
 HIP_FAMILIES = (("RX 9000", ("gfx1200", "gfx1201")), ("RX 7000", ("gfx1100", "gfx1101", "gfx1102")), ("RX 6000", ("gfx1030", "gfx1031", "gfx1032")),
+                ("RX 5000", ("gfx1010", "gfx1011", "gfx1012")),
                 ("Ryzen AI Max", ("gfx1151",)), ("Ryzen AI 300", ("gfx1150",)), ("Radeon 780M", ("gfx1103",)))
 
 
@@ -1093,7 +1097,7 @@ def hip_family(arch: str) -> str:
 #: that has none: a family in this table gets the plain "no ready-made engine" line instead of "Ask for the X build".
 NO_PACKAGE_HIP: dict[str, str] = {}
 NO_PACKAGE_SENTENCE = ("This release has no ready-made Strata engine for the AMD {0} series. Strata can only run on it with an engine built for "
-                       "that card (docs/AMD_HIP.md, \"RDNA2\").")
+                       "that card (docs/AMD_HIP.md and docs/OLDER_GPUS.md).")
 
 
 def no_package_note(archs) -> str | None:
@@ -1104,9 +1108,10 @@ def no_package_note(archs) -> str | None:
 
 def hip_preference(archs) -> int:
     """Tie-break between two AMD engine packages of one version that both cover a PC (a computer with an RX 7900 beside an RX 6800): the
-    RX 6000 package (gfx103x code only) never wins over another family's, so adding it changed nothing for a PC that was served before."""
+    RX 6000 package (gfx103x code only) and the older RDNA1 code (gfx101x) never win over another family's, so adding either changed
+    nothing for a PC that was served before."""
     archs = [str(a) for a in archs or ()]
-    return 0 if archs and all(a.startswith("gfx103") for a in archs) else 1
+    return 0 if archs and all(a.startswith(("gfx101", "gfx103")) for a in archs) else 1
 
 
 #: AMD chips that share the system memory (an iGPU): a card with memory of its own is preferred over them, and an engine build that has
