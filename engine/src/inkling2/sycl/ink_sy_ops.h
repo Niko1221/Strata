@@ -268,7 +268,7 @@ inline void k_kv_norm_store_f16_sg16(const float* k_in, const float* v_in, half*
         float* sh = lmem<float, 16>(it);
         const int m = (int)it.get_group(0), kh = (int)it.get_group(1), tid = (int)it.get_local_id(1);
         const int slot = slot_ids[m], pos = pos_buf[m];
-        const int kpos = is_swa ? (pos & 1023) : pos;
+        const int kpos = is_swa ? pos % kv_stride : pos;
 
         const float kv = k_in[((size_t)m * INK_NKV + kh) * INK_HD + tid];
         const float kss = wg_sum16(it, kv * kv, sh);
@@ -316,9 +316,12 @@ inline void k_relpos_sink_gqa_sg16(
             float m_max = (sg == 0) ? sinks_buf[(size_t)m * INK_NH + head] : -1e30f;
             float l_sum = (sg == 0) ? 1.0f : 0.0f;
             const size_t slot_base = (size_t)slot * kv_stride;
+            // Keys are in the query's ring cycle or the immediately preceding one.
+            const int cycle_start = is_swa ? qpos - qpos % kv_stride : 0;
 
             for (int k = k_start + sg; k < k_end; k += 8) {
-                const int kidx = is_swa ? (k & 1023) : k;
+                const int offset = k - cycle_start;
+                const int kidx = offset < 0 ? offset + kv_stride : offset;
                 const size_t kv_off = ((slot_base + kidx) * INK_NKV + kh) * INK_HD + lane * 8;
                 float dt = 0.0f;
                 for (int u = 0; u < 8; ++u) dt += qv[u] * (float)k_cache[kv_off + u];
