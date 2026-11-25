@@ -739,7 +739,7 @@ public:
                 (void) P("moe_mm_dn_32_64_4");
                 (void) P("moe_mm_gu_64_64_4");
                 (void) P("moe_mm_dn_64_64_4");
-                (void) P("moe_mm_gu2_64_32_4");
+                (void) P("moe_mm_gu2_64_64_4");
                 (void) P("moe_mm_dn2_64_64_4");
             }
             run_all();
@@ -1182,11 +1182,11 @@ public:
         } else if (mpp_ok && T >= moe_mm_min) {
             const int Pn = T * 16;
             if (moe_bucket && moe_tm_arg == 0 && moe_tn_arg == 64) {
-                add("moe_plan_b", 1, 1, 512, {B(moe_idx), I(Pn), B(m_srt), B(m_pos), B(m_t128), B(m_t64), B(m_t32), B(m_t16), B(m_meta), I(1536 / 32), I(1536 / 64), I(1536 / 64)});
+                add("moe_plan_b", 1, 1, 512, {B(moe_idx), I(Pn), B(m_srt), B(m_pos), B(m_t128), B(m_t64), B(m_t32), B(m_t16), B(m_meta), I(1536 / 64), I(1536 / 64), I(1536 / 64)});
                 add("moe_gather", 1, 1, 256, {B(z_h), B(m_srt), B(m_xs)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 0;
                 // Gate+Up buckets write disjoint rows of m_hs: run concurrently with no inter-bucket barrier!
-                add("moe_mm_gu2_64_32_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t128)});
+                add("moe_mm_gu2_64_64_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t128)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 12;
                 add("moe_mm_gu_64_64_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t64)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 36;
