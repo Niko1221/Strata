@@ -1,6 +1,7 @@
 // tools/vision/own/vit_gpu.cu - see vit_gpu.h.  One source for CUDA and HIP (STRATA_VIT_HIP maps the few runtime / BLAS names).
 #include "vit_gpu.h"
 #include "vit_f16.h"
+#include "vit_q8_workspace.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -79,6 +80,7 @@ struct DevW {            // a weight matrix [rows = out][cols = in] on the devic
     Kind kind = K_BF16;
     int rows = 0, cols = 0;
     bool is_q8 = false;  // #6470: stored as raw Q8_0 blocks (34 bytes per 32 weights), dequantized into d_q8_f16 before GEMM
+    size_t q8_f16_elems() const { return is_q8 ? (size_t) rows * cols : 0; }
 };
 
 struct DevLayer {
@@ -464,8 +466,10 @@ struct VitGpuImpl {
     DevW mm0, mm2;
     std::vector<DevLayer> layers;
     bool q8_expand = false;           // STRATA_VIT_Q8_EXPAND=1: opt out of compact Q8_0 weight storage (#6470)
+    bool q8_reuse_workspace = false;  // STRATA_VIT_Q8_REUSE_WORKSPACE=1 (CUDA)
     uint16_t* d_q8_f16 = nullptr;     // shared F16 dequant scratch for compact Q8_0 weight matrices (#6470)
-    size_t q8_scratch_elems = 0;
+    uint16_t* d_q8_projector = nullptr;  // optional alias of the combined Q/K/V allocation
+    size_t q8_layer_elems = 0, q8_projector_elems = 0;
 
     int cap_patches = 0;
     // Work buffers, sized for cap_patches patches N (D = width).  The GPU memory is what a reader costs next to the engine, so the matrix products run in
@@ -748,7 +752,6 @@ struct VitGpuImpl {
             if (!alloc(dev, raw.size(), err, true)) return false;
             w.p = dev;
             if (cudaMemcpy(w.p, raw.data(), raw.size(), cudaMemcpyHostToDevice) != cudaSuccess) { err = "GPU copy failed"; return false; }
-            if (n > q8_scratch_elems) q8_scratch_elems = n;
             return true;
         } else {                                                 // F32 -> BF16, Q8_0 (when expanded) -> F16
             std::vector<float> f(n);
@@ -775,15 +778,16 @@ struct VitGpuImpl {
     static cudaDataType_t dtype(Kind k) { return k == K_F32 ? CUDA_R_32F : (k == K_F16 || k == K_BH || k == K_HF) ? CUDA_R_16F : CUDA_R_16BF; }
 
     // y[M][N] (float32) = A[M][K] (kind of w) * w^T
-    bool gemm(const DevW& w, const void* A, int M, void* y, cudaDataType_t kind_a, std::string& err) {
+    bool gemm(const DevW& w, const void* A, int M, void* y, cudaDataType_t kind_a, std::string& err, uint16_t* q8_workspace = nullptr) {
         const float alpha = 1.0f, beta = 0.0f;
         const void* wp = w.p;
         if (w.is_q8) {
-            const size_t n = (size_t) w.rows * (size_t) w.cols;
-            k_dequant_q8_0_f16<<<blocks_for(n), 256>>>((const uint8_t*) w.p, d_q8_f16, n / 32);
+            const size_t n = w.q8_f16_elems();
+            uint16_t* scratch = q8_workspace ? q8_workspace : d_q8_f16;
+            k_dequant_q8_0_f16<<<blocks_for(n), 256>>>((const uint8_t*) w.p, scratch, n / 32);
             const cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) { err = std::string("the Q8_0 weight dequantization failed: ") + cudaGetErrorString(e); return false; }
-            wp = d_q8_f16;
+            wp = scratch;
         }
         bool done = false;
 #if defined(STRATA_VIT_HIPBLASLT)
@@ -827,6 +831,7 @@ struct VitGpuImpl {
         d_x = d_y = d_ctx = d_out = nullptr;
         d_a = d_f16 = d_q16 = d_k16 = d_v16 = nullptr;
         d_S = nullptr;
+        if (q8_reuse_workspace) d_q8_f16 = d_q8_projector = nullptr;
         // attention by batched GEMMs: scores S (float32) and probabilities P (F16) of a chunk of queries for every head, at most kScoreElems each
         // (a very large picture gets at least 64 queries per chunk, so its many chunks stay few)
         // a score row is padded to a multiple of 8 elements (the product's leading dimension): with an odd row length the BLAS cannot use its tensor-core
@@ -836,27 +841,53 @@ struct VitGpuImpl {
         // product and the attention is launch-bound (l620, 16,384 tokens: 33.4 s, 1.17 of mtmd-GPU; with 512M 24.8 s, 0.87, at 3,398 MiB against mtmd-GPU's
         // 3,858; RESULTS-OWN-3V.md 12.11).  STRATA_VIT_SCORES sets both sizes.
         const size_t budget = (N > 16384 && !scores_env) ? kScoreElemsLarge : kScoreElems;
-        sp_elems = std::min<size_t>((size_t) g.heads * N * Np, std::max<size_t>(budget, (size_t) g.heads * Np * 64));
+        const auto score_elems = [&](size_t target) {
+            return std::min((size_t) g.heads * N * Np, std::max(target, (size_t) g.heads * Np * 64));
+        };
+        sp_elems = score_elems(budget);
+        const size_t fallback_scores = score_elems(kScoreElems);
         const size_t R = std::min<size_t>(N, (size_t) kRows);
         // d_ctx holds, one after the other: the patch matrix, the attention context, and at the end the projector's output rows (d_out)
         const size_t ctx_elems = std::max({N * D, N * K0, (N / 4) * (size_t) g.out_dim});
         bool ok = alloc(d_x, N * D, err, false) && alloc(d_ctx, ctx_elems, err, false) && alloc(d_y, R * std::max<size_t>(3 * D, F), err, false) &&
-                  alloc(d_a, R * D, err, false) && alloc(d_f16, R * F, err, false) &&
-                  alloc(d_q16, N * D, err, false) && alloc(d_k16, N * D, err, false) && alloc(d_v16, N * D, err, false);
+                  alloc(d_a, R * D, err, false) && alloc(d_f16, R * F, err, false);
+        const size_t q_elems = N * D;
+        bool reuse_q8 = q8_reuse_workspace && vit_q8_can_reuse_workspace(q_elems, std::min(sp_elems, fallback_scores), q8_layer_elems, q8_projector_elems);
+        if (ok && reuse_q8 && q8_projector_elems > 0) {
+            reuse_q8 = alloc(d_q16, 3 * q_elems, err, false);
+            if (reuse_q8) {
+                d_k16 = d_q16 + q_elems;
+                d_v16 = d_k16 + q_elems;
+            } else {
+                err.clear();
+            }
+        }
+        if (ok && !d_q16) ok = alloc(d_q16, q_elems, err, false) && alloc(d_k16, q_elems, err, false) && alloc(d_v16, q_elems, err, false);
 #if defined(STRATA_VIT_HIP)
         d_y16 = d_pv16 = nullptr;
         y16_elems = pv16_elems = 0;
         if (ok && hpa16) { y16_elems = R * std::max<size_t>(3 * D, F); ok = alloc(d_y16, y16_elems, err, false); }
         if (ok && hpa16_att) { pv16_elems = N * D; ok = alloc(d_pv16, pv16_elems, err, false); }
 #endif
+        if (ok && q8_reuse_workspace && !reuse_q8) {
+            const size_t elems = std::max(q8_layer_elems, q8_projector_elems);
+            // Reserve the required scratch before the optional large score allocation.
+            if (elems > 0) ok = alloc(d_q8_f16, elems, err, false);
+        }
         if (ok && !alloc(d_S, sp_elems, err, false)) {
             // no room for the large chunk (a small card, or the engine beside the reader): the 16 MB chunk instead, slower, never an error
             ok = false;
             if (budget != kScoreElems) {
                 err.clear();
-                sp_elems = std::min<size_t>((size_t) g.heads * N * Np, std::max<size_t>(kScoreElems, (size_t) g.heads * Np * 64));
+                sp_elems = fallback_scores;
                 ok = alloc(d_S, sp_elems, err, false);
             }
+        }
+        if (ok && reuse_q8) {
+            // Q8 layer products run outside attention, and the projector runs after the last Q/K/V use.
+            // Dequantization, attention and cuBLAS use the same default stream, so reuse needs no extra fence.
+            d_q8_f16 = d_S;
+            if (q8_projector_elems > 0) d_q8_projector = d_q16;
         }
         d_out = d_ctx;
         if (!ok) { cap_patches = 0; return false; }
@@ -951,6 +982,9 @@ bool VitGpu::load(const Gguf& gg, const VitGeometry& g, int device, int max_patc
 #endif
     m.bf16_mode = vit_gpu_bf16_mode(std::getenv("STRATA_VIT_BF16_AS_F16"), m.bf16_mode);
     if (const char* e = std::getenv("STRATA_VIT_Q8_EXPAND")) m.q8_expand = std::atoi(e) != 0;
+#if !defined(STRATA_VIT_HIP)
+    if (const char* e = std::getenv("STRATA_VIT_Q8_REUSE_WORKSPACE")) m.q8_reuse_workspace = std::atoi(e) != 0;
+#endif
     m.trace = std::getenv("STRATA_TRACE") != nullptr;
     {
         const cudaError_t se = set_device_retrying(device);
@@ -997,6 +1031,7 @@ bool VitGpu::load(const Gguf& gg, const VitGeometry& g, int device, int max_patc
         !m.upload_matrix(m.mm0, gg, "mm.0.weight", err) || !m.upload_f32(m.mm0_b, gg, "mm.0.bias", err) ||
         !m.upload_matrix(m.mm2, gg, "mm.2.weight", err) || !m.upload_f32(m.mm2_b, gg, "mm.2.bias", err))
         return false;
+    m.q8_projector_elems = std::max(m.mm0.q8_f16_elems(), m.mm2.q8_f16_elems());
     m.layers.assign((size_t) g.layers, DevLayer{});
     for (int il = 0; il < g.layers; ++il) {
         DevLayer& L = m.layers[(size_t) il];
@@ -1008,8 +1043,10 @@ bool VitGpu::load(const Gguf& gg, const VitGeometry& g, int device, int max_patc
             !m.upload_matrix(L.up, gg, p + "ffn_up.weight", err) || !m.upload_f32(L.up_b, gg, p + "ffn_up.bias", err) ||
             !m.upload_matrix(L.down, gg, p + "ffn_down.weight", err) || !m.upload_f32(L.down_b, gg, p + "ffn_down.bias", err))
             return false;
+        m.q8_layer_elems = std::max({m.q8_layer_elems, L.qkv.q8_f16_elems(), L.o.q8_f16_elems(), L.up.q8_f16_elems(), L.down.q8_f16_elems()});
     }
-    if (m.q8_scratch_elems > 0 && !m.alloc(m.d_q8_f16, m.q8_scratch_elems, err, true)) return false;
+    const size_t q8_elems = std::max(m.q8_layer_elems, m.q8_projector_elems);
+    if (!m.q8_reuse_workspace && q8_elems > 0 && !m.alloc(m.d_q8_f16, q8_elems, err, true)) return false;
     m.n_weight_allocs = m.allocs.size();
     if (m.trace && !m.f16_notes.empty()) {
         for (const VitGpuImpl::F16Note& f : m.f16_notes)
@@ -1164,9 +1201,9 @@ bool VitGpu::encode(const PreparedImage& img, std::vector<float>& rows, int& nx,
     for (int r0 = 0; r0 < M; r0 += RM) {
         const int rows = std::min(RM, M - r0);
         k_layernorm<<<rows * 4, 256>>>(m.d_x + (size_t) r0 * 4 * D, m.post_w, m.post_b, g.eps, D, a16, (int) m.mm0.kind);
-        if (!m.gemm(m.mm0, a16, rows, m.d_y, VitGpuImpl::dtype(m.mm0.kind), err)) return false;
+        if (!m.gemm(m.mm0, a16, rows, m.d_y, VitGpuImpl::dtype(m.mm0.kind), err, m.d_q8_projector)) return false;
         k_bias_gelu_cast<<<rows, 256>>>(m.d_y, m.mm0_b, g.merger_hidden, m.d_f16, (int) m.mm2.kind);
-        if (!m.gemm(m.mm2, m.d_f16, rows, m.d_out + (size_t) r0 * g.out_dim, VitGpuImpl::dtype(m.mm2.kind), err)) return false;
+        if (!m.gemm(m.mm2, m.d_f16, rows, m.d_out + (size_t) r0 * g.out_dim, VitGpuImpl::dtype(m.mm2.kind), err, m.d_q8_projector)) return false;
         k_add_bias<<<rows, 256>>>(m.d_out + (size_t) r0 * g.out_dim, m.mm2_b, g.out_dim);
     }
     if (!sync_err("the projector")) return false;
