@@ -28,19 +28,39 @@ static std::vector<int> parse_csv_ints(const std::string& s) {
     return out;
 }
 
+// forward_batch() rejects any M > max_batch, so a prompt longer than the batch cap must be
+// fed through in cap-sized pieces. Positions stay absolute so the KV ring sees one sequence.
+// Every caller used to ignore a rejected call, which left timers at zero and logits blank.
+static bool forward_prompt_chunked(InkSyRunner& R, const std::vector<int>& prompt,
+                                   float* out_logits, int* out_argmax, bool use_spec) {
+    const int P = (int)prompt.size();
+    const int cap = std::max(1, R.max_batch);
+    int scratch_argmax = 0;
+    for (int off = 0; off < P; off += cap) {
+        const int n = std::min(cap, P - off);
+        const bool last = (off + n) >= P;
+        std::vector<int> sids(n, 0), pos(n);
+        for (int i = 0; i < n; ++i) pos[i] = off + i;
+        if (!R.forward_batch(prompt.data() + off, sids.data(), pos.data(), n, nullptr, nullptr, 1,
+                             last ? out_logits : nullptr,
+                             last ? out_argmax : &scratch_argmax, use_spec)) {
+            fprintf(stderr, "[ERROR] prefill chunk at offset %d (%d tokens) failed; batch cap is %d (see --batch)\n",
+                    off, n, cap);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool run_greedy_decode(InkSyRunner& R, const std::vector<int>& prompt, int n_gen, bool use_spec,
                               std::vector<int>& out_tokens, double& prefill_s, double& decode_s,
                               int& total_drafts, int& total_accepted) {
     R.reset_slot(0);
     const int P = (int)prompt.size();
-    std::vector<int> sids(P, 0), pos(P);
-    for (int i = 0; i < P; ++i) pos[i] = i;
 
     const double t0 = now_s();
     int next_tok = 0;
-    if (!R.forward_batch(prompt.data(), sids.data(), pos.data(), P, nullptr, nullptr, 1, nullptr, &next_tok, use_spec)) {
-        return false;
-    }
+    if (!forward_prompt_chunked(R, prompt, nullptr, &next_tok, use_spec)) return false;
     prefill_s = now_s() - t0;
 
     out_tokens.clear();
@@ -101,7 +121,7 @@ static bool run_greedy_decode(InkSyRunner& R, const std::vector<int>& prompt, in
 int main(int argc, char** argv) {
     ensure_l0_v1_default();
     std::string model_path, vision_path, image_path, prompt_csv = "1,2,3,4,5,6,7,8";
-    int n_gen = 32, max_ctx = 4096, parallel = 1;
+    int n_gen = 32, max_ctx = 4096, parallel = 1, prefill_batch = 512;
     int gpu_index = 0, req_gpus = 1;
     std::vector<int> req_gpu_ids;
     double ep_split = 0.5;
@@ -141,6 +161,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--ep-split") ep_split = std::atof(need().c_str());
         else if (a == "--vram-experts-gb") vram_gb = std::atof(need().c_str());
+        else if (a == "--batch") prefill_batch = std::atoi(need().c_str());
         else if (a == "--prompt-tokens" || a == "--prompt-ids") prompt_csv = need();
     }
     if (const char* ep_env = std::getenv("IK2_EP_SPLIT"); ep_env && *ep_env) {
@@ -196,7 +217,7 @@ int main(int argc, char** argv) {
     }
 
     const int init_slots = do_par_sweep ? 64 : std::max(1, parallel);
-    const int init_batch = std::max(64, init_slots);
+    const int init_batch = std::max(std::max(64, init_slots), std::max(64, prefill_batch));
     InkSyRunner runner;
     if (!runner.init(mod, init_slots, max_ctx, init_batch, !no_dspark, err)) {
         fprintf(stderr, "[ERROR] runner init: %s\n", err.c_str());
@@ -208,13 +229,13 @@ int main(int argc, char** argv) {
 
     if (do_selfcheck) {
         runner.reset_slot(0);
-        const int P = (int)prompt.size();
-        std::vector<int> sids(P, 0), pos(P);
-        for (int i = 0; i < P; ++i) pos[i] = i;
-        std::vector<float> logits(mod.man.c.vocab_unpadded);
+        std::vector<float> logits(mod.man.c.vocab_unpadded, 0.0f);
         int argm = 0;
         const double t0 = now_s();
-        runner.forward_batch(prompt.data(), sids.data(), pos.data(), P, nullptr, nullptr, 1, logits.data(), &argm, false);
+        if (!forward_prompt_chunked(runner, prompt, logits.data(), &argm, false)) {
+            fprintf(stderr, "[ERROR] selfcheck prefill failed; the numbers below are not real\n");
+            return 1;
+        }
         const double dt = now_s() - t0;
         int nans = 0;
         std::vector<std::pair<float, int>> top;
@@ -237,17 +258,25 @@ int main(int argc, char** argv) {
         std::vector<int> t_plain, t_spec;
         double pf1 = 0, dc1 = 0, pf2 = 0, dc2 = 0;
         int d1 = 0, a1 = 0, d2 = 0, a2 = 0;
-        run_greedy_decode(runner, prompt, n_gen, false, t_plain, pf1, dc1, d1, a1);
-        run_greedy_decode(runner, prompt, n_gen, true, t_spec, pf2, dc2, d2, a2);
+        if (!run_greedy_decode(runner, prompt, n_gen, false, t_plain, pf1, dc1, d1, a1) ||
+            !run_greedy_decode(runner, prompt, n_gen, true, t_spec, pf2, dc2, d2, a2)) {
+            fprintf(stderr, "[ERROR] spec-check: decode failed\n");
+            return 1;
+        }
+        const int n_cmp = std::min((int)t_plain.size(), (int)t_spec.size());
+        if (n_cmp <= 0) {
+            fprintf(stderr, "[ERROR] spec-check: no tokens generated\n");
+            return 1;
+        }
         int matches = 0;
-        for (int i = 0; i < n_gen; ++i) if (t_plain[i] == t_spec[i]) matches++;
+        for (int i = 0; i < n_cmp; ++i) if (t_plain[i] == t_spec[i]) matches++;
         printf("[SPEC-CHECK] parity=%d/%d (%s) | plain=%.2f tok/s | dspark=%.2f tok/s (acc=%d/%d = %.1f%%, mean_step=%.2f)\n",
-               matches, n_gen, (matches == n_gen ? "BITWISE-EXACT" : "MISMATCH"),
+               matches, n_cmp, (matches == n_cmp ? "BITWISE-EXACT" : "MISMATCH"),
                (n_gen - 1) / std::max(dc1, 1e-6),
                (n_gen - 1) / std::max(dc2, 1e-6),
                a2, d2, d2 > 0 ? (100.0 * a2 / d2) : 0.0,
                d2 > 0 ? (1.0 + 7.0 * a2 / d2) : 1.0);
-        if (matches != n_gen) {
+        if (matches != n_cmp) {
             printf("  plain:"); for (int x : t_plain) printf(" %d", x); printf("\n");
             printf("  spec :"); for (int x : t_spec) printf(" %d", x); printf("\n");
             return 3;
@@ -257,10 +286,14 @@ int main(int argc, char** argv) {
     if (do_bench) {
         std::vector<int> toks;
         double pf = 0, dc = 0; int td = 0, ta = 0;
-        run_greedy_decode(runner, prompt, n_gen, !no_dspark, toks, pf, dc, td, ta);
-        printf("[BENCH] build=%s mode=%s prompt=%zu ppts=%.1f decode_toks=%d decode_tps=%.2f acc=%.1f%% vram_exp=%d/3072\n",
-               mod.man.build.c_str(), no_dspark ? "plain" : "dspark", prompt.size(),
-               prompt.size() / std::max(pf, 1e-6), n_gen - 1, (n_gen - 1) / std::max(dc, 1e-6),
+        if (!run_greedy_decode(runner, prompt, n_gen, !no_dspark, toks, pf, dc, td, ta)) {
+            fprintf(stderr, "[ERROR] bench: decode failed\n");
+            return 1;
+        }
+        const int dtoks = std::max(0, (int)toks.size() - 1);
+        printf("[BENCH] build=%s mode=%s prompt=%zu batch=%d ppts=%.1f decode_toks=%d decode_tps=%.2f acc=%.1f%% vram_exp=%d/3072\n",
+               mod.man.build.c_str(), no_dspark ? "plain" : "dspark", prompt.size(), runner.max_batch,
+               prompt.size() / std::max(pf, 1e-6), dtoks, dtoks / std::max(dc, 1e-6),
                td > 0 ? (100.0 * ta / td) : 0.0, mod.n_vram_experts);
     }
 
