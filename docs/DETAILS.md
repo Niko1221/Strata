@@ -625,6 +625,11 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   without the model card's penalties: a penalty makes the engine sample from its logits, so the answer would not be the
   greedy one, and the MTP drafts (which run only for greedy requests) would not run (#2940). With the default adaptive
   tier a sampled result is not reproducible from run to run. For seed-reproducible output add `--adapt-every 100000`.
+- Inkling-2-Mini (#7092): a request that names no sampling gets temperature 1.0, the one value its model card gives
+  (`generation_config.json`: `do_sample` true, `temperature` 1.0; the card names no top_p, top_k or penalty, so the engine keeps its
+  own top_k 64 and top_p 1.0). Before, such a request ran greedy (temperature 0), which can loop in long agent sessions. The same
+  order of precedence applies: the request, the shared Chat settings, the config's `sampling` block, then the card; `temperature: 0`
+  still asks for greedy.
 - Sampled drafting is opt-in and not faster in a way that holds up. `STRATA_SPEC_COUPLED=1` (or `--coupled-draft`) and
   `STRATA_SPEC_GUMBEL=1` raise the accepted-draft rate on some machines; `STRATA_SPEC_PROB=1` is speculative rejection
   sampling. `STRATA_SPEC_DEPTH=1` prints acceptance by draft depth and `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting

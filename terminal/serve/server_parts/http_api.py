@@ -640,6 +640,11 @@ MODEL_CARD_SAMPLING = {
     "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
                  "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
+# Inkling-2-Mini (#7092): the model card's own sampling is the generation_config.json of thinkingmachines/Inkling-2-Mini (read 2026-11-25):
+# {"do_sample": true, "temperature": 1.0}.  The README names no other sampling value (no top_p, top_k, min_p or penalty), so only the temperature is set here and the
+# engine keeps its own top_k 64 / top_p 1.0.  Before, a request that named nothing got the engine's temperature 0 (greedy), which can loop.
+MODEL_CARD_SAMPLING.update({arch: {"thinking": {"temperature": 1.0}, "instruct": {"temperature": 1.0}}
+                            for arch in ("inkling2_loop", "inkling2", "inkling2_loop_text")})
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)

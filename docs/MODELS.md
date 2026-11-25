@@ -301,6 +301,10 @@ code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faste
 are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs
 a few hundred MB of video memory on a card that is already full (it takes a little expert space; up to 1 GB when the card has room), and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
 
+**Sampling.** A request that names no sampling runs with temperature 1.0, the value in the model card's `generation_config.json`
+(no top_p, top_k or penalty is given there; the engine's own top_k 64 stays). Send `temperature` (or `"temperature": 0` for greedy)
+to choose another; the run config's `sampling` block and the Chat settings also win over the card. Before 0.2.22 such a request was greedy.
+
 ### Inkling-2-Mini: thinking levels
 
 Inkling-2-Mini is trained with a **number** for how much it should think: the chat template writes `Thinking effort level: <n>` ahead of
