@@ -13,4 +13,7 @@ RUN sed -i 's|archive.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g; s|security.ubun
 RUN python3 -m venv /opt/verifier_venv && \
     /opt/verifier_venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pytest==8.4.1 pytest-json-ctrf && \
     /opt/verifier_venv/bin/pytest --version
+ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 WORKDIR /app
