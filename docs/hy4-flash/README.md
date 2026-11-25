@@ -1,6 +1,6 @@
 # Run hy4-flash on a single NVIDIA GPU
 
-[简体中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Apple Silicon (Metal)](README_MAC-Metal.md)
 
 ## Models
 

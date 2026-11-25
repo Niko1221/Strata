@@ -1,6 +1,6 @@
 # 在单张 NVIDIA GPU 上运行 hy4-flash
 
-[English](README.md)
+[English](README.md) · [Apple Silicon(Metal)](README_MAC-Metal.zh-CN.md)
 
 本文说明如何使用 Strata 在单张 NVIDIA GPU 上部署与运行 `HY4-Flash`。
 
