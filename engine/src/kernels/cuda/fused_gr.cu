@@ -4292,7 +4292,8 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         }
         return q8;
     }
-    if (rdna_gr_enabled()) {
+    // rdna_gr's q8 epilogue counts on q8_cnt; the q32 path without a counter stays on the kernels below
+    if (rdna_gr_enabled() && !(q8 && a[0].q8_cnt == nullptr)) {
         rdna_gr_read_multi(m.a, n_tok, xn_scratch, stream, stamp_buf, stamp_i0);
         const cudaError_t er = cudaGetLastError();
         if (er != cudaSuccess) {
