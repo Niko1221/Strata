@@ -4,10 +4,11 @@
 // while its Harness was still starting, and the test file never exited. These tests drive the real bridge with a held fake start.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
+import { HarnessProcess } from '../server/agent/harness-runtime.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -64,4 +65,24 @@ test('close() with no start under way returns at once', async t => {
   assert.ok(Date.now() - t0 < 1000);
   assert.deepEqual(r.closed, []);
   assert.equal(r.starts(), 0);
+});
+
+test('aborting startup stops the child before it announces an address', { timeout: 30_000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-abort-harness-'));
+  const bin = join(dir, 'fake-harness.cjs');
+  const entered = join(dir, 'entered');
+  writeFileSync(bin, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, ''); setInterval(() => {}, 1000);`);
+  const child = new HarnessProcess({ harness: { bin }, home: dir, cwd: dir, patchFile: join(dir, 'unused.yml'), nodePath: process.execPath });
+  const lifetime = new AbortController();
+  const reason = new Error('The bridge closed.');
+  const outcome = child.start({ signal: lifetime.signal }).then(() => null, error => error);
+  t.after(async () => {
+    if (child.running && child.pid) process.kill(child.pid, 'SIGKILL');
+    await outcome;
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  });
+  assert.equal(await until(() => existsSync(entered), 15_000), true, 'the child started and has yet to announce an address');
+  lifetime.abort(reason);
+  assert.equal(await until(() => !child.running, 10_000), true, 'the child exited during startup');
+  assert.equal(await outcome, reason);
 });

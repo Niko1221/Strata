@@ -73,7 +73,8 @@ export class HarnessProcess {
   get running() { return this.#child !== null && this.exited === null; }
 
   /** Start the agent and resolve with its loopback URL and launch token. */
-  async start({ timeoutMs = 120_000 } = {}) {
+  async start({ timeoutMs = 120_000, signal } = {}) {
+    signal?.throwIfAborted();
     mkdirSync(this.home, { recursive: true });
     mkdirSync(this.cwd, { recursive: true });
     const args = [this.harness.bin, '--profile', 'web', '--patch', this.patchFile, '--port', '0', '--no-open'];
@@ -91,8 +92,11 @@ export class HarnessProcess {
       this.#onExit(this.exited);
     });
     child.stderr.on('data', keep);
+    let abort;
     const info = await new Promise((resolveInfo, reject) => {
       const timer = setTimeout(() => reject(new Error(`the agent did not print its address within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+      abort = () => { clearTimeout(timer); reject(signal.reason); };
+      signal?.addEventListener('abort', abort, { once: true });
       const onData = chunk => {
         keep(chunk);
         text += chunk.toString();
@@ -111,7 +115,8 @@ export class HarnessProcess {
       child.stdout.on('data', onData);
       child.on('exit', code => { clearTimeout(timer); reject(new Error(`the agent exited during start (code ${code}): ${redact(log.join('').slice(-600), Object.values(this.extraEnv))}`)); });
       child.on('error', e => { clearTimeout(timer); reject(e); });
-    }).catch(async error => { await this.stop(); throw error; });
+    }).catch(async error => { await this.stop(); throw error; })
+      .finally(() => signal?.removeEventListener('abort', abort));
     this.info = info;
     if (this.pidFile) { try { writeFileSync(this.pidFile, JSON.stringify({ pid: child.pid, at: new Date().toISOString() })); } catch { /* the record is a courtesy */ } }
     return info;
@@ -120,7 +125,7 @@ export class HarnessProcess {
   /** Stop this process and its children. Only ever touches the PID this object started. */
   async stop({ graceMs = 3000 } = {}) {
     const child = this.#child;
-    if (!child || this.exited) return;
+    if (!child?.pid || this.exited) return;
     const done = new Promise(r => child.once('exit', r));
     if (process.platform === 'win32') {
       // /T takes the shells and PTYs the agent started; /PID is this child only.
