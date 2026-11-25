@@ -1768,14 +1768,8 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa(
             const float vs = v_scales ? v_scales[tok_base] : 1.0f;
             const uint32_t kw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(k_pool) + base);
             const uint32_t vw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(v_pool) + base);
-            k0 = e4m3fn_to_f32(static_cast<uint8_t>(kw & 0xFFu)) * ks;
-            k1 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 8) & 0xFFu)) * ks;
-            k2 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 16) & 0xFFu)) * ks;
-            k3 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 24) & 0xFFu)) * ks;
-            v0 = e4m3fn_to_f32(static_cast<uint8_t>(vw & 0xFFu)) * vs;
-            v1 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 8) & 0xFFu)) * vs;
-            v2 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 16) & 0xFFu)) * vs;
-            v3 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 24) & 0xFFu)) * vs;
+            e4m3fn_x4_to_f32(kw, ks, k0, k1, k2, k3);
+            e4m3fn_x4_to_f32(vw, vs, v0, v1, v2, v3);
         } else {
             const uint2 kw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(k_pool) + base);
             const uint2 vw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(v_pool) + base);
@@ -1866,14 +1860,8 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
             const float vs = v_scales ? v_scales[tok_base] : 1.0f;
             const uint32_t kw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(k_pool) + base);
             const uint32_t vw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(v_pool) + base);
-            k0 = e4m3fn_to_f32(static_cast<uint8_t>(kw & 0xFFu)) * ks;
-            k1 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 8) & 0xFFu)) * ks;
-            k2 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 16) & 0xFFu)) * ks;
-            k3 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 24) & 0xFFu)) * ks;
-            v0 = e4m3fn_to_f32(static_cast<uint8_t>(vw & 0xFFu)) * vs;
-            v1 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 8) & 0xFFu)) * vs;
-            v2 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 16) & 0xFFu)) * vs;
-            v3 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 24) & 0xFFu)) * vs;
+            e4m3fn_x4_to_f32(kw, ks, k0, k1, k2, k3);
+            e4m3fn_x4_to_f32(vw, vs, v0, v1, v2, v3);
         } else {
             const uint2 kw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(k_pool) + base);
             const uint2 vw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(v_pool) + base);
@@ -1989,14 +1977,8 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
             const float vs = v_scales ? v_scales[tok_base] : 1.0f;
             const uint32_t kw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(k_pool) + base);
             const uint32_t vw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(v_pool) + base);
-            k0 = e4m3fn_to_f32(static_cast<uint8_t>(kw & 0xFFu)) * ks;
-            k1 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 8) & 0xFFu)) * ks;
-            k2 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 16) & 0xFFu)) * ks;
-            k3 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 24) & 0xFFu)) * ks;
-            v0 = e4m3fn_to_f32(static_cast<uint8_t>(vw & 0xFFu)) * vs;
-            v1 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 8) & 0xFFu)) * vs;
-            v2 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 16) & 0xFFu)) * vs;
-            v3 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 24) & 0xFFu)) * vs;
+            e4m3fn_x4_to_f32(kw, ks, k0, k1, k2, k3);
+            e4m3fn_x4_to_f32(vw, vs, v0, v1, v2, v3);
         } else {
             const uint2 kw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(k_pool) + base);
             const uint2 vw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(v_pool) + base);
@@ -2214,10 +2196,14 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
                 if constexpr (FP8_KV) {
                     const float ks = k_scales ? k_scales[tok_base] : 1.0f;
                     const uint32_t kw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(k_pool) + base);
-                    dst[0] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>(kw & 0xFFu)) * ks);
-                    dst[1] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((kw >> 8) & 0xFFu)) * ks);
-                    dst[2] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((kw >> 16) & 0xFFu)) * ks);
-                    dst[3] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((kw >> 24) & 0xFFu)) * ks);
+                    {
+                        float f0, f1, f2, f3;
+                        e4m3fn_x4_to_f32(kw, ks, f0, f1, f2, f3);
+                        dst[0] = static_cast<half_t>(f0);
+                        dst[1] = static_cast<half_t>(f1);
+                        dst[2] = static_cast<half_t>(f2);
+                        dst[3] = static_cast<half_t>(f3);
+                    }
                 } else {
                     *reinterpret_cast<uint2*>(dst) = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(k_pool) + base);
                 }
@@ -2316,10 +2302,14 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
                 if constexpr (FP8_KV) {
                     const float vs = v_scales ? v_scales[tok_base] : 1.0f;
                     const uint32_t vw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(v_pool) + base);
-                    kv.sVt[(d0 + 0) * LDV + r] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>(vw & 0xFFu)) * vs);
-                    kv.sVt[(d0 + 1) * LDV + r] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((vw >> 8) & 0xFFu)) * vs);
-                    kv.sVt[(d0 + 2) * LDV + r] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((vw >> 16) & 0xFFu)) * vs);
-                    kv.sVt[(d0 + 3) * LDV + r] = static_cast<half_t>(e4m3fn_to_f32(static_cast<uint8_t>((vw >> 24) & 0xFFu)) * vs);
+                    {
+                        float f0, f1, f2, f3;
+                        e4m3fn_x4_to_f32(vw, vs, f0, f1, f2, f3);
+                        kv.sVt[(d0 + 0) * LDV + r] = static_cast<half_t>(f0);
+                        kv.sVt[(d0 + 1) * LDV + r] = static_cast<half_t>(f1);
+                        kv.sVt[(d0 + 2) * LDV + r] = static_cast<half_t>(f2);
+                        kv.sVt[(d0 + 3) * LDV + r] = static_cast<half_t>(f3);
+                    }
                 } else {
                     const uint2 vw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(v_pool) + base);
                     const hv2 v01 = __builtin_bit_cast(hv2, vw.x);
