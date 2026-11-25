@@ -161,6 +161,8 @@
 #endif
 #include "strata/program/pipe_probe.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
+#include "strata/artifact/dequant.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/stream_watch.hpp"
 #include "strata/core/gpu_pause_time.hpp"
@@ -1203,6 +1205,9 @@ struct Options {
     int cvec_first = -1, cvec_last = -1;   ///< llama.cpp's defaults: 1 .. the last layer
     int cvec_mode = 1;                     ///< 0 = project, 1 = add (llama.cpp's default)
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
+    /// LoRA adapters on the mixers' output projections (strata/kernels/lora.hpp), llama.cpp's `--lora FILE` /
+    /// `--lora-scaled FILE:SCALE` adapter GGUFs, summed.  None by default; --serve switches them per request.
+    std::vector<std::pair<std::string, float>> lora_files;
 };
 
 void usage() {
@@ -1372,6 +1377,8 @@ void usage() {
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
                  "  --cvec-mode add|project  h += s v (default) or h -= s (h.v) v with v unit\n"
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
+                 "  --lora FILE / --lora-scaled FILE:SCALE[,...]  a LoRA adapter GGUF (llama.cpp's format) on the\n"
+                 "                       ssm_out / attn_output projections.  --serve: requests switch it (lora=0|1)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
@@ -2912,6 +2919,190 @@ static bool pcie_auto_split_ok() {
 #endif
 }
 
+// Parse FILE[:SCALE][,FILE[:SCALE]...] into (path, scale) pairs.
+// When `require_scale` is true (`--lora-scaled`), every item must end with `:SCALE`; when false (`LORA_RELOAD`),
+// `:SCALE` is optional and defaults to 1.0f.  Colons that precede a path separator (Windows drive letters like
+// `C:\...` or Unix directories with `:`) are treated as part of the path.
+bool parse_lora_spec(const std::string& spec, std::vector<std::pair<std::string, float>>& out, std::string& err,
+                     bool require_scale = false) {
+    out.clear();
+    if (spec.empty()) {
+        err = "empty LoRA adapter spec";
+        return false;
+    }
+    size_t start = 0;
+    while (start <= spec.size()) {
+        const size_t comma = spec.find(',', start);
+        const std::string item = comma == std::string::npos ? spec.substr(start) : spec.substr(start, comma - start);
+        if (item.empty()) {
+            err = "empty entry in LoRA adapter spec '" + spec + "'";
+            out.clear();
+            return false;
+        }
+        const size_t colon = item.rfind(':');
+        const bool has_sep_after_colon = colon != std::string::npos &&
+            (item.find('/', colon + 1) != std::string::npos || item.find('\\', colon + 1) != std::string::npos);
+        const bool has_scale_suffix = colon != std::string::npos && !has_sep_after_colon;
+        if (require_scale && (!has_scale_suffix || colon == 0)) {
+            err = "expected FILE:SCALE, got '" + item + "'";
+            out.clear();
+            return false;
+        }
+        if (has_scale_suffix) {
+            if (colon == 0) {
+                err = "expected FILE[:SCALE], got '" + item + "'";
+                out.clear();
+                return false;
+            }
+            char* end = nullptr;
+            const float sc = std::strtof(item.c_str() + colon + 1, &end);
+            if (end == item.c_str() + colon + 1 || *end != '\0' || !std::isfinite(sc)) {
+                err = std::string(require_scale ? "expected FILE:SCALE, got '" : "expected FILE[:SCALE], got '") +
+                      item + "'";
+                out.clear();
+                return false;
+            }
+            out.push_back({item.substr(0, colon), sc});
+        } else {
+            out.push_back({item, 1.0f});
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return !out.empty();
+}
+
+// --lora / --lora-scaled / LORA_RELOAD: llama.cpp's `llama_adapter_lora_init` for the projections the engine adapts
+// (every file's `blk.<l>.{ssm_out,attn_output}.weight.lora_{a,b}`, B times scale * alpha / rank, several files' ranks
+// stacked), into host tables without touching GPU memory.  A tensor the engine does not adapt is an error: running part
+// of an adapter would give neither model.  `summary` is what INFO reports; `digest` identifies the parsed tables.
+bool parse_lora_adapters(const std::vector<std::pair<std::string, float>>& files, const strata::core::ModelGeometry& g,
+                         std::vector<strata::kernels::LoraLayerHost>& layers, std::string& summary, uint64_t& digest,
+                         std::string& err) {
+    if (files.empty()) { err = "no LoRA adapter files specified"; return false; }
+    const int64_t L = g.n_layers, N = g.n_embd;
+    layers.assign((size_t) L, strata::kernels::LoraLayerHost{});
+    auto f32_of = [&](const strata::GgufFile& f, const strata::TensorInfo& t, std::vector<float>& out) -> bool {
+        const uint8_t* p = f.tensor_data(t);
+        out.resize((size_t) t.elements());
+        if (t.type == 0) {
+            std::memcpy(out.data(), p, out.size() * sizeof(float));
+        } else if (t.type == 1 || t.type == 30) {   // F16, BF16
+            for (size_t i = 0; i < out.size(); ++i) {
+                uint16_t h;
+                std::memcpy(&h, p + 2 * i, 2);
+                out[i] = t.type == 1 ? strata::fp16_to_fp32(h) : strata::bf16_to_fp32(h);
+            }
+        } else {
+            err = t.name + ": " + t.type_name() + " (f32, f16 or bf16 only)";
+            return false;
+        }
+        return true;
+    };
+    for (const auto& [path, scale] : files) {
+        try {
+            strata::GgufFile f(path);
+            const strata::MetaValue* type = f.get("general.type");
+            const strata::MetaValue* atype = f.get("adapter.type");
+            if (type == nullptr || type->s != "adapter" || atype == nullptr || atype->s != "lora") {
+                err = path + ": not a LoRA adapter GGUF (general.type 'adapter', adapter.type 'lora')";
+                return false;
+            }
+            const strata::MetaValue* arch = f.get("general.architecture");
+            if (arch != nullptr && arch->s != "qwen4exp") {
+                err = path + ": made for '" + arch->s + "', not qwen4exp";
+                return false;
+            }
+            const strata::MetaValue* am = f.get("adapter.lora.alpha");
+            const double alpha = am != nullptr && am->is_num() ? am->num() : 0.0;
+            std::map<std::string, std::pair<const strata::TensorInfo*, const strata::TensorInfo*>> pairs;
+            for (const strata::TensorInfo& t : f.tensors()) {
+                const bool is_a = t.name.size() > 7 && t.name.compare(t.name.size() - 7, 7, ".lora_a") == 0;
+                const bool is_b = t.name.size() > 7 && t.name.compare(t.name.size() - 7, 7, ".lora_b") == 0;
+                if (!is_a && !is_b) { err = path + ": unexpected tensor " + t.name; return false; }
+                auto& pr = pairs[t.name.substr(0, t.name.size() - 7)];
+                (is_a ? pr.first : pr.second) = &t;
+            }
+            if (pairs.empty()) { err = path + ": no lora_a / lora_b tensors"; return false; }
+            for (const auto& [base, pr] : pairs) {
+                if (pr.first == nullptr || pr.second == nullptr) { err = path + ": " + base + " lacks lora_a or lora_b"; return false; }
+                long l = -1;
+                char which[32] = {};
+                if (std::sscanf(base.c_str(), "blk.%ld.%31[a-z_].weight", &l, which) != 2 || l < 0 || l >= L ||
+                    base != "blk." + std::to_string(l) + "." + which + ".weight") {
+                    err = path + ": " + base + ": not a layer of this model";
+                    return false;
+                }
+                const bool qsa = strata::core::is_qsa_layer(g, l);
+                const std::string want = qsa ? "attn_output" : "ssm_out";
+                if (want != which) {
+                    err = path + ": " + base + ": the engine adapts only blk." + std::to_string(l) + "." + want + ".weight";
+                    return false;
+                }
+                const int64_t n_in = qsa ? g.n_head * g.head_dim : g.ssm_value_dim;
+                const strata::TensorInfo &ta = *pr.first, &tb = *pr.second;
+                // llama.cpp's shapes: lora_a ne = [n_in, r], lora_b ne = [r, n_out]
+                if (ta.shape.size() != 2 || tb.shape.size() != 2 || (int64_t) ta.shape[0] != n_in ||
+                    (int64_t) tb.shape[1] != N || ta.shape[1] != tb.shape[0] || ta.shape[1] == 0) {
+                    err = path + ": " + base + ": lora_a must be [" + std::to_string((long long) n_in) + ", r] and lora_b [r, " +
+                          std::to_string((long long) N) + "]";
+                    return false;
+                }
+                const int64_t r = (int64_t) ta.shape[1];
+                std::vector<float> a, b;
+                if (!f32_of(f, ta, a) || !f32_of(f, tb, b)) { err = path + ": " + err; return false; }
+                const float s = (float) (alpha != 0.0 ? scale * alpha / (double) r : scale);
+                strata::kernels::LoraLayerHost& h = layers[(size_t) l];
+                const int64_t r0 = h.rank, rn = r0 + r;
+                if (rn > strata::kernels::kLoraMaxRank) {
+                    err = base + ": the summed rank is above " + std::to_string((long long) strata::kernels::kLoraMaxRank);
+                    return false;
+                }
+                h.n_in = n_in;
+                h.n_out = N;
+                h.a.insert(h.a.end(), a.begin(), a.end());   // A: the new rows below the old ones
+                std::vector<float> nb((size_t) (N * rn));    // B: the new columns right of the old ones
+                for (int64_t i = 0; i < N; ++i) {
+                    for (int64_t k = 0; k < r0; ++k) nb[(size_t) (i * rn + k)] = h.b[(size_t) (i * r0 + k)];
+                    for (int64_t k = 0; k < r; ++k) nb[(size_t) (i * rn + r0 + k)] = s * b[(size_t) (i * r + k)];
+                }
+                h.b = std::move(nb);
+                h.rank = rn;
+            }
+        } catch (const std::exception& e) {
+            err = e.what();
+            return false;
+        }
+    }
+    int covered = 0;
+    for (const auto& h : layers) covered += h.rank > 0;
+    {
+        strata::core::SessionIdentityBuilder b(0x4c4f5241ull);   // "LORA"
+        for (int64_t l = 0; l < L; ++l) {
+            const auto& h = layers[(size_t) l];
+            b.i64("rank", h.rank);
+            if (h.rank == 0) continue;
+            b.bytes("a", h.a.data(), h.a.size() * sizeof(float));
+            b.bytes("b", h.b.data(), h.b.size() * sizeof(float));
+        }
+        digest = b.digest();
+        if (digest == 0) digest = 1;   // 0 means "none loaded"
+    }
+    summary = std::to_string(covered);
+    return true;
+}
+
+bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, std::string& summary, uint64_t& digest,
+                        std::string& err) {
+    std::vector<strata::kernels::LoraLayerHost> layers;
+    if (!parse_lora_adapters(o.lora_files, g, layers, summary, digest, err)) return false;
+    const uint64_t bytes = strata::kernels::lora_device_bytes(layers);
+    if (!strata::kernels::lora_upload(layers, err)) return false;
+    std::fprintf(stderr, "strata generate: LoRA: %zu file%s, %s layers adapted, %.1f MiB per device\n",
+                 o.lora_files.size(), o.lora_files.size() == 1 ? "" : "s", summary.c_str(), (double) bytes / (1024.0 * 1024.0));
+    return true;
+}
+
 // The effective host->device bandwidth of the PCIe link: copies from pinned host memory, as the expert arena's
 // reads are.  The native default share (0.55) was measured on x16 links (~26-28 GB/s); a x8 card in a x8 slot
 // carries about half of that.  Returns < 0 when the probe cannot run (then the caller keeps the default).
@@ -4176,6 +4367,16 @@ int main(int argc, char** argv) {
                 }
                 o.cvec_files.push_back({item.substr(0, colon), sc});
             }
+        }
+        else if (a == "--lora") o.lora_files.push_back({next("--lora"), 1.0f});
+        else if (a == "--lora-scaled") {
+            std::vector<std::pair<std::string, float>> parsed;
+            std::string perr;
+            if (!parse_lora_spec(next("--lora-scaled"), parsed, perr, /*require_scale=*/true)) {
+                std::fprintf(stderr, "--lora-scaled: %s\n", perr.c_str());
+                return 2;
+            }
+            for (auto& p : parsed) o.lora_files.push_back(std::move(p));
         }
         else if (a == "--control-vector-layer-range") {
             o.cvec_first = std::atoi(next("--control-vector-layer-range"));
@@ -6149,6 +6350,16 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    std::string lora_summary = "0";
+    uint64_t lora_digest = 0;   // a session file is bound to the loaded adapter (0: none)
+    if (!o.lora_files.empty()) {
+        std::string le;
+        if (!load_lora_adapters(o, g, lora_summary, lora_digest, le)) {
+            std::fprintf(stderr, "strata generate: LoRA: %s\n", le.c_str());
+            return 2;
+        }
+    }
+    uint64_t lora_generation = strata::kernels::lora().loaded ? 1 : 0;
     if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
@@ -6692,6 +6903,10 @@ int main(int argc, char** argv) {
         }
         // a control vector (the speed projection): its tables on this device too - the stage's layers apply it here
         if (!strata::kernels::cvec_replicate(err)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
+            return 1;
+        }
+        if (!strata::kernels::lora_replicate(err)) {   // --lora: the same for the adapter
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
             return 1;
         }
@@ -13844,6 +14059,7 @@ int main(int argc, char** argv) {
         // checkpoints taken inside it
         ConvCheckpoint::PromptPlan seg_plan;
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
+        bool lora_cached = true;   // the same for the LoRA adapter
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
         // #3493: no --conversation-cache-mib given: size the cache for agent use from the RAM that is free now that the model is
@@ -14014,6 +14230,7 @@ int main(int argc, char** argv) {
                           rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
                           rope_cfg.beta_slow};
                 c.cvec = cvec_digest;
+                c.lora = lora_digest;
                 c.switches = {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
                     {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
@@ -14192,6 +14409,7 @@ int main(int argc, char** argv) {
             const std::vector<ImgKey>& imgs;
             std::vector<ConvCheckpoint>& checks;          ///< moved apart into stage parts for the capture, put back after
             bool cvec;
+            bool lora;
             strata::core::SessionState& session;          ///< stage 0's
             std::vector<strata::core::SessionState*> stage_sessions;   ///< the later stages', in stage order (stages[k]->dev)
             const strata::core::QsaState* draft0;         ///< the draft layer's K/V saved with stage 0's image (or none)
@@ -14276,7 +14494,7 @@ int main(int argc, char** argv) {
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
             {
                 std::vector<size_t> gone;
-                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone);
+                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, src.lora, &gone);
                 if (dropped)
                     std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                                  "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
@@ -14305,7 +14523,7 @@ int main(int argc, char** argv) {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
-            const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec};
+            const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec, src.lora};
             const int64_t retained_n = src.with_reuse ? conversations.retained_tokens() : 0;
             // a batch slot's image carries no retained K/V (it describes the main session's conversation), and the
             // main session's stays retained for its own park
@@ -14323,7 +14541,7 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < n_st; ++k) {
                 auto& st = stages[k];
                 const strata::core::OnDevice on(st->dev);
-                const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
+                const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec, src.lora};
                 size_t b = 0;
                 if (!strata::core::conversation_snapshot_bytes(view_k, *src.stage_sessions[k], g, draft_of(k), b, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage CUDA%d: %s)\n",
@@ -14474,7 +14692,7 @@ int main(int argc, char** argv) {
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
                     if (cudaDeviceSynchronize() != cudaSuccess) { err = "stage sync failed"; return false; }
-                    const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
+                    const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec, src.lora};
                     strata::core::SavedConversation part;
                     if (!strata::core::conversation_snapshot_save(part, view_k, *src.stage_sessions[k], g, draft_of(k), err,
                             std::move(stage_reuse[k]), &reused_bytes))
@@ -14519,7 +14737,7 @@ int main(int argc, char** argv) {
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
             const size_t n_st = stages.size();
-            ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
+            ParkSource src{live, live_imgs, checks, cvec_cached, lora_cached, ss, {},
                            (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state(),
                            use_mtp && !mtp_first && n_st > 0 ? &mtp.kv_state() : nullptr, true, ""};
             for (auto& st : stages) src.stage_sessions.push_back(&st->ss);
@@ -16176,6 +16394,11 @@ int main(int argc, char** argv) {
             if (!(o.batch > 0 && o.batch_groups > 1 && !stages.empty() && piped_mtp && ver.deferred_commit_on())) return false;
             return (o.batch / o.batch_groups) * pm_slot_rows() <= batch_max_t();
         }();
+#if defined(STRATA_GPU_METAL)
+        const bool score_cap = false;
+#else
+        const bool score_cap = !multi_gpu && stages.empty() && !o.prefill_head_alias && sp.chunk() > 0;
+#endif
         // what the server's Monitor tab shows (servers before 0.1.8 skip unknown lines until READY)
         {
             size_t free_b = 0, total_b = 0;
@@ -16199,7 +16422,7 @@ int main(int argc, char** argv) {
             // (#5012: experts = every routed (layer, expert) pair, so the Monitor shows "slots / experts" as a share)
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld experts=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
-                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s lora=%s lora_reload=%d score=%d arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
@@ -16210,7 +16433,8 @@ int main(int argc, char** argv) {
                         (long long) slots_all, (long long) (g.n_layers * g.n_expert), (long long) mib_all,
                         (long long) slots_primary, (long long) mib_primary,
                         o.spec, o.mtp_max_t,
-                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
+                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(), lora_summary.c_str(),
+                        strata::kernels::lora().loaded ? 1 : 0, score_cap ? 1 : 0,
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
@@ -16771,6 +16995,7 @@ int main(int argc, char** argv) {
             int pen_n = 0;                 ///< its request's penalty window (penalty_last_n) when it has a repeat / frequency / presence penalty, else 0
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
+            bool lora = true;              ///< the LoRA adapter setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
             // the checkpoint its prompt read took at the last turn boundary (the history before the new turn's
             // header): a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
@@ -17090,7 +17315,7 @@ int main(int argc, char** argv) {
             }
             const size_t n_st = stages.size();
             static const std::vector<ImgKey> no_imgs;
-            ParkSource src{sl.ids, no_imgs, sl.checks, sl.cvec, *bslot_ss[0][(size_t) b], {},
+            ParkSource src{sl.ids, no_imgs, sl.checks, sl.cvec, sl.lora, *bslot_ss[0][(size_t) b], {},
                            (n_st > 0 && !mtp_first) || !batch_mtp || batch_df2 ? nullptr : &slot_mtp[(size_t) b]->kv_state(),
                            batch_mtp && !batch_df2 && !mtp_first && n_st > 0 ? &slot_mtp[(size_t) b]->kv_state() : nullptr, false,
                            " from slot " + std::to_string(b)};
@@ -18399,6 +18624,312 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return pmtp_settle();
         };
+        // the batched path's slots are lent just before its first run and given back (refilled) before a window
+        // reads - so the windows always see the whole expert cache - or once the prompt/score pass is read
+        // Every participant gives its loan back here: the rows it lent are refilled into the SAME slots from
+        // the arena, the residency table is restored, and one upload puts it on every device.  A stage refills
+        // through its own cache and its own device - a slot refilled into the wrong cache would leave that
+        // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
+        // (split in two halves so a layer split can queue every stage's copies before it waits for any: #340)
+        // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
+        // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
+        static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
+        auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
+            tr("refill start", (long long) p.lent.size());
+            const strata::core::OnDevice on(p.dev);
+            for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                strata::core::BlobPart parts[3];
+                const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
+                if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
+                    if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
+                    host_res[(size_t) i] = slot;
+                    continue;
+                }
+                const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+                const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+                if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
+                                                        : p.cache->fill_slot_queued(slot, b, e, nb)))
+                    return false;
+                if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+                host_res[(size_t) i] = slot;
+            }
+            return true;
+        };
+        auto refill_wait = [&](PfPart& p, std::string& e) -> bool {
+            const strata::core::OnDevice on(p.dev);
+            if (!p.cache->sync_queued(e)) return false;
+#if defined(_WIN32)
+            // The copies have landed: the file pages touched by the loan need not stay in the working set.
+            for (const auto& [i, slot] : p.lent)
+                srcp->release(i / g.n_expert, i % g.n_expert);
+#endif
+            p.lent.clear();
+            p.lent_chunk = 0;
+            return true;
+        };
+        auto refill_one = [&](PfPart& p, std::string& e) -> bool {
+            if (p.lent.empty()) return true;
+            return refill_issue(p, e) && refill_wait(p, e);
+        };
+        // #340: with several stages every stage's copies go out first (each card on its own link), then each is
+        // waited for - the same copies into the same slots, so the same cache; one stage: refill_one exactly.
+        // STRATA_REFILL_SERIAL=1: stage after stage, as 0.1.30/0.1.31.
+        static const bool refill_serial = std::getenv("STRATA_REFILL_SERIAL") != nullptr;
+        auto refill = [&](std::string& e) -> bool {
+            const auto t_rf = Clock::now();
+            int64_t n_lent = 0, n_parts = 0;
+            for (PfPart& p : pf_parts)
+                if (!p.lent.empty()) { n_lent += (int64_t) p.lent.size(); ++n_parts; }
+            if (n_parts > 1 && !refill_serial) {
+                for (PfPart& p : pf_parts)
+                    if (!p.lent.empty() && !refill_issue(p, e)) return false;
+                for (PfPart& p : pf_parts)
+                    if (!p.lent.empty() && !refill_wait(p, e)) return false;
+            } else {
+                for (PfPart& p : pf_parts)
+                    if (!p.lent.empty() && !refill_one(p, e)) return false;
+            }
+            if (n_parts > 0) res_upload();
+            if (trace && n_parts > 0) {
+                std::fprintf(stderr, "strata trace: refilled %lld slots on %lld stage(s) in %.1f ms\n",
+                             (long long) n_lent, (long long) n_parts,
+                             std::chrono::duration<double, std::milli>(Clock::now() - t_rf).count());
+                std::fflush(stderr);
+            }
+            return true;
+        };
+        // lend the slots `tokens` batched prompt tokens need: the prompt path's buffers for min(chunk, tokens
+        // rounded up to 256), laid out in the last of the slots it may borrow - per participant, out of that
+        // participant's own cache, and marking only that participant's own layers
+        int64_t seg_lend = 0;   // the loan the last lend left (the largest participant's chunk; 0: none)
+        auto lend = [&](int64_t tokens, std::string& e, int64_t exact) -> bool {
+            seg_lend = 0;
+            if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
+            const auto t_ln = Clock::now();
+            // what this segment needs, capped by the configured chunk: a request lends only what its own
+            // prompt needs, so a large chunk costs a short prompt nothing
+#if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
+            // one GPU: equal chunks (equal_cut_rule.hpp), unless their loan would take more slots than today's cut
+            const bool eq_one_gpu = pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
+                                    !o.prefill_head_alias && o.batch <= 1;
+            int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, eq_one_gpu));
+            // the equal chunk that kEqualMinChunk turned down (equal_cut_rule.hpp declined_equal; 0: none): kept below
+            // when today's cut, handed back for it, cannot be lent but the equal cut can (keep_equal)
+            int64_t pf_declined_eq = 0;
+            if (eq_one_gpu && equal_cut_one == strata::prefill::equal_cut::Cut::equal &&
+                (pf_plan_chunk <= 0 || pf_plan_chunk >= o.prefill_chunk))
+                pf_declined_eq = strata::prefill::equal_cut::declined_equal(tokens, o.prefill_chunk,
+                                                                            strata::prefill::Prefill::stream_all_min_tokens());
+            if (eq_one_gpu) {
+                const int64_t want_today = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, false));
+                if (want_full != want_today && pf_parts[0].first >= 0) {
+                    const int64_t floor_eq = strata::prefill::Prefill::stream_all_min_tokens();
+                    auto tail_eq = [&](int64_t w) -> int64_t {
+                        return tail_loan_on && strata::prefill::Prefill::tail_matters(w, srcp != nullptr)
+                                   ? strata::prefill::loan_rules::segment_tail(tokens, w, floor_eq) : -1;
+                    };
+                    // after a tail-0 scan only at or below 0.1.39's chunk: today's cut above it would carve the short tail the
+                    // scan did not count (fit_out_rule.hpp today_cut_ok)
+                    if (!strata::prefill::equal_cut::loan_ok(part_slots(pf_parts[0], want_full, tail_eq(want_full)),
+                                                             part_slots(pf_parts[0], want_today, tail_eq(want_today))) &&
+                        strata::prefill::fit_out::today_cut_ok(pf_fit_tail, want_today, pf_fit_small))
+                        want_full = want_today;
+                }
+            }
+#else
+            const int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk));
+#endif
+            // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
+            const int64_t want_seg = o.prefill_head_alias ? o.prefill_chunk
+                                   : split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
+                                                                                 : want_full;
+            // `exact`: a planned segment read on - the loan it was read with (what is left would size another)
+            const int64_t want = exact > 0 ? std::min(exact, o.prefill_chunk) : want_seg;
+            if (want <= 0) {
+                e = "prefill: cannot lend buffers for an empty request segment";
+                return false;
+            }
+            bool any = false;
+            namespace lr = strata::prefill::loan_rules;
+            using strata::prefill::Prefill;
+            const int64_t floor_t = Prefill::stream_all_min_tokens();
+            const bool tail_ok = tail_loan_on && pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
+                                 !o.prefill_head_alias && o.batch <= 1;
+            for (PfPart& p : pf_parts) {
+                if (p.first < 0) continue;
+                if (!p.lent.empty()) {
+                    // its current loan already covers this: the chunk, and (a fused layout) the tail the segment's last
+                    // chunk needs when it is read in the loan's own chunks
+                    if (tail_ok && !dbg_tail_noreuse ? lr::reuse_ok(want, tokens, p.lent_chunk, p.sp->tail_room(), floor_t)
+                                                     : want <= p.lent_chunk) continue;
+                    // ONLY this participant's loan goes back: `refill` would return the other participants'
+                    // loans too, and their buffers are still laid out in their caches - marking those slots
+                    // resident again would hand the next window a prompt buffer in place of an expert
+                    if (!refill_one(p, e)) return false;
+                }
+                const strata::core::OnDevice on(p.dev);
+                int64_t want_p = want;
+                int64_t tail_p = -1;   // the tail the layout is laid out with (-1: floor - 1)
+                int32_t first = p.first_now;
+                // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout.
+                // (STRATA_MTP_ROOM_MIN's room is not one: its slots are the drafter's own bytes, so a roomed
+                // request lends and is laid out exactly as any other - a relayout re-carves the room with it.)
+                if (!o.prefill_head_alias) {
+                    // #2090: the loan a chunk needs is NOT monotonic in the chunk: a chunk above the scan's small_max
+                    // lays out the byte-budget ring (199 slots at 5120), one at or below it 0.1.39's (384 at 4096), so
+                    // a request's smaller chunk can need MORE slots than the auto chunk's region (p.first) holds.  The
+                    // loan starts where the chunk itself needs it (the 128-slot floor aside); a chunk that cannot be
+                    // lent even then is halved until it can, instead of ending the engine.
+                    // the tail this layout is carved with for chunks of `w` (-1: today's floor - 1): grow-only while the layout's
+                    // chunk stays (loan_rules::next_tail), the need of the moment otherwise
+                    auto tail_for = [&](int64_t w) -> int64_t {
+                        if (!tail_ok || !Prefill::tail_matters(w, srcp != nullptr)) return -1;
+                        return lr::next_tail(p.sp->chunk(), p.sp->layout_tail(), w, lr::segment_tail(tokens, w, floor_t), floor_t);
+                    };
+                    tail_p = tail_for(want_p);
+                    int64_t need_p = part_slots(p, want_p, tail_p);
+                    int64_t want_cut = want;   // the chunk this request asked for (the equal one when keep_equal took it)
+#if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
+                    if (pf_declined_eq > 0 && want == want_full) {
+                        const int64_t eq_w = loan_chunk(tokens, pf_declined_eq);
+                        const int64_t eq_tail = tail_for(eq_w);
+                        const int64_t eq_need = part_slots(p, eq_w, eq_tail);
+                        if (strata::prefill::equal_cut::keep_equal(need_p, eq_need, (int64_t) p.cache->slots() - (int64_t) g_lend_keep)) {
+                            std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: the old cut's "
+                                         "buffers do not fit the slots that can be lent, the equal cut's do\n",
+                                         (long long) want_p, (long long) eq_w);
+                            want_p = eq_w;
+                            want_cut = eq_w;
+                            tail_p = eq_tail;
+                            need_p = eq_need;
+                        }
+                    }
+#endif
+                    while ((need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) && want_p > 256) {
+                        want_p = std::max<int64_t>(256, want_p / 2 / 256 * 256);
+                        tail_p = tail_for(want_p);
+                        need_p = part_slots(p, want_p, tail_p);
+                    }
+                    if (need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) {
+                        e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
+                        return false;
+                    }
+                    if (want_p != want_cut)
+                        std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: its "
+                                     "buffers do not fit the slots that can be lent (#2090)\n", (long long) want_cut,
+                                     (long long) want_p);
+                    if (need_p > p.cache->slots() - p.first)   // the case that ended the engine before (#2090)
+                        std::fprintf(stderr, "strata serve: the loan for a chunk of %lld tokens (%lld slots) is larger than the "
+                                     "auto chunk's (%lld slots): starting it earlier (#2090)\n", (long long) want_p,
+                                     (long long) need_p, (long long) (p.cache->slots() - p.first));
+                    first = (int32_t) (p.cache->slots() - need_p);
+                }
+                if (want_p != p.sp->chunk() || first != p.first_now || (tail_p >= 0 && tail_p != p.sp->layout_tail())) {
+                    const auto t_rl = Clock::now();
+                    if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e, tail_p)) return false;
+                    p.first_now = first;
+                    if (tail_p >= 0) {
+                        static bool said = false;
+                        if (!said) {
+                            said = true;
+                            std::fprintf(stderr, "strata serve: the lent prompt buffers are sized for the request's own short last chunk "
+                                                 "(tail %lld tokens, not the stream floor's %lld); STRATA_PREFILL_TAIL_LOAN=0 keeps the floor's\n",
+                                         (long long) tail_p, (long long) (floor_t - 1));
+                        }
+                        if (trace)
+                            std::fprintf(stderr, "strata trace: relayout for %lld tokens, tail %lld, first slot %d: %.1f ms\n", (long long) want_p,
+                                         (long long) tail_p, (int) first,
+                                         std::chrono::duration<double, std::milli>(Clock::now() - t_rl).count());
+                    }
+                }
+                for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
+                    for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                        const size_t i = (size_t) (l * g.n_expert + ex);
+                        if (host_res[i] >= first) {
+                            p.lent.emplace_back((int32_t) i, host_res[i]);
+                            host_res[i] = strata::core::kNotResident;
+                            any = true;
+                        }
+                    }
+                p.lent_chunk = want_p;
+            }
+            for (const PfPart& p : pf_parts)
+                if (p.first >= 0) seg_lend = std::max(seg_lend, p.lent_chunk);
+            if (any) res_upload();
+            if (trace) {
+                int64_t n_lent = 0;
+                for (const PfPart& p : pf_parts) n_lent += (int64_t) p.lent.size();
+                std::fprintf(stderr, "strata trace: lent %lld slots for %lld tokens in %.1f ms\n", (long long) n_lent,
+                             (long long) want, std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
+                std::fflush(stderr);
+            }
+            return true;
+        };
+        struct ScoreFrontierCache {
+            struct Entry {
+                std::vector<int64_t> tokens;
+                int64_t layer = 0;
+                bool cvec = true;
+                std::vector<float> R;
+                uint64_t last_used = 0;
+            };
+            enum : size_t {
+                kMaxEntries = 32,
+                kDefaultMaxBytes = 256ull * 1024ull * 1024ull,
+            };
+            size_t max_bytes = []() -> size_t {
+                if (const char* v = std::getenv("STRATA_SCORE_FRONTIER_MIB")) {
+                    const long long mib = std::strtoll(v, nullptr, 10);
+                    if (mib >= 16 && mib <= 16384) return (size_t) mib * 1024ull * 1024ull;
+                }
+                return kDefaultMaxBytes;
+            }();
+            std::vector<Entry> entries;
+            size_t total_bytes = 0;
+            uint64_t tick = 0;
+
+            const Entry* find(const int64_t* toks, size_t n_toks, int64_t layer, bool cvec) {
+                for (Entry& e : entries) {
+                    if (e.layer == layer && e.cvec == cvec && e.tokens.size() == n_toks &&
+                        std::memcmp(e.tokens.data(), toks, n_toks * sizeof(int64_t)) == 0) {
+                        e.last_used = ++tick;
+                        return &e;
+                    }
+                }
+                return nullptr;
+            }
+
+            void put(const int64_t* toks, size_t n_toks, int64_t layer, bool cvec, std::vector<float>&& R) {
+                const size_t bytes = R.size() * sizeof(float);
+                if (bytes == 0 || bytes > max_bytes) return;
+                for (Entry& e : entries) {
+                    if (e.layer == layer && e.cvec == cvec && e.tokens.size() == n_toks &&
+                        std::memcmp(e.tokens.data(), toks, n_toks * sizeof(int64_t)) == 0) {
+                        total_bytes -= e.R.size() * sizeof(float);
+                        e.R = std::move(R);
+                        total_bytes += bytes;
+                        e.last_used = ++tick;
+                        return;
+                    }
+                }
+                while (!entries.empty() && (entries.size() >= kMaxEntries || total_bytes + bytes > max_bytes)) {
+                    size_t victim = 0;
+                    for (size_t i = 1; i < entries.size(); ++i) {
+                        if (entries[i].last_used < entries[victim].last_used) victim = i;
+                    }
+                    total_bytes -= entries[victim].R.size() * sizeof(float);
+                    entries.erase(entries.begin() + (ptrdiff_t) victim);
+                }
+                Entry e;
+                e.tokens.assign(toks, toks + n_toks);
+                e.layer = layer;
+                e.cvec = cvec;
+                e.R = std::move(R);
+                e.last_used = ++tick;
+                total_bytes += bytes;
+                entries.push_back(std::move(e));
+            }
+        } score_frontier_cache;
         for (;;) {
             line_drain_ms = 0.0;
             strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
@@ -18565,6 +19096,449 @@ int main(int argc, char** argv) {
             stop_req.store(false);   // a STOP that arrived between requests is stale
             g_prompt_stop_req.store(false);   // the prompt read's cancel flag resets with it (#962/#3675)
             err.clear();
+            // Hot-reload LoRA adapter weights in place without re-capturing graphs: LORA_RELOAD <spec>
+            // (<spec> is FILE[:SCALE][,FILE[:SCALE]...]).  Evicts stale LoRA-computed live state, parked RAM entries,
+            // idle batch slots, and SSD spill entries so no cached KV/GDN state is reused across adapter generations.
+            if (line == "LORA_RELOAD" || line.rfind("LORA_RELOAD ", 0) == 0) {
+                const auto t0 = Clock::now();
+                auto ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+                auto refuse = [&](const std::string& why) {
+                    std::string one = why;
+                    for (char& c : one) if (c == '\n' || c == '\r') c = ' ';
+                    std::fprintf(stderr, "strata serve: lora_reload refused: %s\n", one.c_str());
+                    std::printf("ERR lora_reload: %s\n", one.c_str());
+                    std::fflush(stdout);
+                    err.clear();
+                };
+                if (!strata::kernels::lora().loaded) {
+                    refuse("no LoRA adapter was loaded at startup");
+                    continue;
+                }
+                if (batch_on() || (piped && pipe_inflight())) {
+                    refuse("cannot reload LoRA while batch slots are actively decoding");
+                    continue;
+                }
+                const std::string spec = line.size() > 12 ? line.substr(12) : std::string();
+                std::vector<std::pair<std::string, float>> files;
+                std::string rerr;
+                if (!parse_lora_spec(spec, files, rerr, /*require_scale=*/false)) {
+                    refuse(rerr);
+                    continue;
+                }
+                std::vector<strata::kernels::LoraLayerHost> new_layers;
+                std::string new_summary;
+                uint64_t new_digest = 0;
+                if (!parse_lora_adapters(files, g, new_layers, new_summary, new_digest, rerr)) {
+                    refuse(rerr);
+                    continue;
+                }
+                strata::core::conversation_checkpoint_join(nullptr);
+                strata::core::conversation_park_join();
+                if (!ver.wait_commit(err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
+                if (!strata::kernels::lora_update(new_layers, rerr)) {
+                    refuse(rerr);
+                    continue;
+                }
+                ++lora_generation;
+                lora_digest = new_digest;
+                lora_summary = new_summary;
+                config_fp.reset();
+                spill_id.reset();
+                if (lora_cached) {
+                    live.clear();
+                    live_imgs.clear();
+                    if (ckpt_pool.on())
+                        for (ConvCheckpoint& c : checks) ckpt_pool.give(std::move(c));
+                    checks.clear();
+                    tail_ckpt_len = -1;
+                    live_ok = false;
+                    conversations.take_reuse();
+                }
+                size_t dropped_slots = 0;
+                for (BSlot& sl : bs) {
+                    if (!sl.active && sl.cached && sl.lora) {
+                        sl.cached = false;
+                        sl.partial = false;
+                        sl.ids.clear();
+                        if (ckpt_pool.on())
+                            for (ConvCheckpoint& c : sl.checks) ckpt_pool.give(std::move(c));
+                        sl.checks.clear();
+                        ++dropped_slots;
+                    }
+                }
+                const size_t dropped_ram = conversations.drop_lora();
+                const size_t dropped_spill = spill.enabled() ? spill_clear() : 0;
+                const size_t dropped_total = dropped_ram + dropped_spill;
+                const double elapsed_ms = ms();
+                std::fprintf(stderr, "strata serve: lora_reload gen=%llu digest=%016llx layers=%s in %.1f ms "
+                                     "(dropped ram=%zu spill=%zu slots=%zu live=%d)\n",
+                             (unsigned long long) lora_generation, (unsigned long long) lora_digest,
+                             lora_summary.c_str(), elapsed_ms, dropped_ram, dropped_spill, dropped_slots,
+                             lora_cached ? 1 : 0);
+                std::printf("OK lora_reload %llu %016llx %.1f dropped=%zu\n",
+                            (unsigned long long) lora_generation, (unsigned long long) lora_digest,
+                            elapsed_ms, dropped_total);
+                std::fflush(stdout);
+                continue;
+            }
+            // Teacher-forced sequence scoring: SCORE [lora=0|1] [cvec=0|1] [from=K] [frontier=auto|<L>] <id0,id1,...,id_{N-1}>
+            // Reuses single-GPU Prefill::run + on_chunk + run_head with zero extra GPU allocations, and returns
+            // exact per-token log-probabilities for positions [from, N - 2] (predicting tokens[pos + 1]).
+            if (line == "SCORE" || line.rfind("SCORE ", 0) == 0) {
+                const auto t0 = Clock::now();
+                auto ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+                auto refuse = [&](const std::string& why) {
+                    std::string one = why;
+                    for (char& c : one) if (c == '\n' || c == '\r') c = ' ';
+                    std::fprintf(stderr, "strata serve: score refused: %s\n", one.c_str());
+                    std::printf("ERR score: %s\n", one.c_str());
+                    std::fflush(stdout);
+                    err.clear();
+                };
+                if (!score_cap) {
+                    refuse("SCORE requires single-GPU prefill without --prefill-head-alias");
+                    continue;
+                }
+                if (batch_on() || (piped && pipe_inflight())) {
+                    refuse("cannot score while batch slots are actively decoding");
+                    continue;
+                }
+                int req_lora = 1;
+                int req_cvec = 1;
+                int64_t req_from = 0;
+                bool req_frontier_auto = false;
+                int64_t req_frontier = 0;
+                const char* p = line.c_str() + 5;
+                bool parse_ok = true;
+                std::string parse_err;
+                const char* ids_start = nullptr;
+                const char* ids_end = nullptr;
+                for (;;) {
+                    while (*p == ' ') ++p;
+                    if (*p == '\0') break;
+                    const char* start = p;
+                    while (*p != '\0' && *p != ' ') ++p;
+                    const std::string tok(start, (size_t) (p - start));
+                    const size_t eq = tok.find('=');
+                    if (eq == std::string::npos) {
+                        ids_start = start;
+                        ids_end = p;
+                        while (*p == ' ') ++p;
+                        if (*p != '\0') { parse_ok = false; parse_err = "unexpected trailing arguments"; }
+                        break;
+                    }
+                    const std::string key = tok.substr(0, eq);
+                    const std::string val = tok.substr(eq + 1);
+                    if (key == "lora") {
+                        if (val == "0") req_lora = 0;
+                        else if (val == "1") req_lora = 1;
+                        else { parse_ok = false; parse_err = "invalid lora value (expected 0 or 1)"; break; }
+                    } else if (key == "cvec") {
+                        if (val == "0") req_cvec = 0;
+                        else if (val == "1") req_cvec = 1;
+                        else { parse_ok = false; parse_err = "invalid cvec value (expected 0 or 1)"; break; }
+                    } else if (key == "from") {
+                        char* fe = nullptr;
+                        const long long fv = std::strtoll(val.c_str(), &fe, 10);
+                        if (val.empty() || fe == nullptr || *fe != '\0' || fv < 0) {
+                            parse_ok = false;
+                            parse_err = "invalid from value";
+                            break;
+                        }
+                        req_from = (int64_t) fv;
+                    } else if (key == "frontier") {
+                        if (val == "auto") {
+                            req_frontier_auto = true;
+                            req_frontier = 0;
+                        } else {
+                            char* fe = nullptr;
+                            const long long fv = std::strtoll(val.c_str(), &fe, 10);
+                            if (val.empty() || fe == nullptr || *fe != '\0' || fv < 0) {
+                                parse_ok = false;
+                                parse_err = "frontier must be 0, auto, or in [2, n_layers-1]";
+                                break;
+                            }
+                            req_frontier_auto = false;
+                            req_frontier = (int64_t) fv;
+                        }
+                    } else {
+                        parse_ok = false;
+                        parse_err = "unknown option: " + key;
+                        break;
+                    }
+                }
+                if (!parse_ok) { refuse(parse_err); continue; }
+                if (ids_start == nullptr || ids_start == ids_end) { refuse("missing token ids"); continue; }
+                std::vector<int64_t> s_ids;
+                {
+                    const char* q = ids_start;
+                    while (q < ids_end) {
+                        char* qe = nullptr;
+                        const long long v = std::strtoll(q, &qe, 10);
+                        if (qe == q || (qe < ids_end && *qe != ',')) {
+                            parse_ok = false;
+                            parse_err = "malformed token id list";
+                            break;
+                        }
+                        s_ids.push_back((int64_t) v);
+                        if (qe == ids_end) break;
+                        q = qe + 1;
+                        if (q == ids_end) { parse_ok = false; parse_err = "trailing comma in token id list"; break; }
+                    }
+                }
+                if (!parse_ok) { refuse(parse_err); continue; }
+                const int64_t N = (int64_t) s_ids.size();
+                if (N < 2) { refuse("SCORE requires at least 2 tokens"); continue; }
+                if (N > o.max_context) {
+                    refuse("sequence length (" + std::to_string((long long) N) + ") exceeds context (" +
+                           std::to_string((long long) o.max_context) + ")");
+                    continue;
+                }
+                if (req_from < 0 || req_from > N - 2) {
+                    refuse("from (" + std::to_string((long long) req_from) + ") out of range [0, " +
+                           std::to_string((long long) (N - 2)) + "]");
+                    continue;
+                }
+                bool bad_id = false;
+                for (const int64_t tid : s_ids) {
+                    if (tid < 0 || tid >= n_vocab) { bad_id = true; break; }
+                }
+                if (bad_id) { refuse("token id out of vocabulary range"); continue; }
+
+                const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+                const bool want_lora = strata::kernels::lora().loaded ? req_lora != 0 : true;
+                int64_t eff_frontier = 0;
+                if (req_frontier_auto) {
+                    int64_t first_adapted = g.n_layers;
+                    if (want_lora && strata::kernels::lora().loaded) {
+                        for (int64_t l = 0; l < g.n_layers; ++l) {
+                            if (strata::kernels::lora().covers(l)) { first_adapted = l; break; }
+                        }
+                    }
+                    if (first_adapted >= 2 && first_adapted < g.n_layers) eff_frontier = first_adapted;
+                } else if (req_frontier > 0) {
+                    if (req_frontier < 2 || req_frontier >= g.n_layers) {
+                        refuse("frontier must be 0, auto, or in [2, n_layers-1]");
+                        continue;
+                    }
+                    if (want_lora && strata::kernels::lora().loaded) {
+                        bool below = false;
+                        for (int64_t l = 0; l < req_frontier; ++l) {
+                            if (strata::kernels::lora().covers(l)) { below = true; break; }
+                        }
+                        if (below) {
+                            refuse("frontier layer " + std::to_string((long long) req_frontier) +
+                                   " has adapted layers below it");
+                            continue;
+                        }
+                    }
+                    eff_frontier = req_frontier;
+                }
+
+                strata::core::conversation_checkpoint_join(nullptr);
+                strata::core::conversation_park_join();
+                if (!ver.wait_commit(err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
+                if (!kvg_ensure(N + 16, adapt_quiesce)) {
+                    refuse("cannot grow K/V cache for SCORE sequence");
+                    continue;
+                }
+                if (!mrope_identity) {
+                    const int64_t cells = (int64_t) mrope_host.size() / 3;
+                    for (int64_t c = 0; c < cells; ++c)
+                        mrope_host[(size_t) c * 3] = mrope_host[(size_t) c * 3 + 1] = mrope_host[(size_t) c * 3 + 2] = (int32_t) c;
+                    if (cudaDeviceSynchronize() != cudaSuccess ||
+                        cudaMemcpy(d_mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        refuse("failed to restore identity mrope table");
+                        continue;
+                    }
+                    mrope_identity = true;
+                }
+                sp.embd_rows = nullptr;
+#if defined(STRATA_HAVE_DFLASH2)
+                if (use_df2) sp.set_taps({}, 0, 0);
+#endif
+                // Invalidate live device state without touching parked conversations.
+                live.clear();
+                live_imgs.clear();
+                if (ckpt_pool.on())
+                    for (ConvCheckpoint& c : checks) ckpt_pool.give(std::move(c));
+                checks.clear();
+                tail_ckpt_len = -1;
+                live_ok = false;
+                conversations.take_reuse();
+
+                cvec_cached = want_cvec;
+                lora_cached = want_lora;
+                if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+                if (strata::kernels::lora().loaded) strata::kernels::lora_set_enabled(want_lora);
+
+                strata::core::session_zero(ss, g, nullptr, main_cs);
+                if (cudaStreamSynchronize(main_stream) != cudaSuccess) {
+                    refuse("failed to reset session state");
+                    continue;
+                }
+
+                struct BusyGuard {
+                    bool prev;
+                    BusyGuard() : prev(strata::core::progress().busy.exchange(true)) {}
+                    ~BusyGuard() { strata::core::progress().busy.store(prev); }
+                } busy_guard;
+                strata::core::progress_at("scoring sequence");
+                strata::core::progress_beat();
+
+                // Disable KVA for SCORE so every scored position produces exact final residual rows.
+                struct KvaBlockGuard {
+                    std::string saved;
+                    KvaBlockGuard() : saved(strata::prefill::kva_engine().blocked) {
+                        if (strata::prefill::kva_engine().blocked.empty())
+                            strata::prefill::kva_engine().blocked = "SCORE requires exact rows at all positions";
+                    }
+                    ~KvaBlockGuard() { strata::prefill::kva_engine().blocked = std::move(saved); }
+                } kva_guard;
+
+                struct OnChunkGuard {
+                    strata::prefill::Prefill& pf;
+                    std::function<bool(const float*, int64_t, int64_t, std::string&)> saved;
+                    explicit OnChunkGuard(strata::prefill::Prefill& p) : pf(p), saved(std::move(p.on_chunk)) {}
+                    ~OnChunkGuard() { pf.on_chunk = std::move(saved); }
+                } chunk_guard(sp);
+
+                adapt_quiesce();
+                std::string score_err;
+                if (!lend(N - 1, score_err, 0)) {
+                    std::string rerr;
+                    if (!refill(rerr)) {
+                        std::printf("ERR refilling a lent slot failed: %s\n", rerr.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    refuse(score_err.empty() ? "failed to lend prefill buffers" : score_err);
+                    continue;
+                }
+
+                std::vector<float> h_logits((size_t) n_vocab);
+                std::vector<double> scores;
+                const size_t expected_count = (size_t) (N - 1 - req_from);
+                scores.reserve(expected_count);
+                const size_t row_floats = (size_t) g.hc * (size_t) g.n_embd;
+                const size_t row_bytes = row_floats * sizeof(float);
+                const size_t logits_bytes = (size_t) n_vocab * sizeof(float);
+
+                sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
+                    if (g_prompt_stop_req.load() || stop_req.load()) { e = "cancelled"; return false; }
+                    for (int64_t t = 0; t < T; ++t) {
+                        const int64_t pos = p0 + t;
+                        if (pos < req_from || pos > N - 2) continue;
+                        if (cudaMemcpyAsync(ss.block.R, R_rows + (size_t) t * row_floats, row_bytes,
+                                            cudaMemcpyDeviceToDevice, main_stream) != cudaSuccess) {
+                            e = std::string("residual copy failed: ") + cudaGetErrorString(cudaGetLastError());
+                            return false;
+                        }
+                        err.clear();
+                        if (!run_head(main_cs)) {
+                            e = err.empty() ? "run_head failed" : err;
+                            return false;
+                        }
+                        if (cudaMemcpyAsync(h_logits.data(), d_logits, logits_bytes,
+                                            cudaMemcpyDeviceToHost, main_stream) != cudaSuccess ||
+                            cudaStreamSynchronize(main_stream) != cudaSuccess) {
+                            e = std::string("logits copy failed: ") + cudaGetErrorString(cudaGetLastError());
+                            return false;
+                        }
+                        float mx = -INFINITY;
+                        for (const float v : h_logits) mx = std::max(mx, v);
+                        if (!std::isfinite(mx)) { e = "non-finite logits"; return false; }
+                        double se = 0.0;
+                        for (const float v : h_logits) se += std::exp((double) v - (double) mx);
+                        const double lse = (double) mx + std::log(se);
+                        const int64_t target_id = s_ids[(size_t) (pos + 1)];
+                        const double lp = (double) h_logits[(size_t) target_id] - lse;
+                        if (!std::isfinite(lp)) { e = "non-finite logprob"; return false; }
+                        scores.push_back(lp);
+                        if ((scores.size() & 31u) == 0) strata::core::progress_beat();
+                    }
+                    strata::core::progress_at("scoring sequence, done up to token", p0 + T);
+                    strata::core::progress_beat();
+                    return true;
+                };
+
+                strata::prefill::Prefill::set_pipe_request(-1.0);
+                strata::prefill::Prefill::set_share_blocked(false);
+                bool run_ok = false;
+                const bool use_frontier = eff_frontier > 0 && (N - 1) <= sp.chunk();
+                if (use_frontier) {
+                    const ScoreFrontierCache::Entry* hit =
+                        score_frontier_cache.find(s_ids.data(), (size_t) (N - 1), eff_frontier, want_cvec);
+                    if (hit != nullptr) {
+                        run_ok = sp.run_from_layer(s_ids.data(), N - 1, 0, eff_frontier, hit->R.data(), score_err);
+                    } else {
+                        const size_t cap_floats = (size_t) (N - 1) * row_floats;
+                        const size_t cap_bytes = cap_floats * sizeof(float);
+                        if (cap_bytes <= score_frontier_cache.max_bytes) {
+                            std::vector<float> cap(cap_floats);
+                            struct FrontierCapGuard {
+                                strata::prefill::Prefill& pf;
+                                ~FrontierCapGuard() { pf.clear_frontier_capture(); }
+                            } cap_guard{sp};
+                            sp.set_frontier_capture(eff_frontier, cap.data());
+                            run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                            if (run_ok) {
+                                score_frontier_cache.put(s_ids.data(), (size_t) (N - 1), eff_frontier, want_cvec,
+                                                         std::move(cap));
+                            }
+                        } else {
+                            run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                        }
+                    }
+                } else {
+                    run_ok = sp.run(s_ids.data(), N - 1, 0, score_err);
+                }
+
+                if (cudaPeekAtLastError() != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: score GPU fault: %s\n", score_err.c_str());
+                    std::printf("ERR score: %s\n", score_err.c_str());
+                    std::fflush(stdout);
+                    std::fflush(stderr);
+                    std::_Exit(1);
+                }
+
+                std::string refill_err;
+                if (!refill(refill_err)) {
+                    std::printf("ERR refilling a lent slot failed: %s\n", refill_err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
+                live_ok = false;
+
+                if (!run_ok) {
+                    refuse(score_err.empty() ? "prefill run failed" : score_err);
+                    continue;
+                }
+                if (scores.size() != expected_count) {
+                    refuse("scored " + std::to_string(scores.size()) + " tokens, expected " +
+                           std::to_string(expected_count));
+                    continue;
+                }
+
+                double sum_lp = 0.0;
+                for (const double lp : scores) sum_lp += lp;
+                const double mean_nll = -sum_lp / (double) scores.size();
+                const double elapsed_ms = ms();
+                std::printf("SC %zu %lld %.6f %.1f", scores.size(), (long long) req_from, mean_nll, elapsed_ms);
+                for (const double lp : scores) std::printf(" %.6f", lp);
+                std::printf("\n");
+                std::fflush(stdout);
+                continue;
+            }
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
             // RESTORED <tokens> <bytes> <ms>; SERR <invalid|storage|memory|io> <published 0|1> <reason> for a refusal
@@ -18691,7 +19665,7 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         kept = disk_checks.size();
-                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
+                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached, lora_cached};
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
@@ -18789,6 +19763,7 @@ int main(int argc, char** argv) {
                     checks = std::move(image.checkpoints);
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
+                    lora_cached = image.lora;
                     live_ok = true;
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
@@ -18833,6 +19808,7 @@ int main(int argc, char** argv) {
             std::string req_bias_text;
             bool req_bias_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            int req_lora = 1;   // lora=0|1: the loaded LoRA adapter for this request (on when absent)
             // logprobs=K (0..20): after each "T id" an "LP logprob id:logprob ..." line.
             // -1 (absent) = no LP lines, so a server that never asks sees today's output.
             int req_logprobs = -1;
@@ -18886,6 +19862,7 @@ int main(int argc, char** argv) {
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "lora") req_lora = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "prefill") req_prefill_only = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
@@ -19147,6 +20124,14 @@ int main(int argc, char** argv) {
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
             const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            const bool want_lora = strata::kernels::lora().loaded ? req_lora != 0 : true;
+            // the adapter's flag is one per device: other slots still decoding would switch with it
+            if (strata::kernels::lora().loaded && want_lora != strata::kernels::lora_enabled() && batch_on()) {
+                std::printf("ERR lora=%d: not while batch slots decode with lora=%d\n", want_lora ? 1 : 0,
+                            strata::kernels::lora_enabled() ? 1 : 0);
+                std::fflush(stdout);
+                continue;
+            }
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)
@@ -19280,7 +20265,7 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
-            if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+            if (o.prompt_cache > 0 && want_cvec == cvec_cached && want_lora == lora_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
@@ -19294,9 +20279,9 @@ int main(int argc, char** argv) {
             // of a slot's checkpoint this request moved into `checks` (from the slot it is admitted to), -1: none
             int lent_slot = -1;
             int64_t moved_in = -1;
-            if (slot_ckpt_move_env() && o.prompt_cache > 0 && want_cvec == cvec_cached && live_ok)
+            if (slot_ckpt_move_env() && o.prompt_cache > 0 && want_cvec == cvec_cached && want_lora == lora_cached && live_ok)
                 for (int b = 0; b < (int) bs.size(); ++b) {
-                    if (bs[(size_t) b].cvec != cvec_cached || bs[(size_t) b].tainted) continue;   // (#879)
+                    if (bs[(size_t) b].cvec != cvec_cached || bs[(size_t) b].lora != lora_cached || bs[(size_t) b].tainted) continue;   // (#879)
                     for (const ConvCheckpoint& c : bs[(size_t) b].checks) {
                         const int64_t L = (int64_t) c.ids.size();
                         if (L > resume && L <= (int64_t) live.size() && starts_with(c.ids, c.imgs) &&
@@ -19327,7 +20312,7 @@ int main(int argc, char** argv) {
                     // takes the main layers' cells, so the main drafter would keep another conversation's below it)
                     const bool active_source = sl.active && !sl.tainted && slot_ckpt_move_env() &&
                                                (!use_mtp || batch_mtp || admit_slot >= 0);
-                    if (sl.cvec != want_cvec || !(idle_source || active_source)) continue;
+                    if (sl.cvec != want_cvec || sl.lora != want_lora || !(idle_source || active_source)) continue;
                     if (idle_source && (int64_t) sl.ids.size() > std::max(resume, slot_tokens) && starts_with(sl.ids, {})) {
                         slot_source = b;
                         slot_tokens = (int64_t) sl.ids.size();
@@ -19374,7 +20359,7 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            const auto parked = conversations.best(ids, req_imgs, want_cvec, want_lora);
             // STRATA_SLOT_READ (opt-in: =1, with STRATA_PIPED_MTP; asked for by the server with slot_read=1, which then
             // takes DONE and BADM without a token): the next turn of the conversation an idle slot holds is read IN
             // that slot - its new tokens as rows of the slot's own windows in the pipelined groups, all kept - instead
@@ -19525,7 +20510,7 @@ int main(int argc, char** argv) {
                 const int64_t floor_tokens = std::max({resume, slot_tokens, parked.tokens});
                 int64_t held = 0;
                 spill_writer->for_each_held([&](const strata::core::SavedConversation& s) {
-                    held = std::max(held, strata::core::conversation_image_prefix(s, ids, req_imgs, want_cvec).first);
+                    held = std::max(held, strata::core::conversation_image_prefix(s, ids, req_imgs, want_cvec, want_lora).first);
                 });
                 if (held > floor_tokens) {
                     const auto t0 = Clock::now();
@@ -19534,7 +20519,7 @@ int main(int argc, char** argv) {
                     size_t at = SIZE_MAX;
                     std::pair<int64_t, bool> m{0, false};
                     for (size_t i = 0; i < done.size(); ++i) {
-                        const auto mi = strata::core::conversation_image_prefix(done[i].item, ids, req_imgs, want_cvec);
+                        const auto mi = strata::core::conversation_image_prefix(done[i].item, ids, req_imgs, want_cvec, want_lora);
                         if (mi.first > m.first) { m = mi; at = i; }
                     }
                     if (at != SIZE_MAX && m.first > floor_tokens) {
@@ -19551,7 +20536,7 @@ int main(int argc, char** argv) {
             }
             spill_reclaim();   // what the writer finished meanwhile is on the SSD tier: its RAM goes back before this request parks
             if (!from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
-                const auto sp = spill.best(ids, req_imgs, want_cvec);
+                const auto sp = spill.best(ids, req_imgs, want_cvec, want_lora);
                 const auto sp_entry = sp.tokens > 0 ? spill.find(sp.serial) : std::nullopt;
                 if (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id) {
                     const auto t0 = Clock::now();
@@ -19977,6 +20962,7 @@ int main(int argc, char** argv) {
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
                 cvec_cached = donor->cvec;
+                lora_cached = donor->lora;
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
@@ -20031,6 +21017,7 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                lora_cached = incoming->lora;
                 resume = taken.tokens;   // (parked.tokens unless the image came from the SSD tier)
                 from_live = taken.live;
                 if (!swapped_parked && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -20045,12 +21032,14 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }
-            if (want_cvec != cvec_cached) {
+            if (want_cvec != cvec_cached || want_lora != lora_cached) {
                 live_ok = false;
                 checks.clear();
                 cvec_cached = want_cvec;
+                lora_cached = want_lora;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            if (strata::kernels::lora().loaded) strata::kernels::lora_set_enabled(want_lora);
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             auto off_path = [&](const ConvCheckpoint& c) {
@@ -20485,255 +21474,7 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 return true;
             };
-            // the batched path's slots are lent just before its first run and given back (refilled) before a window
-            // reads - so the windows always see the whole expert cache - or once the prompt is read
-            // Every participant gives its loan back here: the rows it lent are refilled into the SAME slots from
-            // the arena, the residency table is restored, and one upload puts it on every device.  A stage refills
-            // through its own cache and its own device - a slot refilled into the wrong cache would leave that
-            // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
-            // (split in two halves so a layer split can queue every stage's copies before it waits for any: #340)
-            // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
-            // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
-            static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
-            auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
-                tr("refill start", (long long) p.lent.size());
-                const strata::core::OnDevice on(p.dev);
-                if (p.cache != nullptr && p.first_now >= 0 && !p.cache->scrub_loan_boundary(p.first_now, e)) return false;
-                for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
-                    strata::core::BlobPart parts[3];
-                    const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
-                    if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
-                        if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
-                        host_res[(size_t) i] = slot;
-                        continue;
-                    }
-                    const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
-                    const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
-                    if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
-                                                            : p.cache->fill_slot_queued(slot, b, e, nb)))
-                        return false;
-                    if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
-                    host_res[(size_t) i] = slot;
-                }
-                return true;
-            };
-            auto refill_wait = [&](PfPart& p, std::string& e) -> bool {
-                const strata::core::OnDevice on(p.dev);
-                if (!p.cache->sync_queued(e)) return false;
-#if defined(_WIN32)
-                // The copies have landed: the file pages touched by the loan need not stay in the working set.
-                for (const auto& [i, slot] : p.lent)
-                    srcp->release(i / g.n_expert, i % g.n_expert);
-#endif
-                p.lent.clear();
-                p.lent_chunk = 0;
-                return true;
-            };
-            auto refill_one = [&](PfPart& p, std::string& e) -> bool {
-                if (p.lent.empty()) {
-                    if (p.lent_chunk > 0 && p.cache != nullptr && p.first_now >= 0) {
-                        const strata::core::OnDevice on(p.dev);
-                        if (!p.cache->scrub_loan_boundary(p.first_now, e) || !p.cache->sync_queued(e)) return false;
-                        p.lent_chunk = 0;
-                    }
-                    return true;
-                }
-                return refill_issue(p, e) && refill_wait(p, e);
-            };
-            // #340: with several stages every stage's copies go out first (each card on its own link), then each is
-            // waited for - the same copies into the same slots, so the same cache; one stage: refill_one exactly.
-            // STRATA_REFILL_SERIAL=1: stage after stage, as 0.1.30/0.1.31.
-            static const bool refill_serial = std::getenv("STRATA_REFILL_SERIAL") != nullptr;
-            auto refill = [&](std::string& e) -> bool {
-                const auto t_rf = Clock::now();
-                int64_t n_lent = 0, n_parts = 0;
-                for (PfPart& p : pf_parts)
-                    if (!p.lent.empty()) { n_lent += (int64_t) p.lent.size(); ++n_parts; }
-                if (n_parts > 1 && !refill_serial) {
-                    for (PfPart& p : pf_parts)
-                        if (!p.lent.empty() && !refill_issue(p, e)) return false;
-                    for (PfPart& p : pf_parts)
-                        if (!p.lent.empty() && !refill_wait(p, e)) return false;
-                } else {
-                    for (PfPart& p : pf_parts)
-                        if (!p.lent.empty() && !refill_one(p, e)) return false;
-                }
-                if (n_parts > 0) res_upload();
-                if (trace && n_parts > 0) {
-                    std::fprintf(stderr, "strata trace: refilled %lld slots on %lld stage(s) in %.1f ms\n",
-                                 (long long) n_lent, (long long) n_parts,
-                                 std::chrono::duration<double, std::milli>(Clock::now() - t_rf).count());
-                    std::fflush(stderr);
-                }
-                return true;
-            };
-            // lend the slots `tokens` batched prompt tokens need: the prompt path's buffers for min(chunk, tokens
-            // rounded up to 256), laid out in the last of the slots it may borrow - per participant, out of that
-            // participant's own cache, and marking only that participant's own layers
-            int64_t seg_lend = 0;   // the loan the last lend left (the largest participant's chunk; 0: none)
-            auto lend = [&](int64_t tokens, std::string& e, int64_t exact) -> bool {
-                seg_lend = 0;
-                if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
-                const auto t_ln = Clock::now();
-                // what this segment needs, capped by the configured chunk: a request lends only what its own
-                // prompt needs, so a large chunk costs a short prompt nothing
-#if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
-                // one GPU: equal chunks (equal_cut_rule.hpp), unless their loan would take more slots than today's cut
-                const bool eq_one_gpu = pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
-                                        !o.prefill_head_alias && o.batch <= 1;
-                int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, eq_one_gpu));
-                // the equal chunk that kEqualMinChunk turned down (equal_cut_rule.hpp declined_equal; 0: none): kept below
-                // when today's cut, handed back for it, cannot be lent but the equal cut can (keep_equal)
-                int64_t pf_declined_eq = 0;
-                if (eq_one_gpu && equal_cut_one == strata::prefill::equal_cut::Cut::equal &&
-                    (pf_plan_chunk <= 0 || pf_plan_chunk >= o.prefill_chunk))
-                    pf_declined_eq = strata::prefill::equal_cut::declined_equal(tokens, o.prefill_chunk,
-                                                                                strata::prefill::Prefill::stream_all_min_tokens());
-                if (eq_one_gpu) {
-                    const int64_t want_today = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, false));
-                    if (want_full != want_today && pf_parts[0].first >= 0) {
-                        const int64_t floor_eq = strata::prefill::Prefill::stream_all_min_tokens();
-                        auto tail_eq = [&](int64_t w) -> int64_t {
-                            return tail_loan_on && strata::prefill::Prefill::tail_matters(w, srcp != nullptr)
-                                       ? strata::prefill::loan_rules::segment_tail(tokens, w, floor_eq) : -1;
-                        };
-                        // after a tail-0 scan only at or below 0.1.39's chunk: today's cut above it would carve the short tail the
-                        // scan did not count (fit_out_rule.hpp today_cut_ok)
-                        if (!strata::prefill::equal_cut::loan_ok(part_slots(pf_parts[0], want_full, tail_eq(want_full)),
-                                                                 part_slots(pf_parts[0], want_today, tail_eq(want_today))) &&
-                            strata::prefill::fit_out::today_cut_ok(pf_fit_tail, want_today, pf_fit_small))
-                            want_full = want_today;
-                    }
-                }
-#else
-                const int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk));
-#endif
-                // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
-                const int64_t want_seg = o.prefill_head_alias ? o.prefill_chunk
-                                       : split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
-                                                                                     : want_full;
-                // `exact`: a planned segment read on - the loan it was read with (what is left would size another)
-                const int64_t want = exact > 0 ? std::min(exact, o.prefill_chunk) : want_seg;
-                if (want <= 0) {
-                    e = "prefill: cannot lend buffers for an empty request segment";
-                    return false;
-                }
-                bool any = false;
-                namespace lr = strata::prefill::loan_rules;
-                using strata::prefill::Prefill;
-                const int64_t floor_t = Prefill::stream_all_min_tokens();
-                const bool tail_ok = tail_loan_on && pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
-                                     !o.prefill_head_alias && o.batch <= 1;
-                for (PfPart& p : pf_parts) {
-                    if (p.first < 0) continue;
-                    if (!p.lent.empty()) {
-                        // its current loan already covers this: the chunk, and (a fused layout) the tail the segment's last
-                        // chunk needs when it is read in the loan's own chunks
-                        if (tail_ok && !dbg_tail_noreuse ? lr::reuse_ok(want, tokens, p.lent_chunk, p.sp->tail_room(), floor_t)
-                                                         : want <= p.lent_chunk) continue;
-                        // ONLY this participant's loan goes back: `refill` would return the other participants'
-                        // loans too, and their buffers are still laid out in their caches - marking those slots
-                        // resident again would hand the next window a prompt buffer in place of an expert
-                        if (!refill_one(p, e)) return false;
-                    }
-                    const strata::core::OnDevice on(p.dev);
-                    int64_t want_p = want;
-                    int64_t tail_p = -1;   // the tail the layout is laid out with (-1: floor - 1)
-                    int32_t first = p.first_now;
-                    // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout.
-                    // (STRATA_MTP_ROOM_MIN's room is not one: its slots are the drafter's own bytes, so a roomed
-                    // request lends and is laid out exactly as any other - a relayout re-carves the room with it.)
-                    if (!o.prefill_head_alias) {
-                        // #2090: the loan a chunk needs is NOT monotonic in the chunk: a chunk above the scan's small_max
-                        // lays out the byte-budget ring (199 slots at 5120), one at or below it 0.1.39's (384 at 4096), so
-                        // a request's smaller chunk can need MORE slots than the auto chunk's region (p.first) holds.  The
-                        // loan starts where the chunk itself needs it (the 128-slot floor aside); a chunk that cannot be
-                        // lent even then is halved until it can, instead of ending the engine.
-                        // the tail this layout is carved with for chunks of `w` (-1: today's floor - 1): grow-only while the layout's
-                        // chunk stays (loan_rules::next_tail), the need of the moment otherwise
-                        auto tail_for = [&](int64_t w) -> int64_t {
-                            if (!tail_ok || !Prefill::tail_matters(w, srcp != nullptr)) return -1;
-                            return lr::next_tail(p.sp->chunk(), p.sp->layout_tail(), w, lr::segment_tail(tokens, w, floor_t), floor_t);
-                        };
-                        tail_p = tail_for(want_p);
-                        int64_t need_p = part_slots(p, want_p, tail_p);
-                        int64_t want_cut = want;   // the chunk this request asked for (the equal one when keep_equal took it)
-#if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
-                        if (pf_declined_eq > 0 && want == want_full) {
-                            const int64_t eq_w = loan_chunk(tokens, pf_declined_eq);
-                            const int64_t eq_tail = tail_for(eq_w);
-                            const int64_t eq_need = part_slots(p, eq_w, eq_tail);
-                            if (strata::prefill::equal_cut::keep_equal(need_p, eq_need, (int64_t) p.cache->slots() - (int64_t) g_lend_keep)) {
-                                std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: the old cut's "
-                                             "buffers do not fit the slots that can be lent, the equal cut's do\n",
-                                             (long long) want_p, (long long) eq_w);
-                                want_p = eq_w;
-                                want_cut = eq_w;
-                                tail_p = eq_tail;
-                                need_p = eq_need;
-                            }
-                        }
-#endif
-                        while ((need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) && want_p > 256) {
-                            want_p = std::max<int64_t>(256, want_p / 2 / 256 * 256);
-                            tail_p = tail_for(want_p);
-                            need_p = part_slots(p, want_p, tail_p);
-                        }
-                        if (need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) {
-                            e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
-                            return false;
-                        }
-                        if (want_p != want_cut)
-                            std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: its "
-                                         "buffers do not fit the slots that can be lent (#2090)\n", (long long) want_cut,
-                                         (long long) want_p);
-                        if (need_p > p.cache->slots() - p.first)   // the case that ended the engine before (#2090)
-                            std::fprintf(stderr, "strata serve: the loan for a chunk of %lld tokens (%lld slots) is larger than the "
-                                         "auto chunk's (%lld slots): starting it earlier (#2090)\n", (long long) want_p,
-                                         (long long) need_p, (long long) (p.cache->slots() - p.first));
-                        first = (int32_t) (p.cache->slots() - need_p);
-                    }
-                    if (want_p != p.sp->chunk() || first != p.first_now || (tail_p >= 0 && tail_p != p.sp->layout_tail())) {
-                        const auto t_rl = Clock::now();
-                        if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e, tail_p)) return false;
-                        p.first_now = first;
-                        if (tail_p >= 0) {
-                            static bool said = false;
-                            if (!said) {
-                                said = true;
-                                std::fprintf(stderr, "strata serve: the lent prompt buffers are sized for the request's own short last chunk "
-                                                     "(tail %lld tokens, not the stream floor's %lld); STRATA_PREFILL_TAIL_LOAN=0 keeps the floor's\n",
-                                             (long long) tail_p, (long long) (floor_t - 1));
-                            }
-                            if (trace)
-                                std::fprintf(stderr, "strata trace: relayout for %lld tokens, tail %lld, first slot %d: %.1f ms\n", (long long) want_p,
-                                             (long long) tail_p, (int) first,
-                                             std::chrono::duration<double, std::milli>(Clock::now() - t_rl).count());
-                        }
-                    }
-                    for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
-                        for (int64_t ex = 0; ex < g.n_expert; ++ex) {
-                            const size_t i = (size_t) (l * g.n_expert + ex);
-                            if (host_res[i] >= first) {
-                                p.lent.emplace_back((int32_t) i, host_res[i]);
-                                host_res[i] = strata::core::kNotResident;
-                                any = true;
-                            }
-                        }
-                    p.lent_chunk = want_p;
-                }
-                for (const PfPart& p : pf_parts)
-                    if (p.first >= 0) seg_lend = std::max(seg_lend, p.lent_chunk);
-                if (any) res_upload();
-                if (trace) {
-                    int64_t n_lent = 0;
-                    for (const PfPart& p : pf_parts) n_lent += (int64_t) p.lent.size();
-                    std::fprintf(stderr, "strata trace: lent %lld slots for %lld tokens in %.1f ms\n", (long long) n_lent,
-                                 (long long) want, std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
-                    std::fflush(stderr);
-                }
-                return true;
-            };
+            seg_lend = 0;
             // --batch: a prompt read while slots are decoding goes one prompt chunk at a time (the same chunks as one
             // run: each run starts where the last ended, at a multiple of the chunk), and between two chunks the slots
             // decode for a share of the time the chunk took (STRATA_BATCH_DECODE_SHARE, default 0.5), so a long
@@ -20989,6 +21730,7 @@ int main(int argc, char** argv) {
                         sl.partial_from0 = read_from == 0 || resumed_from0;
                         if (planned) sl.partial_plan = plan;   // the resend reads the rest in these chunks
                         sl.cvec = cvec_cached;
+                        sl.lora = lora_cached;
                         for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
                             if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
                                     [](int32_t x, int64_t y) { return (int64_t) x == y; }))
@@ -23669,6 +24411,7 @@ int main(int argc, char** argv) {
                         sl.rounds = 0;
                     }
                     sl.cvec = cvec_cached;
+                    sl.lora = lora_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
                     const ConvCheckpoint* best = nullptr;
                     size_t best_at = 0;   // its place in `checks` (STRATA_SLOT_CKPT_MOVE)

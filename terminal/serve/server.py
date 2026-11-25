@@ -283,6 +283,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     default_model_name,
     desktop_vram_note,
     explicit_no_key,
+    format_lora_spec,
     host_allowed,
     host_name,
     key_list,
@@ -291,6 +292,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     lift_reasoning_effort_arg,
     linux_desktop,
     load_shared_settings,
+    lora_spec_from_args,
     model_card_sampling,
     open_server_warning,
     origin_allowed,
@@ -790,6 +792,9 @@ class StrataEngine:
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
         self.last_err = None
+        self.lora_path, self.lora_scale = lora_spec_from_args(args)
+        self.lora_generation = 0
+        self.lora_digest = None
         self._last_exit_code = None
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
@@ -867,6 +872,11 @@ class StrataEngine:
                 self.can_stop = "stop" in f[2:]
                 self.can_hold = "hold" in f[2:]
                 self.can_hold_batch = "holdb" in f[2:]
+                try:
+                    if int(self.info.get("lora") or 0) > 0:
+                        self.lora_generation = 1
+                except (TypeError, ValueError):
+                    pass
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1325,6 +1335,155 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    def lora_reload(self, spec: str, timeout: float = 120.0) -> dict:
+        with self._exclusive_control():
+            return self._lora_reload(spec, timeout)
+
+    def _lora_reload(self, spec: str, timeout: float = 120.0) -> dict:
+        """Hot-reload LoRA adapter weights in place (`LORA_RELOAD <spec>`).  -> {"generation", "digest", "ms", "dropped"}.
+        Raises ValueError on `ERR lora_reload: ...`, EngineDied if the engine exits, times out, or loses protocol step."""
+        if not isinstance(spec, str) or not spec.strip() or any(c in spec for c in "\r\n\0"):
+            raise ValueError("invalid LoRA adapter spec")
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        try:
+            self.proc.stdin.write(f"LORA_RELOAD {spec.strip()}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise EngineDied("the engine did not answer LORA_RELOAD")
+            try:
+                line = self.lines.get(timeout=min(0.5, left))
+            except queue.Empty:
+                continue
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            line = line.strip()
+            if line.startswith("ERR"):
+                msg = line[4:].strip()
+                if msg.startswith("lora_reload:"):
+                    msg = msg[len("lora_reload:"):].strip()
+                raise ValueError(msg or "the engine refused LORA_RELOAD")
+            if line.startswith("OK lora_reload "):
+                parts = line.split()
+                if len(parts) < 6 or not parts[5].startswith("dropped="):
+                    raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
+                try:
+                    gen = int(parts[2])
+                    digest = parts[3]
+                    elapsed_ms = float(parts[4])
+                    dropped = int(parts[5].split("=", 1)[1])
+                except ValueError:
+                    raise EngineDied(f"malformed LORA_RELOAD reply: {line[:200]!r}") from None
+                self.lora_generation = gen
+                self.lora_digest = digest
+                return {"generation": gen, "digest": digest, "ms": elapsed_ms, "dropped": dropped}
+            if line.startswith(("INFO ", "WARN ")):
+                continue
+            raise EngineDied(f"unexpected LORA_RELOAD reply: {line[:200]!r}")
+
+    def score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
+              cvec: bool | None = None, frontier: str | int | None = None,
+              timeout: float = 300.0) -> dict:
+        with self._exclusive_control():
+            return self._score(token_ids, from_pos=from_pos, lora=lora, cvec=cvec,
+                               frontier=frontier, timeout=timeout)
+
+    def _score(self, token_ids: list[int], from_pos: int = 0, lora: bool | None = None,
+               cvec: bool | None = None, frontier: str | int | None = None,
+               timeout: float = 300.0) -> dict:
+        """Teacher-forced log-probabilities via `SCORE [lora=0|1] [cvec=0|1] [from=K] [frontier=auto|<L>] id0,id1,...`.
+        -> {"count", "from", "mean_nll", "sum_logprob", "ms", "logprobs"}.
+        Raises ValueError on invalid inputs or `ERR score: ...`, EngineDied on disconnect, timeout, or malformed reply."""
+        if not isinstance(token_ids, (list, tuple)) or len(token_ids) < 2:
+            raise ValueError("tokens: expected a list of at least 2 integer token IDs")
+        ids: list[int] = []
+        for t in token_ids:
+            if isinstance(t, bool) or not isinstance(t, int) or t < 0:
+                raise ValueError("tokens: every token ID must be a non-negative integer")
+            ids.append(t)
+        if isinstance(from_pos, bool) or not isinstance(from_pos, int) or from_pos < 0 or from_pos > len(ids) - 2:
+            raise ValueError(f"from: expected an integer in [0, {len(ids) - 2}]")
+        if lora is not None and not isinstance(lora, bool):
+            raise ValueError("lora: expected a boolean or null")
+        if cvec is not None and not isinstance(cvec, bool):
+            raise ValueError("cvec: expected a boolean or null")
+        frontier_opt: str | None = None
+        if frontier is not None:
+            if frontier == "auto":
+                frontier_opt = "frontier=auto"
+            elif not isinstance(frontier, bool) and isinstance(frontier, int) and frontier >= 0:
+                frontier_opt = f"frontier={frontier}"
+            else:
+                raise ValueError('frontier: expected "auto" or a non-negative integer')
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        parts = ["SCORE"]
+        if lora is not None:
+            parts.append(f"lora={1 if lora else 0}")
+        if cvec is not None:
+            parts.append(f"cvec={1 if cvec else 0}")
+        if from_pos > 0:
+            parts.append(f"from={from_pos}")
+        if frontier_opt is not None:
+            parts.append(frontier_opt)
+        parts.append(",".join(str(t) for t in ids))
+        cmd = " ".join(parts) + "\n"
+        try:
+            self.proc.stdin.write(cmd)
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        expected_count = len(ids) - 1 - from_pos
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise EngineDied("the engine did not answer SCORE")
+            try:
+                line = self.lines.get(timeout=min(0.5, left))
+            except queue.Empty:
+                continue
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            line = line.strip()
+            if line.startswith("ERR"):
+                msg = line[4:].strip()
+                if msg.startswith("score:"):
+                    msg = msg[len("score:"):].strip()
+                raise ValueError(msg or "the engine refused SCORE")
+            if line.startswith("SC "):
+                toks = line.split()
+                if len(toks) < 6:
+                    raise EngineDied(f"unexpected SCORE reply: {line[:200]!r}")
+                try:
+                    count = int(toks[1])
+                    fr = int(toks[2])
+                    mean_nll = float(toks[3])
+                    elapsed_ms = float(toks[4])
+                    logprobs = [float(x) for x in toks[5:]]
+                except ValueError:
+                    raise EngineDied(f"malformed SCORE reply: {line[:200]!r}") from None
+                if (count != len(logprobs) or count != expected_count or fr != from_pos or
+                        not math.isfinite(mean_nll) or not math.isfinite(elapsed_ms) or
+                        not all(math.isfinite(lp) for lp in logprobs)):
+                    raise EngineDied(f"inconsistent SCORE reply: {line[:200]!r}")
+                return {
+                    "count": count,
+                    "from": fr,
+                    "mean_nll": mean_nll,
+                    "sum_logprob": sum(logprobs),
+                    "ms": elapsed_ms,
+                    "logprobs": logprobs,
+                }
+            if line.startswith(("INFO ", "WARN ")):
+                continue
+            raise EngineDied(f"unexpected SCORE reply: {line[:200]!r}")
+
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
         (sFNX) and Hy4-Flash (`strata-hy4`) refuse the key (GEN: unknown/unsupported key pen_from): it is not sent."""
@@ -1442,7 +1601,11 @@ class StrataEngine:
         """`cvec=0|1`: the experimental-speed-projection control vector for this request, when the engine was
         started with one (--control-vector-scaled; an engine without one ignores the key).  Absent = on."""
         on = sampling.get("experimental_speed_projection")
-        return f" cvec={int(on)}" if isinstance(on, bool) else ""
+        key = f" cvec={int(on)}" if isinstance(on, bool) else ""
+        # "lora": false - the LoRA adapter off for this request, when the engine was started with one (--lora;
+        # an engine without one ignores the key).  Absent = on.
+        lora = sampling.get("lora")
+        return key + (f" lora={int(lora)}" if isinstance(lora, bool) else "")
 
     def _send(self, text: str):
         btrace("send>", text[:60])
@@ -5022,6 +5185,294 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
+    def _lora_layers(self) -> int:
+        raw = (getattr(self.engine, "info", None) or {}).get("lora", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _lora_hot_reload_supported(self) -> bool:
+        info = getattr(self.engine, "info", None) or {}
+        return bool(info.get("lora_reload")) and hasattr(self.engine, "lora_reload")
+
+    def _lora_enabled(self) -> bool:
+        return ({**self.sampling_defaults, **self.shared}).get("lora") is not False
+
+    def _set_lora_enabled(self, on: bool) -> None:
+        self.sampling_defaults["lora"] = bool(on)
+        if "lora" in self.shared:
+            self.shared["lora"] = bool(on)
+
+    def lora_adapters(self) -> list[dict]:
+        """Current LoRA adapter state for GET /lora-adapters ([] when unloaded or no adapter is loaded)."""
+        if not self.loaded():
+            return []
+        layers = self._lora_layers()
+        if layers <= 0:
+            return []
+        enabled = self._lora_enabled()
+        path = getattr(self.engine, "lora_path", "") or ""
+        loaded_scale = float(getattr(self.engine, "lora_scale", 1.0))
+        gen = int(getattr(self.engine, "lora_generation", 1) or 1)
+        return [{
+            "id": 0,
+            "path": path,
+            "scale": loaded_scale if enabled else 0.0,
+            "enabled": enabled,
+            "generation": gen,
+            "layers": layers,
+            "hot_reload": self._lora_hot_reload_supported(),
+        }]
+
+    def _reload_lora_locked(self, display_path: str, scale_val: float, engine_spec: str) -> dict:
+        """Hot-reload adapter weights via the engine's LORA_RELOAD command while idle."""
+        if not self.loaded():
+            raise ModelBusy("the model is not loaded; cannot hot-reload LoRA")
+        if self._lora_layers() <= 0:
+            raise ModelBusy("no LoRA adapter was loaded at startup")
+        if not self._lora_hot_reload_supported():
+            raise ModelBusy("this engine does not support runtime LoRA hot-reload")
+        if not self.fifo.acquire(blocking=False):
+            raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(blocking=False):
+            self.fifo.release()
+            raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+        if ctl is not None:
+            self.engine._ctl_held = True
+        try:
+            with self.status_lock:
+                if self.status.get("busy"):
+                    raise ModelBusy("a request is currently running; retry LoRA reload when idle")
+                self.status.update(busy=True, phase="reloading LoRA", started=time.time(), first_token=None,
+                                   prompt_tokens=None, generated=None, max_tokens=None)
+            try:
+                res = self.engine.lora_reload(engine_spec)
+            except ValueError as e:
+                msg = str(e)
+                if "actively decoding" in msg.lower() or "busy" in msg.lower():
+                    raise ModelBusy(msg) from None
+                raise
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+            self.engine.lora_path = display_path
+            self.engine.lora_scale = scale_val
+            self.engine.lora_generation = int(res["generation"])
+            self.engine.lora_digest = res.get("digest")
+            self._set_lora_enabled(scale_val != 0.0)
+            return {
+                "id": 0,
+                "path": display_path,
+                "scale": scale_val,
+                "enabled": scale_val != 0.0,
+                "generation": int(res["generation"]),
+                "digest": res.get("digest"),
+                "ms": res.get("ms"),
+                "dropped": res.get("dropped", 0),
+                "layers": self._lora_layers(),
+                "hot_reload": True,
+            }
+        finally:
+            if ctl is not None:
+                self.engine._ctl_held = False
+                ctl.release()
+            self.fifo.release()
+
+    def update_lora_adapters(self, payload) -> tuple[int, dict | list]:
+        """POST /lora-adapters: accept either a hot-reload dict `{"path": ..., "scale": ...}` or a llama.cpp-compatible
+        list `[{"id": 0, "scale": ...}]`.  Returns `(http_status, json_body)`."""
+        def err(code: int, message: str, etype: str | None = None) -> tuple[int, dict]:
+            if etype is None:
+                etype = "conflict_error" if code == 409 else ("invalid_request_error" if code < 500 else "server_error")
+            return code, {"error": {"type": etype, "message": message}}
+
+        if isinstance(payload, dict):
+            try:
+                display_path, scale_val, engine_spec = format_lora_spec(payload.get("path"), payload.get("scale"))
+            except ValueError as e:
+                return err(400, str(e))
+            try:
+                return 200, self._reload_lora_locked(display_path, scale_val, engine_spec)
+            except ModelBusy as e:
+                return err(409, str(e), "model_busy")
+            except ValueError as e:
+                return err(400, str(e))
+            except EngineDied as e:
+                return err(503, str(e))
+
+        if isinstance(payload, list):
+            if not self.loaded() or self._lora_layers() <= 0:
+                if not payload:
+                    return 200, []
+                return err(409, "no LoRA adapter was loaded at startup")
+            if not payload:
+                self._set_lora_enabled(False)
+                return 200, self.lora_adapters()
+            chosen = None
+            for item in payload:
+                if not isinstance(item, dict):
+                    return err(400, "each adapter entry must be a JSON object")
+                aid = item.get("id")
+                if isinstance(aid, bool) or not isinstance(aid, int) or aid != 0:
+                    return err(400, f"unknown LoRA adapter id {aid!r}; this server supports adapter id 0")
+                has_path = "path" in item and item["path"] is not None
+                has_scale = "scale" in item and item["scale"] is not None
+                if not has_path and not has_scale:
+                    return err(400, "each adapter entry must specify scale or path")
+                if has_scale:
+                    sc = item["scale"]
+                    if isinstance(sc, bool) or not isinstance(sc, (int, float)) or not math.isfinite(float(sc)):
+                        return err(400, "scale: expected a finite number")
+                chosen = item
+            want_path = chosen.get("path")
+            want_scale = float(chosen["scale"]) if chosen.get("scale") is not None else 1.0
+            if want_path is not None:
+                try:
+                    display_path, scale_val, engine_spec = format_lora_spec(want_path, chosen.get("scale"))
+                    self._reload_lora_locked(display_path, scale_val, engine_spec)
+                except ModelBusy as e:
+                    return err(409, str(e), "model_busy")
+                except ValueError as e:
+                    return err(400, str(e))
+                except EngineDied as e:
+                    return err(503, str(e))
+                return 200, self.lora_adapters()
+            if want_scale == 0.0:
+                self._set_lora_enabled(False)
+                return 200, self.lora_adapters()
+            cur_path = getattr(self.engine, "lora_path", "") or ""
+            cur_scale = float(getattr(self.engine, "lora_scale", 1.0))
+            if (not math.isclose(want_scale, cur_scale, rel_tol=1e-6, abs_tol=1e-9) and
+                    cur_path and "," not in cur_path and self._lora_hot_reload_supported()):
+                try:
+                    display_path, scale_val, engine_spec = format_lora_spec(cur_path, want_scale)
+                    self._reload_lora_locked(display_path, scale_val, engine_spec)
+                except ModelBusy as e:
+                    return err(409, str(e), "model_busy")
+                except ValueError as e:
+                    return err(400, str(e))
+                except EngineDied as e:
+                    return err(503, str(e))
+            else:
+                self._set_lora_enabled(True)
+            return 200, self.lora_adapters()
+
+        return err(400, "send a JSON object or array")
+
+    def _score_supported(self) -> bool:
+        info = getattr(self.engine, "info", None) or {}
+        return bool(info.get("score")) and hasattr(self.engine, "score")
+
+    def score(self, req: dict) -> dict:
+        """POST /v1/score: teacher-forced per-token log-probabilities over either raw token IDs
+        (`{"tokens": [...], "from": 0}`) or a text pair (`{"prompt": "...", "completion": "..."}`)."""
+        if not isinstance(req, dict):
+            raise ValueError("send a JSON object")
+        lora = req.get("lora")
+        if lora is not None and not isinstance(lora, bool):
+            raise ValueError("lora: expected a boolean or null")
+        cvec = req.get("cvec")
+        if cvec is not None and not isinstance(cvec, bool):
+            raise ValueError("cvec: expected a boolean or null")
+        frontier = req.get("frontier")
+        if frontier is not None:
+            if frontier != "auto" and (isinstance(frontier, bool) or not isinstance(frontier, int) or frontier < 0):
+                raise ValueError('frontier: expected "auto" or a non-negative integer')
+
+        has_tokens = "tokens" in req and req["tokens"] is not None
+        has_text = ("prompt" in req and req["prompt"] is not None) or (
+            "completion" in req and req["completion"] is not None
+        )
+        if has_tokens and has_text:
+            raise ValueError("provide either tokens or prompt+completion, not both")
+        if not has_tokens and not has_text:
+            raise ValueError("provide either tokens or prompt+completion")
+
+        tokens: list[int] | None = None
+        from_pos = 0
+        prompt_text: str | None = None
+        comp_text: str | None = None
+        if has_tokens:
+            raw_tokens = req["tokens"]
+            if not isinstance(raw_tokens, list) or len(raw_tokens) < 2:
+                raise ValueError("tokens: expected a list of at least 2 integer token IDs")
+            tokens = []
+            for t in raw_tokens:
+                if isinstance(t, bool) or not isinstance(t, int) or t < 0:
+                    raise ValueError("tokens: every token ID must be a non-negative integer")
+                tokens.append(t)
+            raw_from = req.get("from", 0)
+            if raw_from is None:
+                raw_from = 0
+            if isinstance(raw_from, bool) or not isinstance(raw_from, int) or raw_from < 0 or raw_from > len(tokens) - 2:
+                raise ValueError(f"from: expected an integer in [0, {len(tokens) - 2}]")
+            from_pos = raw_from
+        else:
+            if req.get("from") is not None:
+                raise ValueError("from cannot be specified together with prompt+completion")
+            prompt_text = req.get("prompt")
+            comp_text = req.get("completion")
+            if not isinstance(prompt_text, str) or not isinstance(comp_text, str):
+                raise ValueError("prompt and completion must both be strings")
+
+        if not self.loaded():
+            raise ModelBusy("the model is not loaded; cannot score")
+        if not self._score_supported():
+            raise ModelBusy("this engine does not support SCORE")
+
+        if tokens is None:
+            prompt_ids = list(self.tok.encode(prompt_text))
+            comp_ids = list(self.tok.encode(comp_text))
+            if len(prompt_ids) < 1:
+                raise ValueError("prompt encoded to 0 tokens")
+            if len(comp_ids) < 1:
+                raise ValueError("completion encoded to 0 tokens")
+            tokens = prompt_ids + comp_ids
+            from_pos = len(prompt_ids) - 1
+
+        if not self.fifo.acquire(blocking=False):
+            raise ModelBusy("a request is currently running; retry score when idle")
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(blocking=False):
+            self.fifo.release()
+            raise ModelBusy("a request is currently running; retry score when idle")
+        if ctl is not None:
+            self.engine._ctl_held = True
+        try:
+            with self.status_lock:
+                if self.status.get("busy"):
+                    raise ModelBusy("a request is currently running; retry score when idle")
+                self.status.update(busy=True, phase="scoring", started=time.time(), first_token=None,
+                                   prompt_tokens=len(tokens), generated=None, max_tokens=None)
+            try:
+                res = self.engine.score(tokens, from_pos=from_pos, lora=lora, cvec=cvec, frontier=frontier)
+            except ValueError as e:
+                msg = str(e)
+                if "actively decoding" in msg.lower() or "busy" in msg.lower():
+                    raise ModelBusy(msg) from None
+                raise
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+            return {
+                "count": int(res["count"]),
+                "from": int(res["from"]),
+                "sum_logprob": float(res["sum_logprob"]),
+                "mean_nll": float(res["mean_nll"]),
+                "ms": float(res["ms"]),
+                "logprobs": list(res["logprobs"]),
+                "tokens": tokens,
+            }
+        finally:
+            if ctl is not None:
+                self.engine._ctl_held = False
+                ctl.release()
+            self.fifo.release()
+
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
         note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
@@ -5883,13 +6334,17 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # return_token_ids=True requests exact single-pass on-policy token ids & aligned logprobs:
+        # suppress server-side synthetic token injections (answer_room wrap-up, tool_markup_retry,
+        # reasoning_close_retry, reasoning_loop_recovery) that have no engine LP lines.
+        want_raw_ids = (sampling or {}).get("return_token_ids") is True
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         # #6734: Inkling-2-Mini writes hidden thinking whatever the request asks for (even with its effort at "none"), so its budget
         # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
         think_budget = thinking or self.inkling
-        budget = self.reasoning_budget(sampling) if think_budget else None
+        budget = None if want_raw_ids else (self.reasoning_budget(sampling) if think_budget else None)
         room_cap = INKLING_ROOM_MIN_CAP if self.inkling else ANSWER_ROOM_MIN_CAP     # Inkling: whatever max_tokens, the answer keeps its share
-        if think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
+        if not want_raw_ids and think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
@@ -5931,7 +6386,7 @@ class Service:
                     if isinstance(t, dict) and isinstance(t.get("name"), str)]
         # (a): armed for a request with tools, on the template's own call form (the Qwen form; a JSON-form parser or another
         # family keeps sending the text as it is)
-        hold = ToolMarkupHold(bool(self.tool_markup_retry and declared and self.family is None
+        hold = ToolMarkupHold(bool(not want_raw_ids and self.tool_markup_retry and declared and self.family is None
                                    and self.parser_cls is OutputParser))
         parser_done, markup_retried = False, None
 
@@ -6177,7 +6632,7 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
+                                if (not want_raw_ids and self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
@@ -6274,7 +6729,7 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
-                        if (self.inkling and finish == "stop" and not close_retried and not answered and not wrap and not opens
+                        if (not want_raw_ids and self.inkling and finish == "stop" and not close_retried and not answered and not wrap and not opens
                                 and not repeated and not looped and (stops is None or stops.hit is None) and not cancel.is_set()
                                 and max_new - n > 8):
                             # #6612 / #6620: the reply ended (its stop token) with no text and no call: the model wrote its hidden thinking and
@@ -6297,7 +6752,7 @@ class Service:
                                 prompt = prompt + seg + extra
                                 finish = "length"
                                 continue
-                        if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
+                        if (not want_raw_ids and self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
@@ -6442,6 +6897,7 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read; #3040
+                            lora_n = (getattr(self.engine, "info", {}) or {}).get("lora", 0)
                             if inkling_images and not admission_rejected and finish != "cancel":
                                 # Inkling's pictures are ONE placeholder id each in `ids`; the engine expands them to the picture's tokens and its DONE line
                                 # counts those (the prompt it really read): that is the prompt_tokens a client is told
@@ -6450,6 +6906,8 @@ class Service:
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
+                                "lora": (sampling or {}).get("lora") is not False
+                                if str(lora_n) not in ("0", "", "None") else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "gen": getattr(self.engine, "gen", None),       # #4636: the engine process this record is from
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
@@ -6515,8 +6973,12 @@ class Service:
                                 self.status.pop("tool", None)
         except QueueCancelled:
             finish = "cancel"
-            yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
-                           "reasoning_tokens": 0, "reasoning_recoveries": 0}
+            cancelled_done = {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
+                              "reasoning_tokens": 0, "reasoning_recoveries": 0}
+            if (sampling or {}).get("return_token_ids") is True:
+                cancelled_done["prompt_token_ids"] = list(ids)
+                cancelled_done["token_ids"] = []
+            yield "done", cancelled_done
             return
         except QueueWaitExpired:
             finish = "timeout"
@@ -6594,6 +7056,9 @@ class Service:
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
+        if (sampling or {}).get("return_token_ids") is True:
+            done["prompt_token_ids"] = list(ids)
+            done["token_ids"] = list(raw_ids)
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
             if finish == "length":
@@ -6789,9 +7254,18 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         opened = True
         return (chunk({"role": "assistant", "content": ""}),)
 
-    lp = LogprobEntries(svc, allowed_ids(req), cancel) if top_logprobs(req) is not None else None
+    want_ids = req.get("return_token_ids") is True
+    lp = LogprobEntries(svc, allowed_ids(req), cancel, include_stop=want_ids) if top_logprobs(req) is not None else None
+    raw_lps = []                                   # return_token_ids + logprobs: 1:1 raw entries for every generated id
+
+    def drain_raw_lp():
+        if want_ids and lp is not None:
+            raw_lps.extend(lp.take(svc.engine))
 
     def with_lp(c, key):
+        if want_ids:
+            drain_raw_lp()
+            return c
         got = lp.spell(svc.engine, c["choices"][0]["delta"][key]) if lp is not None else None
         if got:
             c["choices"][0]["logprobs"] = {key: got}
@@ -6824,17 +7298,21 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 yield from first()
                 yield with_lp(chunk({"content": ev.text}), "content")
             elif ev.kind == "tool_start":
+                drain_raw_lp()
                 streamed[ev.call.id] = calls
                 calls += 1
                 yield from first()
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name, "arguments": ""}}]})
             elif ev.kind == "tool_args":
+                drain_raw_lp()
                 yield from first()
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
             elif ev.kind == "tool_call" and ev.call.id in streamed:
+                drain_raw_lp()
                 finished.add(ev.call.id)
             elif ev.kind == "tool_call":
+                drain_raw_lp()
                 yield from first()
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
@@ -6842,6 +7320,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 calls += 1
         else:
             answered_done = True
+            drain_raw_lp()
             # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
             yield from first()                     # an empty answer still opens with the role
             whole = calls and streamed.keys() <= finished
@@ -6854,6 +7333,11 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0},
                              # the tokens written while thinking (OpenAI's field): Inkling's hidden thinking counts too
                              "completion_tokens_details": {"reasoning_tokens": x.get("reasoning_tokens") or 0}}
+            if want_ids:
+                last["prompt_token_ids"] = x.get("prompt_token_ids", list(ids))
+                last["choices"][0]["token_ids"] = x.get("token_ids", [])
+                if raw_lps:
+                    last["choices"][0]["logprobs"] = {"content": raw_lps}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
             if x.get("rejected_tool_calls"):
@@ -7598,6 +8082,10 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
                 return
+            if path == "/lora-adapters":
+                if self._authorized():
+                    self._json(200, svc.lora_adapters())
+                return
             if path == "/config":                            # #564: the Settings view's keys of the run config
                 if self._authorized():
                     self._config_get()
@@ -7738,6 +8226,9 @@ def make_handler(svc: Service):
             if path == "/settings":
                 self._settings()
                 return
+            if path == "/lora-adapters":
+                self._lora_adapters_post()
+                return
             if path == "/config":
                 self._config_post()
                 return
@@ -7868,6 +8359,8 @@ def make_handler(svc: Service):
                     self._count_tokens(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
+                elif path == "/v1/score":
+                    self._json(200, svc.score(req))
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except EngineNonFinite as e:                    # #879, twice: not the request's fault
@@ -8126,6 +8619,18 @@ def make_handler(svc: Service):
                   if shared else "[strata] other apps use their own settings again", flush=True)
             self._json(200, {"shared": bool(shared), "defaults": shared})
 
+        def _lora_adapters_post(self):
+            body = self._body()
+            if not self._own_page("LoRA adapters can be changed"):
+                return
+            try:
+                req = json.loads(body or b"null")
+            except ValueError as e:
+                self._json(400, {"error": {"type": "invalid_request_error", "message": f"invalid JSON: {e}"}})
+                return
+            code, resp = svc.update_lora_adapters(req)
+            self._json(code, resp)
+
         def _sse(self):
             self._note(http_status=200)
             self.send_response(200)
@@ -8233,6 +8738,9 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            rti = req.get("return_token_ids")
+            if rti is not None and not isinstance(rti, bool):
+                raise ValueError("return_token_ids must be a boolean")
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)

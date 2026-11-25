@@ -48,13 +48,14 @@ class LogprobEntries:
     that writes an LP line); the slot's `BT` lines carry none, so a longer reply is refused (400) before it starts.
     """
 
-    def __init__(self, svc, allowed=(), owner=None):
+    def __init__(self, svc, allowed=(), owner=None, include_stop=False):
         self.tok, self.stop_ids = svc.tok, svc.stop_ids
         self.allowed = [i for i in allowed]
         self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.pending = []                          # entries read but not yet given to a piece of text
         self.owner = owner                         # the request's cancel Event (LPLines)
         self.lines = None                          # this request's current LPLines, kept once seen
+        self.include_stop = bool(include_stop)     # return_token_ids: keep stop tokens for 1:1 token_ids alignment
 
     def spell(self, eng, text: str) -> list:
         """The entries whose tokens spell `text`, the next piece of the reply."""
@@ -94,7 +95,7 @@ class LogprobEntries:
         for lines in (old, self.lines):
             while lines:
                 t, line = lines.popleft()
-                if t in self.stop_ids:
+                if not self.include_stop and t in self.stop_ids:
                     continue
                 f = line.split()
                 if len(f) < 2:
@@ -198,6 +199,10 @@ def openai_collect(chunks) -> dict:
     out = {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
            "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
            "usage": last["usage"]}
+    if "prompt_token_ids" in last:
+        out["prompt_token_ids"] = last["prompt_token_ids"]
+    if "token_ids" in last["choices"][0]:
+        out["choices"][0]["token_ids"] = last["choices"][0]["token_ids"]
     if lps:
         out["choices"][0]["logprobs"] = {"content": lps.get("content", []), "refusal": None, **(
             {"reasoning_content": lps["reasoning_content"]} if lps.get("reasoning_content") else {})}

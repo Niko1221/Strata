@@ -217,6 +217,7 @@ struct SavedConversation {
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
     bool cvec = true;
+    bool lora = true;   // the LoRA adapter's setting (--lora; true when none is loaded)
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
     // STRATA_PARK_ASYNC: set while a background copy fills this image's K/V; its deleter waits for that copy, and as
@@ -374,13 +375,14 @@ public:
     }
 
     template<class Token>
-    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec,
+               bool lora = true) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec || e.lora != lora) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > best.tokens) best = {i, n, live, serials_[i]};
@@ -524,6 +526,23 @@ public:
         return n;
     }
 
+    // Drop every parked entry computed under a LoRA adapter (e.lora == true, including pinned entries) and clear
+    // retained K/V, leaving base-model entries (e.lora == false) intact.  Returns how many were dropped.
+    size_t drop_lora() {
+        size_t dropped = 0;
+        for (size_t i = 0; i < entries_.size();) {
+            if (entries_[i].lora) {
+                bytes_ -= entries_[i].bytes();
+                erase(i);
+                ++dropped;
+                continue;
+            }
+            ++i;
+        }
+        reuse_ = {};
+        return dropped;
+    }
+
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
 
@@ -555,7 +574,7 @@ public:
     }
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
-                           std::vector<size_t>* dropped_tokens = nullptr) {
+                           bool lora = true, std::vector<size_t>* dropped_tokens = nullptr) {
         auto held = [&](const ConversationCheckpoint& c) {
             if (c.ids == ids && c.imgs == images) return true;
             for (const auto& k : checkpoints)
@@ -568,7 +587,7 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && !(guarded_ != 0 && serials_[i] == guarded_) &&
+            if (e.cvec == cvec && e.lora == lora && !(guarded_ != 0 && serials_[i] == guarded_) &&
                 ((deepest && !deepest->ids.empty() && held(*deepest)) || live_extended_by(e, ids, images))) {
                 if (dropped_tokens) dropped_tokens->push_back(e.live.ids.size());
                 bytes_ -= e.bytes();
@@ -633,7 +652,7 @@ public:
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
-        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
+        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec, image.lora);
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);

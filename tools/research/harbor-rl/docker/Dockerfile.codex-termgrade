@@ -1,0 +1,29 @@
+FROM ubuntu:24.04
+ARG APT_MIRROR=""
+ARG PIP_INDEX_URL="https://pypi.org/simple"
+ARG NODE_DIST_BASE="https://nodejs.org/dist"
+ARG NPM_REGISTRY="https://registry.npmjs.org"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_INDEX_URL="${PIP_INDEX_URL}"
+
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      sed -i "s|archive.ubuntu.com|${APT_MIRROR}|g; s|security.ubuntu.com|${APT_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl wget git jq ripgrep fd-find tree vim less \
+      build-essential pkg-config cmake sqlite3 unzip zip tar gzip xz-utils \
+      python3 python3-pip python3-venv python3-dev procps net-tools iputils-ping \
+    && rm -rf /var/lib/apt/lists/* && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED && \
+    pip3 install pytest requests pyyaml toml && \
+    curl -fsSL "${NODE_DIST_BASE}/v22.14.0/node-v22.14.0-linux-x64.tar.xz" | tar -xJ -C /usr/local --strip-components=1 && \
+    npm install -g @openai/codex --registry="${NPM_REGISTRY}" && \
+    node -v && codex --version && python3 --version && pytest --version
+
+RUN python3 -m venv /opt/verifier_venv && \
+    /opt/verifier_venv/bin/pip install pytest==8.4.1 pytest-json-ctrf && \
+    /opt/verifier_venv/bin/pytest --version
+
+WORKDIR /app

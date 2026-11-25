@@ -124,3 +124,4 @@ node_modules/
 /build-vision-spark/
 /terminal/.venv-build/
 /.venv-build/
+.DS_Store

@@ -228,6 +228,22 @@ public:
                            int64_t next_checkpoint, int64_t checkpoint_interval, int64_t prompt_end,
                            int64_t short_read, bool save_tail);
 
+    /// Opt-in frozen-layer frontier capture/replay for repeated SCORE runs across LoRA perturbations.
+    /// Capture copies `m.R` after layer `layer - 1` completes (the residual entering `layer`) into caller-owned
+    /// host buffer `host_dst` (`n * hc * n_embd` floats) on a single-chunk `run()`.
+    void set_frontier_capture(int64_t layer, float* host_dst) {
+        frontier_cap_layer_ = layer;
+        frontier_cap_dst_ = host_dst;
+    }
+    void clear_frontier_capture() {
+        frontier_cap_layer_ = 0;
+        frontier_cap_dst_ = nullptr;
+    }
+    /// Replay layers `[start_layer, n_layers)` on single-stage, single-chunk input (`pos0 == 0`,
+    /// `2 <= start_layer < n_layers`, `0 < n <= chunk()`) starting from host residual `R_host_in`.
+    bool run_from_layer(const int64_t* tokens, int64_t n, int64_t pos0, int64_t start_layer,
+                        const float* R_host_in, std::string& err);
+
     const PrefillStats& stats() const { return stats_; }
 
     /// multi-GPU: the experts the peer GPU holds are computed THERE for every prompt chunk (up to `cap_rows` routed
@@ -395,6 +411,8 @@ private:
     /// on its device) when it copies the chunk in pieces without a host wait; null with the one-copy hand-off
     const void* hand_ev_ = nullptr;
     int hand_pieces_ = 0;
+    int64_t frontier_cap_layer_ = 0;
+    float* frontier_cap_dst_ = nullptr;
 
     std::string next_err_;
     std::future<bool> next_run_;

@@ -59,6 +59,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
@@ -4276,6 +4277,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         ~KvDrain() { if (stream) cudaStreamSynchronize(stream); }
     } kv_drain{kv_prefetch ? m.kv_copy : nullptr};
     KvDrain ple_drain{m.ple_copy};   // STRATA_PLE_COPY_STREAM: no upload left in flight from a buffer the next run refills
+    bool frontier_d2h_issued = false;
+    struct FrontierDrain {
+        cudaStream_t stream;
+        const bool* issued;
+        ~FrontierDrain() { if (stream && *issued) (void) cudaStreamSynchronize(stream); }
+    } frontier_drain{m.cs, &frontier_d2h_issued};
     int64_t kv_prefetches = 0;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
@@ -5211,6 +5218,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfGdnOut, cs);
                     if (!kva_state_only)   // KVA: the out projection feeds only the residual write and the MoE half
                         if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err, 0, ld_y)) return false;
+                    if (!kva_state_only)
+                        strata::kernels::lora_apply_f16(l, m.y_h, ld_y ? ld_y : ZV, T, m.bo, 0, m.cs);   // --lora (y_h: the normalized y)
                     ++gdn_index;
                     if (kva_state_only) {
                         // the layer consumed no expert: its stream entries must still be released, or the issuer
@@ -5572,6 +5581,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfQsa, cs);
                     if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err, 0, ld_a)) return false;
+                    strata::kernels::lora_apply_f16(l, m.attn_h, ld_a ? ld_a : ZV, T, m.bo, 0, m.cs);   // --lora
                     ++qsa_index;
                     if (!kv_prefetch_after(l + 1, qsa_index)) return false;
                 } else {
@@ -7725,6 +7735,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                   (int) HC, (int) tap_rows, m.cs);
 #endif
             }
+            if (frontier_cap_dst_ != nullptr && l + 1 == frontier_cap_layer_ && c0 == 0 && T == n) {
+                if (cudaMemcpyAsync(frontier_cap_dst_, m.R, (size_t) T * D * sizeof(float),
+                                    cudaMemcpyDeviceToHost, m.cs) != cudaSuccess) {
+                    err = "prefill: frontier capture D2H failed";
+                    return false;
+                }
+                frontier_d2h_issued = true;
+            }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
         if (issuer.joinable()) {
@@ -9656,7 +9674,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 #endif
     // layer-major prefill: STRATA_PREFILL_LAYER_MAJOR=1 / 0 win; unset, it is off everywhere (sm120_series.hpp prefill_layer_major_default: a layer split
     // reads 32K prompts 37-55% sooner chunk-major, owner's yes 2026-11-02; the single-card small-cache rule sets the variable itself)
-    if (hand_in_ == nullptr && impl_ &&
+    const bool capture_frontier = frontier_cap_layer_ > 0 && frontier_cap_dst_ != nullptr;
+    if (!capture_frontier && hand_in_ == nullptr && impl_ &&
         strata::prefill_layer_major_resolve(lm_env_text(), lm_hip, stage_count(), strata::qwen_defaults_026())) {
         const bool by_default = !lm_env_explicit();
         for (Prefill* p = this; p != nullptr; p = p->next_) p->lm_by_default_ = by_default;
@@ -9723,6 +9742,78 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                          (long long) p->stats_.experts_resident, (long long) p->stats_.experts_streamed);
     }
     return true;
+}
+
+bool Prefill::run_from_layer(const int64_t* tokens, int64_t n, int64_t pos0, int64_t start_layer,
+                             const float* R_host_in, std::string& err) {
+    err.clear();
+#if defined(STRATA_GPU_METAL)
+    (void) tokens;
+    (void) n;
+    (void) pos0;
+    (void) start_layer;
+    (void) R_host_in;
+    err = "prefill: frontier replay is not supported on Metal";
+    return false;
+#else
+    if (!impl_ || !impl_->g) {
+        err = "prefill: not initialized";
+        return false;
+    }
+    if (stage_lb_ != 0 || next_ != nullptr) {
+        err = "prefill: frontier replay requires single-stage prefill";
+        return false;
+    }
+    if (pos0 != 0) {
+        err = "prefill: frontier replay requires pos0 == 0";
+        return false;
+    }
+    const int64_t n_layers = impl_->g->n_layers;
+    if (start_layer < 2 || start_layer >= n_layers) {
+        err = "prefill: frontier start_layer out of range";
+        return false;
+    }
+    if (n <= 0 || n > impl_->T) {
+        err = "prefill: frontier replay requires single chunk";
+        return false;
+    }
+    if (tokens == nullptr || R_host_in == nullptr) {
+        err = "prefill: frontier replay requires non-null tokens and residual buffer";
+        return false;
+    }
+    if (hand_in_ != nullptr || hand_ev_ != nullptr || hand_pieces_ != 0) {
+        err = "prefill: hand-off already active";
+        return false;
+    }
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    (void) strata::kernels::qsa_two_pass_on();
+#endif
+    struct ReplayScope {
+        Prefill& self;
+        int64_t saved_lb;
+        const float* saved_hand_in;
+        bool saved_single;
+        bool saved_pipe;
+        int64_t saved_cap_layer;
+        float* saved_cap_dst;
+        ~ReplayScope() {
+            self.stage_lb_ = saved_lb;
+            self.hand_in_ = saved_hand_in;
+            self.single_chunk_ = saved_single;
+            self.pipe_chunked_ = saved_pipe;
+            self.frontier_cap_layer_ = saved_cap_layer;
+            self.frontier_cap_dst_ = saved_cap_dst;
+        }
+    } scope{*this, stage_lb_, hand_in_, single_chunk_, pipe_chunked_, frontier_cap_layer_, frontier_cap_dst_};
+    stage_lb_ = start_layer;
+    hand_in_ = R_host_in;
+    single_chunk_ = true;
+    pipe_chunked_ = false;
+    frontier_cap_layer_ = 0;
+    frontier_cap_dst_ = nullptr;
+    stopped_at_ = -1;
+    return run_impl(tokens, n, pos0, err);
+#endif
 }
 
 }  // namespace strata::prefill
