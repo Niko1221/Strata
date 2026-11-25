@@ -94,7 +94,8 @@ def window():        # one batch window: every active slot one token
             stopped.discard(b)
             prompt_ids, emitted, in_slot = meta.pop(b, ([], [], False))
             slot_ids[b] = prompt_ids + emitted[:-1]
-            print(f"BDONE {b} {produced} {fin}{BDONE_MS}" + (" read=3.0" if in_slot else ""), flush=True)
+            print(f"BDONE {b} {produced} {fin}{BDONE_MS}" + (" read=3.0" if in_slot else "") +
+                  (f" drafts={2 * produced}:{produced}" if "--drafts" in args else ""), flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -341,6 +342,7 @@ class PickSlot(unittest.TestCase):
         e.slot_order = list(range(n))
         e.slot_busy = [False] * n
         e.slot_held = [[] for _ in range(n)]
+        e.slot_prompt = [[] for _ in range(n)]     # a real engine sets it at start and _slot_prefix reads it (this lazy fixture lacked it)
         e.slot_used = [0.0] * n
         e.slot_live = [None] * n
         e.slot_group = [0] * n
@@ -359,6 +361,43 @@ class PickSlot(unittest.TestCase):
         self.assertIsNone(e.pick_slot([7, 8]))
         e.slot_busy = [False] * 3
         self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # a held prompt is never the WHOLE prompt
+
+    # Inkling-2-Mini with its DSpark drafter: the drafter exists only for slot 0, so a lone request drafts only there (GRID, Olares: 1 slot 152 tok/s, 2 or 3 slots 85,
+    # the speed of drafting off, because pick_slot sent the lone request to the slot with the longest held start or to the one used longest ago)
+    def inkling(self, n, drafting="dspark"):
+        e = self.engine(n)
+        e.inkling_engine = True
+        e.info = {"drafting": drafting}
+        return e
+
+    def test_slot_zero_is_taken_when_nothing_worth_keeping_is_held(self):
+        e = self.inkling(3)
+        e.slot_held = [[9, 9], [], [5, 5]]
+        e.slot_used = [9.0, 0.0, 1.0]                               # slot 1 is empty and slot 2 used longest ago: the old order would take slot 1
+        self.assertEqual(e.pick_slot([7, 8]), 0)
+        e.slot_busy[0] = True                                       # slot 0 busy: the old order, nothing else changes
+        self.assertEqual(e.pick_slot([7, 8]), 1)
+        e.slot_busy[0] = False
+        e.slot_held = [[1] * 5000, [], []]                          # slot 0 itself holds the longest start: it keeps it
+        self.assertEqual(e.pick_slot([1] * 5000 + [2]), 0)
+
+    def test_a_real_conversation_keeps_its_slot_a_short_one_does_not(self):
+        n = StrataEngine.SLOT0_PREFIX_MAX
+        e = self.inkling(3)
+        e.slot_held = [[], [], list(range(1, n + 100))]             # a held start of n + 99 tokens in slot 2
+        self.assertEqual(e.pick_slot(list(range(1, n + 100)) + [7]), 2)
+        e.slot_held = [[], [], list(range(1, n - 10))]              # n - 11 tokens: re-prefilling that costs well under a second
+        self.assertEqual(e.pick_slot(list(range(1, n - 10)) + [7]), 0)
+        self.assertEqual(n, 512)
+
+    def test_nothing_changes_without_the_drafter_or_for_another_engine(self):
+        for make in (lambda: self.engine(3), lambda: self.inkling(3, "off")):
+            e = make()
+            e.slot_held = [[9, 9], [], [5, 5]]
+            e.slot_used = [9.0, 0.0, 1.0]
+            self.assertEqual(e.pick_slot([7, 8]), 1)                # the empty slot first, as before
+            e.slot_held = [[], [], [1] * 20]
+            self.assertEqual(e.pick_slot([1] * 20 + [2]), 2)        # the held start, as before (also a short one)
 
     def test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat(self):
         # #2518: two chats in two slots; each next turn renders the history again but not the reply it decoded or the
@@ -1218,6 +1257,36 @@ class SlotRead(FakeEngineCase):
         self.assertEqual(self.log.read_text()[before:].split()[0], "GEN")
         self.assertFalse(any(x.endswith(" sr") for x in self.log.read_text().splitlines()))
 
+
+
+class BatchDraftCounters(FakeEngineCase):
+    """#5890: with --batch-mtp the engine's BDONE line carries the slot's own draft counters (drafts=<checked>:<kept>), and the response's
+    draft_n / draft_n_accepted read them; an engine that does not say it leaves them as before."""
+
+    def tokens(self, ids, max_new=64):
+        return [t for t in self.engine.generate_batched(list(ids), max_new, {}, threading.Event()) if t is not None]
+
+    def two_chats(self):
+        """Two conversations at once, so the second one runs in a batch slot -> the second one's engine record right after its reply."""
+        a, b = list(b"first LONGREPLY chat " + b"a" * 600), list(b"second chat " + b"b" * 600)
+        ta = threading.Thread(target=lambda: self.tokens(a))
+        ta.start()
+        time.sleep(0.15)
+        self.tokens(b)
+        last = dict(self.engine.last)
+        ta.join(30)
+        return last
+
+    def test_a_batch_slot_request_reports_its_drafts(self):
+        self.start(2, more=("--drafts",))
+        last = self.two_chats()
+        self.assertGreater(last["drafts_offered"], 0)
+        self.assertEqual((last["drafts_offered"], last["drafts_accepted"]), (2 * last["generated"], last["generated"]))
+
+    def test_an_engine_that_does_not_say_drafts_is_read_as_before(self):
+        self.start(2)
+        last = self.two_chats()
+        self.assertFalse(last.get("drafts_offered"))
 
 
 class EngineOwnedDefaults(unittest.TestCase):

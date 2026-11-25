@@ -46,14 +46,16 @@ DFLASH2_BACKENDS = ("cuda", "hip", "metal", "sycl")
 #: Graphics memory each drafter takes on Qwen3.8-Flash-Next IQ3_S (GB; phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1, l620, engine free memory at
 #: the first graph capture): DFlash2 alone 890 MiB, the MTP layer 1082 MiB. The fit, the plan and the slot estimates use the one that is chosen.
 #: `dflash2_selq4` is DFlash2 alone with the converted pack (the selector's codebooks as Q4_0 rows, 175 MiB less: the engine's drafter line 800 -> 625 MiB, section 16):
-#: 715 MiB. vram_gb() says which of the two is the true figure on this computer. The apps keep copies of these numbers (apps/host/server/native-parallel.mjs and
-#: apps/host/src/lib/native-fit.ts); apps/host/tests/drafting.test.mjs reads this table and fails when they differ.
+#: 715 MiB. vram_gb() says which of the two is the true figure on this computer. The apps keep copies of these numbers (app/host/server/native-parallel.mjs and
+#: app/host/src/lib/native-fit.ts); app/host/tests/drafting.test.mjs reads this table and fails when they differ.
 DRAFTER_MIB = {"dflash2": 890, "dflash2_selq4": 715, "mtp": 1082, "off": 0}
 DRAFTER_GB = {name: int(mib / 10 + 0.5) / 100 for name, mib in DRAFTER_MIB.items()}      # 0.89, 0.72, 1.08, the figures the apps show (mib rounded half up to 10 MiB)
 
 #: GPU architecture (what nvidia-smi's compute capability and the kernel driver report) -> card class
 ARCH_CLASS = (
     (re.compile(r"^gfx1151$"), "strix_halo"),
+    (re.compile(r"^gfx1150$"), "strix_point"),
+    (re.compile(r"^gfx1103$"), "radeon_780m"),
     (re.compile(r"^gfx120[01]$"), "rdna4"),
     (re.compile(r"^sm_12\d$"), "blackwell"),
     (re.compile(r"^sm_86$"), "ampere"),
@@ -78,7 +80,7 @@ def card_class(archs: Any) -> str:
 #   slower    measured on this kind of card: slower on every prompt
 #   untested  the engine has the code for this card but it was never measured on it
 
-#: What the Terminal's Drafting step and the app's paragraph under the dropdown say (the same words; apps/host/src/locales/df2-en.json, tests keep them equal).
+#: What the Terminal's Drafting step and the app's paragraph under the dropdown say (the same words; app/host/src/locales/df2-en.json, tests keep them equal).
 #: The numbers are measured: l620, RTX PRO 5000, Qwen3.8-Flash-Next IQ3_S, DFlash2 `--spec 6 --draft-conf 0.35` against MTP (phaseA-tests/blackwell/RESULTS-DRAFT.md section 4).
 EXPLAIN_NUMBERS = ("MTP is the default. DFlash2 is another way to guess the next words ahead, for Qwen3.8-Flash-Next only. On an RTX PRO 5000 it was 7.8% faster than MTP "
                    "on 19 short prompts and 1.1% faster on long thinking, and faster on 21 of 23 prompts. On the short prompts the answers were identical.")
@@ -321,6 +323,7 @@ BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
 # conf 0.55. 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs faster, output identical
 # (conf 0.55 alone +1.1%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured; the other sets on that card were not measured and keep 0.35.
 BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
+BLACKWELL_W8_BYTES = 15_000_000_000 # 15 GB line: RTX 5080 (16 GB), RTX 5090 (32 GB), RTX PRO 5000 (72 GB); engine's kDflash2BlackwellW8Bytes
 
 
 @dataclass(frozen=True)
@@ -494,7 +497,7 @@ DEFAULT_CONTEXT = 131072     # --max-context when the arguments name none (the 1
 SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth")
 #: The model_name setup.py (and metal/setup_mac.py) write: f"{family name}-{model.lower()}": qwen3.8-flash-next-iq3_s, qwen3.8-flash-next-gyro-gyro-s,
 #: qwen3.8-flash-next-unsloth-ud-q4_k_xl. (Coder is qwen3.8-flash-next-coder-iq1_m, NVFP4 qwen3.8-flash-next-nvfp4-nvfp4: neither matches.) Mirrored in
-#: apps/host/server/native-settings.mjs; tests/drafting.test.mjs keeps the two the same.
+#: app/host/server/native-settings.mjs; tests/drafting.test.mjs keeps the two the same.
 _SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$", re.IGNORECASE)
 
 
@@ -574,8 +577,16 @@ def gguf_facts(path: Any) -> dict[str, Any] | None:
                     break                                   # the words follow: everything wanted comes before them
                 if etype in _GGUF_SCALAR:
                     pos += count * _GGUF_SCALAR[etype]
+                elif etype == 8:                            # #6695: string arrays (general.tags, general.languages) before <arch>.block_count
+                    if count > (len(head) - pos) // 8:
+                        break
+                    for _ in range(count):
+                        (slen,) = struct.unpack_from("<Q", head, pos)
+                        pos += 8 + slen
+                        if pos > len(head):
+                            break
                 else:
-                    break                                   # an array of words before the tokens: not looked into
+                    break                                   # nested arrays before the tokens: not looked into
             else:
                 break
             if pos > len(head):
@@ -879,7 +890,7 @@ def normalize(value: Any) -> str:
 ENGINE_SERVES_DFLASH2 = True
 
 #: Why another drafter (or none) runs when the one chosen cannot: a closed set of short reasons, each one is a sentence in the interface catalog in all
-#: nine languages (the line is "Drafting: MTP (<reason>)", apps/host/src/locales/df2-<lang>.json and en.json).
+#: nine languages (the line is "Drafting: MTP (<reason>)", app/host/src/locales/df2-<lang>.json and en.json).
 DIDNT_FIT = "DFlash2 didn't fit"
 NOT_HERE = "DFlash2 isn't available in this mode"
 NOT_SUPPORTED = "DFlash2 is for Qwen3.8-Flash-Next only"
@@ -1014,6 +1025,13 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
 
 
+def blackwell_w8(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
+    """Desktop Blackwell cc 12.0 (sm_120) with at least 15 GB VRAM and normal expert cache: engine cap is 8 (dflash2_blackwell_w8)."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
+        return False
+    return vram_mib * 1048576 >= BLACKWELL_W8_BYTES and slots >= 3000
+
+
 def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
     """Is this start on the large-VRAM Blackwell class (the window of 8, and the sets' big_blackwell_conf): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
     at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
@@ -1029,11 +1047,11 @@ def big_blackwell_conf_for(backend: str | None, model_name: str | None, archs: A
 
 
 def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
-    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on the large-VRAM Blackwell class (big_blackwell), SPEC_WINDOW (6) everywhere else, so no other
-    card's effective window changes (the engine caps 6 on the Spark and the smaller Blackwell cards, and does not cap the rest)."""
+    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on desktop Blackwell cc 12.0 with >= 15 GB (blackwell_w8),
+    SPEC_WINDOW (6) everywhere else, so no other card's effective window changes."""
     if str(backend or "").strip().lower() == "hip" and first_arch(archs) == "gfx1151":
         return WIDE_WINDOW
-    return WIDE_WINDOW if big_blackwell(backend, archs, vram_mib, slots) else SPEC_WINDOW
+    return WIDE_WINDOW if blackwell_w8(backend, archs, vram_mib, slots) else SPEC_WINDOW
 
 
 def conf_for(backend: str | None, slots: int | float | None) -> float:
@@ -1064,7 +1082,11 @@ def expected_slots(vram_mib: float, args: list[Any]) -> int:
     reserve = _flag_value(args, "--vram-reserve-mib")
     reserve = int(reserve) if reserve and reserve.isdigit() else SLOT_RESERVE_MIB
     prefill = _flag_value(args, "--prefill")
-    chunk = vram_fit.chunk_of(prefill.split(":")[-1] if prefill else "auto")
+    # "auto:N" is a ceiling the engine stays under: it lends the prompt buffers from the expert slots and picks the chunk by the card, so its N is not a buffer
+    # that sits beside the slots (#5252: --prefill auto:32768 was priced as 21.6 GiB of buffers, 442 slots against the engine's 8,158, and --draft-conf 0.8).
+    # A plain "auto" and an "auto:N" both come to what auto came to on the 8 GB card; only a number is a chunk the person asked for.
+    chunk = vram_fit.chunk_of(prefill if prefill else "auto")
+    # (--kv-resident is not priced here: the base below was measured on starts that had it, RTX 4080 SUPER 2,710 slots; pricing it raised that start to 3,035.)
     # SLOT_BASE_MIB is the baseline that holds the draft layer (the MTP's ~1.08 GiB, measured); DFlash2 is now the ONLY drafter, so that allowance pays for its own
     # 0.89 GiB (measured: "drafter 799 MiB" + its head's staging, 890 MiB beside the engine without one; 192 MiB less than the MTP layer): nothing more is taken off.
     free = (float(vram_mib) - vram_fit.GAP_OTHER_MIB - SLOT_BASE_MIB - vram_fit.session_mib(ctx, kv) - vram_fit.HEAD_MIB - reserve
@@ -1172,11 +1194,23 @@ def _sycl_host_path(value: str) -> Path:
     """#5395: an Intel (SYCL) run config written by sycl/setup_intel.py names the engine's container paths: the folder above the
     Strata checkout (or STRATA_SYCL_ROOT) is mounted at /work (setup_intel.MOUNT, strata-sycl.sh). A check made here on the host
     looks at the same file through that mount; any other path, or a /work path that exists on this computer, is taken as it is.
-    Only for checks: the engine's own arguments keep the container's paths."""
+    Only for checks: the engine's own arguments keep the container's paths.
+    0.2.17: the mount was the folder above the checkout up to 0.2.16 and is the checkout itself since the layout move (setup_intel.MOUNT),
+    so an Intel config written by an earlier Strata names /work paths relative to the folder above the checkout: STRATA_SYCL_ROOT, the
+    checkout and the folder above it are each tried, and the first one that holds the file is the answer (the checkout's, when none does)."""
     folder = Path(value)
     if value.startswith("/work/") and not folder.exists():
-        root = os.environ.get("STRATA_SYCL_ROOT") or str(Path(__file__).resolve().parents[1].parent)
-        return Path(root) / value[len("/work/"):]
+        rest = value[len("/work/"):]
+        checkout = Path(__file__).resolve().parents[1].parent
+        roots = [Path(os.environ["STRATA_SYCL_ROOT"])] if os.environ.get("STRATA_SYCL_ROOT") else []
+        roots += [checkout, checkout.parent]
+        for root in roots:
+            try:
+                if (root / rest).exists():
+                    return root / rest
+            except OSError:
+                continue
+        return roots[0] / rest
     return folder
 
 
@@ -1201,7 +1235,7 @@ VOCAB_NAME = "draft_vocab.bin"
 
 
 #: The subsets a person can choose in setup (``--draft-vocab``), by name: the files Strata ships in data/ (setup.DRAFT_VOCABS names the same ones).
-VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
+VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin", "arabic": "draft_vocab_arabic.bin"}
 #: The sha256 of the 27-Han-token subset up to 0.1.26 (setup.OLD_DRAFT_VOCABS): a copy that is any shipped subset may be replaced by the person's later choice, a made-by-hand one never.
 OLD_VOCAB_SHA256 = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}
 
@@ -1218,17 +1252,18 @@ def shipped_vocab(choice: str | None = None) -> Path:
 # on those four, both within 0.3% of the default on English and code; either file costs 12-16% on Chinese and Japanese. So with no choice saved, the file follows the computer's languages, and
 # anything that could mean Chinese, Japanese or Korean keeps the default (the costs are lopsided: the wrong file on CJK text costs far more than the right one gains elsewhere).
 
-#: Language codes by the script their text is written in (the ones the vocabulary files cover: Cyrillic, and the Latin script beyond English). Anything else (English, Arabic, Hebrew, Hindi, Thai,
+#: Language codes by the script their text is written in (the ones the vocabulary files cover: Cyrillic, Arabic, and the Latin script beyond English). Anything else (English, Hebrew, Hindi, Thai,
 #: Greek...) says nothing.
 _CJK_LANGS = frozenset("zh ja ko yue cmn wuu hak nan gan lzh".split())
 _CYRILLIC_LANGS = frozenset("ru uk be bg mk sr kk ky tg mn tt ba cv ce os sah ab av kv udm".split())
+_ARABIC_LANGS = frozenset("ar fa ur ps sd ckb ug prs".split())
 _LATIN_LANGS = frozenset(("de fr es pt it nl pl cs sk sl hr bs ro hu sv da nb nn no fi et lv lt tr vi id ms ca gl eu af sq is ga cy mt fil tl sw "
                           "lb fo gd br oc rm eo la uz az tk hsb dsb ast an co fy sc se smn nds wa ln zu xh st tn yo ig ha so mg haw mi sm to").split())
 _CJK_SCRIPTS = frozenset("hans hant hani jpan kore hang hira kana bopo".split())
 
 
 def script_of_language(tag: Any) -> str:
-    """The script group a language tag (``ru-RU``, ``sr-Latn-RS``, ``de_DE.UTF-8``, ``sr_RS@latin``, ``zh-Hans``) says: ``cjk``, ``cyrillic``, ``latin`` (a Latin-script language other than English) or ``""`` (English, another
+    """The script group a language tag (``ru-RU``, ``ar-SA``, ``sr-Latn-RS``, ``de_DE.UTF-8``, ``sr_RS@latin``, ``zh-Hans``) says: ``cjk``, ``cyrillic``, ``arabic``, ``latin`` (a Latin-script language other than English) or ``""`` (English, another
     script, ``C`` / ``POSIX``, nothing readable)."""
     text = str(tag or "").strip()
     if not text:
@@ -1248,10 +1283,14 @@ def script_of_language(tag: Any) -> str:
         return "cjk"
     if "cyrl" in scripts or modifier == "cyrillic":
         return "cyrillic"
+    if "arab" in scripts or modifier == "arabic":
+        return "arabic"
     if "latn" in scripts or modifier == "latin":
         return "" if lang == "en" else "latin"
     if lang in _CYRILLIC_LANGS:
         return "cyrillic"
+    if lang in _ARABIC_LANGS:
+        return "arabic"
     if lang in _LATIN_LANGS:
         return "latin"
     return ""
@@ -1550,7 +1589,7 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
 
 ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this model to one request at a time."
 #: setup could not fetch the MTP layer because the computer is offline (tools/mtp_fetch.py OFFLINE) and the start has no other drafter (owner, 11-15).
-#: The app shows the same words (apps/host/server/native-control.mjs installMtpLayer).
+#: The app shows the same words (app/host/server/native-control.mjs installMtpLayer).
 MTP_OFFLINE_NOTE = "There is no internet connection, so the draft layer can't be downloaded now. The model starts without it."
 
 
@@ -1815,13 +1854,16 @@ def take_note() -> str:
 
 
 def engine_info(args: list[Any], log_text: str = "", note: str = "") -> dict[str, str]:
-    """The facts of one engine start for /metrics and the apps: ``drafting`` (mtp | dflash2 | off) and ``drafting_note`` (plain words, or ""): the one drafter this
-    start loads (``--draft dflash2`` without ``--mtp``, ``--mtp`` without ``--draft``), and why it is not the one asked for. The engine's own log wins over the choice."""
+    """The facts of one engine start for /metrics and the apps: ``drafting`` (mtp | dflash2 | dspark | off) and ``drafting_note`` (plain words, or ""): the one drafter this
+    start loads (``--draft dflash2`` without ``--mtp``, ``--draft dspark``, ``--mtp`` without ``--draft``), and why it is not the one asked for. The engine's own log wins over the choice."""
     items = [str(a) for a in args]
     asked_dflash2 = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dflash2" for i in range(len(items)))
+    asked_dspark = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dspark" for i in range(len(items)))
     fell_back = fallback_note(log_text) if asked_dflash2 else ""
     drafter = "mtp" if "--mtp" in items else "off"
     if asked_dflash2 and not fell_back:
         drafter = "dflash2"
+    elif asked_dspark and "Skipping DSpark drafter" not in str(log_text or ""):
+        drafter = "dspark"
     text = fell_back or (line(drafter, note) if note else "")
     return {"drafting": drafter, "drafting_note": text}

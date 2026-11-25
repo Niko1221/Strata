@@ -149,6 +149,13 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 - **Bounded spins.** A device spin that never sees its flag makes the `xe` driver time out the queue and reset the GT, and the
   card can stay wedged until a reboot. Every spin is capped. The cap is the build option `STRATA_SYCL_SPIN_MAX` (2,000,000
   reads, a few seconds, unless the build is an AOT build for a `bmg` card, which keeps 20,000).
+- **Root GPU monitoring and `preempt_timeout_us` (`xe`, #6445).** On Linux with the `xe` driver, querying the card as root
+  (for example `sudo xpu-smi` from a fan/temperature logger or dashboard) submits a render job that forces running compute
+  kernels to yield within `preempt_timeout_us` (default `640000`, 640 ms). If a long prefill or verify kernel cannot yield
+  in time, GuC resets the compute engine (`Engine reset: engine_class=ccs`) and Level Zero returns
+  `UR_RESULT_ERROR_DEVICE_LOST`. Run `xpu-smi` unprivileged (or stop root GPU polling while Strata is running), and
+  optionally raise the compute preemption timeout before starting the engine:
+  `echo 10000000 > /sys/class/drm/cardN/device/tile0/gt0/engines/ccs/preempt_timeout_us`.
 - **JIT builds** add `-ze-opt-greater-than-4GB-buffer-required` so kernels keep 64-bit addresses past 4 GiB into an allocation.
   oneMKL's own precompiled kernels do not get it; the GEMM stages an operand past 4 GiB (`STRATA_SYCL_GEMM_STAGE=1` forces
   that on Battlemage).
@@ -159,7 +166,10 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 - **Monitor tab.** `server_intel.py` plugs the shared Intel reader (`terminal/serve/telemetry.py`) into the Monitor. Temperature, power and
   the PCIe link come from sysfs. Load and VRAM work without root: load is the GPU busy time of the engine's own processes
   (`/proc/<pid>/fdinfo`, readable by the user who started them), the VRAM total comes from Level Zero sysman (`libze_loader.so.1`),
-  and the VRAM in use from sysman on `xe` and from the engine's own fdinfo memory on `i915`. The root sampler
+  and the VRAM in use from sysman on `xe` and from the engine's own fdinfo memory on `i915`. An Intel GPU built into the
+  processor (Level Zero's integrated flag) has no VRAM: its total is the RAM (`MemTotal`) and its use the fdinfo memory in
+  `gtt` and `system` of the GPU clients this user can see (on a laptop, the desktop's too). The server's free-memory checks (`min_free_vram_mib`, the room for a GPU picture reader) count
+  `MemAvailable` plus `GPUReclaim` from `/proc/meminfo` there. The root sampler
   (`engine/sycl/tools/gpustat.py`, `gpustat.service`) is optional: when it runs, its `/run/gpustat.json` is used first, and it also sees
   other users' processes. PCIe traffic needs Intel PMT, which is root-only unless the host grants it; without it the Monitor leaves
   that reading empty. A run config may name a `model_switcher`; the web app's header then gets a Model menu.
@@ -201,6 +211,11 @@ moves about 26 GB; bigger chunks read faster.
   cache holds every expert, else 0.
 - `STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM (`strata-sycl.sh` sets it). Without it the
   host/GPU handshake is not visible across the bus on `xe` and the logits turn NaN a few tokens in.
+- **`STRATA_VERIFY_NO_HOST=1` and the host arena refuse each other (#4698).** With the switch on and no `--stream-experts`, the experts the
+  VRAM cache does not hold sit in an ordinary pageable RAM arena that the device plan cannot read, and nothing else answers for them: a
+  reply came out as `!` x 256 on an Arc Pro B70. The engine now stops at the start with `REFUSED: STRATA_VERIFY_NO_HOST=1 with the host
+  expert arena`. Use `--stream-experts`, or `STRATA_VERIFY_NO_HOST=0` on a card that runs the arena (an `i915` card). A cache that holds
+  every expert never reads the arena and is not refused.
 - On `xe`, setup writes `terminal/data/expert-profile-sycl.bin`, a ranking built from the routing of 45 varied prompts, so the cache
   holds the experts a chat, code or non-English prompt uses (`terminal/tools/make_profile_mix.py`, `terminal/tools/collect_profile_traces.py`).
   An `i915` card keeps the shipped profile.
@@ -225,8 +240,9 @@ moves about 26 GB; bigger chunks read faster.
 Draft length (200 tokens, `--spec-min-p 0.5`): `--spec 6` against `--spec 4` is +6.5% on code and -1.5% on prose, so the setup
 default (4, 0.5) stays. A `--prefill 8192` chunk is not bit-identical to 4096 (first-token KL 1.1e-2 at 16K, top-1 the same).
 
-**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture) the
-engine computes the prompt's routed experts with ESIMD kernels that decode the quantized weights in registers into the s8 DPAS B
+**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture; also
+an Xe3 GPU, see `STRATA_INTEL_GEN`) the engine computes the prompt's routed experts with ESIMD kernels that decode the
+quantized weights in registers into the s8 DPAS B
 operand and multiply them by q8_1 activations. Covered: gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0. Other formats keep
 the FP16 path, as does every other GPU. `STRATA_PREFILL_MMQ` unset is `auto`, which times both chains at the first layer of each
 format and takes int8 below the measured crossover (130-250 rows per expert); `=0` turns it off, `=1` forces it. Activations are
@@ -297,6 +313,29 @@ The Battlemage AOT build compiles with the trellis kernels and was not run.
 Decode is bound by the CPU pool and the PCIe link (10.4 GB/s), not by the card's kernels. `--prefill 1024` gave +13% decode and
 -24% prompt speed; the default stays `--prefill auto`.
 
+### Repeatable answers on an Alchemist card (Inkling 2 Mini)
+
+On an Arc A-series card (Alchemist, DG2: A380, A580, A750, A770), Intel's oneMKL matrix multiply, which the Inkling 2 Mini engine
+uses to read the prompt, gives last-bit differences between runs. Send the same prompt twice and the numbers behind the first answer
+token can differ in the last digits, so an answer can vary slightly from run to run. The model still answers correctly: first
+chats, a needle in a 32,000-token prompt and 9 parallel requests were right on an A750.
+
+For results that repeat, turn the XMX matrix path off:
+
+```sh
+STRATA_SYCL_NO_XMX=1        # the older name INK_SYCL_NO_XMX=1 works too
+```
+
+The price is prompt-reading speed: about 60% of it (45 tokens a second down to 17 on an A750 with Inkling-2-Mini UD-IQ1_S, four
+alternating runs, spread 0.1). Reading the answer out (decode) is unchanged at 2.1 tokens a second. The default stays XMX on, because
+most people want the speed.
+
+The Arc Pro B70 (Battlemage) repeats with XMX on: five runs of the same 64-token prompt gave one result with UD-Q4_K_XL and with SQ-20.
+AMD and Apple Metal repeat too.
+
+Also on an 8 GB card: the engine plans the memory for the `--parallel` and `--max-context` you ask for before it allocates, and if they
+do not fit it stops at start and names the largest `--parallel` that does (an A750 with UD-IQ1_S at 4,096 tokens: 9, not 32).
+
 ## Pictures on an Arc
 
 <a id="pictures-on-an-arc-2026-10-19-branch-f-021-arcvis"></a>
@@ -333,6 +372,8 @@ and text requests after the pictures all answered, with no GPU fault in the kern
 
 **Layout.** `engine/sycl/src` and `engine/sycl/include` mirror the tree and hold only the files the port changes; `engine/sycl/CMakeLists.txt` takes every
 other source from the original location. `sycl/include/dpct/` is the vendored SYCLomatic helper library.
+
+**Battlemage GDN prefill.** On Level Zero Battlemage, the 128-wide GDN recurrence with 16 key heads and 48 value heads pairs successive inputs from 128 tokens. From 512 rows, eligible GDN layers also share projection weights across four tokens, fuse convolution with Q/K normalization, and combine residual writeback with RMSNorm. The projection requires 48 outputs, 2,560 input columns, output stride 96 and a multiple of four rows. The residual uses aligned FP32 buffers and the supported four-stream BF16 layout. Other shapes retain their ordinary paths. Explicit `STRATA_GDN_CONV_SERIAL` and `STRATA_GDN_CONVL2` settings take precedence for convolution. The recurrence override below controls the recurrence only.
 
 **How it is made, so it can be redone.**
 
@@ -378,6 +419,21 @@ prefill path (`moe_mmq.cu`) is not built. `--peer-device` (a second GPU as an ex
 message. The sm_90 thread-block-cluster sampler and QSA top-k have no SYCL counterpart. Images on the llama.cpp config are not wired;
 on the SYCL port they are ([Pictures](#pictures-on-an-arc)).
 
+## Routed expert prefill on Battlemage
+
+The SYCL engine selects these paths automatically on a Level Zero Battlemage GPU when the request qualifies.
+
+| Setting | Automatic behavior and how to disable it |
+| --- | --- |
+| `STRATA_SYCL_BMG_ROUTED_EXPERTS` | Group routed rows, dequantization and expert projections. Where available, TLA kernels fuse gate/up and SwiGLU or project directly from the packed expert weights. Set to `0` to use the previous expert path and disable the window. |
+| `STRATA_SYCL_BMG_EXPERT_WINDOW` | With routed experts and the TLA expert build enabled, share compressed weights across adjacent eligible chunks. Set to `0` to process one chunk at a time while keeping eligible grouped projections. Checkpoints can split a window. Set `STRATA_TRACE=1` to log the actual chunk lengths. |
+
+A single unbatched run can select one Battlemage GPU even when other GPUs are visible. The paired walk requires 48 native expert layers, 512 experts with top-10 routing, 2,560 input columns, 640 feed-forward columns, and an 8,192-token chunk plan. It serves a streamed model whose expert cache does not hold all experts. Eligible layers use IQ2_XXS, IQ2_S or IQ1_M gate/up and Q2_0 down. A second chunk needs at least 4,096 rows. Shorter tails run individually.
+
+For a portable or Battlemage AOT build with Level Zero, `-DSTRATA_SYCL_TLA_EXPERT_GU=AUTO` (default) uses local sycl-tla headers from `STRATA_SYCL_TLA_DIR` or `engine/third_party/sycl-tla`. Use `ON` to require the kernels at configure time or `OFF` to omit them even with the headers present. This build option is independent of prompt attention. The row-count rules for combining gate/up and down GEMMs were checked with icpx 2026.1.1 and oneMKL 2026.1.0. When changing oneMKL, rerun the oneMKL split/merged, direct and gate/up byte-parity tests against the installed library and check windowed generations against the unmodified engine.
+
+The paired walk can borrow fewer expert-cache slots. For full host-mirror coverage, set `STRATA_LEND_MIRROR` to cover the loan reported at startup.
+
 ## Switch reference
 
 All are environment variables for the engine. Put them in the config's `"env"` block. Defaults are for the current engine.
@@ -385,14 +441,19 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | Switch | Default | Effect |
 | --- | --- | --- |
 | `STRATA_VERIFY_NO_HOST` | 1 (`strata-sycl.sh`); 0 on `i915` | See above |
-| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB. On an integrated GPU: none with `--expert-cache auto`, the pool's rest less `--vram-reserve-mib` with a cache size you give | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_UMA` | From the device | `1` / `0`: plan the GPU as one that shares the system's RAM (an integrated GPU), or as a card. Linux. See [INTEL_ARC.md](INTEL_ARC.md#integrated-arc-gpus-the-b390-panther-lake) |
+| `STRATA_UMA_HEADROOM_GIB` | 6 | On such a GPU, the GiB of RAM the engine leaves free when it sizes its cache |
 | `STRATA_PF_XMX` | 2 on Alchemist | Grouped XMX expert launch; `0` off, `1` dequantize first |
+| `STRATA_SYCL_NO_XMX` | Off (XMX on) | Inkling 2 Mini engine: `1` turns the oneMKL XMX matrix path off. On an Alchemist card this makes prompt reading repeatable between runs, at about 60% of the prompt speed ([above](#repeatable-answers-on-an-alchemist-card-inkling-2-mini)). `INK_SYCL_NO_XMX=1` is the older name |
 | `STRATA_GDN_XE` | On for Alchemist | Sub-group GDN recurrence |
+| `STRATA_SYCL_GDN_PREFILL_REG_QK` | Automatic on Level Zero Battlemage for the 128-wide, 16-key/48-value-head recurrence at 128 or more tokens | Load two consecutive inputs into subgroup registers and update the FP32 state in token order. Unset enables automatic selection. A value beginning with `1` requests the register kernel on supported inputs. Other explicit values, including `0`, an empty string, `on` and `true`, select the original column kernel. |
 | `STRATA_COPY_ENGINE` | On for Battlemage | Expert copies on the copy engine |
+| `STRATA_INTEL_GEN` | From the device | `battlemage`, `alchemist` or `unknown`: the generation whose kernels and defaults the GPU gets. An Xe3 GPU (Panther Lake: the Arc B390) is classed with Battlemage; `unknown` gives it the generic kernels. |
 | `STRATA_PREFILL_MMQ` | `auto` on Battlemage | Fused int8 prompt experts |
 | `STRATA_PREFILL_STREAM_ALL` | On when VRAM holds more than 90% of the (layer, expert) pairs | Copy every expert the cache does not hold, layer by layer; `=0` / `=1` force it |
 | `STRATA_PREFILL_FIRST` | 256 if the cache holds every expert, else 0 | Tokens in the short first prompt chunk |
-| `STRATA_LEND_MIRROR` | On | Mirror the experts in the last 10% of cache slots; `=0` off |
+| `STRATA_LEND_MIRROR` | On; off on an integrated GPU, where an automatic cache also needs `STRATA_MIRROR_MIB` for it | Mirror the experts in the last 10% of cache slots; `=0` off, `=N` the last N slots |
 | `STRATA_VERIFY_LEAN` | On | Decode graph without unanswered nodes; `=0` off |
 | `STRATA_FILL_SERIAL=1` | Off | The old serial expert-cache fill (the pipelined fill is the default) |
 | `STRATA_MMVQ_A2=0`, `STRATA_MMVQ_WIDE_32=0` | On | Restore the older matvec kernels |

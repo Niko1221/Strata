@@ -22,6 +22,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/pinned_ring.hpp"
 #include "strata/core/session.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -44,9 +46,15 @@ public:
     MtpDrafter& operator=(const MtpDrafter&) = delete;
 
     /// Loads `rt_dir` (from tools/mtp_rt.py) and allocates the layer's K/V and buffers for up to `max_t` rows.
-    /// Call before the VRAM expert tier is sized: this takes ~0.9 GB.
+    /// Call before the VRAM expert tier is sized: this takes ~0.9 GB (Q2_0) or ~1.6 GB (Q4_0 / IQ4_NL).
     bool load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
               int64_t window = 32768, const MtpDrafter* shared = nullptr);
+    /// Estimated VRAM reserve (MiB) for the layer split search before `load()` runs: returns `base_mib` (1000 MiB)
+    /// for legacy Q2_0 packs and scales up by the extra expert bytes for larger native packs (e.g. ~1675 MiB for Q4_0 / IQ4_NL).
+    static int64_t reserve_mib(const std::string& rt_dir, int64_t base_mib = 1000);
+    bool native_experts() const { return native_experts_; }
+    int expert_gu_type() const { return expert_layout_.gu_type; }
+    int expert_d_type() const { return expert_layout_.d_type; }
     /// The prompt's length: prefill() skips the cells the attention window can never reach again.
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     /// STRATA_ROUTE_RESIDENT_MTP=1 (EXPERIMENTAL, opt-in, changes the output): the draft layer's router is biased like
@@ -63,7 +71,8 @@ public:
     bool hnorm_per_stream() const { return hnorm_stream_; }
     /// --mtp-q4 (opt-in; before load): the draft layer's Q8_0 projections and its draft head run from 4-bit (Q4_0)
     /// copies made at load/bind - fewer bytes per draft step; drafts only, the verify window decides every token.
-    /// (The prompt path's batched K/V pass keeps the Q8_0 originals.)
+    /// (The prompt path's batched K/V pass keeps the Q8_0 originals.)  head/all need the draft head's subset;
+    /// bind() says so when there is none, instead of silently drafting over the full head.
     void set_q4(bool proj, bool head) { q4_ = proj; q4_head_ = head; }
     /// --mtp-draft-vocab FILE (opt-in; before bind): the draft head's token subset from FILE instead of
     /// rt/draft_vocab.bin (e.g. data/draft_vocab_en.bin, 40K tokens)
@@ -150,6 +159,24 @@ public:
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                      float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr, DraftResult* result = nullptr);
 
+    /// STRATA_BATCH_MTP_FUSED=1 (opt-in, default off): one multi-slot batched MTP round across up to
+    /// min(max_t, kFusedGrMaxT, kQsaAttnMaxSlots) active batch slots at once (chunked if more).  Each slot's
+    /// catch-up row (when keep == 2) and accepted row (keep - 1) update its OWN QsaState in chronological order,
+    /// while all dense projections, shared/routed experts and the draft head read their weights once across the batch.
+    struct BatchSlotDraft {
+        MtpDrafter* slot = nullptr;       ///< owns the slot's K/V state and PLE session
+        const float* R_rows = nullptr;    ///< device: slot's verified final residual rows [2, hc * n_embd]
+        const int32_t* tokens = nullptr;  ///< host: slot's verified output tokens [keep]
+        int64_t pos0 = 0;                 ///< cell index of row 0
+        int keep = 1;                     ///< accepted rows in this verify window (1 or 2)
+        int32_t* out_drafts = nullptr;    ///< host output buffer (at least slot->max_t() - 1 entries)
+        float* out_prob = nullptr;        ///< optional host output for draft 0's probability
+    };
+    /// True when every item meets the preconditions for batched multi-slot drafting; false falls back cleanly to per-slot draft().
+    bool can_draft_slots(const BatchSlotDraft* items, int n_items) const;
+    /// Executes one batched multi-slot draft round (1 draft per slot) on this drafter's stream and workspace.
+    bool draft_slots(const BatchSlotDraft* items, int n_items, std::string& err);
+
     /// COUPLED DRAFT SAMPLING (core/coupled_draft.hpp; STRATA_SPEC_COUPLED=1, set up by bind()): the request's
     /// sampling.  A sampled request (temperature > 0, not greedy) then drafts by SAMPLING with the target's chain and
     /// the target's Philox draw for the verifying row, and `probs` is the draft's probability under that chain; a
@@ -159,6 +186,7 @@ public:
     /// window's commit (`tail`) and the window's pick at its last accepted row (`next`, the next window's row 0).
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
     void set_ple_session(SessionState* s) { ple_ss_ = s; }
+    SessionState* ple_session() const { return ple_ss_ ? ple_ss_ : ss_; }
     std::function<bool(int, float)> chain_rule_;
     bool coupled() const { return coupled_active_; }
     /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): this request's drafts are SAMPLED from
@@ -249,6 +277,14 @@ private:
     /// The rest for row 0 at step row `step_row`: the attention from the q projection, the MLP, the final mixer,
     /// the head, the draft and its probability.  Needs row 0's R_, inj_ and mixed_ (its q8_1 rows in xq_).
     bool record_rest(int step_row, cudaStream_t cs, std::string& err);
+    // STRATA_BATCH_MTP_FUSED=1: lazy staging, multi-slot front/rest recording, and LRU graph cache
+    bool ensure_batch_mtp_buffers(std::string& err);
+    bool record_front_slots(int T, const int32_t* tok_d, const int32_t* step_d, const int32_t* pos_d,
+                            const float* Rin_d, QsaState* const* states, cudaStream_t cs, std::string& err);
+    bool record_rest_slots(int T, int32_t* step_d, const int32_t* pos_d, QsaState* const* states, cudaStream_t cs,
+                           std::string& err);
+    bool capture_batch_slots(const std::vector<uintptr_t>& key, int n_cu, QsaState* const* states_cu, int n_acc,
+                             QsaState* const* states_acc, cudaGraphExec_t& out_exec, std::string& err);
     void norm_rope(float* data, const float* gamma, int rows, int cols, const int32_t* p, cudaStream_t cs);
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
@@ -320,6 +356,9 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    bool native_experts_ = false;
+    strata::kernels::NativeExpertLayout expert_layout_{};
+    uint64_t expert_blob_bytes_ = 0;
     // the prompt room: the experts' pinned host snapshot, its size, and whether a prompt has taken their contents
     // (the block itself stays where it is - see experts_lend)
     void* experts_host_ = nullptr;
@@ -378,6 +417,25 @@ private:
     float* head_logits_ = nullptr;
     float* dummy_inj_ = nullptr;
     int64_t cap_ = 0, attn_scratch_floats_ = 0;
+
+    // STRATA_BATCH_MTP_FUSED=1: lazily allocated only on first draft_slots() call (0 B when off)
+    bool bm_ready_ = false;
+    int bm_max_t_ = 0;
+    void* bm_arena_ = nullptr;
+    float *bm_Rin_cu_ = nullptr, *bm_Rin_acc_ = nullptr;
+    int32_t *bm_tok_ = nullptr, *bm_step_ = nullptr, *bm_pos_ = nullptr;
+    float *bm_sh_gate_ = nullptr, *bm_sh_up_ = nullptr, *bm_sh_g_ = nullptr;
+    uint16_t* bm_x_bf16_ = nullptr;
+    float* bm_dummy_inj_ = nullptr;
+    float* bm_attn_scratch_ = nullptr;   // optional (<= 32 MiB or STRATA_BATCH_MTP_ATTN_SLOTS=1)
+    int32_t *h_bm_tok_ = nullptr, *m_bm_tok_ = nullptr;
+    int32_t *h_bm_step_ = nullptr, *m_bm_step_ = nullptr;
+    int32_t *h_bm_pos_ = nullptr, *m_bm_pos_ = nullptr;
+    int32_t *h_bm_out_ = nullptr, *m_bm_out_ = nullptr;
+    float *h_bm_prob_ = nullptr, *m_bm_prob_ = nullptr;
+    std::map<std::vector<uintptr_t>, cudaGraphExec_t> bm_graphs_;
+    std::map<std::vector<uintptr_t>, uint64_t> bm_used_;
+    uint64_t bm_tick_ = 0;
 };
 
 }  // namespace strata::core

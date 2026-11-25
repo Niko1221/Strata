@@ -370,6 +370,10 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     (Path(out) / feedmod.FEED_NAME).write_bytes(payload)
     signature = signing.sign_bytes(key, payload)
     (Path(out) / (feedmod.FEED_NAME + feedmod.SIGNATURE_SUFFIX)).write_text(json.dumps(signature) + "\n", encoding="utf-8")
+    arm = Path(out) / feedmod.AARCH64_FEED_NAME
+    if arm.exists():                            # a feed folder that already carries its Linux ARM64 copy (make_local_feed.py writes one after its own pass): a later pass
+        arm.write_bytes(payload)                # (the shape engines, say) must not leave that copy behind, or the ARM64 Terminal finds a feed without the engines
+        (Path(out) / (feedmod.AARCH64_FEED_NAME + feedmod.SIGNATURE_SUFFIX)).write_text(json.dumps(signature) + "\n", encoding="utf-8")
     if install_manifest:                        # what install.sh / install.ps1 read: platform version url sha256 size, one line per Terminal (Control) package
         (Path(out) / "install-manifest.txt").write_text(install_manifest, encoding="utf-8", newline="\n")
     if "app" in document:                       # the file the Tauri updater plugin reads

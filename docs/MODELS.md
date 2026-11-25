@@ -1,11 +1,13 @@
 ﻿# Which model? Sizes, versions and what fits
 
 This page helps you choose a model and check that your computer can run it. It covers
-Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
+Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
 
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
 > [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
-> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Adding or switching models](#adding-or-switching-models) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) ·
+> [Tencent Hy4-Flash](#tencent-hy4-flash) ·
+> [Inkling-2-Mini](#inkling-2-mini) · [Adding or switching models](#adding-or-switching-models) ·
 > [History](#history--older-measurements)
 
 ## Quick start
@@ -45,7 +47,8 @@ They are estimates; a given context may still not fit.
 - **Less memory, coding only:** [Coder](#coder) runs around 32 GB of RAM with a suitable GPU.
 - **Less memory, general use:** compare Unsloth, then [Gyro](#gyro-s-and-gyro-m-agentionai), which uses the least memory and is slower.
 - **More memory:** [Unsloth's 4 to 8 bit files](#unsloths-files-ud-iq4_xs-to-q8_0) need 72 to 136 GB for all experts in RAM.
-- **A smaller model:** [Qwen3.6-35B-A3B](#qwen36-35b-a3b), 32 to 52 GB of RAM.
+- **A smaller model:** [Qwen3.6-35B-A3B](#qwen36-35b-a3b) (32 to 52 GB of RAM) or [Inkling-2-Mini](#inkling-2-mini) (8 to 24 GB GPU / 16 to 32 GB RAM).
+- **Large native MoE:** [Tencent Hy4-Flash](#tencent-hy4-flash) (64 to 128 GB of RAM or unified memory, plus Engram shard on SSD).
 
 If RAM is short, setup can read experts from the SSD instead ([below](#will-it-fit)). That works and is much slower.
 
@@ -53,7 +56,7 @@ If RAM is short, setup can read experts from the SSD instead ([below](#will-it-f
 
 ## Qwen3.8-Flash-Next
 
-Four ISTA-DASLab sizes are the original model; the versions below are variants or other providers' packs of it.
+Four [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) sizes are the original model; the versions below are variants or other providers' packs of it.
 Every version in setup's menu reads pictures. [Picture rules](#pictures).
 
 ### Will it fit?
@@ -130,7 +133,7 @@ strata launch --family swift --model IQ2_XS
 
 ### Unsloth's files: UD-IQ4_XS to Q8_0
 
-`--family unsloth` is Unsloth's 4 to 8 bit quantizations of the same model. They keep the experts at more bits than
+`--family unsloth` is [Unsloth's 4 to 8 bit quantizations](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) of the same model. They keep the experts at more bits than
 the sizes above, so they need more RAM. Setup keeps every expert in RAM when they fit with 16 GB to spare. With less RAM
 it keeps as many as fit and reads the rest from the SSD (much slower), and for the bigger files it asks first.
 
@@ -154,13 +157,22 @@ strata launch --family unsloth --model UD-Q5_K_XL
 
 ### Gyro-S and Gyro-M (agentionai)
 
-`--family gyro` is agentionai's Gyro quantization: trellis-coded experts in a rotated basis. They are the smallest
+`--family gyro` is [agentionai's Gyro quantization](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF): trellis-coded experts in a rotated basis. They are the smallest
 options and never setup's default. The download includes the 28 GB n-gram table. The memory figure is VRAM and RAM together.
 
 | Size | Download | Memory (VRAM + RAM) | In plain words |
 | --- | ---: | ---: | --- |
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
 | **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory |
+
+The **fits** label compares the model files (excluding the n-gram table) with
+the available RAM and VRAM together. Setup makes a separate decision about
+keeping experts in memory. It can select low-RAM mode when system RAM cannot
+hold the experts with about 10 GiB left for the OS and other buffers. In that
+mode, Strata keeps experts in RAM only if the experts outside the GPU cache
+still fit with that headroom. Otherwise it reads them through the OS file cache,
+which can mean repeated SSD reads. A model can show **fits** and still stream
+experts from disk.
 
 Gyro runs on NVIDIA and AMD (experimental), on Intel Arc under Linux, and on Apple Silicon Macs. It reads pictures.
 On an RTX 3060 12 GB and an R9700, Gyro-M decodes 16 to 21% slower than Q2_0. Details, measurements and credit:
@@ -211,12 +223,18 @@ cards; the Intel Arc engine and the Mac engine do not run it. It reads pictures 
 
 | Size | File | RAM setup plans for | In plain words |
 | --- | ---: | ---: | --- |
-| **UD-Q4_K_XL** | 22.9 GB | 32 GB | 4-bit (Unsloth Dynamic), the smallest |
+| **UD-Q4_K_XL** | 22.9 GB | 32 GB | 4-bit (Unsloth Dynamic), the smallest; see the note below |
 | **UD-Q6_K_XL** | 32.6 GB | 44 GB | 6-bit, closer to the full model |
 | **Q8_0** | 37.8 GB | 52 GB | 8-bit, the closest to the full model |
 
 The picture reader file adds 0.9 GB. The engine keeps every expert it can on the graphics card and computes the rest on
-the CPU.
+the CPU. The "RAM setup plans for" figures are planning sizes for system RAM. They are not a promise that every machine
+with that much RAM runs the size comfortably. On a card that cannot hold most experts (for example 12 GB or 16 GB of
+graphics memory), a large host expert arena stays in system RAM. Free physical RAM after the OS and other programmes
+must cover that arena; if it does not, start can fail after the process has opened with `no host memory for the experts`.
+The decode table below was measured on a Radeon AI PRO R9700 with 32 GB of graphics memory, and on an RTX 3060 with
+12 GB and most experts on the CPU. Those rows are decode speed only. They do not measure how long start takes, and they
+do not describe a 16 GB card sharing 32 GB of system RAM with other large processes.
 
 **Measured on:** UD-Q4_K_XL, decode only.
 
@@ -230,6 +248,85 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 ```sh
 strata launch --family qwen36 --model UD-Q4_K_XL
 ```
+
+## Tencent Hy4-Flash
+
+[Tencent Hy4-Flash](https://huggingface.co/tencent/Hy4-flash) runs on its dedicated Strata shape engine (`strata-hy4`) using
+[Strata's native `.strata` quantizations](https://huggingface.co/strata-engine/Hy4-Flash-Strata). It includes the built-in DFly2
+drafter, reads pictures (`Hy4-Flash-Vision.strata`, 0.93 GB), and streams its 67.6 GB Engram lookup shard (`Hy4-Flash-Engram-Q8.strata`)
+directly from the SSD.
+
+| Build | Model file | Engram shard (SSD) | Planning memory | In plain words |
+| --- | ---: | ---: | ---: | --- |
+| **SQ-64** | 62.0 GB | 67.6 GB | 64 GB RAM + 8+ GB GPU | flagship size; also supports 4-tier SSD cold-expert streaming on smaller RAM |
+| **SQ-96** | 89.6 GB | 67.6 GB | 96 GB RAM or 128 GB unified | higher precision, closer to the full model |
+| **SQ-128** | 113.7 GB | 67.6 GB | 128 GB RAM or 128 GB unified | highest precision native build |
+
+```sh
+strata launch --family hy4-flash --model SQ-64
+```
+
+## Inkling-2-Mini
+
+[Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) from Thinking Machines runs on its dedicated Strata shape
+engine (`strata-inkling`). Both [Strata's native `.strata` v1.1 builds](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata)
+and [Unsloth's Dynamic GGUFs](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) are supported, with built-in DSpark speculative
+drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
+
+**Strata native `.strata` builds**
+
+| Build | File size | Typical hardware | In plain words |
+| --- | ---: | --- | --- |
+| **SQ-10** | 10.5 GB | 12 GB GPU, 16 GB Mac, or 4–8 GB hybrid | compact high-speed build |
+| **SQ-15** | 14.3 GB | 16 GB GPU, 24 GB Mac, or 12 GB hybrid | flagship quality |
+| **SQ-20** | 19.3 GB | 24 GB GPU or 32+ GB unified | near-lossless native SF4+MX8 build |
+
+**Unsloth Dynamic GGUF builds** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), plus a 0.40 to 0.64 GB companion DSpark drafter)
+
+| Range | File sizes | Typical hardware |
+| --- | ---: | --- |
+| **UD-IQ1\_S / UD-IQ1\_M / UD-IQ2\_XXS / UD-Q2\_K\_XL** | 7.8 – 9.1 GB | 4–12 GB GPUs and 16 GB RAM |
+| **UD-IQ3\_XXS / UD-Q3\_K\_XL / UD-IQ4\_XS / UD-Q4\_K\_M / UD-Q4\_K\_XL** | 11.7 – 17.6 GB | 8–24 GB GPUs or hybrid RAM |
+| **UD-Q8\_K\_XL** | 22.9 GB | 24+ GB GPUs or 32+ GB RAM |
+
+```sh
+strata launch --family inkling-2-mini --model SQ-15
+```
+
+**The DSpark drafter (speculative drafting)** is decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dspark` always turns it on, `--drafting off` always off).
+It is one small model: the original `mtp.safetensors` of Thinking Machines (636 MB, BF16; downloaded for the GGUF builds, pinned by commit and checksum), with Unsloth's 402 MB Q8_0 copy of the same weights (`dspark-...-Q8_0.gguf`, the version before 2026-11-23) as the fallback; the copy inside the SQ builds is the same checkpoint too. It guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
+code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
+are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs
+a few hundred MB of video memory on a card that is already full (it takes a little expert space; up to 1 GB when the card has room), and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+
+### Inkling-2-Mini: thinking levels
+
+Inkling-2-Mini is trained with a **number** for how much it should think: the chat template writes `Thinking effort level: <n>` ahead of
+the conversation, `0` meaning no thinking. Strata sends the number the model was trained with and keeps names for convenience:
+
+| You send | Level written | Notes |
+| --- | --- | --- |
+| `"none"`, `"off"`, `0`, `"chat_template_kwargs": {"enable_thinking": false}`, Anthropic `"thinking": {"type": "disabled"}` | `0` | No thinking pass; the answer starts at once. |
+| `"minimal"` | `0.1` | |
+| `"low"` | `0.2` | **The default** when a request names none (config `reasoning_effort`, or `STRATA_INKLING_EFFORT`, changes it). |
+| `"medium"` | `0.7` | Anthropic `budget_tokens` 2K to 8K. |
+| `"high"` | `0.9` | |
+| `"xhigh"`, `"max"` | `0.99` | |
+| a number from 0 to 0.99 (`"reasoning_effort": 0.5`) | that number | Passed to the template as it is; above 0.99 is 0.99. |
+
+A level above 0 lets the model write its thinking before the answer or a tool call. It comes back where each API puts thinking: chat
+completions `message.reasoning_content` (streamed as `delta.reasoning_content`), Anthropic messages a `thinking` content block, the
+Responses API a `reasoning` output item with `reasoning_text` content. The thinking tokens are counted in
+`usage.completion_tokens_details.reasoning_tokens` (Responses: `output_tokens_details.reasoning_tokens`).
+
+**The thinking cannot run away.** A request's own `reasoning_budget_tokens` (or Anthropic `budget_tokens`) is the limit; without one
+the default of its level applies: 1,024 tokens at `none` and `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at
+`xhigh` and `max`. `STRATA_INKLING_THINKING_BUDGET=<tokens>` (config `inkling_thinking_budget`) sets one number for every level, `0`
+none; a request's `reasoning_budget_tokens: 0` turns the default off for that request. When the budget is spent the server ends the
+thinking with a short wrap-up and the model answers. Whatever `max_tokens` is, a quarter of it (at least 512 tokens, but never more
+than half of it) stays for the answer. A reply that still ends with no text and no tool call is retried once with the answer
+opened, and if nothing visible can be produced the reply says so (`[No answer: ...]`) with `finish_reason` left as it was: never an
+empty string. See [DETAILS.md](DETAILS.md) for the settings.
 
 ## Adding or switching models
 

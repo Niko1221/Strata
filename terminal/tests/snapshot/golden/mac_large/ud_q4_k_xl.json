@@ -59,7 +59,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -93,6 +94,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -107,7 +109,8 @@
      "0.7"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)",
@@ -196,7 +199,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -234,6 +238,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -248,7 +253,8 @@
      "0.7"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)",
@@ -321,7 +327,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -360,6 +367,7 @@
      "int8",
      "--resident-budget-gib",
      "48",
+     "--prompt-cache-spread",
      "--draft",
      "dflash2",
      "--draft-model",
@@ -374,7 +382,8 @@
      "0.7"
     ],
     "env_set": {
-     "GGML_NO_BACKTRACE": "1"
+     "GGML_NO_BACKTRACE": "1",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)",

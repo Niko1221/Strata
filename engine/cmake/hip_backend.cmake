@@ -10,9 +10,9 @@ endif()
 # same LDS limit and wave32 but an older dot4 instruction (v_dot4_i32_i8, hip_compat/intrinsics.hpp); a community
 # report ran it (#311), the maintainers have not. gfx1151 (Ryzen AI Max / Strix Halo, Radeon 8060S, RDNA3.5) is the
 # same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental.
-set(_strata_hip_validated gfx1100 gfx1201)
-set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1032 gfx1034 gfx1150 gfx1151 gfx1152)   # gfx1103: Radeon 780M iGPU, opt-in, WMMA kernels like gfx1100; gfx1152: Krackan, Radeon 860M / 840M (#1625), builds with the portable kernels, no card report yet
+set(_strata_hip_validated gfx1100 gfx1103 gfx1151 gfx1201)
+set(_strata_hip_community gfx1101 gfx1150 gfx1200)
+set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1030 gfx1031 gfx1032 gfx1034 gfx1152 gfx1153 gfx1170 gfx1171 gfx1172 gfx1250)   # gfx1103: Radeon 780M iGPU; gfx1150: Strix Point 890M/880M; gfx1151: Strix Halo; gfx1152: Krackan, Radeon 860M / 840M (#1625); ROCm 10.2 adds gfx1153 (Ryzen AI 400), gfx1170/1171/1172 (RDNA3.5+/Medusa), and gfx1250 (wave32/matrix preview)
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
@@ -43,6 +43,17 @@ endif()
 string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 
 enable_language(HIP)
+# The Windows HIP build uses clang's GNU-style driver, so the MSVC-only manifest helper does not run.
+# Embed the Windows settings in every HIP executable, including the tests. Tensile opens its kernel files
+# with ordinary paths; without longPathAware it fails above MAX_PATH even when Windows long paths are on.
+if(WIN32)
+  add_library(strata_hip_windows_settings INTERFACE)
+  target_link_options(strata_hip_windows_settings INTERFACE "LINKER:/MANIFEST:EMBED"
+    "LINKER:/MANIFESTINPUT:${CMAKE_CURRENT_LIST_DIR}/strata-utf8.manifest")
+  set_property(TARGET strata_hip_windows_settings PROPERTY INTERFACE_LINK_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/strata-utf8.manifest")
+  link_libraries(strata_hip_windows_settings)
+endif()
 # CMake caches CMAKE_HIP_FLAGS_<CONFIG> while it enables HIP, before it tests the compiler.  A configure that stopped
 # there because HIP could not compile at all (Visual Studio 2026's <cmath> with the HIP SDK 7.2, a wrong ROCm path)
 # cached them empty, and every later configure of that build folder keeps them: setup's Release build then compiled

@@ -5,16 +5,23 @@
  * This file only reads the first into something the page can draw, and checks the second before it goes out.
  */
 const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const isMulti = v => v === true || v === 1 || (typeof v === 'string' && v.trim().toLowerCase() === 'true');
 
 /** The questions of a request, bounded and plain; an empty list when the request carries nothing that can be shown. */
 export function parseQuestions(raw) {
   const out = [];
+  const seenIds = new Set();
   for (const q of Array.isArray(raw) ? raw.slice(0, 6) : []) {
-    const id = text(q?.id, 120), question = text(q?.question, 800);
-    if (!id || !question) continue;
+    const baseId = text(q?.id, 120), question = text(q?.question, 800);
+    if (!baseId || !question) continue;
+    let id = baseId;
+    for (let n = 2; seenIds.has(id); n++) id = `${baseId.slice(0, 112)}-${n}`;
+    seenIds.add(id);
+    const seenLabels = new Set();
     const options = (Array.isArray(q.options) ? q.options.slice(0, 12) : [])
-      .map(o => ({ label: text(o?.label, 200), description: text(o?.description, 400) || undefined })).filter(o => o.label);
-    out.push({ id, question, detail: text(q.detail, 800) || undefined, header: text(q.header, 80) || undefined, options, multiSelect: q.multiSelect === true });
+      .map(o => ({ label: text(o?.label, 200), description: text(o?.description, 400) || undefined }))
+      .filter(o => { if (!o.label || seenLabels.has(o.label)) return false; seenLabels.add(o.label); return true; });
+    out.push({ id, question, detail: text(q.detail, 800) || undefined, header: text(q.header, 80) || undefined, options, multiSelect: isMulti(q.multiSelect) });
   }
   return out;
 }

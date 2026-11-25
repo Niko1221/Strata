@@ -187,7 +187,7 @@ def _line(name: str, result: dict) -> str:
             return f"{name:<8}{before}   up to date"
         if status == "failed":
             return f"{name:<8}{before or 'none'}   NOT changed: {result.get('error')}"
-        return f"{name:<8}{before or 'none'}   {result.get('note') or status}"
+        return f"{name:<8}{before or 'none installed (the Strata engine, which runs the Qwen models)'}   {result.get('note') or status}"
     if result.get("shape"):                              # the engine of a model shape (strata_control/shape_engine.py)
         from strata_control import shape_engine
         if status == "failed":
@@ -195,7 +195,11 @@ def _line(name: str, result: dict) -> str:
         return f"{shape_engine.WORDS['update_label']}  {result.get('note') or status}"
     if result.get("component") == "control":
         if status == "updated":
-            return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"
+            if not result.get('installed_before'):          # run from a source folder: no Control component was installed before (it used to print '?')
+                src = _source_version()
+                return (f"{name:<8}{result.get('installed_after')} installed as a component (until now this terminal ran from a source folder" + (f", version {src}" if src else "") +
+                        "). The next `strata` command already runs it; the app switches on its next start")
+            return f"{name:<8}{result.get('installed_before')} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"
         if status == "current":
             return f"{name:<8}{result.get('installed_before')}   up to date"
         if status == "not-in-feed":

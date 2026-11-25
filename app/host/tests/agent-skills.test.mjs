@@ -44,7 +44,8 @@ test('writing a skill refuses a duplicate and an empty name, and materializing m
     assert.ok(!existsSync(join(live, 'empty')), 'a skill with no instructions is not offered');
     mkdirSync(join(live, 'old-one'));
     materializeSkills(live, list.slice(0, 1));
-    assert.ok(!existsSync(join(live, 'old-one')) && !existsSync(join(live, 'commit-messages')), 'removed skills disappear from the agent folder');
+    assert.ok(!existsSync(join(live, 'commit-messages')), 'a removed skill disappears from the agent folder');
+    assert.ok(existsSync(join(live, 'old-one')), 'a folder the person put there is not Strata\'s to remove (#6857)');
   } finally { cleanup(dir); }
 });
 
