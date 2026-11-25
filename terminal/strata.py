@@ -24,15 +24,22 @@ def _preflight(argv):
     missing = [m for m in SERVER_PACKAGES if importlib.util.find_spec(m) is None]
     if not missing:
         return 0
-    sys.stderr.write(
-        "strata: the interpreter %s is missing packages the API server needs: %s.\n"
+    from strata_cli import i18n as cli_i18n
+    message = (
+        "strata: the interpreter {} is missing packages the API server needs: {}.\n"
         "        Starting and serving never install anything. Use the Strata terminal archive (it carries them),\n"
         "        or install them yourself: python -m pip install -r requirements.txt\n"
-        "        (status, monitor, timeskip and tune plan do not need them)\n" % (sys.executable, ", ".join(missing)))
+        "        (status, monitor, timeskip and tune plan do not need them)\n"
+    )
+    sys.stderr.write(cli_i18n.tr(message).format(sys.executable, ", ".join(missing)))
     return 5
 
 
 if __name__ == "__main__":
+    # Optional Arabic human output. Opt-in only; English is byte-identical without STRATA_CLI_LANG/LANG=ar.
+    # Installed before handover and _preflight so even their messages can be translated.
+    from strata_cli import i18n as cli_i18n
+    cli_i18n.install()
     # a newer Control installed by `strata update` takes over before anything heavy is imported (stdlib only)
     from strata_cli.handover import maybe_hand_over, refuse_old_updater
     try:                                               # the app host started this for a long download or pack: it ends with the host (strata_control/parentwatch.py)

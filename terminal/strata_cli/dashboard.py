@@ -22,6 +22,7 @@ from strata_cli import nav
 from strata_cli.client import complete_slots
 from strata_cli.render import (_queue_wait, activity_continuity_notice, activity_label, display_width,
                                field, group_occupancy, number, safe)
+from strata_cli.i18n import tr as _tr
 
 
 WORK_SAMPLE_MAX_AGE_S = 5.0
@@ -888,27 +889,27 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
         return _visual_overview(snapshot, history, width=width, height=height,
                                 header=header, footer=footer, live=live, glyphs=glyphs,
                                 color=color, theme=theme, filter_text=filter_text)
-    left_sections = [(serving, "SERVING"), (performance, "PERFORMANCE"),
-                     (batch, "BATCHING / PARALLEL")]
+    left_sections = [(serving, _tr("SERVING")), (performance, _tr("PERFORMANCE")),
+                     (batch, _tr("BATCHING / PARALLEL"))]
     if width >= 100 and height >= 40:
         totals = snapshot.get("totals") or {}
         left_sections.extend([
             ([f"Completed {number(totals.get('requests'))}  [server lifetime]",
               f"Prompt {number(totals.get('prompt_tokens'))} tokens",
-              f"Output {number(totals.get('output_tokens'))} tokens"], "SESSION"),
+              f"Output {number(totals.get('output_tokens'))} tokens"], _tr("SESSION")),
             ([f"Context {number(model.get('context'))} tokens",
               f"Topology {safe(topology.get('mode'), 26)}",
               f"Last engine token {number(recent[0].get('first_engine_token_s') if recent else None, 's', 3)}"],
-             "ENGINE"),
+             _tr("ENGINE")),
         ])
-    right_sections = [(hardware, "HARDWARE"), (requests, "REQUESTS"),
-                      (activity, "ACTIVITY")]
+    right_sections = [(hardware, _tr("HARDWARE")), (requests, _tr("REQUESTS")),
+                      (activity, _tr("ACTIVITY"))]
     panel_rows = max(sum(len(lines) + 2 for lines, _ in left_sections),
                      sum(len(lines) + 2 for lines, _ in right_sections))
     # Textual reserves its final row for the read-only message. Keep this
     # navigation row next to it when a tall terminal has spare space.
     filler = max(0, min(200, height + 1 - (3 + int(telemetry_unavailable) + panel_rows + 1)))
-    return Group(header, *([Text("Telemetry unavailable; status only", style="yellow" if color else "")]
+    return Group(header, *([Text(_tr("Telemetry unavailable; status only"), style="yellow" if color else "")]
                            if telemetry_unavailable else []),
                  _columns([_panel(lines, title, accent, color=color) for lines, title in left_sections],
                           [_panel(lines, title, accent, color=color) for lines, title in right_sections]),
