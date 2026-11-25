@@ -705,7 +705,7 @@ kernel void ink_kv_norm_store_f16(
     const int m = int(tgp.x), kh = int(tgp.y);
     const int slot = slot_ids[m];
     const int pos = pos_buf[m];
-    const int kpos = is_swa ? (pos & 1023) : pos;
+    const int kpos = is_swa ? (pos % kv_stride) : pos;
 
     device const float* kp = k_in + ((size_t)m * INK_NKV + kh) * INK_HD;
     const float kv = kp[tid];
@@ -796,7 +796,7 @@ kernel void ink_relpos_sink_gqa(
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
 
     for (int k = k_start + int(sg); k < k_end; k += 4) {
-        const int kidx = A.is_swa ? (k & 1023) : k;
+        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         float sc = simd_sum(dot(qv, kv));
@@ -893,7 +893,7 @@ kernel void ink_relpos_gqa_splitk(
 
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
     for (int k = p_start + int(sg); k < p_end; k += 4) {
-        const int kidx = A.is_swa ? (k & 1023) : k;
+        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
@@ -1315,7 +1315,7 @@ kernel void ink_kv_tree_commit_f16(
     const int i = int(tgp.x), kh = int(tgp.y);
     const int node = path_ids[i];
     const int pos = anchor_pos + i;
-    const int kpos = is_swa ? (pos & 1023) : pos;
+    const int kpos = is_swa ? (pos % kv_stride) : pos;
     const size_t src_off = ((size_t)node * INK_NKV + kh) * INK_HD + tid;
     const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
     k_cache[dst_off] = tree_k[src_off];
@@ -1385,7 +1385,7 @@ kernel void ink_relpos_tree_gqa_splitk(
 
     const size_t slot_kv_base = (size_t)A.slot * A.kv_stride;
     for (int k = p_start + int(sg); k < p_end; k += 4) {
-        const int kidx = A.is_swa ? (k & 1023) : k;
+        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
