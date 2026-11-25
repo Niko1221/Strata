@@ -471,6 +471,12 @@ public:
                 prompt_ckpts_[v] = PromptCkpt{};
                 valid[v] = false;
             }
+            if (prompt_ckpt_slots_ < max_slots_) {
+                // a checkpoint reset_slot made invalid keeps its buffers; with a budget below the slot count only valid ones may hold RAM
+                for (size_t s = 0; s < prompt_ckpts_.size(); ++s) {
+                    if ((int)s != slot && !prompt_ckpts_[s].valid && !prompt_ckpts_[s].sconv.empty()) prompt_ckpts_[s] = PromptCkpt{};
+                }
+            }
             prompt_ckpt_use_[slot] = ++prompt_ckpt_clock_;
         }
         auto& ck = (shared ? shared_ckpts_ : prompt_ckpts_)[slot];
