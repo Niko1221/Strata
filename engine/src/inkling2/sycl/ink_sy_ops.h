@@ -268,7 +268,7 @@ inline void k_kv_norm_store_f16_sg16(const float* k_in, const float* v_in, half*
         float* sh = lmem<float, 16>(it);
         const int m = (int)it.get_group(0), kh = (int)it.get_group(1), tid = (int)it.get_local_id(1);
         const int slot = slot_ids[m], pos = pos_buf[m];
-        const int kpos = is_swa ? (pos & 1023) : pos;
+        const int kpos = is_swa ? pos % kv_stride : pos;
 
         const float kv = k_in[((size_t)m * INK_NKV + kh) * INK_HD + tid];
         const float kss = wg_sum16(it, kv * kv, sh);
@@ -316,9 +316,12 @@ inline void k_relpos_sink_gqa_sg16(
             float m_max = (sg == 0) ? sinks_buf[(size_t)m * INK_NH + head] : -1e30f;
             float l_sum = (sg == 0) ? 1.0f : 0.0f;
             const size_t slot_base = (size_t)slot * kv_stride;
+            // Keys are in the query's ring cycle or the immediately preceding one.
+            const int cycle_start = is_swa ? qpos - qpos % kv_stride : 0;
 
             for (int k = k_start + sg; k < k_end; k += 8) {
-                const int kidx = is_swa ? (k & 1023) : k;
+                const int offset = k - cycle_start;
+                const int kidx = offset < 0 ? offset + kv_stride : offset;
                 const size_t kv_off = ((slot_base + kidx) * INK_NKV + kh) * INK_HD + lane * 8;
                 float dt = 0.0f;
                 for (int u = 0; u < 8; ++u) dt += qv[u] * (float)k_cache[kv_off + u];
@@ -391,6 +394,74 @@ inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int*
                 for (int k = 0; k < 8; ++k) { topk_idx[(size_t)m * 8 + k] = sel[k]; topk_w[(size_t)m * 8 + k] = pw[k] * inv; }
             }
         });
+    });
+}
+
+// One subgroup keeps all 128 candidates in registers. Resolve ties by expert ID.
+inline void k_sq20_decode_top8(const float *logits, const float *bias, int *ids, float *weights,
+                               float scale, int rows = 1) {
+    Q().parallel_for(NR(rows, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int row = it.get_group(0), lane = it.get_local_id(0);
+        const auto sg = it.get_sub_group();
+        float p[8], score[8], my_weight = 0.f, sum = 0.f;
+        int my_id = 0;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int e = 16 * j + lane;
+            const float raw = 1.f / (1.f + sycl::exp(-logits[row * 128 + e]));
+            p[j] = sycl::isfinite(raw) ? raw : 0.f;
+            const float s = p[j] + bias[e];
+            score[j] = sycl::isfinite(s) ? s : -1e29f;
+        }
+        for (int rank = 0; rank < 8; ++rank) {
+            float best = -1e30f;
+            int local_id = 128;
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                if (score[j] > best) {
+                    best = score[j];
+                    local_id = 16 * j + lane;
+                }
+            const float maximum = sycl::reduce_over_group(sg, best, sycl::maximum<float>());
+            int id = sycl::reduce_over_group(sg, best == maximum ? local_id : 128, sycl::minimum<int>());
+            if (id == 128)
+                id = rank;
+            const int j = id / 16;
+            const float chosen = sycl::select_from_group(sg, p[j], sycl::id<1>(id % 16));
+            if (rank == lane) {
+                my_id = id;
+                my_weight = chosen;
+            }
+            sum += chosen;
+            if (lane == id % 16)
+                score[j] = -1e30f;
+        }
+        const float inv = scale / (sum + 1e-20f);
+        if (lane < 8) {
+            ids[row * 8 + lane] = my_id;
+            weights[row * 8 + lane] = my_weight * inv;
+        }
+    });
+}
+
+// Single-token MLP ShortConv has static taps and consumes exactly one history slot.
+inline void k_sq20_decode_tail(const float *weighted, const float *taps, float *history, const int *slots,
+                               const float *residual, float *out) {
+    Q().parallel_for(NR(9, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        constexpr int D = 2304;
+        const int d = it.get_global_id(0);
+        float cur = 0.f;
+        for (int k = 0; k < 8; ++k)
+            cur += weighted[k * D + d];
+        float *h = history + (size_t)slots[0] * 3 * D + d;
+        const float *sw = taps + 4 * d;
+        const float h1 = h[D], h2 = h[2 * D];
+        const float acc = h[0] * sw[0] + h1 * sw[1] + h2 * sw[2] + cur * sw[3];
+        h[0] = h1;
+        h[D] = h2;
+        h[2 * D] = cur;
+        const float conv = (cur + acc) * 0.4472135954999579f;
+        out[d] = residual[d] + conv;
     });
 }
 

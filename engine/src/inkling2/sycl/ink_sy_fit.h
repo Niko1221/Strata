@@ -16,6 +16,11 @@
 
 namespace ink_sycl {
 
+// A whole batch writes K/V before its first query reads the sliding window.
+inline int swa_kv_stride(int window, int batch_cap, int context_cap) {
+    return static_cast<int>(std::min<int64_t>(context_cap, int64_t(window) + batch_cap - 1));
+}
+
 struct InkSyFitGeom {
     std::vector<uint8_t> visit_is_swa;  // [n_visits], 1 = sliding window layer, 0 = global
     int swa_win = 1024;
@@ -33,7 +38,7 @@ inline size_t ink_sy_runner_reserve(const InkSyFitGeom& g, int par, int ctx, int
     const int batch_cap = std::max(256, std::max(chunk, par));
     size_t kv = 0;
     for (uint8_t swa : g.visit_is_swa) {
-        const size_t stride = swa ? (size_t)g.swa_win : (size_t)ctx;
+        const size_t stride = swa ? (size_t)swa_kv_stride(g.swa_win, batch_cap, ctx) : (size_t)ctx;
         kv += 2ull * p * stride * (size_t)g.n_kv * (size_t)g.head_dim * 2ull;
     }
     const size_t dsp = g.dspark ? (3ull * 2ull * p * (size_t)ctx * 1024ull * 2ull) : 0ull;

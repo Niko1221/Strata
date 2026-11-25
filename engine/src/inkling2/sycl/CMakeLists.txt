@@ -43,3 +43,20 @@ endif()
 target_link_libraries(strata_inkling_sycl PUBLIC strata_inkling_core strata_zstd_dec)
 target_compile_definitions(strata_inkling_core PUBLIC INKLING_ENABLE_SYCL=1)
 target_link_libraries(strata-inkling PRIVATE strata_inkling_sycl)
+
+# Explicitly built GPU checks. An optional SQ-20 artifact exercises the real expert codecs.
+if(STRATA_BUILD_TESTS)
+  add_executable(strata_inkling_sycl_kernel_test tests/bmg_kernels.cpp)
+  set(STRATA_INKLING_TEST_MODEL "" CACHE FILEPATH "Optional local SQ-20 model for the Battlemage kernel test")
+  add_test(NAME inkling_bmg_kernels COMMAND strata_inkling_sycl_kernel_test ${STRATA_INKLING_TEST_MODEL})
+  set_tests_properties(inkling_bmg_kernels PROPERTIES SKIP_RETURN_CODE 77 LABELS "sycl;battlemage")
+else()
+  add_executable(strata_inkling_sycl_kernel_test EXCLUDE_FROM_ALL tests/bmg_kernels.cpp)
+endif()
+target_link_libraries(strata_inkling_sycl_kernel_test PRIVATE strata_inkling_sycl strata_inkling_core)
+target_include_directories(strata_inkling_sycl_kernel_test PRIVATE
+  "$<TARGET_PROPERTY:strata_inkling_sycl,INCLUDE_DIRECTORIES>")
+target_compile_definitions(strata_inkling_sycl_kernel_test PRIVATE
+  "$<TARGET_PROPERTY:strata_inkling_sycl,COMPILE_DEFINITIONS>")
+target_compile_options(strata_inkling_sycl_kernel_test PRIVATE "$<TARGET_PROPERTY:strata_inkling_sycl,COMPILE_OPTIONS>")
+target_link_options(strata_inkling_sycl_kernel_test PRIVATE "$<TARGET_PROPERTY:strata-inkling,LINK_OPTIONS>")
