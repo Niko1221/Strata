@@ -19648,6 +19648,12 @@ int main(int argc, char** argv) {
                     restore_free.push_back((uint64_t) fb);
                     restore_ready.push_back(strata::core::conversation_copy_stream_ready(cur) ? 1 : 0);
                 }
+#if defined(STRATA_GPU_METAL)
+                // Unified memory: the shim's free figure is the arena's bookkeeping (0 MiB once the cache is sized), and a
+                // Metal stream is a command queue, not a device allocation.  The first-use reserve is a CUDA context rule;
+                // here it refused every first restore after a start (the adopted SSD tier's included).
+                sampled = false;
+#endif
                 if (sampled &&
                     !strata::program::conv_cache::restore_fits(restore_free.data(), restore_ready.data(), restore_free.size(),
                                                                strata::program::conv_cache::kRestoreFirstUseMib << 20)) {
