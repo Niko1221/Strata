@@ -6700,13 +6700,17 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                                 s1[j] += Split<TG>::apply(rw1, xk, iqs);
                             }
                         } else {
+                            // The fallback is also instantiated for K-quant types whose DotG<TG>
+                            // has no specialization (e.g. 8/12/13); use the existing Split<TG>
+                            // traits, which perform the same dot arithmetic, so nvcc never forms
+                            // an incomplete type here.
+                            const auto rw0 = Split<TG>::load(w0, kbx, iqs, nullptr);
+                            const auto rw1 = Split<TG>::load(w1, kbx, iqs, nullptr);
 #pragma unroll
                             for (int j = 0; j < NTC; ++j) {
                                 const block_q8_1* xk = sx + (size_t) j * xb + kbx * (F::qk / 32);
-                                const float a = DotG<TG, 1>::f(w0, xk, kbx, iqs, sgrid);
-                                const float b = DotG<TG, 1>::f(w1, xk, kbx, iqs, sgrid);
-                                s0[j] += a;
-                                s1[j] += b;
+                                s0[j] += Split<TG>::apply(rw0, xk, iqs);
+                                s1[j] += Split<TG>::apply(rw1, xk, iqs);
                             }
                         }
                     }
