@@ -660,6 +660,18 @@ def request_asks_sampling(*layers) -> bool:
     return False
 
 
+# #3354: the families whose engine drafts only for a strictly greedy request, so the model card's sampling (Qwen3.6's presence_penalty 1.5)
+# switches the MTP drafts off ("drafts accepted 0 of 0").  Flash-Next (qwen4exp: Qwen3.8, Gyro) and Hy4-Flash verify the drafts of sampled
+# requests, so for them the card stays the default of a request that names no sampling (#7070: Gyro-S solved far fewer tasks when it ran greedy).
+GREEDY_FOR_DRAFTS = frozenset({"qwen35moe"})
+
+
+def mtp_greedy_default(arch, has_mtp, *layers) -> bool:
+    """True when a request that names no sampling should run greedy instead of with the model card's sampling: the engine has an MTP
+    drafter, its family drafts only greedy requests (GREEDY_FOR_DRAFTS), and no layer (request, Chat settings, config block) names any."""
+    return bool(has_mtp) and arch in GREEDY_FOR_DRAFTS and not request_asks_sampling(*layers)
+
+
 def model_card_sampling(arch, thinking, greedy=False) -> dict:
     """The model card's sampling for the family `arch` and the thinking state ({} for an unknown or unset family).
     `greedy` (temperature 0 asked for, see asks_greedy): without the card's penalties, so a greedy request stays greedy.

@@ -297,6 +297,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     origins_of,
     parse_config_text,
     read_config,
+    mtp_greedy_default,
     request_asks_sampling,
     sampling_defaults_from_config,
     split_joined_args,
@@ -5992,9 +5993,14 @@ class Service:
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
-        # #3354: when MTP drafting is active (has_mtp) and the request does not explicitly ask for sampling,
-        # omitted sampling parameters remain greedy so MTP drafts are not silently disabled by model card defaults.
-        mtp_greedy = self.has_mtp and not request_asks_sampling(sampling, self.shared, self.sampling_defaults)
+        # #3354: when MTP drafting is active (has_mtp) and the request does not explicitly ask for sampling, a family whose engine drafts only
+        # greedy requests (Qwen3.6, http_api.GREEDY_FOR_DRAFTS) stays greedy, so the MTP drafts are not silently disabled by the model card.
+        # Every other family keeps the card (#7070: Flash-Next / Gyro drafts sampled requests fine).
+        mtp_greedy = mtp_greedy_default(self.model_arch, self.has_mtp, sampling, self.shared, self.sampling_defaults)
+        if mtp_greedy and not getattr(self, "_mtp_greedy_said", False):
+            self._mtp_greedy_said = True
+            print("[strata] a request that names no sampling runs greedy on this model so its MTP drafts can run; send temperature / top_p / top_k "
+                  "with the request, or a \"sampling\" block in the run config, for the model card's sampling", flush=True)
         card = {} if mtp_greedy else model_card_sampling(
             self.model_arch, thinking,
             greedy=asks_greedy(sampling, self.shared, self.sampling_defaults),
@@ -8101,7 +8107,7 @@ def make_handler(svc: Service):
             if not svc.loaded() and not getattr(svc.engine, "unloaded", False):
                 self._json(503, {"error": {"message": "the engine is not running"}})
                 return
-            card_defaults = {} if (svc.has_mtp and not request_asks_sampling(svc.shared, svc.sampling_defaults)) else \
+            card_defaults = {} if mtp_greedy_default(svc.model_arch, svc.has_mtp, svc.shared, svc.sampling_defaults) else \
                 model_card_sampling(svc.model_arch, True, greedy=asks_greedy(svc.shared, svc.sampling_defaults))
             defaults = {**card_defaults,
                         **svc.sampling_defaults, **svc.shared}
