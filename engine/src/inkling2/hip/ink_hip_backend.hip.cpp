@@ -703,6 +703,13 @@ public:
                                         false
 #endif
         );
+        // HIP reports WGPs, not CUs, on RDNA (an R9700's 64 CUs read as 32), so a big discrete card lands in the <= 36 class (2048).
+        // STRATA_INK_MAX_PREFILL_CHUNK=N sets the cap by hand.
+        if (const char* ev = std::getenv("STRATA_INK_MAX_PREFILL_CHUNK"); ev && std::atoi(ev) >= 64) {
+            guard_.max_prefill_chunk = std::atoi(ev);
+        }
+        std::fprintf(stderr, "[ink-hip] dispatch guard: max_prefill_chunk %d (cu_count %d as HIP reports it)\n",
+                     guard_.max_prefill_chunk, mem_info_.cu_count);
 
         // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU OR on <= 13 GiB discrete GPUs (8/10/12 GB)
         default_kv_dtype_ = opts.kv_dtype;
