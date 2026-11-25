@@ -785,7 +785,8 @@ int64_t qsa_kv_resident_min() {
 }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
-uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         bool external_idx_pooled) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     uint64_t n = 0;
@@ -796,7 +797,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
     n += (uint64_t) s.idx_dim * 4;                                             // dead
-    n += (uint64_t) p.pooled_rows * s.idx_dim * 4;                             // pooled
+    if (!external_idx_pooled) n += (uint64_t) p.pooled_rows * s.idx_dim * 4;   // pooled
     n += 16;                                                                   // block_pos
     if (with_rope) n += (uint64_t) max_cells * (s.n_rot / 2) * 4 * 2;          // cos + sin tables
     n += strata::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
@@ -805,7 +806,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 }
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope, int64_t ring_cells) {
+                        const QsaState* share_rope, int64_t ring_cells,
+                        float* external_idx_pooled, bool defer_device_init) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     const int64_t pages = p.pages;
@@ -894,10 +896,18 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.idx_tail = c.take<float>((uint64_t) (s.idx_block - 1) * s.idx_dim);
     st.idx_dead = c.take<float>((uint64_t) s.idx_dim);
     st.idx_pooled_rows = p.pooled_rows;
-    const uint64_t idx_pooled_begin = c.used;
-    st.idx_pooled = c.take<float>((uint64_t) p.pooled_rows * s.idx_dim);
-    st.idx_pooled_allocation = st.idx_pooled;
-    st.idx_pooled_allocation_bytes = (size_t) (c.used - idx_pooled_begin);
+    if (external_idx_pooled != nullptr) {
+        st.idx_pooled = external_idx_pooled;
+        st.idx_pooled_allocation = external_idx_pooled;
+        st.idx_pooled_allocation_bytes = (size_t) ((uint64_t) p.pooled_rows * (uint64_t) s.idx_dim * 4);
+        st.idx_pooled_mapped_rows = 0;
+    } else {
+        const uint64_t idx_pooled_begin = c.used;
+        st.idx_pooled = c.take<float>((uint64_t) p.pooled_rows * s.idx_dim);
+        st.idx_pooled_allocation = st.idx_pooled;
+        st.idx_pooled_allocation_bytes = (size_t) (c.used - idx_pooled_begin);
+        st.idx_pooled_mapped_rows = -1;
+    }
     st.idx_block_pos = c.take<int32_t>(1);
     if (share_rope != nullptr) {
         st.cos_tab = share_rope->cos_tab;
@@ -974,16 +984,18 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     }
     // the page table starts as the IDENTITY, which is the simplest legal mapping and what a caller that does
     // not page at all wants; a streamed state starts with nothing resident, a ring at `block % n_slots`.
-    if (p.mode == 0) {
-        std::vector<int32_t> tab((size_t) pages);
-        for (int64_t i = 0; i < pages; ++i) tab[(size_t) i] = (int32_t) i;
-        cudaMemcpy(st.page_table, tab.data(), tab.size() * 4, cudaMemcpyHostToDevice);
-    } else if (p.mode == 1) {
-        strata::kernels::kv_stream_reset(st.map, nullptr);
-    } else {
-        strata::kernels::kv_ring_table(st.page_table, pages, p.slots, nullptr);
+    if (!defer_device_init) {
+        if (p.mode == 0) {
+            std::vector<int32_t> tab((size_t) pages);
+            for (int64_t i = 0; i < pages; ++i) tab[(size_t) i] = (int32_t) i;
+            cudaMemcpy(st.page_table, tab.data(), tab.size() * 4, cudaMemcpyHostToDevice);
+        } else if (p.mode == 1) {
+            strata::kernels::kv_stream_reset(st.map, nullptr);
+        } else {
+            strata::kernels::kv_ring_table(st.page_table, pages, p.slots, nullptr);
+        }
+        cudaDeviceSynchronize();
     }
-    cudaDeviceSynchronize();
     return c.used;
 }
 
@@ -1015,7 +1027,8 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, stream);
     cudaMemsetAsync(st.idx_tail, 0, (size_t) (s.idx_block - 1) * s.idx_dim * 4, cs);
     cudaMemsetAsync(st.idx_dead, 0, (size_t) s.idx_dim * 4, cs);
-    cudaMemsetAsync(st.idx_pooled, 0, (size_t) st.idx_pooled_rows * s.idx_dim * 4, cs);
+    const int64_t zrows = st.idx_pooled_mapped_rows >= 0 ? std::min(st.idx_pooled_rows, st.idx_pooled_mapped_rows) : st.idx_pooled_rows;
+    if (zrows > 0) cudaMemsetAsync(st.idx_pooled, 0, (size_t) zrows * s.idx_dim * 4, cs);
 }
 
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {

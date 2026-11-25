@@ -519,8 +519,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
     const bool kv_int8_was = qsa_kv_int8();
+    const char* mtp_kv_i8 = std::getenv("STRATA_MTP_KV_INT8");
+    const bool force_mtp_int8 = mtp_kv_i8 != nullptr && mtp_kv_i8[0] != 0 && mtp_kv_i8[0] != 48;
     qsa_set_kv_hybrid(false);
-    if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+    if (kv_hybrid_was || force_mtp_int8) qsa_set_kv_int8(true);   // lossless: target verifies every draft in exact FP16
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {

@@ -48,7 +48,8 @@ static uint64_t ple_hist_bytes() {
     return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
-uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
+uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi,
+                       bool share_rope, bool slim_slot, bool external_idx_pooled) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
@@ -57,20 +58,27 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     const int64_t q_n = std::max<int64_t>(q_hi - q_lo, g.n_qsa_layers() > 0 ? 1 : 0);
     const int64_t gdn_n = std::max<int64_t>((layer_hi - layer_lo) - std::max<int64_t>(q_hi - q_lo, 0), 0);
     uint64_t n = 0;
-    n += gdn_buffers_bytes(g);
-    n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
-    // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
+    if (!slim_slot) n += align_up(gdn_buffers_bytes(g), SESSION_STATE_ALIGN);
+    n += align_up((uint64_t) gdn_n * gdn_state_floats(g) * 4, SESSION_STATE_ALIGN);
+    // One QSA state carries the RoPE table unless shared from the main session (saves 64 MiB/slot at 262K).
     if (g.n_qsa_layers() > 0)
-        n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
-    n += qsa_buffers_bytes(g, max_cells);
-    n += moe_buffers_bytes(g, k);
-    n += block_buffers_bytes(g);
-    n += ple_hist_bytes();                       // the PLE's NG_HIST normalized history rows
+        n += align_up(qsa_state_bytes(g, max_cells, !share_rope, 0, external_idx_pooled) +
+                      (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false, 0, external_idx_pooled),
+                      SESSION_STATE_ALIGN);
+    if (!slim_slot) {
+        n += align_up(qsa_buffers_bytes(g, max_cells), SESSION_STATE_ALIGN);
+        n += align_up(moe_buffers_bytes(g, k), SESSION_STATE_ALIGN);
+        n += align_up(block_buffers_bytes(g), SESSION_STATE_ALIGN);
+    } else {
+        n += align_up((uint64_t) g.hc * (uint64_t) g.n_embd * 4, SESSION_STATE_ALIGN);   // block.R only
+    }
+    n += align_up(ple_hist_bytes(), SESSION_STATE_ALIGN);
     return align_up(n, SESSION_STATE_ALIGN) + 4096;
 }
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo, int64_t layer_hi) {
+                      int64_t layer_lo, int64_t layer_hi, const QsaState* share_rope_src, bool slim_slot,
+                      uint8_t* external_idx_base, uint64_t external_idx_stride, bool defer_device_init) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
@@ -92,34 +100,36 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.gdn_ord0 = layer_lo - layer_lo / I;
     s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
 
-    gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
+    if (!slim_slot) gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
     s.gdn_state = (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);
 
-    // the QSA states are separate allocations carved from one arena, because `QsaState` is a struct of
-    // pointers and `qsa_state_init` writes them - a contiguous array would need the arena to be laid out the
-    // same way, which is a coupling with nothing to gain.  Only the range's ordinals are initialized; the
-    // rest stay value-initialized nulls.  The FIRST ALLOCATED one (the session's primary, ordinal qsa_ord0)
-    // owns the RoPE table that the others - and the prefill staging identity, and the MTP drafter - borrow.
-    const uint64_t first = qsa_state_bytes(g, max_cells, true), rest = qsa_state_bytes(g, max_cells, false);
+    const bool share_rope = share_rope_src != nullptr;
+    const bool ext_idx = external_idx_base != nullptr;
+    const uint64_t first = qsa_state_bytes(g, max_cells, !share_rope, 0, ext_idx);
+    const uint64_t rest = qsa_state_bytes(g, max_cells, false, 0, ext_idx);
     s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1) * rest : 0);
     s.qsa_states = new QsaState[(size_t) g.n_qsa_layers()]();
-    s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
+    if (!slim_slot) s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
 
     uint8_t* qp = (uint8_t*) s.qsa_state_arena;
-    // a layer whose pinned RAM could not be had (KV streaming's host copy) is half-built: going on would have the
-    // attention read null host pointers at the first request ("illegal memory access"), so the session fails here
-    for (int64_t j = 0; j < s.qsa_alloc; ++j)
+    for (int64_t j = 0; j < s.qsa_alloc; ++j) {
+        float* ext_ptr = ext_idx ? (float*) (external_idx_base + (uint64_t) j * external_idx_stride) : nullptr;
         if (qsa_state_init(g, max_cells, qp + (j == 0 ? 0 : first + (uint64_t) (j - 1) * rest),
-                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0)
+                           s.qsa_states[s.qsa_ord0 + j],
+                           j == 0 ? share_rope_src : (share_rope ? share_rope_src : &s.qsa_states[s.qsa_ord0]),
+                           0, ext_ptr, defer_device_init) == 0)
             return 0;
-    qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
-
-    s.moe_arena = take(moe_buffers_bytes(g, k));
-    moe_buffers_init(g, k, s.moe_arena, s.moe);
-    s.block_arena = take(block_buffers_bytes(g));
-    block_buffers_init(g, s.block_arena, s.block);
-    // THE PLE HISTORY: NG_HIST rows of hc_dim floats, row-fastest.  Sequence state, carved here and zeroed by
-    // `session_zero`; it survives every token, which is the whole point of a conv history.
+    }
+    if (!slim_slot) {
+        qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
+        s.moe_arena = take(moe_buffers_bytes(g, k));
+        moe_buffers_init(g, k, s.moe_arena, s.moe);
+        s.block_arena = take(block_buffers_bytes(g));
+        block_buffers_init(g, s.block_arena, s.block);
+    } else {
+        s.block_arena = take((uint64_t) g.hc * (uint64_t) g.n_embd * 4);
+        s.block.R = (float*) s.block_arena;
+    }
     s.ple_hist = (float*) take(ple_hist_bytes());
     s.R = s.block.R;
     return used;

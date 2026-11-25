@@ -2522,6 +2522,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_BATCH_GRAPH_LIMIT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13774,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Opt-in (--batch): LRU cap on captured batch CUDA graphs to bound VRAM usage across arbitrary slot subsets (e.g. 16 for --batch 12).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_BATCH_GROUPS_AUTO",
    "backends": [
     "sycl"
@@ -2746,6 +2779,84 @@
    "status": "rollback",
    "owner": "program",
    "note": "[reviewed] \"split+batch default pipelined groups win ... (BATCH_MTP_SERIAL=1 old)\"; restores old serial groups. [checklist-1431.md:44]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_BATCH_MTP_WIDE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 7930,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 7930,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 7930,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Opt-in (single-GPU --batch-mtp with -DSTRATA_WINDOW_MAX_T=16): allow batch-MTP windows up to kVerifyMaxT rows instead of kVerifyNarrowT.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_BATCH_PCIE_FRAC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 17528,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Opt-in (single-GPU --batch): override pcie_frac for multi-row batch windows (S >= 2) while keeping solo windows at --pcie-frac (e.g. 0.00 in solo, 0.35 in batch).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -7995,6 +8106,39 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] off unless set, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_ELASTIC_SLOTS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 8078,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Opt-in (CUDA single-GPU, --batch >= 2, --kv-resident > 0): reserve slim batch slots (shared RoPE, no per-slot single-token scratch) in CUDA VMM ranges with 0 physical VRAM at startup; dynamically borrow 2 MiB chunks from ExpertCache tail per active slot (base + 24 MiB/16K-token idx_pooled) and reclaim back to ExpertCache on return to solo.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -25976,6 +26120,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_MTP_KV_INT8",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/mtp.cpp",
+     "line": 522,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "core",
+   "note": "Opt-in: store the MTP draft layer KV ring in INT8 while keeping the target model KV format unchanged (lossless on verified outputs).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_MTP_MULTI_COPY",
    "backends": [
     "cuda-hip"
@@ -30477,6 +30654,39 @@
    "status": "rollback",
    "owner": "prefill",
    "note": "[OWN-4A 11-10] IQ2_XXS / IQ2_XS gate/up (the IQ3_XXS pack, the IQ2_XS sets) on the fused prompt kernels: default ON on gfx12 under Linux (0.2.15, owner 11-10); =0 keeps those layers on MMQ (two releases); Windows gfx12: opt-in via STRATA_PF_FUSED=1",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PF_FUSED_KERNELS_ONLY",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 12839,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Opt-in: set pf_fused_override to kPfFusedKernelsOnly so fused native prefill kernels stay active while using the MMQ buffer layout required by layer-major multi-prompt co-read (STRATA_COALESCE_PREFILL).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -52742,5 +52952,6 @@
    "retire_after": "",
    "retired_in": ""
   }
- ]
+ ],
+ "count": 1290
 }

@@ -1975,7 +1975,14 @@ class StrataEngine:
                 rq = e[4] if len(e) > 4 else None
                 if prompt is None or rq is None or rq is cancel or getattr(rq, "_strata_preslot", None) is not None:
                     continue
-                if getattr(rq, "_strata_co", False) or len(prompt) < 32 or total + len(prompt) > COALESCE_TOKENS:
+                # Count only unshared suffix tokens when follower shares a prefix with lead_prompt
+                shared_pfx = 0
+                lim_pfx = min(len(lead_prompt), len(prompt))
+                while shared_pfx < lim_pfx and lead_prompt[shared_pfx] == prompt[shared_pfx]:
+                    shared_pfx += 1
+                eff_len = len(prompt) - shared_pfx if shared_pfx >= 256 else len(prompt)
+                max_eff = int(os.environ.get("STRATA_COALESCE_MAX_EFF") or 0)
+                if getattr(rq, "_strata_co", False) or len(prompt) < 32 or (max_eff > 0 and eff_len > max_eff) or total + eff_len > COALESCE_TOKENS:
                     continue
                 slot = self.pick_slot(prompt)
                 if slot is None:
@@ -1985,7 +1992,7 @@ class StrataEngine:
                 self.slot_held[slot] = []
                 rq._strata_preslot = slot
                 rq._strata_co = True
-                total += len(prompt)
+                total += eff_len
                 picked.append((slot, prompt))
         for slot, prompt in picked:
             self._send(f"BCO {slot} {','.join(str(int(t)) for t in prompt)}")
@@ -2321,7 +2328,7 @@ class StrataEngine:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
-                    if COALESCE_PREFILL > 1 and not embeddings:
+                    if COALESCE_PREFILL > 1 and not embeddings and not out and not getattr(cancel, "_strata_co", False):
                         self._coalesce(cancel, prompt)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
