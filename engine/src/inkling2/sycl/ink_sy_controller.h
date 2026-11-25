@@ -51,19 +51,21 @@ inline void k_ctrl_pack_weights(InkCtrlSource src, uint16_t* packed, uint32_t* i
 
 template<int Count> struct InkCtrlSet { InkCtrlWeights weights[Count]; };
 
-template<int Count>
+template<int Count, bool Tree = false>
 inline void k_ctrl_decode_batch(InkCtrlSet<Count> weights, float* cur, const float* msg,
-                                bool shared_cur, float* scratch, float* gates) {
+                                bool shared_cur, float* scratch, float* gates, int nodes = 1) {
+    const int batch = Tree ? nodes : 1;
     // A workgroup normalizes both inputs, then eight SG16s each compute one gate.
     constexpr int rows = 8;
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> input(ctrl_k, h);
         sycl::local_accessor<sycl::float2, 1> partial(16, h);
-        h.parallel_for(NR(Count * ctrl_rank / rows, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-            const int g = it.get_group(0), bank = g / (ctrl_rank / rows), tid = it.get_local_id(0);
+        h.parallel_for(NR(batch * Count * ctrl_rank / rows, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const int g = it.get_group(0), vector = g / (ctrl_rank / rows), tid = it.get_local_id(0);
             const int lane = tid % 16, sg = tid / 16;
-            const float* c = cur + (shared_cur ? 0 : bank * INK_D);
-            const float* m = msg + bank * INK_D;
+            const int bank = vector / batch;
+            const float* c = cur + (shared_cur ? vector % batch : vector) * INK_D;
+            const float* m = msg + vector * INK_D;
             float cv[INK_D / 256], mv[INK_D / 256], cs = 0.0f, ms = 0.0f;
 #pragma unroll
             for (int k = 0; k < INK_D / 256; ++k) {
@@ -95,7 +97,7 @@ inline void k_ctrl_decode_batch(InkCtrlSet<Count> weights, float* cur, const flo
                 for (int j = 0; j < 8; ++j) acc += bf16_to_f32(v[j]) * input[offset + j];
             }
             const float dot = sg_sum(it, acc);
-            if (lane == 0) gates[bank * ctrl_rank + row] = dot;
+            if (lane == 0) gates[vector * ctrl_rank + row] = dot;
         });
     });
 
@@ -104,15 +106,15 @@ inline void k_ctrl_decode_batch(InkCtrlSet<Count> weights, float* cur, const flo
     constexpr int stripes = INK_D / 256;
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> values(stripes * 16, h);
-        h.parallel_for(NR(Count * 16, stripes * 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-            const int group = it.get_group(0), bank = group / 16, tid = it.get_local_id(0);
+        h.parallel_for(NR(batch * Count * 16, stripes * 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const int group = it.get_group(0), vector = group / 16, bank = vector / batch, tid = it.get_local_id(0);
             const int sg = tid / 16, lane = tid % 16;
-            const int d = sg * 256 + group % 16 * 16 + lane, i = bank * INK_D + d;
+            const int d = sg * 256 + group % 16 * 16 + lane, i = vector * INK_D + d;
             const uint16_t* pair = weights.weights[bank].gate_pair;
             float gain = 0.0f, forget = 0.0f;
             for (int r = 0; r < ctrl_rank; r += 8) {
                 const int off = ((d / 16 * (ctrl_rank / 8) + r / 8) * 16 + d % 16) * 16;
-                const auto g = *reinterpret_cast<const sycl::vec<float, 8>*>(gates + bank * ctrl_rank + r);
+                const auto g = *reinterpret_cast<const sycl::vec<float, 8>*>(gates + vector * ctrl_rank + r);
                 const auto a = *reinterpret_cast<const sycl::vec<uint16_t, 8>*>(pair + off);
                 const auto b = *reinterpret_cast<const sycl::vec<uint16_t, 8>*>(pair + off + 8);
 #pragma unroll
@@ -121,7 +123,7 @@ inline void k_ctrl_decode_batch(InkCtrlSet<Count> weights, float* cur, const flo
                     forget += bf16_to_f32(b[t]) * g[t];
                 }
             }
-            const float v = (1.0f - sycl::tanh(sycl::clamp(forget, -15.0f, 15.0f))) * cur[shared_cur ? d : i]
+            const float v = (1.0f - sycl::tanh(sycl::clamp(forget, -15.0f, 15.0f))) * cur[shared_cur ? (vector % batch) * INK_D + d : i]
                           + sycl::tanh(sycl::clamp(gain, -15.0f, 15.0f)) * msg[i];
             scratch[i] = v; values[tid] = v;
             sycl::group_barrier(it.get_group());
@@ -133,13 +135,13 @@ inline void k_ctrl_decode_batch(InkCtrlSet<Count> weights, float* cur, const flo
                     ss += x * x;
                 }
                 const float sum = sg_sum(it, ss);
-                if (lane == 0) scratch[Count * INK_D + group] = sum;
+                if (lane == 0) scratch[batch * Count * INK_D + group] = sum;
             }
         });
     });
-    Q().parallel_for(NR(Count * INK_D / 64, 64), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-        const int i = it.get_global_id(0), bank = i / INK_D, lane = it.get_local_id(0) % 16;
-        const float ss = sg_sum(it, scratch[Count * INK_D + bank * 16 + lane]);
+    Q().parallel_for(NR(batch * Count * INK_D / 64, 64), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int i = it.get_global_id(0), vector = i / INK_D, bank = vector / batch, lane = it.get_local_id(0) % 16;
+        const float ss = sg_sum(it, scratch[batch * Count * INK_D + vector * 16 + lane]);
         const float inv = sycl::rsqrt(ss / float(INK_D) + INK_RMS_EPS);
         cur[i] = scratch[i] * inv * weights.weights[bank].norm[i % INK_D];
     });

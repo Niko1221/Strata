@@ -21,6 +21,54 @@ static void equal(const char* kind, const float* a, const float* b, size_t n) {
             throw std::runtime_error(kind);
         }
 }
+#ifdef INK_SYCL_USE_ONEMKL
+static void dspark_q8_projection_check() {
+    constexpr int n = 128, k = 2304, m = 8;
+    Array<uint8_t> packed(n * (k + sizeof(float)));
+    auto* w_scale = reinterpret_cast<float*>(packed.p);
+    auto* w = reinterpret_cast<int8_t*>(w_scale + n);
+    Array<int8_t> x(m * k);
+    Array<float> x_scale(m), expected(m * n), actual(m * n);
+    Array<int32_t> dots(m * n), zero(1);
+    zero.p[0] = 0;
+
+    for (int i = 0; i < m; ++i) {
+        x_scale.p[i] = float(i + 1) / 1037.0f;
+        for (int j = 0; j < k; ++j)
+            x.p[i * k + j] = i == 0 ? 127 : (i * 29 + j * 43) % 255 - 127;
+    }
+    for (int i = 0; i < n; ++i) {
+        w_scale[i] = float(i + 1) / 1303.0f;
+        for (int j = 0; j < k; ++j)
+            w[i * k + j] = i == 0 ? 127 : (i * 31 + j * 47) % 255 - 127;
+    }
+    // Exercise the conversion of a non-exact S32 sum beyond the 24-bit
+    // mantissa of the FP32 output used by the original DP4A path.
+    w[k - 1] = 126;
+    k_linear_q8row_dp4a_sg16(packed.p, n, k, x.p, x_scale.p, expected.p, m);
+    ink_xmx_dspark_q8(packed.p, n, k, x.p, x_scale.p, actual.p, dots.p, zero.p);
+    wait();
+    equal("DSpark eight-row INT8 projection", expected.p, actual.p, m * n);
+}
+#endif
+
+#ifdef INK_HAS_GROUP_LOAD
+static void tree_narrow_projection_check() {
+    constexpr int k = 2304, max_n = 128, max_nodes = 12;
+    Array<float> w(max_n * k), x(max_nodes * k), ref(max_nodes * max_n), got(max_nodes * max_n);
+    for (int i = 0; i < max_n * k; ++i) w.p[i] = float((i * 19) % 2503 - 1250) / 3807.0f;
+    for (int i = 0; i < max_nodes * k; ++i) x.p[i] = float((i * 31) % 3137 - 1520) / 5733.0f;
+    for (int n : {23, 24, 32, 128}) {
+        for (int nodes : {3, 8, 12}) {
+            k_tree_linear_f32_sg16(w.p, n, k, x.p, ref.p, nodes);
+            k_tree_linear_f32_striped(w.p, n, k, x.p, got.p, nodes);
+            wait();
+            equal("DSpark striped FP32 projection", ref.p, got.p, size_t(nodes) * n);
+        }
+    }
+}
+#endif
+
 static void controller_batch_check() {
     constexpr int d = INK_D, rank = ctrl_rank, dr = ctrl_k * rank, gr = d * rank;
     Array<float> down(4 * dr), gain(4 * gr), forget(4 * gr), norm(4 * d);
@@ -60,7 +108,7 @@ static void controller_batch_check() {
         c.is_swa[1] = swa;
         cache.prepare(model);
         if (cache.layers.size() != 1) throw std::runtime_error("expected exact controller cache");
-        for (int nodes : {1}) {
+        for (int nodes : {1, 3, max_nodes}) {
             const int span = nodes * d;
             for (int count : {1, 3}) {
                 std::copy_n(original.p, capacity, actual.p);
@@ -81,8 +129,10 @@ static void controller_batch_check() {
                         row, nodes, 1);
                 }
                 const auto& layer = cache.layers[0];
-                if (count == 3) k_ctrl_decode_batch(layer.attention, actual.p, msg.p, swa, cat.p, gates.p);
-                else k_ctrl_decode_batch(layer.mlp, actual.p, msg.p, false, cat.p, gates.p);
+                if (count == 3 && nodes == 1) k_ctrl_decode_batch(layer.attention, actual.p, msg.p, swa, cat.p, gates.p);
+                else if (count == 1 && nodes == 1) k_ctrl_decode_batch(layer.mlp, actual.p, msg.p, false, cat.p, gates.p);
+                else if (count == 3) k_ctrl_decode_batch<3, true>(layer.attention, actual.p, msg.p, swa, cat.p, gates.p, nodes);
+                else k_ctrl_decode_batch<1, true>(layer.mlp, actual.p, msg.p, false, cat.p, gates.p, nodes);
                 wait();
                 equal("controller gate vector", want_gates.p, gates.p, count * nodes * rank);
                 equal("in-place controller output and guard rows", ref.p, actual.p, capacity);
@@ -151,11 +201,12 @@ static void single_request_ops_check() {
     Array<float> blocks(7 * stride), queries(4 * d), stats(4 * max_nodes * 8 * 2);
     for (int i = 0; i < 7 * stride; ++i) blocks.p[i] = draw();
     for (int i = 0; i < 4 * d; ++i) queries.p[i] = draw();
-    for (int nodes : {1}) {
+    for (int nodes : {1, 3, max_nodes}) {
         for (int n : {0, 1, 4, 7}) {
             for (int nq : {1, 3, 4}) {
                 main_reference::k_attn_res_mix_sg16(blocks.p, x.p, queries.p, ref.p, n, stride, nodes, nq);
-                k_res_mix_decode(blocks.p, x.p, queries.p, y.p, n, stride, nq, stats.p);
+                if (nodes == 1) k_res_mix_decode(blocks.p, x.p, queries.p, y.p, n, stride, nq, stats.p);
+                else k_res_mix_decode<true>(blocks.p, x.p, queries.p, y.p, n, stride, nq, stats.p, nodes);
                 wait();
                 equal("decode residual mix", ref.p, y.p, nodes * nq * d);
             }
@@ -294,6 +345,18 @@ static void expert_check(const char* model) {
         wait();
         equal("SQ-20 small GU", gold_h.p, test_h.p, rows * 1152);
         equal("SQ-20 small down", gold_y.p, test_y.p, rows * 2304);
+        // The first four experts are SF4. Keep their original scattered row IDs.
+        std::fill_n(test_h.p, rows * 1152, NAN);
+        std::fill_n(test_y.p, rows * 2304, NAN);
+        nu.p[0] = 4;
+        k_tree_sf4_packed<false>(experts.p, ue.p, off.p, cnt.p, pairs.p, nu.p, 8, nullptr, x.p, test_h.p);
+        k_tree_sf4_packed<true>(experts.p, ue.p, off.p, cnt.p, pairs.p, nu.p, 8, weights.p, test_h.p, test_y.p);
+        wait();
+        for (int token = 0; token < n; ++token) {
+            equal("tree SF4 gate/up", gold_h.p + token * 8 * 1152, test_h.p + token * 8 * 1152, 4 * 1152);
+            equal("tree SF4 down", gold_y.p + token * 8 * 2304, test_y.p + token * 8 * 2304, 4 * 2304);
+        }
+
     }
     // More than sixteen distinct experts forces another pass through the
     // bounded dispatch grid. A twelve-row expert also crosses the route tile.
@@ -421,6 +484,23 @@ int main(int argc, char** argv) {
             k_streaming_gemv<true>(wb.p, n, k, x.p, b.p);
             wait();
             equal("BF16 GEMV", a.p, b.p, n);
+            if (n == 17 || n == 24) {
+                InkTensorInfo weight;
+                weight.fmt = FMT_BF16;
+                weight.shape = {n, k};
+                weight.dev_ptr = reinterpret_cast<uint8_t*>(wb.p);
+                Array<float> xx(12 * k), yy(12 * n), ref(12 * n);
+                for (int i = 0; i < 12 * k; ++i) xx.p[i] = draw();
+                for (int nodes : {3, 4, 5, 6, 8, 10, 12}) {
+                    main_reference::k_linear_bf16_sg16(wb.p, n, k, xx.p, ref.p, nodes);
+                    if (!tree_bf16_projection(weight, xx.p, yy.p, nodes)) throw std::runtime_error("tree BF16 dispatch");
+                    wait();
+                    equal("tree BF16 projection", ref.p, yy.p, nodes * n);
+                }
+                if (tree_bf16_projection(weight, xx.p, yy.p, 7)) throw std::runtime_error("unexpected tree width");
+                weight.fmt = FMT_F32;
+                if (tree_bf16_projection(weight, xx.p, yy.p, 3)) throw std::runtime_error("unexpected tree dtype");
+            }
             ++nlinear;
         }
 #endif
@@ -490,6 +570,53 @@ int main(int argc, char** argv) {
             wait();
             equal("split KV", a.p, b.p, m * nh * hd);
         }
+    // Materialize each branch's logical cache separately for the independent
+    // SG16 reference; siblings at the same depth must never see one another.
+    Array<int> ancestry(m * 8), zero(1);
+    zero.p[0] = 0;
+    const int depth[m] = {0, 1, 1, 2, 2}, parent[m] = {-1, 0, 0, 1, 2};
+    for (int i = 0; i < m; ++i) {
+        if (i) std::copy_n(ancestry.p + parent[i] * 8, depth[i], ancestry.p + i * 8);
+        ancestry.p[i * 8 + depth[i]] = i;
+        slot.p[i] = 1;
+    }
+    for (int root : {7, 1031, stride - 2, stride + 29}) {
+        for (bool sliding : {false, true}) {
+            if (!sliding && root + m > stride) continue;
+            const int ref_stride = sliding ? 1024 : stride;
+            Array<half> rk(ref_stride * 8 * hd), rv(ref_stride * 8 * hd);
+            for (int extent : {63, 1024}) {
+                for (int i = 0; i < m; ++i) {
+                    const int pos_i = pos.p[i] = root + depth[i];
+                    for (int j = sliding ? std::max(0, pos_i - 1023) : 0; j <= pos_i; ++j) {
+                        const int physical = j < root ? j : root + ancestry.p[i * 8 + j - root];
+                        const int src = (stride + physical % stride) * 8 * hd, dst = (j % ref_stride) * 8 * hd;
+                        std::copy_n(k.p + src, 8 * hd, rk.p + dst);
+                        std::copy_n(v.p + src, 8 * hd, rv.p + dst);
+                    }
+                    main_reference::k_relpos_sink_gqa_sg16(q.p + i * nh * hd, r.p + i * nh * 16, rp.p,
+                        s.p + i * nh, g.p + i * nh * hd, rk.p, rv.p, zero.p, pos.p + i, a.p + i * nh * hd,
+                        1, sliding, 1024, extent, ref_stride);
+                    wait();
+                }
+                k_relpos_tree_stream(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p, m, sliding,
+                                     1024, extent, stride, root, ancestry.p, b.p);
+                wait();
+                equal("tree KV vs independently materialized branch", a.p, b.p, m * nh * hd);
+                if (sliding) {
+                    k_relpos_tree_stream<true>(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p, m, true,
+                                               1024, extent, stride, root, ancestry.p, b.p);
+                    wait();
+                    equal("sliding tree KV vs independently materialized branch", a.p, b.p, m * nh * hd);
+                } else {
+                    k_relpos_tree_stream<false, true>(q.p, r.p, rp.p, s.p, g.p, k.p, v.p, slot.p, pos.p, m, false,
+                                                      1024, extent, stride, root, ancestry.p, b.p);
+                    wait();
+                    equal("full-context tree KV vs independently materialized branch", a.p, b.p, m * nh * hd);
+                }
+            }
+        }
+    }
     {
         constexpr int cases = 7;
         Array<float> inputs(cases), observed(cases * cases * 2), reference(cases * cases * 2);
@@ -549,6 +676,14 @@ int main(int argc, char** argv) {
     std::puts("PASS bitwise: packed expert reduction");
     single_request_ops_check();
     std::puts("PASS bitwise: tiled ShortConv and carried history, aliased controller and single-token residual mixing");
+#ifdef INK_SYCL_USE_ONEMKL
+    dspark_q8_projection_check();
+    std::puts("PASS bitwise: DSpark eight-row INT8 XMX projection versus DP4A");
+#endif
+#ifdef INK_HAS_GROUP_LOAD
+    tree_narrow_projection_check();
+    std::puts("PASS bitwise: DSpark striped narrow FP32 projections");
+#endif
     controller_batch_check();
     std::puts("PASS bitwise: attention/K/V and MLP controllers, shared SWA input, inexact-weight fallback");
     routing_and_tail_check();

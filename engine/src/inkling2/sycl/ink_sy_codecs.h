@@ -357,6 +357,64 @@ inline void k_streaming_gemv(const std::conditional_t<BF16, uint16_t, float>* we
 }
 #endif
 
+#ifdef INK_HAS_GROUP_LOAD
+// Every tree row uses the same matrix. Load one striped BF16 packet per
+// subgroup and carry all node accumulators in registers across K.
+template<int Nodes>
+inline void k_tree_bf16_projection(const uint16_t* weights, const float* x, float* y, int n, int k) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    Q().parallel_for(NR((n + 3) / 4, 64), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int row = it.get_global_id(0) / 16, lane = it.get_local_id(0) % 16;
+        if (row >= n) return;
+        const auto sg = it.get_sub_group();
+        const auto prop = ex::properties{ex::data_placement_striped, ex::full_group};
+        float sum[Nodes]{};
+        for (int k0 = 0; k0 < k; k0 += 256) {
+            sycl::vec<uint64_t, 4> packet;
+            ex::group_load(sg, reinterpret_cast<const uint64_t*>(weights + (size_t)row * k + k0), packet, prop);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const auto w = sycl::bit_cast<sycl::vec<uint16_t, 4>>(static_cast<uint64_t>(packet[j]));
+#pragma unroll
+                for (int m = 0; m < Nodes; ++m) {
+                    const auto a = *reinterpret_cast<const sycl::vec<float, 4>*>(x + m * k + k0 + 64 * j + lane * 4);
+                    sum[m] += bf16_to_f32(w[0]) * a[0] + bf16_to_f32(w[1]) * a[1] +
+                              bf16_to_f32(w[2]) * a[2] + bf16_to_f32(w[3]) * a[3];
+                }
+            }
+        }
+#pragma unroll
+        for (int m = 0; m < Nodes; ++m) {
+            const float v = sg_sum(it, sum[m]);
+            if (!lane) y[(size_t)m * n + row] = v;
+        }
+    });
+}
+
+inline bool tree_bf16_projection(const InkTensorInfo& weight, const float* x, float* y, int nodes,
+                                 int output_rows = -1) {
+    if (weight.fmt != FMT_BF16 || weight.cols() % 256 ||
+        reinterpret_cast<uintptr_t>(weight.dev_ptr) % 16 || reinterpret_cast<uintptr_t>(x) % 16) return false;
+    auto run = [&](auto count) {
+        k_tree_bf16_projection<decltype(count)::value>(reinterpret_cast<const uint16_t*>(weight.dev_ptr),
+                                                       x, y, output_rows > 0 ? output_rows : weight.rows(),
+                                                       weight.cols());
+    };
+    switch (nodes) {
+        case 2: run(std::integral_constant<int, 2>{}); break;
+        case 3: run(std::integral_constant<int, 3>{}); break;
+        case 4: run(std::integral_constant<int, 4>{}); break;
+        case 5: run(std::integral_constant<int, 5>{}); break;
+        case 6: run(std::integral_constant<int, 6>{}); break;
+        case 8: run(std::integral_constant<int, 8>{}); break;
+        case 10: run(std::integral_constant<int, 10>{}); break;
+        case 12: run(std::integral_constant<int, 12>{}); break;
+        default: return false;
+    }
+    return true;
+}
+#endif
+
 // BF16 SG16 GEMV (16 SGs = 256 threads/WG -> 16 rows/WG)
 inline void k_linear_bf16_sg16(const uint16_t* W, int N, int K, const float* X, float* Y, int M) {
 #ifdef INK_HAS_GROUP_LOAD
@@ -646,6 +704,53 @@ inline bool use_f32_prefill_pairs(const float* w, int n, int k, const float* x, 
 }
 
 // F32 SG16 Linear (exact FP32 for routers, controllers, dynamic sconv weight_proj, attn_sink_proj)
+// Tree verification has only a few rows. Give each (node, output) dot its own
+// work-group while keeping the same K traversal and SG16 sum as the regular projection.
+inline void k_tree_linear_f32_sg16(const float* weights, int outputs, int inputs,
+                                   const float* x, float* y, int nodes) {
+    Q().parallel_for(NR((size_t)nodes * outputs, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int dot = it.get_group(0), lane = it.get_local_id(0);
+        const float* w = weights + (size_t)(dot % outputs) * inputs;
+        const float* row = x + (size_t)(dot / outputs) * inputs;
+        float acc = 0.0f;
+        for (int k = lane; k < inputs; k += 16) acc += w[k] * row[k];
+        const float sum = sg_sum(it, acc);
+        if (lane == 0) y[dot] = sum;
+    });
+}
+
+#ifdef INK_HAS_GROUP_LOAD
+// The lane visits the same K indices as the scalar SG16 dot, with the
+// loads issued in striped packets of eight before those additions.
+inline void k_tree_linear_f32_striped(const float* weights, int outputs, int inputs,
+                                      const float* x, float* y, int nodes) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    constexpr int subgroups = 4;
+    const int dots = nodes * outputs;
+    Q().parallel_for(NR((dots + subgroups - 1) / subgroups, subgroups * 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const auto sg = it.get_sub_group();
+        const int dot = it.get_group(0) * subgroups + sg.get_group_linear_id();
+        if (dot >= dots) return;
+        const auto* w = reinterpret_cast<const uint32_t*>(weights + size_t(dot % outputs) * inputs);
+        const auto* a = reinterpret_cast<const uint32_t*>(x + size_t(dot / outputs) * inputs);
+        const auto properties = ex::properties{ex::data_placement_striped, ex::full_group};
+        float sum = 0.f;
+        for (int k = 0; k < inputs; k += 128) {
+            sycl::vec<uint32_t, 8> wp, xp;
+            ex::group_load(sg, w + k, wp, properties);
+            ex::group_load(sg, a + k, xp, properties);
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                sum += sycl::bit_cast<float>(static_cast<uint32_t>(wp[j])) *
+                       sycl::bit_cast<float>(static_cast<uint32_t>(xp[j]));
+            }
+        }
+        const float value = sg_sum(it, sum);
+        if (sg.get_local_linear_id() == 0) y[dot] = value;
+    });
+}
+#endif
+
 inline void k_linear_f32_sg16(const float* W, int N, int K, const float* X, float* Y, int M) {
 #ifdef INK_HAS_GROUP_LOAD
     static const bool stream = ink_bmg_dense();
@@ -1156,6 +1261,19 @@ inline void k_sq20_sf4_pair(const InkSyExpertDev* experts, const int* ids, const
     });
 }
 
+// Store the two exact BF16 bit patterns for a compressed SF4 byte together.
+// One lookup recovers the adjacent coefficients, including signed zeros.
+inline constexpr auto sf4_byte_bf16 = [] {
+    constexpr uint16_t magnitude[] = {0, 0x3f00, 0x3f80, 0x3fc0, 0x4000, 0x4040, 0x4080, 0x40c0};
+    std::array<uint32_t, 256> pairs{};
+    for (uint32_t i = 0; i < pairs.size(); ++i) {
+        const uint32_t lo = magnitude[i & 7] | ((i & 8) << 12);
+        const uint32_t hi = magnitude[(i >> 4) & 7] | ((i & 128) << 8);
+        pairs[i] = lo | (hi << 16);
+    }
+    return pairs;
+}();
+
 // A nibble's magnitude is at most six and is a multiple of one half.
 inline float sf4_weight_from_nibble(uint32_t nibble) {
     constexpr uint32_t doubled_magnitudes = 0xc8643210u;
@@ -1177,13 +1295,13 @@ inline float mx8_coefficient_f32(uint32_t code) {
 
 // Both output rows share each
 // activation load. Keep block sums in FP32 before applying their separate scales.
-template <bool Down, bool SF4, bool Cached = false, int FixedRows = 0, bool MX8Only = false>
+template <bool Down, bool SF4, bool Cached = false, int FixedRows = 0, bool MX8Only = false, bool TreeSF4 = false>
 inline void sq20_small_pairs(sycl::nd_item<2> it, const InkSyExpertDev &ed, const int *order, int n,
                              const float *w, const float *x, float *out,
                              const float* factors = nullptr, int output_tile = 0) {
     constexpr int K = Down ? 1152 : 2304, width = SF4 ? 16 : 32;
     constexpr int blocks = K / width, bytes = SF4 ? 8 : 32;
-    constexpr int pairs_per_group = Cached ? 8 : 16;
+    constexpr int pairs_per_group = (Cached || TreeSF4) ? 8 : 16;
     constexpr int rows_per_tile = FixedRows ? FixedRows : (Cached ? 8 : 4);
     const int pair = (Cached ? output_tile : int(it.get_group(1))) * pairs_per_group + it.get_local_id(1) / 16, lane = it.get_local_id(1) % 16;
     const uint8_t *data = ed.body_ptr + (Down ? ed.dn_off : (SF4 ? 16 : 0));
@@ -1214,6 +1332,12 @@ inline void sq20_small_pairs(sycl::nd_item<2> it, const InkSyExpertDev &ed, cons
                         v0[2 * j + 1] = sf4_weight_from_nibble(p[j] >> 4);
                         v1[2 * j] = sf4_weight_from_nibble(q[j]);
                         v1[2 * j + 1] = sf4_weight_from_nibble(q[j] >> 4);
+                    } else if constexpr (TreeSF4) {
+                        const uint32_t u = sf4_byte_bf16[p[j]], v = sf4_byte_bf16[q[j]];
+                        v0[2 * j] = sycl::bit_cast<float>(u << 16);
+                        v0[2 * j + 1] = sycl::bit_cast<float>(u & 0xffff0000u);
+                        v1[2 * j] = sycl::bit_cast<float>(v << 16);
+                        v1[2 * j + 1] = sycl::bit_cast<float>(v & 0xffff0000u);
                     } else {
                         v0[2 * j] = e2m1_lut(p[j] & 15);
                         v0[2 * j + 1] = e2m1_lut(p[j] >> 4);
@@ -1306,6 +1430,18 @@ inline void k_sf4_cached(const InkSyExpertDev* experts, const int* ids, const in
             else
                 sq20_small_pairs<Down, true, true>(it, experts[expert], pairs, rows, weights, x, out, table, tile);
         }
+    });
+}
+
+template <bool Down>
+inline void k_tree_sf4_packed(const InkSyExpertDev* experts, const int* ids, const int* offs,
+                              const int* counts, const int* order, const int* num, int limit,
+                              const float* weights, const float* x, float* out) {
+    constexpr int pairs_per_group = 8;
+    Q().parallel_for(NR2(1152 / pairs_per_group, limit, pairs_per_group * 16), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int group = it.get_group(0);
+        if (group < *num)
+            sq20_small_pairs<Down, true, false, 0, false, true>(it, experts[ids[group]], order + offs[group], counts[group], weights, x, out);
     });
 }
 

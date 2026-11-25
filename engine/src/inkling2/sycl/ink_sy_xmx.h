@@ -541,6 +541,21 @@ inline bool ink_xmx_linear_sk(const uint8_t* W, int N, int K, const float* X, fl
     return true;
 }
 
+// The DSpark block has eight rows of already quantized activations. The
+// signed dot accumulates in S32 and applies the same per-row FP32 scales as DP4A.
+inline void ink_xmx_dspark_q8(const uint8_t* weights, int n, int k, const int8_t* x,
+                             const float* x_scale, float* out, int32_t* dots, const int32_t* zero) {
+    const auto* codes = reinterpret_cast<const int8_t*>(weights + size_t(n) * sizeof(float));
+    const auto* w_scale = reinterpret_cast<const float*>(weights);
+    oneapi::mkl::blas::row_major::gemm_bias(
+        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans, oneapi::mkl::offset::fix,
+        8, n, k, 1.0f, x, k, int8_t(0), codes, k, int8_t(0), 0.0f, dots, n, zero);
+    Q().parallel_for(NR((8 * n + 255) / 256, 256), [=](sycl::nd_item<1> it) {
+        const int i = it.get_global_id(0);
+        if (i < 8 * n) out[i] = float(dots[i]) * (w_scale[i % n] * x_scale[i / n]);
+    });
+}
+
 // A prefill tile retains its projection shapes even when several tiles are
 // scheduled together. The weight scratch can stay live across those GEMMs.
 inline sycl::event ink_xmx_expand_expert(InkSyExpertDev expert) {

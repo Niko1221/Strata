@@ -22,7 +22,7 @@
 #include "ink_sy_codecs.h"
 #include "ink_sy_xmx.h"
 #include "ink_sy_common.h"
-#include "ink_sy_dspark.h"
+#include "ink_sy_beam.h"
 #include "ink_sy_fit.h"
 #include "ink_sy_hybrid.h"
 #include "ink_sy_controller.h"
@@ -36,6 +36,18 @@ struct InkSyRunner {
     int max_ctx = 4096;
     int max_batch = 256;
     bool use_dspark = true;
+
+    BeamPool* beam_pool = nullptr;
+    BeamPick* beam_picks = nullptr;
+    int *screen_short = nullptr, *screen_ids = nullptr, *tree_ancestry = nullptr;
+    float *beam_scores = nullptr, *beam_state_next = nullptr;
+    TreeKvCache* tree_caches = nullptr;
+    TreeConvHistory* tree_histories = nullptr;
+    float* tree_frnn_snapshot = nullptr;
+    bool trace_tree = false;
+    AcceptedPath last_path{};
+    bool beam_enabled = false;
+    bool compact_tree = false;
 
     std::vector<int> visit_kv_stride;
     std::vector<half*> kv_k;
@@ -164,6 +176,8 @@ struct InkSyRunner {
 
     int8_t* xq_s8_dev = nullptr;
     float* xsc_dev = nullptr;
+    int32_t* dspark_q8_dots = nullptr;
+    int dspark_q8_cols = 0;
 
     InkControllerCache ctrl_cache;
     InkSyVision vis;
@@ -203,6 +217,12 @@ struct InkSyRunner {
         sc_ring_k.clear(); sc_ring_v.clear(); sc_ring_attn.clear(); sc_ring_mlp.clear();
 
         for (int i = 0; i < 3; ++i) { dfree(dsp_ctx_k[i]); dfree(dsp_ctx_v[i]); dsp_ctx_k[i] = dsp_ctx_v[i] = nullptr; }
+        dfree(tree_histories); dfree(tree_frnn_snapshot);
+        tree_histories = nullptr; tree_frnn_snapshot = nullptr;
+        dfree(beam_pool); dfree(beam_picks); dfree(screen_short); dfree(screen_ids);
+        dfree(tree_ancestry); dfree(beam_scores); dfree(beam_state_next); dfree(tree_caches);
+        beam_pool = nullptr; beam_picks = nullptr; screen_short = screen_ids = tree_ancestry = nullptr;
+        beam_scores = beam_state_next = nullptr; tree_caches = nullptr;
         dfree(dsp_frnn_slot); dfree(dsp_frnn_tmp);
         dfree(bd_cur); dfree(bd_res); dfree(bd_h); dfree(bd_q); dfree(bd_k); dfree(bd_v);
         dfree(bd_ao); dfree(bd_proj); dfree(bd_mg); dfree(bd_mu); dfree(bd_mh);
@@ -236,6 +256,8 @@ struct InkSyRunner {
         dfree(h_ep_y1); h_ep_y1 = nullptr;
         dfree(b_h_out); dfree(b_h_norm); dfree(b_logits); dfree(b_argmax); dfree(b_taps4);
         dfree(xq_s8_dev); dfree(xsc_dev);
+        dfree(dspark_q8_dots); dspark_q8_dots = nullptr;
+        dspark_q8_cols = 0;
         dsp_frnn_slot = nullptr; b_cur = nullptr;
     }
 
@@ -247,6 +269,11 @@ struct InkSyRunner {
         max_batch = std::max(64, batch_cap);
         use_dspark = enable_dspark && m.man.c.has_dspark;
 
+        const char* tree_flag = std::getenv("INK_SYCL_DSPARK_TREE");
+        beam_enabled = use_dspark && !m.ep2_active && tree_flag && std::string(tree_flag) == "1" &&
+                       m.man.c.hidden == INK_D && m.man.c.vocab_unpadded >= screen_size &&
+                       m.man.get("model.llm.unembed.weight").fmt == FMT_BF16;
+        const size_t ring_rows = beam_enabled ? tree_capacity : 8;
         const auto& c = m.man.c;
         kv_k.resize(c.n_visits); kv_v.resize(c.n_visits); visit_kv_stride.resize(c.n_visits);
         sc_hist_k.resize(c.n_visits); sc_hist_v.resize(c.n_visits);
@@ -271,8 +298,8 @@ struct InkSyRunner {
             sc_hist_attn[v] = dalloc<float>(sc_d); sc_hist_mlp[v] = dalloc<float>(sc_d);
             sc_snap_k[v] = dalloc<float>(sc_kv); sc_snap_v[v] = dalloc<float>(sc_kv);
             sc_snap_attn[v] = dalloc<float>(sc_d); sc_snap_mlp[v] = dalloc<float>(sc_d);
-            sc_ring_k[v] = dalloc<float>(8ul * 3 * 1024); sc_ring_v[v] = dalloc<float>(8ul * 3 * 1024);
-            sc_ring_attn[v] = dalloc<float>(8ul * 3 * c.hidden); sc_ring_mlp[v] = dalloc<float>(8ul * 3 * c.hidden);
+            sc_ring_k[v] = dalloc<float>(ring_rows * 3 * 1024); sc_ring_v[v] = dalloc<float>(ring_rows * 3 * 1024);
+            sc_ring_attn[v] = dalloc<float>(ring_rows * 3 * c.hidden); sc_ring_mlp[v] = dalloc<float>(ring_rows * 3 * c.hidden);
             dzero(sc_hist_k[v], sc_kv * 4); dzero(sc_hist_v[v], sc_kv * 4);
             dzero(sc_hist_attn[v], sc_d * 4); dzero(sc_hist_mlp[v], sc_d * 4);
             sc_tot += (2 * sc_kv + 2 * sc_d) * 4;
@@ -294,7 +321,7 @@ struct InkSyRunner {
         b_bank_blk = dalloc<float>(2 * MB * D); b_bank_out = dalloc<float>(MB * D);
         b_msgs = dalloc<float>(4 * MB * D); b_in3 = dalloc<float>(3 * MB * D);
         b_cat = dalloc<float>(3 * MB * 2 * D); b_ctrl_gate = dalloc<float>(3 * MB * c.gate_rank);   // one region per controller (attn, k, v) of a visit
-        if (ink_bmg_dense()) b_mix_stats = dalloc<float>(4 * 8 * 2);
+        if (ink_bmg_dense()) b_mix_stats = dalloc<float>((beam_enabled ? tree_capacity : 1) * 4 * 8 * 2);
 
         b_q = dalloc<float>(MB * 3072); b_k_raw = dalloc<float>(MB * 1024); b_v_raw = dalloc<float>(MB * 1024);
         b_k = dalloc<float>(MB * 1024); b_v = dalloc<float>(MB * 1024); b_r = dalloc<float>(MB * 384);
@@ -339,6 +366,21 @@ struct InkSyRunner {
         xq_s8_dev = dalloc<int8_t>(MB * 9216); xsc_dev = dalloc<float>(MB);
 
         if (use_dspark) {
+#ifdef INK_SYCL_USE_ONEMKL
+            if (ink_bmg_dspark() && xmx_enabled()) {
+                const int cols = std::max({c.hidden, c.dspark_inter, INK_NH * INK_HD});
+                const size_t count = size_t(8) * cols + 1;
+                try { dspark_q8_dots = sycl::malloc_device<int32_t>(count, Q()); }
+                catch (const sycl::exception& e) {
+                    if (e.code() != sycl::errc::memory_allocation) throw;
+                }
+                if (dspark_q8_dots) {
+                    dev_bytes_allocated() += count * sizeof(int32_t);
+                    dspark_q8_cols = cols;
+                    dzero(dspark_q8_dots + size_t(8) * cols, sizeof(int32_t));
+                }
+            }
+#endif
             const size_t dkv = (size_t)max_slots * max_ctx * 1024;
             for (int l = 0; l < 3; ++l) { dsp_ctx_k[l] = dalloc<half>(dkv); dsp_ctx_v[l] = dalloc<half>(dkv); }
             dsp_frnn_slot = dalloc<float>((size_t)max_slots * D);
@@ -348,11 +390,41 @@ struct InkSyRunner {
             bd_ao = dalloc<float>(8 * 3072); bd_proj = dalloc<float>(8 * D);
             bd_mg = dalloc<float>(8 * 9216); bd_mu = dalloc<float>(8 * 9216); bd_mh = dalloc<float>(8 * 9216);
             bd_logits = dalloc<float>(c.vocab_padded);
-            bd_state = dalloc<float>(256); bd_joint = dalloc<float>(5120); bd_rproj = dalloc<float>(768);
-            bd_latent = dalloc<float>(256); bd_corr = dalloc<float>(D); bd_comb = dalloc<float>(D);
+            const int beams = beam_enabled ? beam_width : 1;
+            bd_state = dalloc<float>(beams*256); bd_joint = dalloc<float>(beams*5120); bd_rproj = dalloc<float>(beams*768);
+            bd_latent = dalloc<float>(beams*256); bd_corr = dalloc<float>(beams*D); bd_comb = dalloc<float>(D);
             bd_part_v = dalloc<float>(256); bd_part_i = dalloc<int>(256); bd_tok_chain = dalloc<int>(8);
         }
 
+        if (beam_enabled) {
+            const char* trace_flag = std::getenv("INK_SYCL_DSPARK_TREE_TRACE");
+            trace_tree = trace_flag && std::string(trace_flag) == "1";
+            std::vector<TreeConvHistory> histories;
+            for (int v = 0; v < c.n_visits; ++v) {
+                histories.push_back({sc_hist_k[v], sc_snap_k[v], sc_ring_k[v], 1024});
+                histories.push_back({sc_hist_v[v], sc_snap_v[v], sc_ring_v[v], 1024});
+                histories.push_back({sc_hist_attn[v], sc_snap_attn[v], sc_ring_attn[v], INK_D});
+                histories.push_back({sc_hist_mlp[v], sc_snap_mlp[v], sc_ring_mlp[v], INK_D});
+            }
+            tree_histories = dalloc<TreeConvHistory>(histories.size());
+            h2d_sync(tree_histories, histories.data(), histories.size() * sizeof(TreeConvHistory));
+            tree_frnn_snapshot = dalloc<float>(INK_D);
+            beam_pool = dalloc<BeamPool>(1);
+            beam_picks = dalloc<BeamPick>(16);
+            screen_short = dalloc<int>(7 * 2048);
+            screen_ids = dalloc<int>(7 * screen_size);
+            tree_ancestry = dalloc<int>(tree_capacity * 8);
+            beam_scores = dalloc<float>(beam_width * screen_size);
+            beam_state_next = dalloc<float>(beam_width * DSP_RANK);
+            std::vector<TreeKvCache> caches;
+            for (int v = 0; v < c.n_visits; ++v) caches.push_back({kv_k[v], kv_v[v], visit_kv_stride[v]});
+            for (int l = 0; l < 3; ++l) caches.push_back({dsp_ctx_k[l], dsp_ctx_v[l], max_ctx});
+            tree_caches = dalloc<TreeKvCache>(caches.size());
+            h2d_sync(tree_caches, caches.data(), caches.size() * sizeof(TreeKvCache));
+            compact_tree = ink_bmg_dspark();
+            fprintf(stderr, "[ink_sycl] DSpark greedy beam tree enabled (width %d, depth %d, up to 12 target rows)\n",
+                    compact_tree ? 2 : beam_width, compact_tree ? 4 : 7);
+        }
         wait();
         hybrid.init(m);
         ctrl_cache.prepare(m);
@@ -372,9 +444,9 @@ struct InkSyRunner {
         }
 
         if (ink_battlemage()) {
-            std::fprintf(stderr, "[ink_sycl] Battlemage experts=%s dense=%s controller cache=%s\n",
+            std::fprintf(stderr, "[ink_sycl] Battlemage experts=%s dense=%s dspark=%s controller cache=%s\n",
                          ink_bmg_experts() ? "on" : "off", ink_bmg_dense() ? "on" : "off",
-                         ctrl_cache.layers.empty() ? "off" : "ready");
+                         ink_bmg_dspark() ? "on" : "off", ctrl_cache.layers.empty() ? "off" : "ready");
         }
         fprintf(stderr, "[ink_sycl] runner ready: slots=%d ctx=%d batch=%d dspark=%d hybrid=%d | KV=%.1f MiB SC=%.1f MiB DevAlloc=%.2f GiB\n",
                 max_slots, max_ctx, max_batch, (int)use_dspark, (int)hybrid.active,
@@ -385,6 +457,7 @@ struct InkSyRunner {
     }
 
     void reset_slot(int s) {
+        if (s == last_ver_slot) { last_path.length = 0; last_ver_slot = -1; }
         if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         for (int v = 0; v < mod->man.c.n_visits; ++v) {
@@ -409,6 +482,15 @@ struct InkSyRunner {
 
     void rollback_slot(int s, int keep_len) {
         if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
+        if (last_path.length && s == last_ver_slot && keep_len >= last_ver_pos0 &&
+            keep_len <= last_ver_pos0 + last_path.length) {
+            const int keep = keep_len - last_ver_pos0;
+            const int row = keep ? last_path.rows[keep - 1] : -1;
+            restore_tree_history(tree_histories, 4 * mod->man.c.n_visits, row, false);
+            d2d(dsp_frnn_slot, keep ? dsp_frnn_tmp + (size_t)row * INK_D : tree_frnn_snapshot,
+                INK_D * sizeof(float));
+            return;
+        }
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         if (s == last_ver_slot && keep_len > last_ver_pos0 && keep_len <= last_ver_pos0 + last_ver_m) {
             const int step_idx = keep_len - last_ver_pos0 - 1;
@@ -636,6 +718,10 @@ struct InkSyRunner {
     }
 #endif
 
+    static bool tree_defer_metadata() {
+        return ink_bmg_dspark();
+    }
+
     static bool sy_graph_enabled() {
         static const bool v = [] { const char* e = std::getenv("INK_SY_GRAPH"); return e && e[0] == '1'; }();
         return v;
@@ -678,7 +764,7 @@ struct InkSyRunner {
                        int logits_mode,  // 0=none, 1=last token only, 2=all M tokens (or want_idx_host[0..n_want-1])
                        float* out_logits_host, int* out_argmax_host,
                        bool record_dspark_ctx,
-                       const int* want_idx_host = nullptr, int n_want = 0) {
+                       const int* want_idx_host = nullptr, int n_want = 0, int tree_root = -1) {
         if (M <= 0 || M > max_batch) return false;
         hybrid.decay_step();
         sy_prof_begin(M);
@@ -700,9 +786,10 @@ struct InkSyRunner {
             for (int m : kv.second) { h_idx.push_back(m); ++cur_t; }
         }
         const int n_active_slots = (int)h_as.size();
+        last_path.length = 0;
         const int save_ring = (n_active_slots == 1 && M > 1 && M <= 8) ? 1 : 0;
         static const bool tile_conv = ink_bmg_dense();
-        if (save_ring) {
+        if (save_ring || tree_root >= 0) {
             last_ver_slot = slot_ids[0];
             last_ver_pos0 = positions[0];
             last_ver_m = M;
@@ -710,7 +797,10 @@ struct InkSyRunner {
 
         auto short_conv = [&](const float* x, const float* weights, const float* dynamic, float* history,
                               float* output, int width, float* ring) {
-            if (tile_conv && n_active_slots == 1 && M >= 32)
+            if (tree_root >= 0)
+                k_sconv4_tree(x, weights, dynamic, history, tree_ancestry, b_pos, tree_root, M, width, output,
+                              ring);
+            else if (tile_conv && n_active_slots == 1 && M >= 32)
                 k_sconv4_prefill(x, weights, dynamic, history, b_active_slots, output, M, width);
             else
                 k_sconv4_multi_sg16(x, weights, dynamic, history, b_active_slots, b_slot_tok_off, b_slot_tok_cnt,
@@ -721,10 +811,15 @@ struct InkSyRunner {
         h2d(b_tok_ids, tok_ids, (size_t)M * 4);
         h2d(b_slot_ids, slot_ids, (size_t)M * 4);
         h2d(b_pos, positions, (size_t)M * 4);
-        h2d_sync(b_active_slots, h_as.data(), (size_t)n_active_slots * 4);
-        h2d_sync(b_slot_tok_off, h_off.data(), (size_t)n_active_slots * 4);
-        h2d_sync(b_slot_tok_cnt, h_cnt.data(), (size_t)n_active_slots * 4);
-        h2d_sync(b_slot_tok_idx, h_idx.data(), (size_t)M * 4);
+        if (tree_root < 0 || !tree_defer_metadata()) {
+            h2d_sync(b_active_slots, h_as.data(), (size_t)n_active_slots * 4);
+            h2d_sync(b_slot_tok_off, h_off.data(), (size_t)n_active_slots * 4);
+            h2d_sync(b_slot_tok_cnt, h_cnt.data(), (size_t)n_active_slots * 4);
+            h2d_sync(b_slot_tok_idx, h_idx.data(), (size_t)M * 4);
+        } else if (M == 1) {
+            // The fused single-row MoE tail only reads the active slot.
+            h2d(b_active_slots, h_as.data(), sizeof(int));
+        }
         if (is_img_host && img_emb_host) {
             h2d(b_is_img, is_img_host, (size_t)M);
             h2d(b_img_emb, img_emb_host, (size_t)M * D * 4);
@@ -763,6 +858,31 @@ struct InkSyRunner {
         int n_blocks = 0;
         int prelude_n_blocks = 0;
 
+        const bool tree = tree_root >= 0 && ink_bmg_dspark();
+        auto project_attention = [&](const InkTensorInfo& weight, const float* x, float* y) {
+#ifdef INK_HAS_GROUP_LOAD
+            if (tree && tree_bf16_projection(weight, x, y, M)) return;
+#endif
+            dispatch_linear(weight, x, y, M);
+        };
+        auto project_narrow = [&](const InkTensorInfo& weight, const float* x, float* y) {
+            const int outputs = static_cast<int>(weight.rows());
+            if (tree_root >= 0 && weight.fmt == FMT_F32 && outputs <= 128) {
+                const auto* w = reinterpret_cast<const float*>(weight.dev_ptr);
+                const int inputs = static_cast<int>(weight.cols());
+#ifdef INK_HAS_GROUP_LOAD
+                if (tree && inputs % 128 == 0 && reinterpret_cast<uintptr_t>(w) % 16 == 0 &&
+                    reinterpret_cast<uintptr_t>(x) % 16 == 0) {
+                    k_tree_linear_f32_striped(w, outputs, inputs, x, y, M);
+                    return;
+                }
+#endif
+                k_tree_linear_f32_sg16(w, outputs, inputs, x, y, M);
+            } else {
+                dispatch_linear(weight, x, y, M);
+            }
+        };
+
         auto run_visit = [&](int ip, int visit, int visit_pass, bool has_msgs) {
             if (record_dspark_ctx && use_dspark) {
                 for (int ti = 0; ti < 3; ++ti) {
@@ -774,7 +894,7 @@ struct InkSyRunner {
 
             const std::string p = "model.llm.layers." + std::to_string(ip);
             const bool is_swa = (c.is_swa[ip] != 0);
-            const auto* ctrl = M == 1 && has_msgs && !ctrl_cache.layers.empty()
+            const auto* ctrl = (M == 1 || tree) && has_msgs && !ctrl_cache.layers.empty()
                              ? &ctrl_cache.layers[ip - c.core_start] : nullptr;
 
             if (ip == 0) d2d(b_res, b_cur, (size_t)M_stride * 4);   // for ip > 0 the mix kernel below writes the copy
@@ -784,7 +904,7 @@ struct InkSyRunner {
             if (ip > 0) {
                 const int nq = is_swa ? 1 : 3;
                 k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.attn_queries." + std::to_string(ip - 1)),
-                                    b_in3, n_blocks, block_stride, M, nq, b_mix_stats, b_res);
+                                    b_in3, n_blocks, block_stride, M, nq, b_mix_stats, tree, b_res);
                 if (is_swa && has_msgs && !ctrl) {
                     d2d(b_in3 + M_stride, b_in3, (size_t)M_stride * 4);
                     d2d(b_in3 + 2 * M_stride, b_in3, (size_t)M_stride * 4);
@@ -796,7 +916,11 @@ struct InkSyRunner {
 
             // Cross-pass loop controllers (attn, k, v) + input RMSNorm
             if (ctrl) {
-                k_ctrl_decode_batch(ctrl->attention, b_in3, b_msgs, is_swa, b_cat, b_ctrl_gate);
+                // Expert scratch is idle until routing later in this visit.
+                if (tree)
+                    k_ctrl_decode_batch<3, true>(ctrl->attention, b_in3, b_msgs, is_swa, b_moe_yp, b_moe_h, M);
+                else
+                    k_ctrl_decode_batch(ctrl->attention, b_in3, b_msgs, is_swa, b_cat, b_ctrl_gate);
             } else if (has_msgs) {
                 const char* cnames[3] = {"attn", "k", "v"};
                 const char* nnames[3] = {"q_input_norm.weight", "k_input_norm.weight", "v_input_norm.weight"};
@@ -833,7 +957,7 @@ struct InkSyRunner {
                     if (!fuse3) {
                         k_ctrl_cat_rms_sg16(inp, mp, b_cat, M);
                         sy_prof_fmark(FX_CCAT);
-                        dispatch_linear(man.get(p + ".controllers." + cnames[j] + ".down_weight"), b_cat, b_ctrl_gate, M);
+                        project_narrow(man.get(p + ".controllers." + cnames[j] + ".down_weight"), b_cat, b_ctrl_gate);
                         sy_prof_fmark(FX_CLIN);
                     }
                     const float* gate_j = fuse3 ? (b_ctrl_gate + j * gate_stride) : b_ctrl_gate;
@@ -875,7 +999,7 @@ struct InkSyRunner {
             };
             const int tail = M % prefill_tile_rows;
             const bool keep_tile = !prefill_weight_reuse || M <= prefill_tile_rows || !tail || tail >= 16;
-            if (reuse_attention_input && M >= 512 && keep_tile && xmx_enabled() &&
+            if (reuse_attention_input && tree_root < 0 && M >= 512 && keep_tile && xmx_enabled() &&
                 bf16(q_weight) && bf16(k_weight) && bf16(v_weight) && bf16(rel_weight) && bf16(gate_weight)) {
                 auto& scratch = xmx_scratch();
                 const size_t input_elements = in_q == in_k ? M_stride : 3ul * M_stride;
@@ -891,43 +1015,69 @@ struct InkSyRunner {
                 project_packed(v_weight, in_v, b_v_raw);
                 project_packed(rel_weight, in_q, b_r);
                 project_packed(gate_weight, in_q, b_gate_attn);
-                dispatch_linear(sink_weight, in_q, b_sinks, M);
+                project_narrow(sink_weight, in_q, b_sinks);
             } else
 #endif
             {
-                dispatch_linear(q_weight, in_q, b_q, M);
-                dispatch_linear(k_weight, in_k, b_k_raw, M);
-                dispatch_linear(v_weight, in_v, b_v_raw, M);
-                dispatch_linear(rel_weight, in_q, b_r, M);
-                dispatch_linear(sink_weight, in_q, b_sinks, M);
-                dispatch_linear(gate_weight, in_q, b_gate_attn, M);
+                project_attention(q_weight, in_q, b_q);
+                project_attention(k_weight, in_k, b_k_raw);
+                project_attention(v_weight, in_v, b_v_raw);
+                project_attention(rel_weight, in_q, b_r);
+                project_narrow(sink_weight, in_q, b_sinks);
+                project_attention(gate_weight, in_q, b_gate_attn);
             }
             if (!is_swa) {
-                dispatch_linear(man.get(p + ".attn.k_sconv.weight_proj"), in_k, b_kd_taps, M);
-                dispatch_linear(man.get(p + ".attn.v_sconv.weight_proj"), in_v, b_vd_taps, M);
+                project_narrow(man.get(p + ".attn.k_sconv.weight_proj"), in_k, b_kd_taps);
+                project_narrow(man.get(p + ".attn.v_sconv.weight_proj"), in_v, b_vd_taps);
             }
             sy_prof_mark(PF_QKV);
 
             // 4-tap ShortConv on K & V
             const float* sc_layer = mod->static_sconv_dev + (size_t)ip * InkSyModel::kSconvLayerFloats;
             const int has_dyn = is_swa ? 0 : 1;
-            short_conv(b_k_raw, sc_layer + InkSyModel::kSconvKOff, has_dyn ? b_kd_taps : nullptr, sc_hist_k[visit],
-                       b_k, 1024, sc_ring_k[visit]);
-            short_conv(b_v_raw, sc_layer + InkSyModel::kSconvVOff, has_dyn ? b_vd_taps : nullptr, sc_hist_v[visit],
-                       b_v, 1024, sc_ring_v[visit]);
+            if (tree && !dbg && M <= 12 && D == INK_D) {
+                k_qkv_tree_clip_store(b_q, tf32(p + ".attn.q_l2_clip.scale"), b_r, tf32(p + ".attn.rel_l2_clip.scale"),
+                                      b_k_raw, b_v_raw, sc_layer + InkSyModel::kSconvKOff,
+                                      sc_layer + InkSyModel::kSconvVOff, b_kd_taps, b_vd_taps,
+                                      sc_hist_k[visit], sc_hist_v[visit], sc_ring_k[visit], sc_ring_v[visit],
+                                      kv_k[visit], kv_v[visit], tree_ancestry, b_slot_ids, b_pos,
+                                      M, is_swa, visit_kv_stride[visit], tree_root);
+            } else {
+                short_conv(b_k_raw, sc_layer + InkSyModel::kSconvKOff, has_dyn ? b_kd_taps : nullptr, sc_hist_k[visit],
+                           b_k, 1024, sc_ring_k[visit]);
+                short_conv(b_v_raw, sc_layer + InkSyModel::kSconvVOff, has_dyn ? b_vd_taps : nullptr, sc_hist_v[visit],
+                           b_v, 1024, sc_ring_v[visit]);
 
-            // Q/R L2 clip + tau, K L2 clip + V RMSNorm + KV store
-            k_qr_clip_tau_sg16(b_q, tf32(p + ".attn.q_l2_clip.scale"),
-                               b_r, tf32(p + ".attn.rel_l2_clip.scale"),
-                               b_pos, M, is_swa ? 1 : 0);
-            k_kv_norm_store_f16_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
-                                     b_slot_ids, b_pos, M, is_swa ? 1 : 0, visit_kv_stride[visit]);
+                // Q/R L2 clip + tau, K L2 clip + V RMSNorm + KV store
+                k_qr_clip_tau_sg16(b_q, tf32(p + ".attn.q_l2_clip.scale"),
+                                   b_r, tf32(p + ".attn.rel_l2_clip.scale"),
+                                   b_pos, M, is_swa ? 1 : 0);
+                k_kv_norm_store_f16_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
+                                         b_slot_ids, b_pos, M, is_swa ? 1 : 0, visit_kv_stride[visit], tree_root);
+            }
             sy_prof_mark(PF_SCONV);
 
             // Fused RelPos + Sink 24:8 GQA Flash Attention + sigmoid(gate_attn)
             static const bool shared_kv = ink_bmg_dense();
             static const bool split_kv = ink_bmg_dense();
-            if (M == 1 && positions[0] >= 1023 && split_kv && !capturing) {
+            auto attention = [&](auto tree) {
+                k_relpos_sink_gqa_sg16<decltype(tree)::value>(
+                    b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025, b_sinks, b_gate_attn, kv_k[visit],
+                    kv_v[visit], b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0, c.swa_win, c.rel_extent,
+                    visit_kv_stride[visit], tree_root, tree_ancestry);
+            };
+            if (tree) {
+                auto run_stream = [&](auto ring, auto full) {
+                    k_relpos_tree_stream<decltype(ring)::value, decltype(full)::value>(b_q, b_r, mod->rel_proj_pad_dev + size_t(ip) * 16 * 1025,
+                        b_sinks, b_gate_attn, kv_k[visit], kv_v[visit], b_slot_ids, b_pos,
+                        M, is_swa, c.swa_win, c.rel_extent, visit_kv_stride[visit], tree_root,
+                        tree_ancestry, b_attn_out);
+                };
+                if (!is_swa) run_stream(std::false_type{}, std::true_type{});
+                else run_stream(std::true_type{}, std::false_type{});
+            } else if (tree_root >= 0) {
+                attention(std::true_type{});
+            } else if (M == 1 && positions[0] >= 1023 && split_kv && !capturing) {
                 k_relpos_decode_split_kv(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
                                         b_sinks, b_gate_attn, kv_k[visit], kv_v[visit], slot_ids[0], positions[0],
                                         b_attn_out, b_moe_yp, is_swa, c.swa_win, c.rel_extent, visit_kv_stride[visit]);
@@ -952,10 +1102,7 @@ struct InkSyRunner {
                     prefill_attention(std::true_type{});
                 }
             } else {
-                k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
-                                       b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
-                                       b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
-                                       c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+                attention(std::false_type{});
             }
             sy_prof_mark(PF_ATTN);
             if (visit == 0) {
@@ -964,7 +1111,7 @@ struct InkSyRunner {
             }
 
             // Output projection + attn_sconv
-            dispatch_linear(man.get(p + ".attn.wo_ud.weight"), b_attn_out, b_wo_raw, M);
+            project_attention(man.get(p + ".attn.wo_ud.weight"), b_attn_out, b_wo_raw);
             short_conv(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn[visit],
                        b_wo, D, sc_ring_attn[visit]);
             if (visit == 0) { dbg_buf("v0_wo_raw", b_wo_raw, D); dbg_buf("v0_wo", b_wo, D); }
@@ -982,15 +1129,18 @@ struct InkSyRunner {
             // ---- MoE Sublayer ----
             sy_prof_fmark(FX_RES);
             k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.mlp_queries." + std::to_string(ip)),
-                                b_mlp_in, n_blocks, block_stride, M, 1, b_mix_stats, b_res);
+                                b_mlp_in, n_blocks, block_stride, M, 1, b_mix_stats, tree, b_res);
             sy_prof_fmark(FX_MARM);
             if (ctrl) {
-                k_ctrl_decode_batch(ctrl->mlp, b_mlp_in, b_msgs + 3 * M_stride, false, b_cat, b_ctrl_gate);
+                if (tree)
+                    k_ctrl_decode_batch<1, true>(ctrl->mlp, b_mlp_in, b_msgs + 3 * M_stride, false, b_moe_yp, b_moe_h, M);
+                else
+                    k_ctrl_decode_batch(ctrl->mlp, b_mlp_in, b_msgs + 3 * M_stride, false, b_cat, b_ctrl_gate);
             } else if (has_msgs) {
                 const float* mp = b_msgs + 3 * M_stride;
                 k_ctrl_cat_rms_sg16(b_mlp_in, mp, b_cat, M);
                 sy_prof_fmark(FX_MCCAT);
-                dispatch_linear(man.get(p + ".controllers.mlp.down_weight"), b_cat, b_ctrl_gate, M);
+                project_narrow(man.get(p + ".controllers.mlp.down_weight"), b_cat, b_ctrl_gate);
                 sy_prof_fmark(FX_MCLIN);
                 k_ctrl_apply_norm_sg16(b_mlp_in, mp, b_ctrl_gate,
                                        tf32(p + ".controllers.mlp.gain_weight"),
@@ -1002,7 +1152,7 @@ struct InkSyRunner {
                 sy_prof_fmark(FX_MNORM);
             }
 
-            dispatch_linear(man.get(p + ".mlp.gate.weight"), b_mlp_in, b_r_logits, M);
+            project_narrow(man.get(p + ".mlp.gate.weight"), b_mlp_in, b_r_logits);
             sy_prof_fmark(FX_GATE);
             const bool resident_sq20 = mod->sq20_experts && mod->n_host_experts == 0 && !mod->ep2_active;
             const bool resident_one = M == 1 && resident_sq20 && !hybrid.active;
@@ -1010,7 +1160,7 @@ struct InkSyRunner {
             const bool single_dot = M == 1 && packed_dot && mod->sq20_experts;
             const bool single_tail = single_dot && resident_one && n_active_slots == 1 && D == 2304 && !dbg;
             const float* router_bias = tf32(p + ".mlp.gate.bias");
-            if (resident_one && packed_dot)
+            if ((resident_one || (tree && resident_sq20 && !hybrid.active)) && packed_dot)
                 k_sq20_decode_top8(b_r_logits, router_bias, b_topk_idx, b_topk_w, c.route_scale, M);
             else
                 k_router_topk8_sg16(b_r_logits, router_bias, b_topk_idx, b_topk_w, c.route_scale, M);
@@ -1164,8 +1314,30 @@ struct InkSyRunner {
                 const int max_uniq = std::min(128, P);
                 k_moe_plan_sg16(b_topk_idx, P, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq);
                 const InkSyExpertDev* ex_layer = mod->expert_dev + (size_t)ip * c.n_experts;
-                k_moe_gu_situ_sg16(ex_layer, b_mlp_in, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, max_uniq, b_moe_h);
-                k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, max_uniq, b_moe_h, b_moe_yp);
+                if (tree && resident_sq20 && !hybrid.active && packed_dot) {
+                    const auto& formats = mod->layer_codecs[ip];
+                    if (formats.sf4_gu && formats.sf4_down) {
+                        if (sf4_scales) {
+                            const float* factors = sf4_scales + size_t(ip) * c.n_experts * sf4_expert_scales;
+                            k_sf4_cached<false>(ex_layer, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs,
+                                                     b_moe_n_uniq, max_uniq, nullptr, b_mlp_in, b_moe_h, factors);
+                            k_sf4_cached<true>(ex_layer, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs,
+                                                    b_moe_n_uniq, max_uniq, b_topk_w, b_moe_h, b_moe_yp, factors);
+                        } else {
+                            k_tree_sf4_packed<false>(ex_layer, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs,
+                                                     b_moe_n_uniq, max_uniq, nullptr, b_mlp_in, b_moe_h);
+                            k_tree_sf4_packed<true>(ex_layer, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs,
+                                                    b_moe_n_uniq, max_uniq, b_topk_w, b_moe_h, b_moe_yp);
+                        }
+                    } else {
+                        const auto project = sq20_mx8_layer(ip) ? sq20_small_moe_mx8 : sq20_small_moe;
+                        project(ex_layer, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs,
+                                b_moe_n_uniq, max_uniq, b_topk_w, b_mlp_in, b_moe_h, b_moe_yp);
+                    }
+                } else {
+                    k_moe_gu_situ_sg16(ex_layer, b_mlp_in, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, max_uniq, b_moe_h);
+                    k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, max_uniq, b_moe_h, b_moe_yp);
+                }
                 k_moe_reduce8_sg16(b_moe_yp, b_moe_raw, M);
             }
             sy_prof_mark(PF_MOE);
@@ -1209,7 +1381,7 @@ struct InkSyRunner {
                 if (p_idx > 0) {
                     k_attn_res_mix_sg16(b_bank_blk, b_bank_out,
                                         mod->msg_queries_dev + (size_t)(ip - c.core_start) * 4 * D,
-                                        b_msgs, bank_n, block_stride, M, 4, b_mix_stats);
+                                        b_msgs, bank_n, block_stride, M, 4, b_mix_stats, tree);
                 }
                 run_visit(ip, visit++, p_idx, p_idx > 0);
             }
@@ -1219,7 +1391,7 @@ struct InkSyRunner {
         for (int ip = c.core_end; ip < c.n_phys; ++ip) run_visit(ip, visit++, 0, false);
 
         // 5. Final Output Attention-Residual + model.llm.norm
-        k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.output_query"), b_h_out, n_blocks, block_stride, M, 1, b_mix_stats);
+        k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.output_query"), b_h_out, n_blocks, block_stride, M, 1, b_mix_stats, tree);
         k_rms_norm_sg16(b_h_out, tf32("model.llm.norm.weight"), b_h_norm, D, M);
 
         // 6. Optional DSpark taps -> context KV + f_rnn
@@ -1233,11 +1405,11 @@ struct InkSyRunner {
                 dispatch_linear(man.get_d(dp + ".self_attn.v_proj_ctx.weight"), b_mlp_in, b_v_raw, M);
                 k_dspark_ctx_kv_store_sg16(b_k_raw, b_v_raw, df32(dp + ".self_attn.k_norm_ctx.weight"),
                                            dsp_ctx_k[dl], dsp_ctx_v[dl], b_slot_ids, b_pos,
-                                           M, max_ctx, c.dspark_rope_theta);
+                                           M, max_ctx, c.dspark_rope_theta, tree_root);
             }
             k_dspark_mix_taps_sg16(b_taps4, fw, df32("dspark.markov_head.dflare_norm.weight"), dsp_frnn_tmp, 3, M, M);
             // Scatter latest f_rnn per slot on GPU (in ascending token order)
-            for (int m = 0; m < M; ++m) {
+            for (int m = 0; tree_root < 0 && m < M; ++m) {
                 d2d(dsp_frnn_slot + (size_t)slot_ids[m] * D, dsp_frnn_tmp + (size_t)m * D, (size_t)D * 4);
             }
         }
@@ -1268,7 +1440,13 @@ struct InkSyRunner {
                         }
                         x_src = b_h_out;
                     }
-                    dispatch_linear(man.get("model.llm.unembed.weight"), x_src, b_logits, rc, V_un);
+                    const auto& head = man.get("model.llm.unembed.weight");
+                    bool projected = false;
+#ifdef INK_HAS_GROUP_LOAD
+                    if (tree)
+                        projected = tree_bf16_projection(head, x_src, b_logits, rc, V_un);
+#endif
+                    if (!projected) dispatch_linear(head, x_src, b_logits, rc, V_un);
                     k_softcap_sg16(b_logits, rc * V_un, c.logit_softcap);
                     if (out_argmax_host) {
                         k_argmax_rows_sg16(b_logits, b_argmax, V_un, rc);
@@ -1301,6 +1479,57 @@ struct InkSyRunner {
         return true;
     }
 
+    void dspark_block_linear(const InkTensorInfo& weight, const float* x, float* y) {
+#ifdef INK_SYCL_USE_ONEMKL
+        const int n = static_cast<int>(weight.rows()), k = static_cast<int>(weight.cols());
+        if (dspark_q8_dots && weight.fmt == FMT_Q8ROW && n > 0 && n <= dspark_q8_cols &&
+            n % 16 == 0 && k > 0 && k <= 9216 && k % 32 == 0 &&
+            reinterpret_cast<uintptr_t>(weight.dev_ptr) % 16 == 0) {
+            k_quantize_x_q8_sg16(x, 8, k, xq_s8_dev, xsc_dev);
+            ink_xmx_dspark_q8(weight.dev_ptr, n, k, xq_s8_dev, xsc_dev, y,
+                              dspark_q8_dots, dspark_q8_dots + size_t(8) * dspark_q8_cols);
+            return;
+        }
+#endif
+        dispatch_linear(weight, x, y, 8);
+    }
+
+    void dspark_prepare_block(int slot, int anchor_tok, int anchor_pos) {
+        const auto& man = mod->man;
+        const auto& c = man.c;
+        const int D = c.hidden;
+        k_dspark_init_block_sg16(man.get("model.llm.embed.weight"), tf32("model.llm.embed_norm.weight"),
+                                 df32("dspark.mask_embed"), bd_cur, anchor_tok, c.vocab_padded);
+
+        for (int il = 0; il < 3; ++il) {
+            std::string lp = "dspark.layers." + std::to_string(il);
+            d2d(bd_res, bd_cur, 8 * D * 4);
+            k_rms_norm_sg16(bd_cur, df32(lp + ".input_layernorm.weight"), bd_h, D, 8);
+            dspark_block_linear(man.get_d(lp + ".self_attn.q_proj.weight"), bd_h, bd_q);
+            dspark_block_linear(man.get_d(lp + ".self_attn.k_proj.weight"), bd_h, bd_k);
+            dspark_block_linear(man.get_d(lp + ".self_attn.v_proj.weight"), bd_h, bd_v);
+            k_dspark_qk_norm_rope_sg16(bd_q, df32(lp + ".self_attn.q_norm.weight"), 24, anchor_pos, c.dspark_rope_theta);
+            k_dspark_qk_norm_rope_sg16(bd_k, df32(lp + ".self_attn.k_norm.weight"), 8, anchor_pos, c.dspark_rope_theta);
+            static const bool vectorized_attn = ink_bmg_dspark();
+            const auto attention = vectorized_attn ? k_dspark_block_attn_sg16<true> : k_dspark_block_attn_sg16<false>;
+            attention(bd_q, bd_k, bd_v, dsp_ctx_k[il], dsp_ctx_v[il], bd_ao,
+                      slot, anchor_pos, c.dspark_is_swa[il], c.dspark_swa_win, max_ctx);
+            dspark_block_linear(man.get_d(lp + ".self_attn.o_proj.weight"), bd_ao, bd_proj);
+            k_add_sg16(bd_res, bd_proj, bd_cur, 8 * D);
+
+            d2d(bd_res, bd_cur, 8 * D * 4);
+            k_rms_norm_sg16(bd_cur, df32(lp + ".post_attention_layernorm.weight"), bd_h, D, 8);
+            dspark_block_linear(man.get_d(lp + ".mlp.gate_proj.weight"), bd_h, bd_mg);
+            dspark_block_linear(man.get_d(lp + ".mlp.up_proj.weight"), bd_h, bd_mu);
+            k_dspark_swiglu_sg16(bd_mg, bd_mu, bd_mh, 8 * c.dspark_inter);
+            dspark_block_linear(man.get_d(lp + ".mlp.down_proj.weight"), bd_mh, bd_proj);
+            k_add_sg16(bd_res, bd_proj, bd_cur, 8 * D);
+        }
+
+        k_rms_norm_sg16(bd_cur, df32("dspark.norm.weight"), bd_cur, D, 8);
+
+    }
+
     // Persistent 100% on-GPU DSpark Block-8 Recurrent Markov drafter!
     // Uses linearity: unembed(cur[s]) + unembed(corr) == unembed(cur[s] + corr) -> ONLY 7 unembed calls (vs 15)!
     int dspark_draft_block8(int slot, int anchor_tok, int anchor_pos, int out_drafts[7]) {
@@ -1313,34 +1542,7 @@ struct InkSyRunner {
         dzero(bd_state, 256 * 4);
         h2d_sync(bd_tok_chain, &anchor_tok, 4);
 
-        k_dspark_init_block_sg16(man.get("model.llm.embed.weight"), tf32("model.llm.embed_norm.weight"),
-                                 df32("dspark.mask_embed"), bd_cur, anchor_tok, c.vocab_padded);
-
-        for (int il = 0; il < 3; ++il) {
-            std::string lp = "dspark.layers." + std::to_string(il);
-            d2d(bd_res, bd_cur, 8 * D * 4);
-            k_rms_norm_sg16(bd_cur, df32(lp + ".input_layernorm.weight"), bd_h, D, 8);
-            dispatch_linear(man.get_d(lp + ".self_attn.q_proj.weight"), bd_h, bd_q, 8);
-            dispatch_linear(man.get_d(lp + ".self_attn.k_proj.weight"), bd_h, bd_k, 8);
-            dispatch_linear(man.get_d(lp + ".self_attn.v_proj.weight"), bd_h, bd_v, 8);
-            k_dspark_qk_norm_rope_sg16(bd_q, df32(lp + ".self_attn.q_norm.weight"), 24, anchor_pos, c.dspark_rope_theta);
-            k_dspark_qk_norm_rope_sg16(bd_k, df32(lp + ".self_attn.k_norm.weight"), 8, anchor_pos, c.dspark_rope_theta);
-            k_dspark_block_attn_sg16(bd_q, bd_k, bd_v, dsp_ctx_k[il], dsp_ctx_v[il], bd_ao,
-                                     slot, anchor_pos, c.dspark_is_swa[il], c.dspark_swa_win, max_ctx);
-            dispatch_linear(man.get_d(lp + ".self_attn.o_proj.weight"), bd_ao, bd_proj, 8);
-            k_add_sg16(bd_res, bd_proj, bd_cur, 8 * D);
-
-            d2d(bd_res, bd_cur, 8 * D * 4);
-            k_rms_norm_sg16(bd_cur, df32(lp + ".post_attention_layernorm.weight"), bd_h, D, 8);
-            dispatch_linear(man.get_d(lp + ".mlp.gate_proj.weight"), bd_h, bd_mg, 8);
-            dispatch_linear(man.get_d(lp + ".mlp.up_proj.weight"), bd_h, bd_mu, 8);
-            k_dspark_swiglu_sg16(bd_mg, bd_mu, bd_mh, 8 * c.dspark_inter);
-            dispatch_linear(man.get_d(lp + ".mlp.down_proj.weight"), bd_mh, bd_proj, 8);
-            k_add_sg16(bd_res, bd_proj, bd_cur, 8 * D);
-        }
-
-        k_rms_norm_sg16(bd_cur, df32("dspark.norm.weight"), bd_cur, D, 8);
-
+        dspark_prepare_block(slot,anchor_tok,anchor_pos);
         const float* ctx_vec = dsp_frnn_slot + (size_t)slot * D;
         const auto& mw1 = man.get_d("dspark.markov_head.markov_w1.weight");
         const auto& rnn_w = man.get_d("dspark.markov_head.rnn_proj.weight");
@@ -1350,7 +1552,7 @@ struct InkSyRunner {
         const auto& unemb = man.get("model.llm.unembed.weight");
 
         for (int s = 1; s < 8; ++s) {
-            k_dspark_markov_joint_sg16(bd_state, mw1, bd_cur, ctx_vec, bd_tok_chain, bd_joint, s, c.vocab_padded);
+            k_dspark_markov_joint_sg16(bd_state, mw1, bd_cur, ctx_vec, bd_tok_chain+s-1, bd_joint, s, c.vocab_padded);
             dispatch_linear(rnn_w, bd_joint, bd_rproj, 1);
             k_dspark_markov_rnn_update_sg16(bd_rproj, rnn_b, bd_state, bd_latent);
             dispatch_linear(ho_w, bd_latent, bd_corr, 1);
@@ -1367,6 +1569,120 @@ struct InkSyRunner {
         wait();
         for (int i = 0; i < 7; ++i) out_drafts[i] = chain[i + 1];
         return 7;
+    }
+    template<int ScreenDepths = 7>
+    void draft_screened(int anchor, int root, int width, int depths, BeamPool& pool) {
+        const auto& man = mod->man;
+        const auto& c = man.c;
+        const auto& head = man.get("model.llm.unembed.weight");
+        const int V = c.vocab_unpadded;
+        pool = {};
+        pool.nodes[0] = {anchor, -1, 0, 0};
+        pool.size = 1;
+        const auto upload = tree_defer_metadata() ? h2d : h2d_sync;
+        upload(beam_pool, &pool, sizeof(pool));
+        dzero(bd_state, beam_width * DSP_RANK * sizeof(float));
+        dspark_prepare_block(0, anchor, root);
+        k_dspark_screen_logits<ScreenDepths>(reinterpret_cast<const uint16_t*>(head.dev_ptr), bd_cur + INK_D, b_logits, V);
+        screen_beam_vocab(b_logits, V, screen_short, screen_ids, ScreenDepths);
+        const auto& mw = man.get_d("dspark.markov_head.markov_w1.weight");
+        const auto& rw = man.get_d("dspark.markov_head.rnn_proj.weight");
+        const auto& hw = man.get_d("dspark.markov_head.hidden_out.weight");
+        for (int depth = 1; depth <= depths; ++depth) {
+            const int beams = depth == 1 ? 1 : width;
+            auto* pool_dev = beam_pool;
+            auto* prev = bd_tok_chain;
+            Q().parallel_for(sycl::range<1>(beams),
+                             [=](sycl::id<1> i) { prev[i[0]] = pool_dev->nodes[pool_dev->active[i[0]]].token; });
+            for (int b = 0; b < beams; ++b)
+                k_dspark_markov_joint_sg16(bd_state + b * 256, mw, bd_cur, dsp_frnn_slot, prev + b,
+                                           bd_joint + b * 5120, depth, c.vocab_padded);
+            dispatch_linear(rw, bd_joint, bd_rproj, beams);
+            for (int b = 0; b < beams; ++b)
+                k_dspark_markov_rnn_update_sg16(bd_rproj + b * 768, df32("dspark.markov_head.rnn_proj.bias"),
+                                                bd_state + b * 256, bd_latent + b * 256);
+            dispatch_linear(hw, bd_latent, bd_corr, beams);
+            const int* ids = screen_ids + (depth - 1) * screen_size;
+            score_beam_candidates(reinterpret_cast<const uint16_t*>(head.dev_ptr), bd_corr,
+                                  df32("dspark.markov_head.hidden_out.bias"), ids,
+                                  b_logits + (size_t)(depth - 1) * V, beams, c.logit_softcap, beam_scores);
+            expand_beams(beam_pool, ids, beam_scores, beam_picks, beams, depth, bd_state, beam_state_next);
+            std::swap(bd_state, beam_state_next);
+        }
+        d2h(&pool, beam_pool, sizeof(pool));
+        wait();
+    }
+
+    int dspark_adaptive_chain(int anchor, int root, int cap, int32_t* tokens) {
+        if (root <= 0 || root >= max_ctx - 8 || cap < 1) return 0;
+        cap = std::min(7, cap);
+        BeamPool pool;
+        draft_screened(anchor, root, 1, cap, pool);
+        double expected = 1.0, best = 0.0;
+        int keep = 1;
+        for (int n = 1; n <= cap; ++n) {
+            // One active beam records its four expansions at every depth.
+            const auto& best_child = pool.nodes[1 + (n - 1) * beam_width];
+            tokens[n - 1] = best_child.token;
+            expected += std::exp(double(best_child.logp));
+            if (n < 2 && cap > 1) continue;
+            const double rate = expected / beam_verify_cost(n + 1);
+            if (rate > best) {
+                best = rate;
+                keep = n;
+            }
+        }
+        if (trace_tree) fprintf(stderr, "[ink_sycl] adaptive chain pos=%d offered=%d cap=%d\n", root, keep, cap);
+        return keep;
+    }
+
+    int dspark_tree_step(int anchor, int root, int limit, int32_t* emitted, int* drafted) {
+        if (!beam_enabled || root <= 0 || root >= max_ctx - tree_capacity || limit < 1 || !emitted) return 0;
+        const auto& c = mod->man.c;
+        BeamPool pool;
+        // Compact drafting leaves target verification and accepted-path commit intact.
+        if (compact_tree) draft_screened<4>(anchor, root, 2, 4, pool);
+        else draft_screened(anchor, root, beam_width, 7, pool);
+        static const bool tight_verify = ink_bmg_dspark();
+        const VerifyTree tree = prune_beams(pool, tight_verify);
+        int positions[tree_capacity], slots[tree_capacity]{}, targets[tree_capacity];
+        for (int i = 0; i < tree.count; ++i) positions[i] = root + tree.depth[i];
+        const auto upload = tree_defer_metadata() ? h2d : h2d_sync;
+        upload(tree_ancestry, tree.ancestry, tree.count * 8 * sizeof(int));
+        // The live ShortConv histories stay intact until the selected path is known.
+        if (!forward_batch(tree.tokens, slots, positions, tree.count, nullptr, nullptr, 2, nullptr, targets, true,
+                           nullptr, 0, root))
+            return -1;
+        AcceptedPath path{};
+        int node = 0, sibling_hits = 0;
+        while (path.length < std::min(limit, 8)) {
+            path.rows[path.length] = node;
+            emitted[path.length++] = targets[node];
+            int child = node + 1;
+            while (child < tree.count && (tree.parent[child] != node || tree.tokens[child] != targets[node]))
+                ++child;
+            if (child == tree.count) break;
+            if (trace_tree && path.length < std::min(limit, 8)) {
+                for (int j = node + 1; j < child; ++j)
+                    if (tree.parent[j] == node) {
+                        ++sibling_hits;
+                        break;
+                    }
+            }
+            node = child;
+        }
+        commit_tree_kv(tree_caches, c.n_visits + 3, root, path);
+        last_path = path;
+        last_ver_m = path.length;
+        const int last = path.rows[path.length - 1];
+        restore_tree_history(tree_histories, 4 * c.n_visits, last, true);
+        d2d(tree_frnn_snapshot, dsp_frnn_slot, INK_D * sizeof(float));
+        d2d(dsp_frnn_slot, dsp_frnn_tmp + (size_t)last * INK_D, INK_D * sizeof(float));
+        if (trace_tree)
+            fprintf(stderr, "[ink_sycl] tree pos=%d nodes=%d emitted=%d sibling_hits=%d\n", root, tree.count,
+                    path.length, sibling_hits);
+        if (drafted) *drafted = tree.count - 1;
+        return path.length;
     }
 };
 

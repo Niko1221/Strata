@@ -362,6 +362,12 @@ inline bool ink_bmg_dense() {
     return enabled;
 }
 
+// DSpark drafting and tree-verification kernels.
+inline bool ink_bmg_dspark() {
+    static const bool enabled = ink_bmg_option("INK_SYCL_BMG_DSPARK");
+    return enabled;
+}
+
 inline size_t& dev_bytes_allocated() { static size_t b = 0; return b; }
 
 template <class T>

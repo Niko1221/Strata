@@ -43,13 +43,15 @@ inline void k_embed_sg16(const InkTensorInfo& eti, const float* norm_w, const in
     });
 }
 
-// For one token, each state/query pair can form its two reductions independently.
+// Each node, state and query can form its two reductions independently.
+template<bool Tree = false>
 inline void k_res_mix_decode(const float* blocks, const float* cur, const float* queries, float* out,
-                             int n_blocks, int stride, int n_queries, float* stats, float* copy_cur = nullptr) {
+                             int n_blocks, int stride, int n_queries, float* stats, int nodes = 1, float* copy_cur = nullptr) {
+    const int batch = Tree ? nodes : 1;
     const int states = n_blocks + 1;
-    Q().parallel_for(NR(states * n_queries, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-        const int pair = it.get_group(0), state = pair % states, q = pair / states;
-        const float* x = state < n_blocks ? blocks + (size_t)state * stride : cur;
+    Q().parallel_for(NR(batch * states * n_queries, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int pair = it.get_group(0), state = pair % states, vector = pair / states, q = vector / batch;
+        const float* x = (state < n_blocks ? blocks + (size_t)state * stride : cur) + (vector % batch) * INK_D;
         const float* query = queries + q * INK_D;
         float sq = 0.0f, dot = 0.0f;
         for (int d = it.get_local_id(0); d < INK_D; d += 256) {
@@ -61,8 +63,9 @@ inline void k_res_mix_decode(const float* blocks, const float* cur, const float*
         const float score = wg_sum16(it, dot, shared) * inv * (1.0f / 48.0f);
         if (it.get_local_id(0) == 0) { stats[pair * 2] = inv; stats[pair * 2 + 1] = score; }
     });
-    Q().parallel_for(NR2(INK_D / 64, n_queries, 64), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+    Q().parallel_for(NR2(INK_D / 64, batch * n_queries, 64), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
         const int q = it.get_group(0), d = it.get_global_id(1);
+        const int offset = (q % batch) * INK_D + d;
         const float* st = stats + q * states * 2;
         float peak = -1e30f, sum = 0.0f, p[8];
         for (int s = 0; s < states; ++s) peak = sycl::fmax(peak, st[2 * s + 1]);
@@ -71,10 +74,10 @@ inline void k_res_mix_decode(const float* blocks, const float* cur, const float*
         float v = 0.0f;
         for (int s = 0; s < states; ++s) {
             p[s] *= inv_sum * st[2 * s];
-            v += p[s] * (s < n_blocks ? blocks[(size_t)s * stride + d] : cur[d]);
+            v += p[s] * (s < n_blocks ? blocks[(size_t)s * stride + offset] : cur[offset]);
         }
         out[q * INK_D + d] = v;
-        if (copy_cur && q == 0) copy_cur[d] = cur[d];
+        if (copy_cur && q < batch) copy_cur[offset] = cur[offset];
     });
 }
 
@@ -191,10 +194,14 @@ inline void k_attn_res_mix_prefill(const float* blocks_buf, const float* cur_buf
 }
 
 inline void k_attn_res_mix_sg16(const float* blocks_buf, const float* cur_buf, const float* queries, float* out_buf,
-                                int n_blocks, int block_stride, int M, int n_queries, float* stats = nullptr, float* copy_cur = nullptr) {
+                                int n_blocks, int block_stride, int M, int n_queries, float* stats = nullptr, bool tree = false, float* copy_cur = nullptr) {
     static const bool split = ink_bmg_dense();
+    if (tree && stats && split) {
+        k_res_mix_decode<true>(blocks_buf, cur_buf, queries, out_buf, n_blocks, block_stride, n_queries, stats, M, copy_cur);
+        return;
+    }
     if (M == 1 && stats && split) {
-        k_res_mix_decode(blocks_buf, cur_buf, queries, out_buf, n_blocks, block_stride, n_queries, stats, copy_cur);
+        k_res_mix_decode(blocks_buf, cur_buf, queries, out_buf, n_blocks, block_stride, n_queries, stats, 1, copy_cur);
         return;
     }
     static const bool combined = ink_bmg_dense();
@@ -382,6 +389,32 @@ inline void k_sconv4_multi_sg16(
     });
 }
 
+// Tree rows have independent ShortConv histories. Negative logical offsets
+// refer to the three committed samples immediately before the anchor.
+inline void k_sconv4_tree(const float* x, const float* weights, const float* dynamic, const float* history,
+                          const int* ancestry, const int* positions, int root, int count, int width, float* y,
+                          float* ring) {
+    Q().parallel_for(sycl::range<2>(count, width), [=](sycl::id<2> idx) {
+        const int m = idx[0], c = idx[1], depth = positions[m] - root;
+        float h[3];
+        for (int t = 0; t < 3; ++t) {
+            const int previous = depth - 3 + t;
+            h[t] = previous < 0 ? history[(3 + previous) * width + c] : x[ancestry[m * 8 + previous] * width + c];
+        }
+        const float cur = x[m * width + c];
+        const float* w = weights + 4 * c;
+        float acc = h[0] * w[0] + h[1] * w[1] + h[2] * w[2] + cur * w[3];
+        if (dynamic) {
+            const float* dt = dynamic + (m * 8 + (c >> 7)) * 4;
+            acc += cur * dt[0] + h[2] * dt[1] + h[1] * dt[2] + h[0] * dt[3];
+        }
+        y[m * width + c] = (cur + acc) * (dynamic ? 1.0f / 3.0f : 0.4472135954999579f);
+        ring[(m * 3) * width + c] = h[1];
+        ring[(m * 3 + 1) * width + c] = h[2];
+        ring[(m * 3 + 2) * width + c] = cur;
+    });
+}
+
 inline void k_qr_clip_tau_sg16(float* q_buf, const float* q_scale, float* r_buf, const float* r_scale,
                                const int* pos_buf, int M, int is_swa) {
     Q().parallel_for(NR2(INK_NH, (size_t)M, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
@@ -407,11 +440,11 @@ inline void k_qr_clip_tau_sg16(float* q_buf, const float* q_scale, float* r_buf,
 }
 
 inline void k_kv_norm_store_f16_sg16(const float* k_in, const float* v_in, half* k_cache, half* v_cache,
-                                     const int* slot_ids, const int* pos_buf, int M, int is_swa, int kv_stride) {
+                                     const int* slot_ids, const int* pos_buf, int M, int is_swa, int kv_stride, int tree_root = -1) {
     Q().parallel_for(NR2(INK_NKV, (size_t)M, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
         float* sh = lmem<float, 16>(it);
         const int m = (int)it.get_group(0), kh = (int)it.get_group(1), tid = (int)it.get_local_id(1);
-        const int slot = slot_ids[m], pos = pos_buf[m];
+        const int slot = slot_ids[m], pos = tree_root < 0 ? pos_buf[m] : tree_root+m;
         const int kpos = is_swa ? pos % kv_stride : pos;
 
         const float kv = k_in[((size_t)m * INK_NKV + kh) * INK_HD + tid];
@@ -428,12 +461,77 @@ inline void k_kv_norm_store_f16_sg16(const float* k_in, const float* v_in, half*
     });
 }
 
+// Keep the per-channel ShortConv results in registers until the KV norms and cache store.
+inline void k_qkv_tree_clip_store(float* q, const float* qs, float* r, const float* rs,
+                   const float* k, const float* v, const float* kw, const float* vw,
+                   const float* kd, const float* vd, const float* khist, const float* vhist,
+                   float* kring, float* vring, half* kc, half* vc,
+                   const int* ancestry, const int* slots, const int* pos,
+                   int nodes, bool swa, int stride, int root) {
+    Q().parallel_for(NR2(INK_NH + INK_NKV, nodes, INK_HD),
+                     [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        float* shared = lmem<float, 16>(it);
+        const int m = it.get_group(0), h = it.get_group(1), t = it.get_local_id(1);
+        if (h < INK_NH) {
+            const float r_pos = float(pos[m] + 1) * (1.0f / 8192.0f);
+            const float tau = swa ? 1.0f : (1.0f + 0.1f * sycl::log(sycl::fmax(1.0f, r_pos)));
+            float* qp = q + ((size_t)m * INK_NH + h) * INK_HD;
+            const float qv = qp[t] * qs[h * INK_HD + t];
+            const float qss = wg_sum16(it, qv * qv, shared);
+            const float qfac = sycl::fmin(1.0f, 22.627416997969522f / (sycl::sqrt(qss) + 1e-6f)) * tau;
+            qp[t] = qv * qfac;
+            if (t < 16) {
+                float* rp = r + ((size_t)m * INK_NH + h) * INK_DREL;
+                const float rv = rp[t] * rs[h * INK_DREL + t];
+                const float rss = sg_sum(it, rv * rv);
+                const float rfac = sycl::fmin(1.0f, 8.0f / (sycl::sqrt(rss) + 1e-6f)) * tau;
+                rp[t] = rv * rfac;
+            }
+            return;
+        }
+        constexpr int width = INK_NKV * INK_HD;
+        const int kh = h - INK_NH, c = kh * INK_HD + t;
+        auto conv = [&](const float* raw, const float* weights, const float* dyn, const float* hist, float* ring) {
+            const int depth = pos[m] - root;
+            float hh[3];
+#pragma unroll
+            for (int i = 0; i < 3; ++i) {
+                const int j = depth - 3 + i;
+                hh[i] = j < 0 ? hist[(3 + j) * width + c] : raw[ancestry[m * 8 + j] * width + c];
+            }
+            const float x = raw[m * width + c];
+            const float* w = weights + 4 * c;
+            float acc = hh[0] * w[0] + hh[1] * w[1] + hh[2] * w[2] + x * w[3];
+            if (!swa) {
+                const float* z = dyn + (m * 8 + (c >> 7)) * 4;
+                acc += x * z[0] + hh[2] * z[1] + hh[1] * z[2] + hh[0] * z[3];
+            }
+            ring[(m * 3) * width + c] = hh[1];
+            ring[(m * 3 + 1) * width + c] = hh[2];
+            ring[(m * 3 + 2) * width + c] = x;
+            return (x + acc) * (swa ? 0.4472135954999579f : 1.0f / 3.0f);
+        };
+        const float k_val = conv(k, kw, kd, khist, kring);
+        const float v_val = conv(v, vw, vd, vhist, vring);
+        const float kss = wg_sum16(it, k_val * k_val, shared);
+        const float kfac = sycl::fmin(1.0f, 22.627416997969522f / (sycl::sqrt(kss) + 1e-6f));
+        const float vss = wg_sum16(it, v_val * v_val, shared);
+        const float vfac = sycl::rsqrt(vss / float(INK_HD) + INK_RMS_EPS);
+        const int p = swa ? (root + m) % stride : root + m;
+        const size_t offset = ((size_t(slots[m]) * stride + p) * INK_NKV + kh) * INK_HD + t;
+        kc[offset] = half(k_val * kfac);
+        vc[offset] = half(v_val * vfac);
+    });
+}
+
 // Fused RelPos + Sink 24:8 GQA Flash Attention + Sigmoid Gate (SG16: 8 SGs = 128 threads, 8 dims/lane!)
+template<bool Tree = false>
 inline void k_relpos_sink_gqa_sg16(
     const float* q_buf, const float* r_buf, const float* rel_proj_pad, const float* sinks_buf,
     const float* gate_buf, const half* k_cache, const half* v_cache,
     const int* slot_ids, const int* pos_buf, float* attn_out,
-    int M, int is_swa, int swa_win, int rel_extent, int kv_stride) {
+    int M, int is_swa, int swa_win, int rel_extent, int kv_stride,
+    int tree_root = -1, const int* ancestry = nullptr) {
     const float scale = 1.0f / std::sqrt((float)INK_HD);
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> sh_m(8, h);
@@ -465,7 +563,10 @@ inline void k_relpos_sink_gqa_sg16(
 
             for (int k = k_start + sg; k < k_end; k += 8) {
                 const int offset = k - cycle_start;
-                const int kidx = offset < 0 ? offset + kv_stride : offset;
+                int kidx = offset < 0 ? offset + kv_stride : offset;
+                if constexpr (Tree) {
+                    if (k >= tree_root) kidx = (tree_root + ancestry[m*8+k-tree_root]) % kv_stride;
+                }
                 const size_t kv_off = ((slot_base + kidx) * INK_NKV + kh) * INK_HD + lane * 8;
                 float dt = 0.0f;
                 for (int u = 0; u < 8; ++u) dt += qv[u] * (float)k_cache[kv_off + u];
@@ -504,6 +605,8 @@ inline void k_relpos_sink_gqa_sg16(
     });
 }
 
+// One SG16 owns one of the original eight KV streams. Issue four independent
+// key/value loads before updating the FP32 softmax in its original order.
 // The winning score has a zero difference (or NaN for a non-finite
 // self-difference). exp(0) is one; both expressions propagate NaN.
 inline sycl::float2 swa_online_factors(float peak, float score, float mx) {
@@ -512,6 +615,122 @@ inline sycl::float2 swa_online_factors(float peak, float score, float mx) {
     const float factor = sycl::exp(rise ? da : db);
     const float unit = 1.f + (rise ? db : da);
     return {rise ? factor : unit, rise ? unit : factor};
+}
+
+template<bool SlidingRing = false, bool FullContext = false>
+inline void k_relpos_tree_stream(const float* q, const float* rel, const float* table,
+                                 const float* sinks, const float* gate, const half* keys, const half* values,
+                                 const int* slots, const int* positions, int rows, bool sliding_requested, int window,
+                                 int extent, int stride, int root, const int* ancestors, float* out) {
+    const bool sliding = !FullContext && sliding_requested;
+    constexpr int streams = 8, tile = 4, pitch = INK_HD + 2;
+    const float scale = 1.f / std::sqrt(float(INK_HD));
+    Q().submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> partial(streams * pitch, h);
+        h.parallel_for(NR(rows * INK_NH, 128), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const int head = it.get_group(0), node = head / INK_NH, kh = (head % INK_NH) / 3;
+            const int tid = it.get_local_id(0), lane = tid % 16, stream = tid / 16;
+            const int pos = positions[node], start = sliding ? sycl::max(0, pos + 1 - window) : 0;
+            const int cycle = sliding ? pos - pos % stride : 0;
+            const size_t base = (size_t(slots[node]) * stride * INK_NKV + kh) * INK_HD + lane * 8;
+            const auto query = *reinterpret_cast<const sycl::vec<float, 8>*>(q + head * INK_HD + lane * 8) * scale;
+            const float r = rel[head * INK_DREL + lane];
+            const float distant = sg_sum(it, r * table[lane * 1025 + extent]);
+            float peak = stream == 0 ? sinks[head] : -1e30f, norm = stream == 0 ? 1.f : 0.f;
+            float accum[8]{};
+
+            auto update = [&](float score, sycl::vec<half, 8> v) {
+                const float mx = sycl::fmax(peak, score);
+                float a, b;
+                if constexpr (SlidingRing || FullContext) {
+                    const auto factors = swa_online_factors(peak, score, mx);
+                    a = factors.x();
+                    b = factors.y();
+                } else {
+                    const float factor = sycl::exp(-sycl::fabs(score - peak));
+                    // For finite scores one factor is exactly one. Retain the
+                    // reference's two differences for non-finite inputs.
+                    a = score > peak ? factor : 1.f;
+                    b = score > peak ? 1.f : factor;
+                    if (!sycl::isfinite(score) || !sycl::isfinite(peak)) {
+                        a = sycl::exp(peak - mx);
+                        b = sycl::exp(score - mx);
+                    }
+                }
+                norm = norm * a + b;
+                peak = mx;
+#pragma unroll
+                for (int d = 0; d < 8; ++d) accum[d] = accum[d] * a + b * float(v[d]);
+            };
+            auto score_at = [&](int k, size_t address, bool clipped) {
+                const auto key = *reinterpret_cast<const sycl::vec<half, 8>*>(keys + address);
+                float dot = 0.f;
+#pragma unroll
+                for (int d = 0; d < 8; ++d) dot += query[d] * float(key[d]);
+                const float bias = clipped ? distant : sg_sum(it, r * table[lane * 1025 + sycl::min(pos - k, extent)]);
+                return sg_sum(it, dot) + bias;
+            };
+
+            int k = start + stream;
+            auto prefix = [&](int end, bool clipped, int adjust) {
+                for (; k + streams * (tile - 1) < end; k += streams * tile) {
+                    float scores[tile];
+                    sycl::vec<half, 8> v[tile];
+#pragma unroll
+                    for (int j = 0; j < tile; ++j) {
+                        const int logical = k + streams * j, offset = logical - cycle;
+                        const int idx = SlidingRing ? logical + adjust :
+                                        FullContext ? logical : (offset < 0 ? offset + stride : offset);
+                        const size_t address = base + size_t(idx) * INK_NKV * INK_HD;
+                        scores[j] = score_at(logical, address, clipped);
+                        v[j] = *reinterpret_cast<const sycl::vec<half, 8>*>(values + address);
+                    }
+#pragma unroll
+                    for (int j = 0; j < tile; ++j) update(scores[j], v[j]);
+                }
+            };
+            if constexpr (SlidingRing) {
+                // Within either side of the physical wrap, all four loads
+                // have the same displacement from their logical positions.
+                const int boundary = sycl::min(root, cycle);
+                prefix(boundary, false, stride - cycle);
+                for (; k < boundary; k += streams) {
+                    const size_t address = base + size_t(k + stride - cycle) * INK_NKV * INK_HD;
+                    const auto v = *reinterpret_cast<const sycl::vec<half, 8>*>(values + address);
+                    update(score_at(k, address, false), v);
+                }
+                prefix(root, false, -cycle);
+            } else {
+                prefix(sycl::min(root, pos - extent + 1), true, 0);
+                prefix(root, false, 0);
+            }
+            for (; k <= pos; k += streams) {
+                int idx = k - cycle;
+                if (!FullContext && idx < 0) idx += stride;
+                if (k >= root) {
+                    idx = root + ancestors[node * 8 + k - root];
+                    if (sliding) idx %= stride;
+                }
+                const size_t address = base + size_t(idx) * INK_NKV * INK_HD;
+                const auto v = *reinterpret_cast<const sycl::vec<half, 8>*>(values + address);
+                update(score_at(k, address, false), v);
+            }
+
+            const int part = stream * pitch;
+            if (lane == 0) { partial[part] = peak; partial[part + 1] = norm; }
+            for (int d = 0; d < 8; ++d) partial[part + 2 + lane * 8 + d] = accum[d];
+            sycl::group_barrier(it.get_group());
+            float mx = -1e30f, sum = 0.f, v = 0.f;
+            for (int s = 0; s < streams; ++s) mx = sycl::fmax(mx, partial[s * pitch]);
+            for (int s = 0; s < streams; ++s) {
+                const float w = sycl::exp(partial[s * pitch] - mx);
+                sum += partial[s * pitch + 1] * w;
+                v += partial[s * pitch + 2 + tid] * w;
+            }
+            const int i = head * INK_HD + tid;
+            out[i] = (v * (1.f / sum)) / (1.f + sycl::exp(-gate[i]));
+        });
+    });
 }
 
 // Three query heads share a KV head in Inkling. Stream each KV vector once.

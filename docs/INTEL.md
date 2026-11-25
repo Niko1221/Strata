@@ -634,12 +634,26 @@ disables it.
   it to FP16 once. The single-token loop controllers use a packed BF16 copy of their FP32 weights when every weight
   converts exactly (54 MiB for SQ-20); otherwise the original controller runs. ShortConv, the controller mix and the
   residual mix are tiled for prompts.
+- **DSpark drafting.** The drafter uses signed INT8 XMX GEMM for its eight-row Q8 projections (S32 accumulation, the
+  same FP32 row scales as DP4A) and paired K/V loads in its attention.
 
 | Process variable | Effect |
 |---|---|
 | `INK_SYCL_BMG_OPT=0` | Use the original Inkling SYCL paths for everything below. |
 | `INK_SYCL_BMG_EXPERTS=0` | Use the original routed-expert paths, including 512-row tiling of larger prompt chunks. |
 | `INK_SYCL_BMG_DENSE=0` | Use the original attention, projection, controller, ShortConv and residual-mix paths. |
+| `INK_SYCL_BMG_DSPARK=0` | Use the original DSpark drafter kernels and the portable tree-verification kernels. |
+| `INK_SYCL_DSPARK_TREE=1` | Enable DSpark tree verification (off by default, see below). |
+| `INK_SYCL_DSPARK_TREE_TRACE=1` | Print the verified rows, emitted tokens and accepted siblings of each tree step. |
+
+### DSpark tree verification
+
+With `--draft dspark`, `INK_SYCL_DSPARK_TREE=1` lets the single-GPU SYCL engine verify a tree of drafts, as the CUDA
+and HIP engines do. A greedy request in slot zero with penalties off drafts a pruned tree and verifies up to 12
+target rows in one pass; only tokens that the target model selects enter the reply. Other requests in slot zero use
+linear drafting with a confidence-based draft length. The tree needs a BF16 output head. On Battlemage it keeps two
+continuations per depth up to depth 4 and prunes low-confidence candidates; elsewhere it keeps four continuations up
+to depth 7. Unset the variable or set it to `0` to use the existing linear drafter.
 
 Configure the Inkling build with `-DSTRATA_BUILD_TESTS=ON`, build it, then run
 `ctest --test-dir build-inkling -R inkling_bmg_kernels --output-on-failure`. Add

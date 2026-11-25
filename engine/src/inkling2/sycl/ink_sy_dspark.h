@@ -45,7 +45,7 @@ inline void k_dspark_mix_taps_sg16(const float* taps_4, const float* fuse_w, con
 
 inline void k_dspark_ctx_kv_store_sg16(const float* k_in, const float* v_in, const float* k_nw,
                                        half* k_cache, half* v_cache, const int* slot_ids, const int* pos_buf,
-                                       int M, int kv_stride, float theta) {
+                                       int M, int kv_stride, float theta, int tree_root = -1) {
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> sh(8, h);
         sycl::local_accessor<float, 1> kn(128, h);
@@ -57,7 +57,8 @@ inline void k_dspark_ctx_kv_store_sg16(const float* k_in, const float* v_in, con
             const float inv = sycl::rsqrt(wg_sum16(it, kv * kv, sh) / (float)INK_HD + INK_RMS_EPS);
             kn[tid] = kv * inv * k_nw[tid];
             sycl::group_barrier(it.get_group());
-            const size_t dst = (((size_t)slot * kv_stride + pos) * INK_NKV + kh) * INK_HD;
+            const int store_pos = tree_root < 0 ? pos : tree_root+m;
+            const size_t dst = (((size_t)slot * kv_stride + store_pos) * INK_NKV + kh) * INK_HD;
             if (tid < 64) {
                 const float freq = 1.0f / sycl::pow(theta, (float)(2 * tid) / (float)INK_HD);
                 const float ang = (float)pos * freq;
@@ -122,6 +123,7 @@ inline void k_dspark_qk_norm_rope_sg16(float* x_buf, const float* nw, int NH, in
     });
 }
 
+template<bool Vectorized = false>
 inline void k_dspark_block_attn_sg16(const float* q_buf, const float* kd_buf, const float* vd_buf,
                                      const half* ctx_k, const half* ctx_v, float* out_buf,
                                      int slot, int apos, int is_swa, int swa_win, int kv_stride) {
@@ -144,26 +146,58 @@ inline void k_dspark_block_attn_sg16(const float* q_buf, const float* kd_buf, co
             float m_max = -1e30f, l_sum = 0.0f;
             const size_t sbase = (size_t)slot * kv_stride;
 
-            for (int idx = sg; idx < total_k; idx += 8) {
-                float kv[8], vv[8];
-                if (idx < n_ctx) {
-                    const int pos = c0 + idx;
-                    const size_t off = ((sbase + pos) * INK_NKV + kh) * INK_HD + lane * 8;
-                    for (int u = 0; u < 8; ++u) { kv[u] = (float)ctx_k[off + u]; vv[u] = (float)ctx_v[off + u]; }
-                } else {
-                    const int db = idx - n_ctx;
-                    const size_t off = ((size_t)db * INK_NKV + kh) * INK_HD + lane * 8;
-                    for (int u = 0; u < 8; ++u) { kv[u] = kd_buf[off + u]; vv[u] = vd_buf[off + u]; }
-                }
+            const auto consume = [&](const auto& kv, const auto& vv) {
                 float dt = 0.0f;
-                for (int u = 0; u < 8; ++u) dt += qv[u] * kv[u];
+                for (int u = 0; u < 8; ++u) dt += qv[u] * float(kv[u]);
                 const float sc = sg_sum(it, dt);
                 const float mn = sycl::fmax(m_max, sc);
                 const float corr = sycl::exp(m_max - mn);
                 const float p = sycl::exp(sc - mn);
                 l_sum = l_sum * corr + p;
                 m_max = mn;
-                for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] * corr + p * vv[u];
+                for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] * corr + p * float(vv[u]);
+            };
+            if constexpr (Vectorized) {
+                using KeyValue = sycl::vec<half, 8>;
+                const auto ctx_offset = [&](int index) {
+                    return ((sbase + c0 + index) * INK_NKV + kh) * INK_HD + lane * 8;
+                };
+                int idx = sg;
+                // Read both K/V pairs before advancing the online FP32 softmax.
+                for (; idx + 8 < n_ctx; idx += 16) {
+                    const size_t offset = ctx_offset(idx), next = ctx_offset(idx + 8);
+                    const auto k0 = *reinterpret_cast<const KeyValue*>(ctx_k + offset);
+                    const auto v0 = *reinterpret_cast<const KeyValue*>(ctx_v + offset);
+                    const auto k1 = *reinterpret_cast<const KeyValue*>(ctx_k + next);
+                    const auto v1 = *reinterpret_cast<const KeyValue*>(ctx_v + next);
+                    consume(k0, v0);
+                    consume(k1, v1);
+                }
+                for (; idx < n_ctx; idx += 8) {
+                    const size_t off = ctx_offset(idx);
+                    consume(*reinterpret_cast<const KeyValue*>(ctx_k + off),
+                            *reinterpret_cast<const KeyValue*>(ctx_v + off));
+                }
+                using DraftValue = sycl::vec<float, 8>;
+                for (; idx < total_k; idx += 8) {
+                    const size_t off = ((size_t)(idx - n_ctx) * INK_NKV + kh) * INK_HD + lane * 8;
+                    consume(*reinterpret_cast<const DraftValue*>(kd_buf + off),
+                            *reinterpret_cast<const DraftValue*>(vd_buf + off));
+                }
+            } else {
+                for (int idx = sg; idx < total_k; idx += 8) {
+                    float kv[8], vv[8];
+                    if (idx < n_ctx) {
+                        const int pos = c0 + idx;
+                        const size_t off = ((sbase + pos) * INK_NKV + kh) * INK_HD + lane * 8;
+                        for (int u = 0; u < 8; ++u) { kv[u] = (float)ctx_k[off + u]; vv[u] = (float)ctx_v[off + u]; }
+                    } else {
+                        const int db = idx - n_ctx;
+                        const size_t off = ((size_t)db * INK_NKV + kh) * INK_HD + lane * 8;
+                        for (int u = 0; u < 8; ++u) { kv[u] = kd_buf[off + u]; vv[u] = vd_buf[off + u]; }
+                    }
+                    consume(kv, vv);
+                }
             }
             if (lane == 0) { sh_m[sg] = m_max; sh_l[sg] = l_sum; }
             for (int u = 0; u < 8; ++u) sh_o[sg * INK_HD + lane * 8 + u] = o_acc[u];
@@ -197,7 +231,7 @@ inline void k_dspark_swiglu_sg16(const float* gate, const float* up, float* out,
 
 inline void k_dspark_markov_joint_sg16(const float* state_buf, const InkTensorInfo& mw1,
                                        const float* cur_all, const float* ctx_vec,
-                                       const int* tok_chain, float* joint_out, int slot_i, int V_padded) {
+                                       const int* prev_token, float* joint_out, int slot_i, int V_padded) {
     const uint8_t* w1 = mw1.dev_ptr;
     const int fmt = mw1.fmt;
     Q().parallel_for(NR((512 + 2 * INK_D + 255) / 256, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
@@ -205,7 +239,7 @@ inline void k_dspark_markov_joint_sg16(const float* state_buf, const InkTensorIn
         if (g < 256) {
             joint_out[g] = state_buf[g];
         } else if (g < 512) {
-            const int prev_tok = tok_chain[slot_i - 1];
+            const int prev_tok = *prev_token;
             if (fmt == FMT_BF16) {
                 joint_out[g] = bf16_to_f32(reinterpret_cast<const uint16_t*>(w1)[(size_t)prev_tok * 256 + (g - 256)]);
             } else if (fmt == FMT_F32) {
