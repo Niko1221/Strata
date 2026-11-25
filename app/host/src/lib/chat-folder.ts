@@ -47,3 +47,29 @@ export async function setChatFolder(chatId: string, path: string | null) {
   const result = await api.post<{ folder: unknown }>('/api/chat/folder', { sessionId: chatId, path });
   put(chatId, readFolder(result.folder));
 }
+
+/** One copy in flight per (from, to): `branchFrom` starts it and `retryLast` awaits the same one before it sends. */
+const copying = new Map<string, Promise<void>>();
+
+/**
+ * Gives the branch the folder of the chat it was cut from (#7101).
+ *
+ * A branch is a NEW chat id (`store.ts` `branchFrom`), and the host keeps a chat's folder by id, so the branch's first
+ * turn asked for its files in `chatRoot(chatId)` - the chosen folder is unknown for that id - and ran in the default
+ * workspace instead. A chat with no folder gives the branch none, and a host that refuses (the folder was deleted, or
+ * an older host without the route) leaves the branch on the default: neither is an error for the person.
+ */
+export function copyChatFolder(fromId: string, toId: string): Promise<void> {
+  if (!fromId || !toId || fromId === toId) return Promise.resolve();
+  const key = `${fromId}\u0000${toId}`;
+  const running = copying.get(key);
+  if (running) return running;
+  const done = (async () => {
+    if (!folders.has(fromId)) await loadFolder(fromId);       // chosen in an earlier page load: ask the host once
+    const folder = folderOf(fromId);
+    if (!folder) return;
+    try { await setChatFolder(toId, folder.path); } catch { /* the default folder */ }
+  })().finally(() => copying.delete(key));
+  copying.set(key, done);
+  return done;
+}

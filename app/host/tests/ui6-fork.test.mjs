@@ -38,6 +38,52 @@ test('the folder answer: a path gives a name; nothing gives no folder', () => {
   assert.equal(F.readFolder({ path: '' }), null);
 });
 
+/** A stand-in for the host's two folder routes; `folder` is what GET answers. */
+function hostAnswering(folder, asked) {
+  globalThis.fetch = async (url, init = {}) => {
+    asked.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(init.body) : undefined });
+    return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify({ folder }) };
+  };
+}
+
+test('#7101: a branch is told the folder of the chat it was cut from', async () => {
+  const asked = [];
+  hostAnswering({ path: '/work/pagoda-site', name: 'pagoda-site', exists: true }, asked);
+  await F.copyChatFolder('chat-parent', 'chat-branch');
+  assert.deepEqual(asked.map(r => r.method).sort(), ['GET', 'POST'], 'the parent is asked once, then the branch is told');
+  const post = asked.find(r => r.method === 'POST');
+  assert.equal(post.url, '/api/chat/folder');
+  assert.deepEqual(post.body, { sessionId: 'chat-branch', path: '/work/pagoda-site' });
+});
+
+test('#7101: a chat with no folder, or the same id twice, sends nothing', async () => {
+  const asked = [];
+  hostAnswering(null, asked);
+  await F.copyChatFolder('chat-plain', 'chat-plain-branch');
+  assert.equal(asked.filter(r => r.method === 'POST').length, 0, 'no folder to carry');
+  const none = [];
+  hostAnswering(null, none);
+  await F.copyChatFolder('same', 'same');
+  assert.equal(none.length, 0, 'a chat is not told about itself');
+});
+
+test('#7101: the copy is in flight once, and the retry waits for it before it sends', async () => {
+  const { readFileSync } = await import('node:fs');
+  const asked = [];
+  hostAnswering({ path: '/work/site', name: 'site', exists: true }, asked);
+  const first = F.copyChatFolder('chat-a', 'chat-b');
+  const second = F.copyChatFolder('chat-a', 'chat-b');
+  assert.equal(first, second, 'the two callers share one copy');
+  await Promise.all([first, second]);
+  assert.equal(asked.filter(r => r.method === 'POST').length, 1, 'one POST, not two');
+  const store = readFileSync(src('lib/store.ts'), 'utf8');
+  const branch = store.slice(store.indexOf('export function branchFrom'), store.indexOf('export function rewindTo'));
+  const retry = store.slice(store.indexOf('export async function retryLast'), store.indexOf('function failedExchange'));
+  assert.match(branch, /copyChatFolder\(sessionId, branch\.id\)/, 'branchFrom carries it, so "Branch from here" does too');
+  const carried = retry.indexOf('await copyChatFolder('), sent = retry.indexOf('await sendMessage(');
+  assert.ok(carried > 0 && carried < sent, 'the retry carries the folder before the turn is sent');
+});
+
 test('the sample time-skip copy appears only when the host cannot be reached at all', async () => {
   const { readFileSync } = await import('node:fs');
   const store = readFileSync(src('lib/store.ts'), 'utf8');
