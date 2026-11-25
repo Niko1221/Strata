@@ -33,7 +33,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 
 - [Build or run from a source checkout](SOURCE_INSTALL.md)
 - [Docker](DOCKER.md)
-- [Contribution rules](../.github/CONTRIBUTING.md)
+- [Contribution rules](../.github/CONTRIBUTING.md) · [دليل المساهمة بالعربية](lang/CONTRIBUTING.ar.md)
 - [Community benchmarks](COMMUNITY_BENCHMARKS.md) and the [standard benchmark protocol](BENCHMARK_PROTOCOL.md)
 - [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md) and [Terminal reference](TERMINAL.md)
 - [KVA: approximate prompt processing for the late layers (experimental, opt-in)](KVA.md)
@@ -44,6 +44,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 - [Install for a user](AI_SETUP.md)
 - [Verified facts, model availability and API reference](AI_REFERENCE.md)
 - [Articles and videos](MEDIA_KIT.md)
+- [العربية: دليل التثبيت](lang/INSTALL.ar.md) · [العربية: README](lang/README.ar.md) · [العربية: دليل الاستخدام](lang/USING-STRATA.ar.md)
 - [Repository instructions for agents](../AGENTS.md)
 
 ## Which instructions apply?
