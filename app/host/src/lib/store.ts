@@ -30,6 +30,7 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { copyChatFolder } from './chat-folder';
 import { mcpToolsPatch } from './mcp-tools-switch';
 import { createSessionWriter, exportSessions, readBrowserSessions, HOST_FLAG_KEY, PENDING_KEY, type SaveResult, type StorageLike } from './session-persist';
 import { createHttpTransport, hydrateChats, keepLastMomentCopy, WINDOW_ID } from './chat-sync';
@@ -1900,6 +1901,10 @@ export async function retryLast(messageId?: string) {
   if (!user) return;
   const prompt = rewindTo(user.id);
   if (prompt !== null) {
+    // #7101: a retry runs in a branch - a new chat id the host has no folder for - so carry the chat's folder
+    // before the turn starts, or the assistant works in the default workspace instead of the chosen one.
+    const branchId = state.activeSession;
+    if (branchId && branchId !== source.id) await copyChatFolder(source.id, branchId);
     // Retry sends immediately; only Edit should leave the prompt in the composer.
     sessionStorage.setItem(`strata.chat-draft.${state.activeSession}`, '');
     await sendMessage(prompt);
@@ -1987,6 +1992,10 @@ export function branchFrom(messageId: string): string | null {
   persistSessions(sessions);
   set({ sessions, activeSession: branch.id });
   for (const run of branch.timeSkips ?? []) scheduleTimeSkip(branch.id, run);
+  // A branch is the same project as the chat it was cut from, but it is a new chat id and the host keeps a chat's
+  // folder by id: carry it, or the branch's first turn works in the default folder (#7101). `retryLast` awaits this
+  // same copy before it sends, so a retry does not race it.
+  void copyChatFolder(sessionId, branch.id);
   // The URL wins over `activeSession` when it names a session, so a programmatic
   // switch has to move the route too — otherwise the sidebar shows the branch
   // while the transcript still shows the original, which reads as a broken
