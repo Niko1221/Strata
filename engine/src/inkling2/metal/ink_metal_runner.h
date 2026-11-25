@@ -107,6 +107,7 @@ struct InkMetalRunner {
     int lib_codecs = -1, lib_ops = -1, lib_dspark = -1, lib_vis = -1, lib_mpp = -1;
     bool is_apple10 = false;
     bool use_mpp = false, use_mpp_trunk_f16 = false, use_dspark_f16 = false;
+    bool kv_fp8_ = false;   // FP8_E4M3 KV cache pages (half the fp16 bytes; kernels branch on it)
     int mpp_decomp_cap = 0;
 
     // Metal 4 MPP Neural Accelerator pipelines (active when lib_mpp >= 0)
@@ -230,7 +231,7 @@ struct InkMetalRunner {
 
     bool init(mtl::Context& ctx, InkMetalModel& m, int slots, int ctx_len, int batch_cap,
               bool enable_dspark, const std::string& vision_path,
-              const std::string& kernel_dir, std::string& err) {
+              const std::string& kernel_dir, bool kv_fp8, std::string& err) {
         cx = &ctx;
         mod = &m;
         is_apple10 = cx->has_family_apple(10);
@@ -238,6 +239,7 @@ struct InkMetalRunner {
         max_ctx = std::max(256, ctx_len);
         max_batch = std::max(64, batch_cap);
         use_dspark = enable_dspark && m.man.c.has_dspark;
+        kv_fp8_ = kv_fp8;
 
         // Compile Metal shader libraries
         if (!compile_shaders(kernel_dir, err)) return false;
@@ -431,7 +433,8 @@ struct InkMetalRunner {
             const int ip = c.phys_for_visit(v);
             const int stride = c.is_swa[ip] ? c.swa_win : max_ctx;
             visit_kv_stride[v] = stride;
-            const size_t kvb = (size_t)max_slots * stride * c.n_kv * c.head_dim * sizeof(uint16_t);
+            const size_t kv_bytes = kv_fp8_ ? sizeof(uint8_t) : sizeof(uint16_t);
+            const size_t kvb = (size_t)max_slots * stride * c.n_kv * c.head_dim * kv_bytes;
             kv_k[v] = cx->alloc(kvb);
             kv_v[v] = cx->alloc(kvb);
             kv_bytes_tot += 2 * kvb;
@@ -758,8 +761,9 @@ struct InkMetalRunner {
         }
 
         fprintf(stderr,
-                "[ink_metal] runner ready: slots=%d ctx=%d batch=%d dspark=%d vision=%s mpp=%d(trunk=%d,hot=%d) | KV=%.1f MiB SC=%.1f MiB TotalAlloc=%.2f GiB\n",
+                "[ink_metal] runner ready: slots=%d ctx=%d batch=%d dspark=%d kv=%s vision=%s mpp=%d(trunk=%d,hot=%d) | KV=%.1f MiB SC=%.1f MiB TotalAlloc=%.2f GiB\n",
                 max_slots, max_ctx, max_batch, (int)use_dspark,
+                kv_fp8_ ? "fp8_e4m3" : "fp16",
                 vis.loaded ? "loaded" : (pending_vision_path.empty() ? "off" : "lazy"),
                 (int)use_mpp, (int)use_mpp_trunk_f16, mpp_decomp_cap,
                 kv_bytes_tot / (1024.0 * 1024.0), sc_bytes_tot / (1024.0 * 1024.0),
@@ -942,10 +946,10 @@ struct InkMetalRunner {
     struct InkMppAttnArgs {
         int M, M_pad, slot, pos0, is_swa, swa_win, rel_extent, kv_stride;
         float scale;
-        int pad;
+        int kv_fp8;
     };
     struct InkTreeAttnArgs {
-        int M, slot, anchor_pos, is_swa, swa_win, rel_extent, kv_stride, pad;
+        int M, slot, anchor_pos, is_swa, swa_win, rel_extent, kv_stride, kv_fp8;
         float scale;
         int pad2;
     };
@@ -1395,7 +1399,8 @@ struct InkMetalRunner {
                     dkv.args = {mtl::Arg::B(b_k), mtl::Arg::B(b_v),
                                 mtl::Arg::B(kv_k[visit]), mtl::Arg::B(kv_v[visit]),
                                 mtl::Arg::B(b_slot_ids), mtl::Arg::B(b_pos),
-                                mtl::Arg::V(swa_i), mtl::Arg::V(visit_kv_stride[visit])};
+                                mtl::Arg::V(swa_i), mtl::Arg::V(visit_kv_stride[visit]),
+                                mtl::Arg::V(kv_fp8_ ? 1 : 0)};
                     ds.push_back(std::move(dkv));
                 }
             }
@@ -1411,6 +1416,7 @@ struct InkMetalRunner {
                     ta.swa_win = c.swa_win;
                     ta.rel_extent = c.rel_extent;
                     ta.kv_stride = visit_kv_stride[visit];
+                    ta.kv_fp8 = kv_fp8_ ? 1 : 0;
                     ta.scale = 1.0f / std::sqrt((float)c.head_dim);
                     mtl::Dispatch d1;
                     d1.p = &p_relpos_tree_gqa_splitk;
@@ -1453,6 +1459,7 @@ struct InkMetalRunner {
                         ma.swa_win = c.swa_win;
                         ma.rel_extent = c.rel_extent;
                         ma.kv_stride = visit_kv_stride[visit];
+                        ma.kv_fp8 = kv_fp8_ ? 1 : 0;
                         ma.scale = sc;
                         mtl::Dispatch da;
                         da.p = &p_mpp_relpos_gqa_pf;
@@ -1470,7 +1477,7 @@ struct InkMetalRunner {
                         aa.swa_win = c.swa_win;
                         aa.rel_extent = c.rel_extent;
                         aa.kv_stride = visit_kv_stride[visit];
-                        aa.kv_fp8 = 0;
+                        aa.kv_fp8 = kv_fp8_ ? 1 : 0;
                         aa.scale = 1.0f / std::sqrt((float)c.head_dim);
                         int max_p = 0;
                         for (int m = 0; m < M; ++m) if (step.pos[m] > max_p) max_p = step.pos[m];
@@ -2379,7 +2386,8 @@ struct InkMetalRunner {
                 d.args = {mtl::Arg::B(tree_k[v]), mtl::Arg::B(tree_v[v]),
                           mtl::Arg::B(kv_k[v]), mtl::Arg::B(kv_v[v]),
                           mtl::Arg::B(b_tree_path), mtl::Arg::V(slot), mtl::Arg::V(anchor_pos),
-                          mtl::Arg::V(swa_i), mtl::Arg::V(visit_kv_stride[v])};
+                          mtl::Arg::V(swa_i), mtl::Arg::V(visit_kv_stride[v]),
+                          mtl::Arg::V(kv_fp8_ ? 1 : 0)};
                 ds.push_back(std::move(d));
             }
             auto push_sc_commit = [&](const mtl::Buffer& raw_b, const mtl::Buffer& hist_b, int C_ch) {
