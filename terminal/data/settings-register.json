@@ -695,7 +695,7 @@
    ],
    "first_commit": "ddac45d0da",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "af9bf52f8c",
    "last_date": "2026-11-23",
    "status": "default",
@@ -1071,7 +1071,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6618,
+     "line": 6698,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -1184,7 +1184,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6493,
+     "line": 6573,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -1386,7 +1386,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6566,
+     "line": 6646,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3246,7 +3246,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1948,
+     "line": 1976,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3279,7 +3279,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1951,
+     "line": 1979,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3804,13 +3804,13 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 2558,
+     "line": 2586,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5465,
+     "line": 5545,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -5281,7 +5281,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5727,
+     "line": 5807,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -5370,7 +5370,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8983
+     "line": 8987
     }
    ],
    "doc_mentions": [
@@ -5413,7 +5413,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6749,
+     "line": 6829,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -7468,7 +7468,7 @@
    "doc_mentions": [],
    "first_commit": "66f2ee2b0a",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "66f2ee2b0a",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -8184,7 +8184,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4806,
+     "line": 4886,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -8595,7 +8595,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1070,
+     "line": 1098,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -9110,7 +9110,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 2728,
+     "line": 2756,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -9191,7 +9191,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 999,
+     "line": 1027,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -9227,7 +9227,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 3936,
+     "line": 3964,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -9273,7 +9273,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 985,
+     "line": 1013,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -9341,7 +9341,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1015,
+     "line": 1043,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -9696,7 +9696,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7309,
+     "line": 7389,
      "backend": "cuda-hip",
      "fn": "env_int"
     }
@@ -9762,7 +9762,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7308,
+     "line": 7388,
      "backend": "cuda-hip",
      "fn": "env_int"
     }
@@ -9795,7 +9795,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7310,
+     "line": 7390,
      "backend": "cuda-hip",
      "fn": "env_int"
     }
@@ -9828,7 +9828,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7296,
+     "line": 7376,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -9878,7 +9878,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7311,
+     "line": 7391,
      "backend": "cuda-hip",
      "fn": "env_int"
     }
@@ -14768,7 +14768,7 @@
    "doc_mentions": [],
    "first_commit": "6cb548ffb1",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "6cb548ffb1",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -14952,7 +14952,7 @@
    "doc_mentions": [],
    "first_commit": "6cb548ffb1",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "6cb548ffb1",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16524,7 +16524,7 @@
    "doc_mentions": [],
    "first_commit": "faceebb50c",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "faceebb50c",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16563,7 +16563,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0b58d83200",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16629,7 +16629,7 @@
    "doc_mentions": [],
    "first_commit": "7d1ae1e5d6",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0b58d83200",
    "last_date": "2026-11-23",
    "status": "default",
@@ -16662,7 +16662,7 @@
    "doc_mentions": [],
    "first_commit": "7d1ae1e5d6",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "7d1ae1e5d6",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16695,7 +16695,7 @@
    "doc_mentions": [],
    "first_commit": "2d96ef73c5",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "2d96ef73c5",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16728,7 +16728,7 @@
    "doc_mentions": [],
    "first_commit": "7d635fe051",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "7d635fe051",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16746,7 +16746,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2102,
+     "line": 2225,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -16768,7 +16768,7 @@
    "doc_mentions": [],
    "first_commit": "2d96ef73c5",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "78038c0f2c",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16785,7 +16785,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2105,
+     "line": 2228,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16801,7 +16801,7 @@
    "doc_mentions": [],
    "first_commit": "ba65268084",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "ba65268084",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16834,7 +16834,7 @@
    "doc_mentions": [],
    "first_commit": "8c2afbc2bf",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "8c2afbc2bf",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16867,7 +16867,7 @@
    "doc_mentions": [],
    "first_commit": "5281882cf0",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "5281882cf0",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16906,7 +16906,7 @@
    "doc_mentions": [],
    "first_commit": "f42a9aa714",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "f42a9aa714",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -16939,7 +16939,7 @@
    "doc_mentions": [],
    "first_commit": "080da82d3b",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "080da82d3b",
    "last_date": "2026-11-23",
    "status": "research",
@@ -16972,7 +16972,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -17005,7 +17005,7 @@
    "doc_mentions": [],
    "first_commit": "859276060a",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "859276060a",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17038,7 +17038,7 @@
    "doc_mentions": [],
    "first_commit": "0c655e75ec",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0c655e75ec",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17071,7 +17071,7 @@
    "doc_mentions": [],
    "first_commit": "2612ae5c0e",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "2612ae5c0e",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17104,7 +17104,7 @@
    "doc_mentions": [],
    "first_commit": "e32fa5334c",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "e32fa5334c",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -17143,7 +17143,7 @@
    "doc_mentions": [],
    "first_commit": "e32fa5334c",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "c77e47d953",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17176,7 +17176,7 @@
    "doc_mentions": [],
    "first_commit": "258e09f22d",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "258e09f22d",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17209,7 +17209,7 @@
    "doc_mentions": [],
    "first_commit": "7d635fe051",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "7d635fe051",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17242,7 +17242,7 @@
    "doc_mentions": [],
    "first_commit": "c60259fa6a",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "c60259fa6a",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17275,7 +17275,7 @@
    "doc_mentions": [],
    "first_commit": "6e9415252e",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "6e9415252e",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17308,7 +17308,7 @@
    "doc_mentions": [],
    "first_commit": "6e9415252e",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "6e9415252e",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17341,7 +17341,7 @@
    "doc_mentions": [],
    "first_commit": "4655f3b533",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "4655f3b533",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -17374,7 +17374,7 @@
    "doc_mentions": [],
    "first_commit": "7a2518ceaa",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "953e154174",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17407,7 +17407,7 @@
    "doc_mentions": [],
    "first_commit": "e0ab3e241f",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0ac2242558",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17440,7 +17440,7 @@
    "doc_mentions": [],
    "first_commit": "e0ab3e241f",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0ac2242558",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17473,7 +17473,7 @@
    "doc_mentions": [],
    "first_commit": "e0ab3e241f",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0ac2242558",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17506,7 +17506,7 @@
    "doc_mentions": [],
    "first_commit": "e0ab3e241f",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "0ac2242558",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17539,7 +17539,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17572,7 +17572,7 @@
    "doc_mentions": [],
    "first_commit": "fb5973183e",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "fb5973183e",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17605,7 +17605,7 @@
    "doc_mentions": [],
    "first_commit": "64c224f3c1",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "64c224f3c1",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17638,7 +17638,7 @@
    "doc_mentions": [],
    "first_commit": "2d96ef73c5",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "2d96ef73c5",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17671,7 +17671,7 @@
    "doc_mentions": [],
    "first_commit": "859276060a",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "859276060a",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17704,7 +17704,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17737,7 +17737,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -17770,7 +17770,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17803,7 +17803,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17836,7 +17836,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17869,7 +17869,7 @@
    "doc_mentions": [],
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "afe925f971",
    "last_date": "2026-11-23",
    "status": "research",
@@ -17886,7 +17886,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1284,
+     "line": 1312,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17921,7 +17921,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1297,
+     "line": 1325,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17954,7 +17954,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1296,
+     "line": 1324,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17987,7 +17987,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1300,
+     "line": 1328,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18023,7 +18023,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1302,
+     "line": 1330,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18056,7 +18056,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1301,
+     "line": 1329,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18091,7 +18091,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1303,
+     "line": 1331,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18126,7 +18126,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1295,
+     "line": 1323,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18159,7 +18159,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1293,
+     "line": 1321,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18192,7 +18192,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1286,
+     "line": 1314,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -18236,7 +18236,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 1298,
+     "line": 1326,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -21769,7 +21769,7 @@
     },
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 446,
+     "line": 474,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -24038,7 +24038,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11340,
+     "line": 11376,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -27105,7 +27105,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6634,
+     "line": 6714,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -28092,7 +28092,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8982
+     "line": 8986
     }
    ],
    "doc_mentions": [
@@ -28856,7 +28856,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4441,
+     "line": 4521,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -28898,7 +28898,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4447,
+     "line": 4527,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -29412,7 +29412,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5549,
+     "line": 5629,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33058,7 +33058,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4331,
+     "line": 4411,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33093,7 +33093,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4324,
+     "line": 4404,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -34952,7 +34952,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5456,
+     "line": 5536,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -36676,7 +36676,7 @@
    "doc_mentions": [],
    "first_commit": "759ccf6c68",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "759ccf6c68",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -41180,7 +41180,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5016,
+     "line": 5096,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -41721,7 +41721,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 8957,
+     "line": 8961,
      "value": "6"
     },
     {
@@ -41805,7 +41805,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 7553,
+     "line": 7557,
      "value": "frozenset({\"0\""
     }
    ],
@@ -42090,7 +42090,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5531,
+     "line": 5611,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -42452,7 +42452,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5419,
+     "line": 5499,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -45067,7 +45067,7 @@
    "doc_mentions": [],
    "first_commit": "eb2c0b23d5",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "eb2c0b23d5",
    "last_date": "2026-11-23",
    "status": "research",
@@ -45100,7 +45100,7 @@
    "doc_mentions": [],
    "first_commit": "eb2c0b23d5",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "eb2c0b23d5",
    "last_date": "2026-11-23",
    "status": "research",
@@ -45133,7 +45133,7 @@
    "doc_mentions": [],
    "first_commit": "3ebe837242",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "3ebe837242",
    "last_date": "2026-11-23",
    "status": "research",
@@ -45166,7 +45166,7 @@
    "doc_mentions": [],
    "first_commit": "a0fb0fe080",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "8459706424",
    "last_date": "2026-11-23",
    "status": "research",
@@ -46002,7 +46002,7 @@
    ],
    "first_commit": "4285678952",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "4285678952",
    "last_date": "2026-11-23",
    "status": "rollback",
@@ -46084,6 +46084,39 @@
    "status": "opt-in",
    "owner": "sycl/program",
    "note": "[auto] documented for users (docs/INTEL_ARC.md:137)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SPLIT_LEND_RESERVE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/expert_source.cpp",
+     "line": 4153,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "rollback",
+   "owner": "core",
+   "note": "#7089 (PR #7091 by @svonolfen): how much of the layer split's prompt-path lend regions the RAM budget reserves before it fills the expert complement. 0 = none (the complement first, as before #6583), full or 100 = all (0.1.66 and 0.1.67), 1..99 = that percent, auto or unset = by the drive: half on a drive that reads 3 GB/s or more (measured at start, Linux), all otherwise and on Windows. The reservation costs decode on a RAM-tight host and buys prefill only where unbacked lent slots are slow to read.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -47110,7 +47143,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 2189,
+     "line": 2217,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -47260,7 +47293,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 3034,
+     "line": 3062,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -48524,7 +48557,7 @@
    ],
    "first_commit": "9b61b6918f",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "9b61b6918f",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -49373,7 +49406,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 2947,
+     "line": 2975,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -49510,7 +49543,7 @@
    ],
    "first_commit": "724bbbed72",
    "first_date": "2026-11-23",
-   "since": null,
+   "since": "v0.2.21",
    "last_commit": "724bbbed72",
    "last_date": "2026-11-23",
    "status": "opt-in",
@@ -50731,13 +50764,13 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 969,
+     "line": 997,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 2869,
+     "line": 2897,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -50938,7 +50971,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 6861,
+     "line": 6941,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -51061,7 +51094,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4699,
+     "line": 4779,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -51164,13 +51197,13 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5732,
+     "line": 5812,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7300,
+     "line": 7380,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -51247,13 +51280,13 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 5731,
+     "line": 5811,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 7299,
+     "line": 7379,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -52382,7 +52415,7 @@
    "reads": [
     {
      "file": "engine/src/core/expert_source.cpp",
-     "line": 4092,
+     "line": 4124,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
