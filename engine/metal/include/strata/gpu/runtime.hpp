@@ -57,6 +57,7 @@ struct Caps {
 };
 inline Caps caps() { return Caps{}; }
 void* host_view(const void* device_pointer);
+void* host_view_span(const void* device_pointer, size_t bytes);
 
 Error get_last_error();
 Error peek_last_error();
