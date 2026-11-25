@@ -105,6 +105,13 @@ class CatalogSets(unittest.TestCase):
         gate = next(n for n in types if n.endswith("ffn_gate_exps.weight"))
         self.assertTrue(q36_types.problems({**types, gate: 13}))             # gate and up must be one type
 
+    def test_memt_tensors_use_the_loader_type_rules(self):
+        projection = "blk.3.memt.in_proj.weight"
+        gate = "blk.3.memt.f_down.weight"
+        self.assertEqual(q36_types.problems({projection: 8, gate: 0}), [])
+        self.assertEqual(q36_types.problems({projection: 0, gate: 2}),
+                         [f"{gate}: type 2 (vector)", f"{projection}: type 0 (matrix)"])
+
 
 class Importer(unittest.TestCase):
     def setUp(self):

@@ -12,14 +12,20 @@
 #include "gguf_fixture.hpp"
 
 #include "strata/core/family_layout.hpp"
+#include "strata/qwen35/memt_model.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace fs = std::filesystem;
+
+static_assert(std::is_same_v<decltype(&strata::core::check_gguf_layout),
+                            bool (*)(const strata::GgufModel&, const strata::core::ModelGeometry&, std::string&, size_t*)>);
 
 namespace {
 int g_fail = 0;
@@ -177,7 +183,14 @@ int real_model(const std::string& any) {
         const std::string mm = strata::core::compiled_geometry_mismatch(g);
         std::printf("  compiled kernels: %s\n", mm.empty() ? "match" : mm.c_str());
         size_t n = 0;
-        const bool ok = strata::core::check_gguf_layout(m, g, err, &n);
+        std::optional<strata::qwen35::MemtConfig> memt;
+        if (!strata::qwen35::read_memt_config(m.meta(), g, memt, err)) {
+            std::printf("  layout: %s\n", err.c_str());
+            return 1;
+        }
+        const bool ok = memt ? strata::core::check_gguf_layout_with_extra_tensors(
+                                   m, g, strata::qwen35::memt_tensors(g, *memt), err, &n)
+                             : strata::core::check_gguf_layout(m, g, err, &n);
         std::printf("  layout: %s (%zu tensors checked)\n", ok ? "ok" : err.c_str(), n);
         return ok ? 0 : 1;
     } catch (const std::exception& e) {
@@ -286,6 +299,27 @@ int main(int argc, char** argv) {
                 if (it->name == "blk.3.indexer.k_proj.weight") { ts.erase(it); break; }
         });
         check(e == "missing blk.3.indexer.k_proj.weight", "Flash-Next: a missing indexer tensor is refused (" + e + ")");
+    }
+    {
+        const fs::path model = d.path / "extra-layout.gguf";
+        const auto kv = metadata("qwen35moe", kTiny36, 16);
+        fixture::write(model, kv, {});
+        strata::core::ModelGeometry g;
+        int64_t k = 0;
+        std::string err;
+        if (geometry_of(model, g, k, err)) {
+            auto tensors = tensors_of(g);
+            tensors.push_back({"blk.3.memt.o_norm.weight", {4}, F32, 99});
+            fixture::write(model, kv, tensors);
+            const strata::GgufModel m({model.string()});
+            check(strata::core::check_gguf_layout_with_extra_tensors(m, g, {{"blk.3.memt.o_norm.weight", {4}}}, err),
+                  "a tensor explicitly added to the qwen35moe layout is accepted");
+            check(!strata::core::check_gguf_layout_with_extra_tensors(m, g, {{"blk.3.memt.decay_bias", {4}}}, err) &&
+                      err == "missing blk.3.memt.decay_bias",
+                  "a missing extra tensor is refused");
+        } else {
+            check(false, "Qwen3.6 geometry for the extra tensor fixture: " + err);
+        }
     }
     std::printf(g_fail ? "FAILED (%d)\n" : "ALL PASSED\n", g_fail);
     return g_fail ? 1 : 0;
