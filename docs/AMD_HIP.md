@@ -595,6 +595,26 @@ ninja -C build-906 strata
 `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
 `HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
 
+**With a system ROCm 6.3.3, no container.** The 6.3.x line still ships the gfx906 libraries, so the build also works
+from a plain system install (checked on this checkout, engine 0.1.67: `ninja -C build-906 strata` links a 28.6 MB
+binary). CMake fetches the pinned ggml commit itself, so no `STRATA_GGML_DIR` is needed:
+
+```sh
+cmake -S engine -B build-906 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.3.3 \
+  -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 -DSTRATA_BUILD_TESTS=OFF \
+  -DCMAKE_C_COMPILER=/opt/rocm-6.3.3/lib/llvm/bin/clang \
+  -DCMAKE_CXX_COMPILER=/opt/rocm-6.3.3/lib/llvm/bin/clang++
+ninja -C build-906 strata
+```
+
+`-DCMAKE_PREFIX_PATH` is required in this layout; without it the `hipblas-common` lookup fails. If the **first**
+configure fails, delete the build directory and start again — the RPATH error that follows a failed first configure
+is a symptom, and no rpath flag is the cure. On this tree two source-level blockers must be applied before the lane
+builds at all: the shared `__shared__ alignas(16) int4` class (#4151, fixed upstream as `804003950`) and the
+`hip_compat` P2P names that `src/core/peer_experts.cpp` calls (#7088). Run, limits and measured numbers for 2x MI50
+are in [ROCm_6_3_3.md](ROCm_6_3_3.md).
+
 **What differs from the CUDA build** (each A/B switch restores the CUDA layout, and was checked bitwise against it):
 
 | | gfx906 | Switch |
