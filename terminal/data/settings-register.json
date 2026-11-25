@@ -7511,6 +7511,34 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DOWN_SUB8",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/iq_kernels.cu",
+     "line": 7371,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "rollback",
+   "owner": "kernels",
+   "note": "=0 keeps the 32-lane down reduction (the pre-8-lane output); default unchanged",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DOWN_WS",
    "backends": [
     "cuda-hip"
@@ -32844,7 +32872,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cuda/iq_kernels.cu",
-     "line": 7916,
+     "line": 7918,
      "backend": "cuda-hip",
      "fn": "getenv"
     }

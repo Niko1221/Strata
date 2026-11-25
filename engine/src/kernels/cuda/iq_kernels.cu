@@ -6359,7 +6359,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                                                               const int32_t* __restrict__ n_groups,
                                                               const int32_t* __restrict__ ent_dst,
                                                               const block_q8_1* __restrict__ hq, NativeExpertLayout L,
-                                                              float* __restrict__ out) {
+                                                              float* __restrict__ out, int allow_sub8) {
     using F = Fmt<TD>;
     constexpr bool kStageSplit = (TD == 18 || TD == 21);
     constexpr int kGridN = (TD == 21) ? 1024 : (TD == 18) ? 512 : 1;
@@ -6387,7 +6387,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
     constexpr bool kDownSplit = kSplit<TD> || (TD == 7);
     constexpr bool kCanSub8 = kDownSplit && (TD != 8);
     constexpr bool kCanSub16 = kSplit<TD> && (TD != 40 && TD != 42 && TD != 20);
-    const bool use_sub8 = kCanSub8 && (n_items == 40 || n_items == 20 || n_items == 24);
+    const bool use_sub8 = allow_sub8 && kCanSub8 && (n_items == 40 || n_items == 20 || n_items == 24);
     const bool use_sub16 = kCanSub16 && !use_sub8 && (n_items == 80 || n_items == 16 || n_items == 48);
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
@@ -7367,19 +7367,21 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if ((em0d == 7 || em0d == 8) && lds_down_ok) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
+        // fork: STRATA_DOWN_SUB8=0 keeps the 32-lane reduction (the pre-8-lane output); default: the 8-lane sub-warp
+        static const int sub8 = [] { const char* e = std::getenv("STRATA_DOWN_SUB8"); return (e && e[0] == '0') ? 0 : 1; }();
         switch (L.d_type) {
-            case 8:  native_down_lds_kernel<8><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 12: native_down_lds_kernel<12><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 13: native_down_lds_kernel<13><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 8:  native_down_lds_kernel<8><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 12: native_down_lds_kernel<12><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 13: native_down_lds_kernel<13><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
 #ifdef STRATA_Q6K_EXPERTS
-            case 14: native_down_lds_kernel<14><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 14: native_down_lds_kernel<14><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
 #endif
-            case 18: native_down_lds_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 20: native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 21: native_down_lds_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 23: native_down_lds_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            case 40: native_down_lds_kernel<40><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-            default: native_down_lds_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 18: native_down_lds_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 20: native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 21: native_down_lds_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 23: native_down_lds_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            case 40: native_down_lds_kernel<40><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
+            default: native_down_lds_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, sub8); break;
         }
         check("native_expert_grouped/down");
         return;
