@@ -92,8 +92,11 @@ export function ClusterScreen() {
                   port: Number(port), backend,
                 }))}>{tr('Add node')}</Btn>
             </div>
-            <p className="small muted">Run the cluster agent on each machine with STRATA_CLUSTER_TOKEN set:
-              <code> python -m strata_control.cluster.agent --port {port} </code></p>
+            <p className="small muted">Run this on each machine (from the Strata terminal folder), with the same token as the host:
+              <code> cd Strata/terminal </code>
+              <code> $env:STRATA_CLUSTER_TOKEN='your-secret' </code>
+              <code> python -m strata_control.cluster.agent --host 0.0.0.0 --port {port} </code>
+              For a quick local test, add a node with address 127.0.0.1 and start the agent on this machine.</p>
           </Panel>
           <Panel><PanelHead title={tr('Resources')}/>
             <div className="summary-list">
