@@ -232,7 +232,7 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         {"pro4000", "RTX PRO 4000", 66, 74, 22, 26, true, "measured (rows lane 11-26, Vast PRO 4000 24 GB, 145 W): 4K / 32K prefill 1.7x / 2.2x, C4 +36%, C8 +39%; peak 23.4 GB of 24.4 (the 5090 row, not compact)",
          kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, false},
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
         {"pro2000", "RTX PRO 2000", 24, 32, 15, 17, false, "placeholder: RTX PRO 2000 Blackwell (16 GB)",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
