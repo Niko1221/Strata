@@ -23,6 +23,8 @@ GIB_TO_GB = 1.073741824
 VRAM_DRIVER_GB = 1.30            # CUDA context + runtime + the engine's working buffers beside the weights, measured: 1.54 GB of non-expert use on a 12 GiB card (was 1.60 with the margin inside; the margin is now VRAM_SAFETY_GB)
 VRAM_HYBRID_WORKSPACE_GB = 0.85  # hybrid ping-pong DMA ring + staging buffers + desktop margin (#6587, #6613)
 KV_GROW_FACTOR = 1.60            # peak transient headroom for elastic/doubling KV pool growth (HIP grow_pool #6613)
+HIP_KV_WINDOW_TOKENS = 32768     # HIP, discrete card: the K/V the plan keeps room for, per slot. The engine's pools start empty and grow on demand (VisitKvPool::grow_pool); when the
+                                 # card is full the pool moves to host-mapped pinned memory, so a longer chat is slower, never a failure. Counting the whole context took the card from the experts (#7022)
 SPLIT_GPU_OVERHEAD_GB = 1.00     # per-extra-GPU runtime/trunk/comm overhead on multi-GPU layer-split
 DSPARK_BASE_GB = 0.11            # DSpark activation + compact SWA-1025 rings for layers 0 & 2
 DSPARK_KV_BYTES_PER_TOK = 4096   # 1 global DSpark layer (L1) x 8 kv_heads x 128 head_dim x 2 (K+V) x 2B (FP16)
@@ -206,17 +208,20 @@ def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = Fals
                   host_offload_global_kv: bool = False, backend: str | None = None) -> float:
     """Video memory kept free of expert bodies: driver/desktop + hybrid workspace + DSpark KV + KV/SWA/ShortConv (+ peak KV growth margin + Vision shard)."""
     slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+    kv_ctx = ctx
+    if str(backend or "").strip().lower() == "hip":      # HIP (a card of its own): room for the K/V window; the pool grows on demand and spills to the host when the card is full
+        kv_ctx = min(DEFAULT_CONTEXT if ctx is None else max(1024, int(ctx)), HIP_KV_WINDOW_TOKENS)
     if host_offload_global_kv:
         kv_vram = swa_sconv_gb(parallel, fp8_kv=fp8_kv, backend=backend)
     else:
         grow = 1.0 if _full_ctx_slots(backend) else KV_GROW_FACTOR       # SYCL allocates the whole K/V once: there is no growth to leave room for
-        kv_vram = round(global_kv_gb(ctx, parallel, fp8_kv=fp8_kv, backend=backend) * grow
+        kv_vram = round(global_kv_gb(kv_ctx, parallel, fp8_kv=fp8_kv, backend=backend) * grow
                         + swa_sconv_gb(parallel, fp8_kv=fp8_kv, backend=backend), 3)
     return round(
         VRAM_DRIVER_GB
         + (VRAM_HYBRID_WORKSPACE_GB if hybrid else 0.0)
         + (SLOT_WORKSPACE_EXTRA_GB if slots >= 8 else 0.0)
-        + dspark_gb(ctx, enabled=dspark, parallel=parallel, backend=backend)
+        + dspark_gb(kv_ctx, enabled=dspark, parallel=parallel, backend=backend)
         + kv_vram
         + (VISION_GB if vision else 0.0),
         3,

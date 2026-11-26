@@ -7530,7 +7530,11 @@ def data_folder_in_place() -> tuple:
 
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
-    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
+    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind.
+    #7012: the folder is made first.  The Terminal's install folder (<data home>/strata/install) is not made by anything
+    before the first run config is written (the data folder beside it is), so the very first write failed there."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     atomic.replace(tmp, path)
@@ -9044,19 +9048,20 @@ def mtp_corrupt(mtp: Path, env=None) -> bool:
     return r.returncode == 3
 
 
-def auto_drafter(a, family: str, fam: dict, model: str, hip: bool, gpu: dict, mtp_here: bool) -> str | None:
+def auto_drafter(a, family: str, fam: dict, model: str, hip: bool, gpu: dict, mtp_here: bool, canonical: bool = False) -> str | None:
     """P14 (0.2.16): the drafter a fresh setup uses when the person named none (no --drafter, no --mtp): the Terminal's Auto rule
     (strata_control/drafting.py choice_of, the one `strata launch` and the app use), not a copy of it. "dflash2" when Auto means DFlash2 on this
     computer and the MTP layer is not on disk yet, so the ~5 GB MTP download is skipped and the 1.2 GB DFlash2 drafter is fetched instead (a P100 got the
     5 GB layer from setup while the Terminal's Auto picks DFlash2 there). None in every other case: the MTP layer is already here (nothing to save), a
-    drafter was named, or Auto means the MTP; setup then goes on as before. Never raises."""
+    drafter was named, or Auto means the MTP; setup then goes on as before. ``canonical``: step 6 builds the canonical pack (Q2_0 on a CPU with AVX-512), which
+    the engine's DFlash2 refuses ("it needs a native pack", #7090): Auto is the MTP then, and the layer is fetched. Never raises."""
     if getattr(a, "drafter", None) or a.mtp is not None or mtp_here:
         return None
     try:
         from strata_control import drafting
         backend, archs = drafting.hardware_for("hip" if hip else "cuda")
         pick = drafting.choice_of("auto", model_name=f"{fam['name']}-{model.lower()}", family=family, backend=backend, archs=archs,
-                                  vram_mib=float(gpu.get("vram_gb") or 0) * 1024 or None)
+                                  vram_mib=float(gpu.get("vram_gb") or 0) * 1024 or None, canonical=canonical)
         return "dflash2" if pick == "dflash2" else None
     except Exception:                                  # noqa: BLE001 - a rule that cannot be read leaves setup as it was
         return None
@@ -9234,6 +9239,7 @@ def write_run_script(model, cfg_path, port, open_browser=True):
     """run-<model>.bat / .sh: the server with this config; `open_browser` False (#609: --no-browser) leaves --open out."""
     serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
              "--port", str(port)] + (["--open"] if open_browser else [])
+    home().mkdir(parents=True, exist_ok=True)           # #7012: the Terminal's install folder may not exist yet
     if WIN:
         script = home() / f"run-{model.lower()}.bat"
         script.write_bytes(("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
@@ -9498,12 +9504,28 @@ def shape_engine_fetch(a):
     name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
     from strata_cli import update_cmd
     source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
-    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
+    lines: list[str] = []                                            # #7119: what ensure said; the last one is why it stopped
+
+    def emit(m):
+        lines.append(str(m))
+        say("  " + m)
+
+    exe = shape_engine.ensure(shape, source, emit=emit, title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
             warn(shape_engine.WORDS["setup_skip"].format(model=name))
             return None
-        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
+        why = (lines[-1].strip() if lines else "").rstrip()
+        try:
+            hand = shape_engine.hand_install_note(shape)
+        except Exception:                                            # noqa: BLE001 - a note about folders never hides the failure itself
+            hand = ""
+        if why and not why.endswith((".", "!", "?")):
+            why += "."
+        if hand:
+            why = f"{why} {hand}".strip()
+        fail(shape_engine.WORDS["setup_failed"].format(model=name),
+             shape_engine.WORDS["setup_failed_why"].format(why=why) if why else shape_engine.WORDS["setup_failed_hint"])
     found = shape_engine.find(shape, full=False, title=title)
     ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
     return found
@@ -10534,7 +10556,17 @@ def inkling_pc(gpu, ram) -> tuple:
     return effective_vram_gb(g), float(ram), False, False, arch
 
 
-def inkling_expert_flags(placed) -> list:
+# A plan that fills the card and the RAM with every expert and leaves nothing for the SSD has its two caps equal to the plan.  The engine counts its experts a
+# little differently (each one's real bytes, and the 65-slot bounce ring the SSD-streaming mode takes out of the RAM cap), so a few percent of them do not fit
+# under caps with no room, the engine switches to GPU+SSD streaming and reads them from the SSD on every use: SQ-20 on an RX 7900 XT (20 GiB, 32K context) wrote
+# 12.53 + 2.08 GiB = exactly its 15.68 GB, the engine kept 47 experts on the SSD and decode / prefill fell 7% / 19% below 0.2.20, which (before the GiB fix #6792) wrote
+# caps 7.4% above its plan.  So the RAM cap of such a plan gets this much room: the larger of RAM_TIER_SLACK_GIB and RAM_TIER_SLACK_FRAC of the experts, bounded
+# by the free RAM the planner was given.  HIP only: that is where it was measured (boxia, RX 7900 XT); the other backends write the caps they always wrote.
+RAM_TIER_SLACK_GIB = 0.75
+RAM_TIER_SLACK_FRAC = 0.05
+
+
+def inkling_expert_flags(placed, ram_free_gib=None, backend=None) -> list:
     """--vram-experts-gb / --ram-experts-gb for a planner placement.  The planner counts GB (10^9 bytes); strata-inkling reads the two
     flags as GiB (2^30 bytes): written as they were, the engine's cap sat 7.4% above the plan (#6792)."""
     # Rounded UP to the 0.01 GiB the flag carries: an exact figure rounded down cuts the last expert off (UD-Q4_K_XL: 15.48 GB written as 14.42 GiB left
@@ -10545,7 +10577,15 @@ def inkling_expert_flags(placed) -> list:
     # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only": a plan with every expert on the card leaves it
     # out, so experts that do not fit after all (a bigger context, a --vram-experts-gb cap) go to RAM, not the SSD (#6752)
     if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
-        flags += ["--ram-experts-gb", f"{up(placed['ram_gb']):.2f}"]
+        ram_slack = 0.0
+        if backend == "hip" and placed["ram_gb"] > 0.05 and placed.get("ssd_gb", 0.0) <= 0.05 and not placed.get("full_vram"):
+            # card + RAM, no SSD tier, no room: give the RAM cap room (see RAM_TIER_SLACK_GIB), never more than the free RAM allows
+            total_gib = (placed["vram_gb"] + placed["ram_gb"]) / inkling_fit.GIB_TO_GB
+            ram_slack = max(RAM_TIER_SLACK_GIB, RAM_TIER_SLACK_FRAC * total_gib)
+            if ram_free_gib is not None:
+                room = float(ram_free_gib) - placed["ram_gb"] / inkling_fit.GIB_TO_GB - inkling_fit.FREE_RAM_MARGIN_GB / inkling_fit.GIB_TO_GB
+                ram_slack = max(0.0, min(ram_slack, room))
+        flags += ["--ram-experts-gb", f"{up(placed['ram_gb'], ram_slack):.2f}"]
     return flags
 
 
@@ -10568,6 +10608,19 @@ def inkling_plan_extra(gpu) -> dict:
     except Exception:                                  # noqa: BLE001
         pass
     return out
+
+
+def inkling_plan_kv(a, backend) -> dict:
+    """The K/V type the person chose, for the HIP plan only (#7022): fp8 or fp16 is planned as asked (the plan assumed FP16 on a card of more than 13 GiB, twice the K/V of an
+    --kv fp8 start); no choice, or another backend, leaves the planner's own rule (the other backends' plans are the ones they always were)."""
+    if backend != "hip":
+        return {}
+    asked = str(getattr(a, "kv", None) or "").strip().lower()
+    if asked in ("fp8", "k8v8", "k8v4"):                  # setup turns k8v8 / k8v4 into fp8 on HIP (below)
+        return {"fp8_kv": True}
+    if asked == "fp16":
+        return {"fp8_kv": False}
+    return {}
 
 
 def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_family.DEFAULT_VISION, *, igpu=False, arch=None, extra=None) -> list:
@@ -10795,7 +10848,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == inkling_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(inkling_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
     par = max(1, min(inkling_family.MAX_PARALLEL, int(getattr(a, "parallel", None) or 1)))     # --parallel N: the slots the planner makes room for (0221 APPTUI: it planned for one)
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra)
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra, **inkling_plan_kv(a, plan_extra.get("backend")))
     mode = inkling_fit.mode(placed)
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
@@ -10887,7 +10940,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
     drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
         inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend})
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
@@ -10904,7 +10957,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
-        args += inkling_expert_flags(placed)
+        args += inkling_expert_flags(placed, ram_free_gib=plan_extra.get("ram_free_gib"), backend=ink_backend)
         if placed.get("ssd_gb", 0.0) > 0.05:
             args += ["--ssd-experts"]
     cfg = {
@@ -12330,9 +12383,12 @@ def main() -> int:
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     pack_bin = ready or ((pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists())   # ready: in the download
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
-    if not ready and (picked := auto_drafter(a, family, fam, model, hip, gpu, mtp_have)):      # P14: the Terminal's Auto rule, not always the 5 GB layer
-        a.drafter, a.drafter_auto = picked, True
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
+    if not ready and (picked := auto_drafter(a, family, fam, model, hip, gpu, mtp_have, canonical=q2_avx)):      # P14: the Terminal's Auto rule, not always the 5 GB layer
+        a.drafter, a.drafter_auto = picked, True
+    if q2_avx and not ready and getattr(a, "drafter", None) == "dflash2":     # #7090: step 6 builds the canonical pack, which DFlash2 refuses (also when the app or --drafter named it)
+        warn("DFlash2 needs a native pack, and the AVX-512 Q2_0 pack of this CPU is not one: the MTP draft layer is used instead")
+        a.drafter, a.drafter_auto = None, False
     prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
         not prepared_done(model, models_dir) else 0.0
     margin = 2 if mtp_have else 8                      # working room: a guess, not bytes that will be written

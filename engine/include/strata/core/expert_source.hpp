@@ -189,6 +189,13 @@ int64_t append_stage_lend_regions(int64_t n_layers, int64_t n_expert, const std:
                                   const std::vector<std::vector<std::pair<int32_t, int32_t>>>& regions,
                                   std::string& err);
 
+/// #7089 (PR #7091 by @svonolfen): how much of the stages' lend regions (percent of their bytes, counted from the highest slot of each region down, the
+/// slots a short prompt borrows) the RAM budget reserves BEFORE it fills the coldest tail of the complement.  #6583 reserves all of it (100) and that stays
+/// the default on every drive.  The reservation is paid out of the complement, the copy decode reads, so on a RAM-tight 2-GPU layer split it can cost
+/// decode (reporter: 82.6 against 90.1 tok/s) and it buys cold prompt reading (5 to 17% at 18K tokens).  `env` is STRATA_SPLIT_LEND_RESERVE:
+/// "0" none (the complement first, as before #6583), "1".."99" that percent, anything else or unset: all (100).  `why` (optional) says which rule decided.
+int split_lend_reserve_percent(const char* env, std::string* why = nullptr);
+
 }  // namespace detail
 
 

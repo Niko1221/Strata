@@ -58,6 +58,8 @@ WORDS = {
     # setup.py (the [X] / [ok] marks are setup's)
     "setup_failed": "the engine for {model} could not be installed",
     "setup_failed_hint": "See the line above. Nothing was downloaded for the model. Run this again when the update feed has it.",
+    # #7119: the app shows only the stopping line and its hint, never the lines before it, so "See the line above" pointed at nothing. The hint carries the reason itself.
+    "setup_failed_why": "{why} Nothing was downloaded for the model. Run this again when the update feed has it.",
     "setup_ok": "engine for {model}: {version} in {folder}",
     "setup_skip": "no engine for {model} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched",
     "update_label": "Model engine",
@@ -340,6 +342,53 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
     finally:
         if stage_root is not None:
             shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
+
+
+def hand_install_note(shape: str, components: Path | None = None) -> str:
+    """#7119: why a package somebody unpacked by hand is not used, in one plain sentence ("" when there is nothing of the kind). The right place is
+    ``<components>/shapes/<shape>/engine/<package>/`` with ``engine-component.json`` directly inside the package folder. Three mistakes are named: a
+    package folder with an unreadable manifest, the files one folder too deep, and a shape engine in the Strata engine's own folder. Reads folder names and
+    ``engine-component.json`` only (nothing is hashed, nothing is changed)."""
+    import json
+    comp = component_id(shape)
+    components = Path(components) if components else ec.components_dir()
+    place = ec.engine_dir(root(shape, components))
+    right = f"{place}{os.sep}<package folder>{os.sep}"
+    notes: list[str] = []
+    try:
+        entries = sorted(item for item in place.iterdir() if item.is_dir() and not item.name.startswith("."))[:64]
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            ec.read_manifest(entry, comp)
+            continue
+        except ec.ComponentProblem as exc:
+            problem = str(exc)
+        deeper = None
+        try:
+            deeper = next((sub for sub in sorted(entry.iterdir()) if sub.is_dir() and (sub / ec.MANIFEST).is_file()), None)
+        except OSError:
+            pass
+        if deeper is not None and not (entry / ec.MANIFEST).is_file():
+            notes.append(f"the package in {entry.name} is one folder too deep: move {deeper.name} up so that {ec.MANIFEST} is directly inside a folder of {place}")
+        else:
+            notes.append(f"the package folder {entry.name} cannot be used ({problem})")
+    strata = ec.engine_dir(components)
+    try:
+        wrong = sorted(item for item in strata.iterdir() if item.is_dir() and not item.name.startswith("."))[:64]
+    except OSError:
+        wrong = []
+    for entry in wrong:
+        try:
+            data = json.loads((entry / ec.MANIFEST).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("id") == comp:
+            notes.append(f"the engine for this model is in the Strata engine's folder ({entry.name}): move it to {place}")
+    if not notes:
+        return ""
+    return "A package unpacked by hand: " + "; ".join(notes[:3]) + f". The right place is {right}."
 
 
 LOCK_WAIT_S = 120.0

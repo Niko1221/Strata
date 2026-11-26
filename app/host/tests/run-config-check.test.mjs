@@ -169,3 +169,11 @@ test('inkling_thinking_budget (Inkling-2-Mini default thinking budget, 0.2.21) i
   const bad = checkRunConfig(JSON.stringify({ exe: 'x', args: [], inkling_thinking_budget: -5 }));
   assert.ok(bad.issues.some(i => i.key === 'inkling_thinking_budget'), 'a negative budget is reported');
 });
+
+test('inkling_budget_cap (#7133: false keeps a client\'s full thinking budget) is a known key and must be true or false', () => {
+  assert.ok(KNOWN_KEYS.has('inkling_budget_cap'));
+  const ok = checkRunConfig(JSON.stringify({ exe: 'component:strata-inkling', arch: 'inkling2_loop', args: ['--native', 'Inkling-2-Mini-SQ-10.strata'], inkling_budget_cap: false }));
+  assert.equal(ok.issues.filter(i => i.key === 'inkling_budget_cap').length, 0, JSON.stringify(ok.issues));
+  const bad = checkRunConfig(JSON.stringify({ exe: 'x', args: [], inkling_budget_cap: 'no' }));
+  assert.ok(bad.issues.some(i => i.key === 'inkling_budget_cap'), 'a string is reported');
+});

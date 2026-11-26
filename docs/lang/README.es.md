@@ -95,7 +95,7 @@ SQ-20 está pensado para una tarjeta gráfica de 24 GiB, SQ-15 para 16 GiB y SQ-
 
 Instala la aplicación, elige un modelo y empieza a chatear. Hay un instalador por sistema. En el primer arranque, la aplicación descarga el motor para tu tarjeta gráfica. [Ayuda con el instalador](../INSTALL.md#the-app).
 
-<sub>Archivos: `Strata-0.2.21-windows-x64-setup.exe` · `Strata-0.2.21-linux-x86_64.AppImage` · `Strata-0.2.21-macos-arm64.dmg`</sub>
+<sub>Archivos: `Strata-0.2.22-windows-x64-setup.exe` · `Strata-0.2.22-linux-x86_64.AppImage` · `Strata-0.2.22-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="Aplicación de escritorio de Strata con un chat y una vista previa del código en vivo, una junto a otra">

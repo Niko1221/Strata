@@ -236,6 +236,7 @@
   "toast.httpAnswer": "サーバーが HTTP {code} で応答しました。",
   "toast.keyAbout": "このサーバーにはキーが必要です。「情報」>「設定」で入力してください。",
   "toast.keyAbout2": "API キーが必要です。「情報」>「設定」で入力してください。",
+  "toast.keyFrom": "これはサーバーを起動したときのキーです。--api-key、STRATA_API_KEY、実行設定の api_key、またはこのコンピューターの外へ共有するときに strata launch が作成した sk-strata- のキーのいずれかです。",
   "toast.keyNeeded": "このサーバーには API キーが必要です。「情報」>「設定」で入力してください。",
   "toast.requestFailed": "リクエストに失敗しました",
   "tool.arguments": "引数",

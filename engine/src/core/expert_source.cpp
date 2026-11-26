@@ -354,6 +354,24 @@ int64_t append_stage_lend_regions(int64_t n_layers, int64_t n_expert, const std:
     return kept;
 }
 
+int split_lend_reserve_percent(const char* env, std::string* why) {
+    auto say = [&](const std::string& s) { if (why != nullptr) *why = s; };
+    if (env != nullptr && env[0] != '\0') {
+        const std::string v(env);
+        if (v == "full") { say("STRATA_SPLIT_LEND_RESERVE=full"); return 100; }
+        if (v != "auto") {
+            char* end = nullptr;
+            const long n = std::strtol(env, &end, 10);
+            if (end != env && *end == '\0' && n >= 0 && n <= 100) {
+                say(std::string("STRATA_SPLIT_LEND_RESERVE=") + v);
+                return (int) n;
+            }
+        }
+    }
+    say("the whole reservation (#6583), the default");
+    return 100;
+}
+
 bool exchange_cache_complement(std::vector<uint64_t>& offsets, size_t in, size_t out) {
     if (in == out || in >= offsets.size() || out >= offsets.size() || offsets[in] == kNoCacheComplement ||
         offsets[out] != kNoCacheComplement) return false;
@@ -4041,6 +4059,10 @@ bool FileExpertSource::pin_cache_complement(
     int64_t budget_lent = 0, budget_lendable = 0;   // the lend region's slots kept by a budget (below), and its size
     uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
     uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
+    // #7089: with a partial lend reservation, how many of each stage lend region's pairs (highest slot first) the RAM budget reserved before it
+    // filled the complement (empty: all of them, or no budget).  The stage lend regions are appended in this order further down, so the
+    // reserved ones are certain to be kept.
+    std::vector<size_t> lend_reserved_prefix;
     if (budget_bytes > 0) {
         // CS-T: a RAM budget.  The complement's experts in `rank` order (the expert profile, hottest first) while
         // they fit, the rest left on the mapped files; Windows commit capacity also limits the allocation (#730).
@@ -4109,11 +4131,31 @@ bool FileExpertSource::pin_cache_complement(
         // regions BEFORE filling the coldest tail of the complement.  Borrowed slots hold GPU-resident hot experts
         // that are evicted and re-read on every prompt chunk; letting the coldest complement experts crowd them out
         // turns every chunk into hundreds of uncached SSD blob reads.
+        // #7089 (PR #7091 by @svonolfen): the reservation is paid out of the complement, which is what decode reads.  On a RAM-tight 2-GPU layer split
+        // (RTX 4090 + 3090, UD-Q4_K_XL, --resident-budget-gib 47 of 64 GiB) switching it off gave +9% decode (82.6 -> 90.1 tok/s) and cost ~5% cold
+        // prompt reading at 18K tokens; on 2 x A6000 with the same lend regions +5.5% decode and -17% (reservation 100% -> 0%).  The default stays whole:
+        // it is what #6583 measured on Windows (2 x RTX 3090: 315 unbacked slots cost 9% prefill).  STRATA_SPLIT_LEND_RESERVE=0 (none) or 1..99 (that
+        // percent, from the highest slot of each region) is an opt-in.
         uint64_t stage_lend_reserve = 0;
+        int lend_percent = 100;
         if (!stage_lend_regions_.empty()) {
+            std::string why;
+            lend_percent = detail::split_lend_reserve_percent(std::getenv("STRATA_SPLIT_LEND_RESERVE"), &why);
+            if (lend_percent != 100)   // the default says nothing: the line below it already reports the kept slots
+                std::fprintf(stderr, "FileExpertSource: the stage lend reservation takes %d%% of the lend regions before the complement is filled: %s\n",
+                             lend_percent, why.c_str());
+        }
+        if (lend_percent > 0 && !stage_lend_regions_.empty()) {
             std::vector<uint8_t> seen(offsets.size(), 0);
+            if (lend_percent < 100) lend_reserved_prefix.assign(stage_lend_regions_.size(), 0);
+            size_t region_no = 0;
             for (const auto& region : stage_lend_regions_) {
+                const size_t take = lend_percent >= 100 ? region.size() : (region.size() * (size_t) lend_percent + 99) / 100;
+                if (lend_percent < 100) lend_reserved_prefix[region_no] = take;
+                ++region_no;
+                size_t seen_pairs = 0;
                 for (const auto& pair : region) {
+                    if (seen_pairs++ >= take) break;
                     if (pair.first < 0 || pair.first >= n_layers_ || pair.second < 0 || pair.second >= n_expert_) continue;
                     const size_t idx = (size_t) pair.first * (size_t) n_expert_ + (size_t) pair.second;
                     if (offsets[idx] != kNoComplement || seen[idx]) continue;
@@ -4258,8 +4300,25 @@ bool FileExpertSource::pin_cache_complement(
         uint64_t cap = budget;   // an explicit --resident-budget-gib caps the whole copy, regions included
         if (budget_bytes > 0 && budget_bytes != kResidentWhatFits && budget_bytes < cap) cap = budget_bytes;
         const uint64_t before = bytes;
-        stage_lent = detail::append_stage_lend_regions(n_layers_, n_expert_, layer_blob_bytes_, offsets, bytes, cap,
-                                                       stage_lend_regions_, err);
+        if (lend_reserved_prefix.size() == stage_lend_regions_.size() && !lend_reserved_prefix.empty()) {
+            // #7089: a partial reservation. The reserved first part of every region goes in first (it fits: its bytes were taken from the
+            // complement's room), then what is left of the regions, while the budget lasts.
+            std::vector<std::vector<std::pair<int32_t, int32_t>>> first(stage_lend_regions_.size()), rest(stage_lend_regions_.size());
+            for (size_t r = 0; r < stage_lend_regions_.size(); ++r) {
+                const auto& region = stage_lend_regions_[r];
+                const size_t cut = std::min(lend_reserved_prefix[r], region.size());
+                first[r].assign(region.begin(), region.begin() + (std::ptrdiff_t) cut);
+                rest[r].assign(region.begin() + (std::ptrdiff_t) cut, region.end());
+            }
+            stage_lent = detail::append_stage_lend_regions(n_layers_, n_expert_, layer_blob_bytes_, offsets, bytes, cap, first, err);
+            if (stage_lent >= 0) {
+                const int64_t more = detail::append_stage_lend_regions(n_layers_, n_expert_, layer_blob_bytes_, offsets, bytes, cap, rest, err);
+                stage_lent = more < 0 ? -1 : stage_lent + more;
+            }
+        } else {
+            stage_lent = detail::append_stage_lend_regions(n_layers_, n_expert_, layer_blob_bytes_, offsets, bytes, cap,
+                                                           stage_lend_regions_, err);
+        }
         if (stage_lent < 0) return false;
         stage_lent_bytes = bytes - before;
     }

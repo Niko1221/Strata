@@ -19,6 +19,7 @@ else()
   set(STRATA_SYCL_VERSION 0.1.40.2)
 endif()
 project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/strata_symbols.cmake)   # -DSTRATA_KEEP_SYMBOLS=ON: host debug information, same machine code
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 include(${STRATA_ROOT}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name> (default flash_next, no flag added)
 set(CMAKE_CXX_STANDARD 20)

@@ -2153,6 +2153,10 @@ def _install(a: argparse.Namespace) -> int:
         env["STRATA_CONTROL_INSTALL"] = "1"
         from strata_cli.launch.catalog import install_root
         env.setdefault("STRATA_INSTALL_DIR", str(install_root()))
+        try:                                             # #7012: setup writes its run configs here; a Terminal-only install has no such folder yet
+            Path(env["STRATA_INSTALL_DIR"]).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass                                         # setup says what it cannot write
     return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
                            cwd=str(installer.parent), env=env)
 

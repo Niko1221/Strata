@@ -640,6 +640,11 @@ MODEL_CARD_SAMPLING = {
     "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
                  "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
+# Inkling-2-Mini (#7092): the model card's own sampling is the generation_config.json of thinkingmachines/Inkling-2-Mini (read 2026-11-25):
+# {"do_sample": true, "temperature": 1.0}.  The README names no other sampling value (no top_p, top_k, min_p or penalty), so only the temperature is set here and the
+# engine keeps its own top_k 64 / top_p 1.0.  Before, a request that named nothing got the engine's temperature 0 (greedy), which can loop.
+MODEL_CARD_SAMPLING.update({arch: {"thinking": {"temperature": 1.0}, "instruct": {"temperature": 1.0}}
+                            for arch in ("inkling2_loop", "inkling2", "inkling2_loop_text")})
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)
@@ -658,6 +663,18 @@ def request_asks_sampling(*layers) -> bool:
                 if layer.get(k) is not None:
                     return True
     return False
+
+
+# #3354: the families whose engine drafts only for a strictly greedy request, so the model card's sampling (Qwen3.6's presence_penalty 1.5)
+# switches the MTP drafts off ("drafts accepted 0 of 0").  Flash-Next (qwen4exp: Qwen3.8, Gyro) and Hy4-Flash verify the drafts of sampled
+# requests, so for them the card stays the default of a request that names no sampling (#7070: Gyro-S solved far fewer tasks when it ran greedy).
+GREEDY_FOR_DRAFTS = frozenset({"qwen35moe"})
+
+
+def mtp_greedy_default(arch, has_mtp, *layers) -> bool:
+    """True when a request that names no sampling should run greedy instead of with the model card's sampling: the engine has an MTP
+    drafter, its family drafts only greedy requests (GREEDY_FOR_DRAFTS), and no layer (request, Chat settings, config block) names any."""
+    return bool(has_mtp) and arch in GREEDY_FOR_DRAFTS and not request_asks_sampling(*layers)
 
 
 def model_card_sampling(arch, thinking, greedy=False) -> dict:

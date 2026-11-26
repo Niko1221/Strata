@@ -51,7 +51,7 @@ class FreeMemoryPlan(unittest.TestCase):
                          F.place("SQ-10", 6.0, 32, False, 32768, ram_free_gib=None))
 
     def test_flags_are_gib_not_gb(self):
-        placed = {"vram_gb": 7.75, "ram_gb": 0.85}
+        placed = {"vram_gb": 7.75, "ram_gb": 0.85, "ssd_gb": 0.5}      # an SSD tier: the plain GB -> GiB conversion (room for a plan without one: RamTierSlack)
         got = S.inkling_expert_flags(placed)
         self.assertEqual(got[0], "--vram-experts-gb")
         self.assertEqual(got[2], "--ram-experts-gb")
@@ -77,6 +77,46 @@ class FreeMemoryPlan(unittest.TestCase):
                 self.assertGreaterEqual(float(f[3]) * 1.073741824 + 1e-9, gb / 3)
             else:
                 self.assertEqual(f, f[:2])
+
+
+class RamTierSlack(unittest.TestCase):
+    """A plan with every expert in card + RAM and no SSD tier must not write caps equal to the plan (RX 7900 XT, SQ-20: 47 experts went to the SSD)."""
+
+    def _plan(self, build="SQ-20", vram=20.0, ram=60.0, free=58.0, backend="hip"):
+        return F.place(build, vram, ram, False, 32768, False, dspark=False, backend=backend, ram_free_gib=free)
+
+    def test_card_plus_ram_without_ssd_gets_room_on_the_ram_cap(self):
+        placed = self._plan()
+        self.assertLessEqual(placed["ssd_gb"], 0.05, placed)
+        self.assertGreater(placed["ram_gb"], 0.05, placed)
+        self.assertFalse(placed.get("full_vram"), placed)
+        plain = float(S.inkling_expert_flags(placed, backend="hip")[3])
+        self.assertAlmostEqual(plain, placed["ram_gb"] / 1.073741824 + S.RAM_TIER_SLACK_GIB, delta=0.05)    # 2.08 GiB -> about 2.83
+        self.assertEqual(S.inkling_expert_flags(placed, backend="hip")[1], S.inkling_expert_flags(placed, ram_free_gib=58.0, backend="hip")[1])   # the card's cap is not touched
+
+    def test_the_room_is_bounded_by_the_free_ram(self):
+        placed = self._plan()
+        need = placed["ram_gb"] / 1.073741824
+        tight = float(S.inkling_expert_flags(placed, ram_free_gib=need + 0.3 + F.FREE_RAM_MARGIN_GB / 1.073741824, backend="hip")[3])
+        self.assertLessEqual(tight, need + 0.3 + 0.011)
+        none = float(S.inkling_expert_flags(placed, ram_free_gib=need, backend="hip")[3])
+        self.assertGreaterEqual(none, need)                       # never below the plan
+        self.assertLessEqual(none, need + 0.011)
+
+    def test_plans_with_an_ssd_tier_or_all_in_the_card_are_unchanged(self):
+        ssd = {"vram_gb": 12.53, "ram_gb": 2.0, "ssd_gb": 1.0, "full_vram": False}
+        self.assertAlmostEqual(float(S.inkling_expert_flags(ssd)[3]), 2.0 / 1.073741824, delta=0.011)
+        full = {"vram_gb": 15.8, "ram_gb": 0.0, "ssd_gb": 0.0, "full_vram": True}
+        self.assertEqual(S.inkling_expert_flags(full), S.inkling_expert_flags(full, ram_free_gib=56.0))
+        self.assertEqual(len(S.inkling_expert_flags(full)), 2)
+
+
+    def test_only_hip_gets_the_room(self):
+        placed = self._plan()
+        plain = float(S.inkling_expert_flags(placed)[3])
+        self.assertAlmostEqual(plain, placed["ram_gb"] / 1.073741824, delta=0.011)
+        for backend in (None, "cuda", "sycl", "metal"):
+            self.assertEqual(S.inkling_expert_flags(placed, ram_free_gib=58.0, backend=backend), S.inkling_expert_flags(placed), backend)
 
 
 class MaxContext(unittest.TestCase):
