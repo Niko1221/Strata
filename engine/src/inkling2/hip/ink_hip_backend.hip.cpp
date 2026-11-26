@@ -1892,6 +1892,7 @@ public:
                     }
                 };
                 for (int il = 0; il < c_.n_phys; ++il) {
+                    if (r9700_fp8_keeps_layer(il)) continue;   // the layers whose output the drafter taps keep their shipped format (acceptance)
                     if (trunk_qkvrg_[il].dev_ptr) {
                         quant_add(reinterpret_cast<const uint16_t*>(trunk_qkvrg_[il].dev_ptr), tot_qkvrg, D, true);
                     }
@@ -6677,7 +6678,7 @@ private:
                 } else {
                     k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
                 }
-                if (r9700_ && r9700_->cfg.fp8_moe && (B > 16 || r9700_->cfg.fp8_decode) && !exact_rows_ &&
+                if (r9700_ && r9700_->cfg.fp8_moe && (B > 16 || r9700_->cfg.fp8_decode) && !r9700_fp8_keeps_layer(ip) && !exact_rows_ &&
                     (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
                     layer_dn_class_[ip] == layer_gu_class_[ip]) {
                     // R9700 Native Zero-Spill Persistent FP8 WMMA MoE (BM=64 prefill, BM=16 decode/C64)
@@ -9714,6 +9715,13 @@ private:
     static bool halo_sf4_keeps_layer(int il) {
         static const bool taps_4bit = [] { const char* e = std::getenv("STRATA_INK_STRIXHALO_SF4_TAPS"); return e && e[0] == '1'; }();
         return !taps_4bit && (il == 5 || il == 11 || il == 17 || il == 23);
+    }
+
+    // R9700 FP8 trunk / FP8 MoE: true for the layers whose output the DFlash 2 / DSpark drafter taps (5, 11, 17, 23); they keep their shipped format.
+    // STRATA_INK_R9700_FP8_TAPS=1 puts them in FP8 too (the owner's first version; measurement only).
+    static bool r9700_fp8_keeps_layer(int il) {
+        static const bool taps_fp8 = [] { const char* e = std::getenv("STRATA_INK_R9700_FP8_TAPS"); return e && e[0] == '1'; }();
+        return !taps_fp8 && (il == 5 || il == 11 || il == 17 || il == 23);
     }
 
     void cleanup() {
