@@ -2742,16 +2742,28 @@ public:
             const int s = batch.slot_ids[b];
             if (s >= 0 && s < max_slots_ && !df2_->ensure_slot(s)) { /* that slot has no drafts; its rows are skipped by the ring kernel (null ring) */ }
         }
-        df2_->note_ingest(batch.slot_ids.data(), batch.pos.data(), B);
+        // A prompt's rows older than the drafter's window before the prompt's end are never read: a prefill batch starts at its first row that can matter
+        // (hint_prompt_len gives the prompt's end; decode batches are never skipped).
+        df2_off_ = (B >= 64) ? df2_->skip_prefix(batch.slot_ids.data(), batch.pos.data(), B) : 0;
+        df2_->note_ingest(batch.slot_ids.data() + df2_off_, batch.pos.data() + df2_off_, B - df2_off_);
         (void)err;
         return true;
     }
 
-    void df2_ingest(int B) {
-        df2_->ingest_dev(reinterpret_cast<const float*>(sc_taps_[0].dev_ptr), reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
-                         reinterpret_cast<const float*>(sc_taps_[2].dev_ptr), reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
-                         reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), reinterpret_cast<const int32_t*>(sc_pos_.dev_ptr), B);
+    void hint_prompt_len(int slot, int prompt_len) override {
+        if (has_df2_) df2_->hint_prompt(slot, prompt_len);
     }
+
+    void df2_ingest(int B) {
+        const int off = df2_off_;
+        static const bool no_ingest = std::getenv("STRATA_INK_DFLASH2_NOINGEST") != nullptr;   // ablation: the taps are captured, nothing is ingested
+        if (off >= B || no_ingest) return;
+        const size_t D = static_cast<size_t>(c_.hidden);
+        df2_->ingest_dev(reinterpret_cast<const float*>(sc_taps_[0].dev_ptr) + off * D, reinterpret_cast<const float*>(sc_taps_[1].dev_ptr) + off * D,
+                         reinterpret_cast<const float*>(sc_taps_[2].dev_ptr) + off * D, reinterpret_cast<const float*>(sc_taps_[3].dev_ptr) + off * D,
+                         reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr) + off, reinterpret_cast<const int32_t*>(sc_pos_.dev_ptr) + off, B - off);
+    }
+    int df2_off_ = 0;   // first row of the current batch that the drafter ingests
 
     // One linear chain of up to max_draft tokens. The window follows the expected-tokens-per-cost rule of the CUDA backend: the chain's cumulative confidences are the
     // prefix probabilities, a verify row costs 1 - (15/16)^rows of the MoE share (ratio). Returns the number of draft tokens (0 = a plain step).
@@ -5647,7 +5659,8 @@ private:
             cur, B, D, c_.rms_eps);
 
         auto maybe_tap = [&](int visit_id, const float* vec) {
-            if (!need_taps) return;
+            static const bool notap = std::getenv("STRATA_INK_DFLASH2_NOTAP") != nullptr;   // ablation only
+            if (!need_taps || notap) return;
             for (int k = 0; k < 4 && k < static_cast<int>(dspark_cfg_.target_visits.size()); ++k) {
                 if (dspark_cfg_.target_visits[k] == visit_id) {
                     (void)hipMemcpyAsync(sc_taps_[k].dev_ptr, vec, static_cast<size_t>(B) * D * 4, hipMemcpyDeviceToDevice, stream_);
@@ -9850,7 +9863,7 @@ private:
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
     double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
     bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
-    double df2_plain_ = 0.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain)
+    double df2_plain_ = 1.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain, STRATA_INK_DFLASH2_PLAIN=0 turns it off)
     int max_slots_ = 1;
     int max_ctx_ = 32768;
     int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)

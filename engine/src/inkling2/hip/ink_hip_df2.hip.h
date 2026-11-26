@@ -1208,10 +1208,16 @@ struct InkHipDFlash2 {
     void ingest_dev(const float* t0, const float* t1, const float* t2, const float* t3, const int32_t* d_slots, const int32_t* d_posv, int B) {
         using namespace hdf2;
         if (!ready || B <= 0) return;
+        const bool ip = prof_stages && B >= 64;
+        hipEvent_t ie[4] = {};
+        if (ip) { for (auto& e : ie) (void)hipEventCreate(&e); }
         for (int c0 = 0; c0 < B; c0 += kCh) {
             const int cn = std::min(kCh, B - c0);
+            if (ip) (void)hipEventRecord(ie[0], h.stream);
             k_hdf2_gather_taps<<<cn, 256, 0, h.stream>>>(t0, t1, t2, t3, c0, cn, d_ix);
+            if (ip) (void)hipEventRecord(ie[1], h.stream);
             h.gemm(fc, d_ix, d_ic, cn, kHidden, kTargets * kHidden);
+            if (ip) (void)hipEventRecord(ie[2], h.stream);
             k_hdf2_rms_norm<<<cn, 256, 0, h.stream>>>(d_ic, hidden_norm, d_icn, cn);
             for (int l = 0; l < kLayers; ++l) {
                 h.gemm(L[l].wkv, d_icn, d_ikc, cn, kKV, kHidden);
@@ -1219,8 +1225,23 @@ struct InkHipDFlash2 {
                 k_hdf2_rmsnorm_rope<<<dim3(kKvHeads, cn), 128, 0, h.stream>>>(d_ikc, L[l].k_norm, d_posv + c0, theta, cn, kKvHeads);
                 k_hdf2_ring_write<<<cn, 256, 0, h.stream>>>(d_ikc, d_ivc, d_slots + c0, d_posv + c0, l, d_rk_tab, d_rv_tab, cn);
             }
+            if (ip) {
+                (void)hipEventRecord(ie[3], h.stream);
+                (void)hipEventSynchronize(ie[3]);
+                float a = 0, b = 0, c = 0;
+                (void)hipEventElapsedTime(&a, ie[0], ie[1]);
+                (void)hipEventElapsedTime(&b, ie[1], ie[2]);
+                (void)hipEventElapsedTime(&c, ie[2], ie[3]);
+                ing_ms[0] += a; ing_ms[1] += b; ing_ms[2] += c; ing_rows += cn;
+                if (++ing_calls % 8 == 0)
+                    std::fprintf(stderr, "[InkHipDFlash2 ingest] %ld rows: ms per 128 rows: gather %.3f | fc gemm %.3f | norm + 5 layers of K/V %.3f\n", ing_rows,
+                                 ing_ms[0] * 128.0 / ing_rows, ing_ms[1] * 128.0 / ing_rows, ing_ms[2] * 128.0 / ing_rows);
+            }
         }
+        if (ip) { for (auto& e : ie) (void)hipEventDestroy(e); }
     }
+    double ing_ms[3] = {0, 0, 0};
+    long ing_rows = 0, ing_calls = 0;
 
     // host bookkeeping of what was ingested (call once per forward with the batch's slots / positions, graph hit or not)
     void note_ingest(const int32_t* slots, const int32_t* pos, int n) {
@@ -1241,6 +1262,26 @@ struct InkHipDFlash2 {
         n_ingest_rows += n;
     }
 
+    // The end of a request's prompt: its rows more than kKeep positions before it are never attended (the window is 2048), so a prefill batch skips them.
+    std::vector<int64_t> skip_below;
+    void hint_prompt(int slot, int prompt_len) {
+        if (slot < 0 || slot >= max_slots) return;
+        if (skip_below.size() < (size_t)max_slots) skip_below.assign(max_slots, 0);
+        constexpr int kKeep = hdf2::kRingCap - 16;
+        skip_below[slot] = prompt_len > kKeep ? (int64_t)prompt_len - kKeep : 0;
+    }
+    // the number of leading rows of a prefill batch that no draft can ever read (they stay skipped even when the batch is a prefix of several slots' rows: the scan stops at the first row that matters)
+    int skip_prefix(const int32_t* slots, const int32_t* pos, int n) const {
+        if (skip_below.empty()) return 0;
+        int i = 0;
+        while (i < n) {
+            const int s = slots[i];
+            if (s < 0 || s >= max_slots || skip_below[s] <= 0 || pos[i] >= skip_below[s]) break;
+            ++i;
+        }
+        return i;
+    }
+
     // rows at positions >= keep_len were ingested with a verify batch and then rejected: only [0, keep_len) is context
     void rollback(int slot, int64_t keep_len) {
         if (slot < 0 || slot >= max_slots) return;
@@ -1252,6 +1293,7 @@ struct InkHipDFlash2 {
     void reset_slot(int slot, int64_t pos) {
         if (slot < 0 || slot >= max_slots) return;
         lo[slot] = hi[slot] = pos;
+        if (!skip_below.empty()) skip_below[slot] = 0;
     }
 
     // ---- the draft ------------------------------------------------------------------------------------------------------------
@@ -1393,7 +1435,7 @@ struct InkHipDFlash2 {
     bool prof_stages = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_PROF"); return e && e[0] == '2'; }();
     hipEvent_t pev[8] = {};
     double pst[8] = {};
-    int head_blocks_n = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_HEAD_BLOCKS"); return e && std::atoi(e) > 0 ? std::atoi(e) : 384; }();
+    int head_blocks_n = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_HEAD_BLOCKS"); return e && std::atoi(e) > 0 ? std::atoi(e) : 768; }();
     void mark(int i, hipStream_t st) {
         if (!prof_stages) return;
         if (!pev[i]) (void)hipEventCreate(&pev[i]);
