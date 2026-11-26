@@ -23,8 +23,9 @@ macro(strata_quant_layer)
   if(STRATA_CPU_X86)
     # the x86 tiers: ggml's own x86 code ported, each file compiled with its flavour's instruction-set flags so the #if __AVX2__ / __AVX__ branches
     # select what ggml-cpu selects for that flavour (the release builds are AVX2; STRATA_ISA_FLOOR=avx is the AVX-only one)
-    target_sources(strata_quant PRIVATE ${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp ${_sq}/src/quant/x86/dot_avx.cpp
-                                       ${_sq}/src/quant/x86/act_avx.cpp ${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp)
+    include(CheckCXXCompilerFlag)
+    target_sources(strata_quant PRIVATE ${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp ${_sq}/src/quant/x86/dot_avxvnni.cpp
+                                       ${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp ${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp)
     target_compile_definitions(strata_quant PRIVATE STRATA_QUANT_X86_TIERS=1)
     # The S_K / SF4 / MX8 codecs (sk_codecs.cpp) as three tiers (base / avx2 / avx512) chosen at run time by sk_dispatch.cpp from caps() (src/quant/sk_tiers.hpp):
     # a CPU without AVX2 never executes an AVX2 instruction of them, and a -march=native host cannot leak wide code into the base tier.  The tier files are
@@ -52,8 +53,13 @@ macro(strata_quant_layer)
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2;/clang:-mavxvnni")
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni")
+      elseif(MSVC_VERSION LESS 1929)
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2" COMPILE_DEFINITIONS "STRATA_NO_COMPILER_AVXVNNI=1")
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
       else()
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
       endif()
     else()
@@ -68,6 +74,12 @@ macro(strata_quant_layer)
       # Q5_K and IQ1_S dots differ from GCC's by 1-512 ulp (the golden file's msvc lines).
       set(STRATA_QUANT_AVX2_EXTRA "" CACHE STRING "extra compile options for the AVX2 tier files (experiments), semicolon separated")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-ffp-contract=fast;${STRATA_QUANT_AVX2_EXTRA}")
+      check_cxx_compiler_flag("-mavxvnni" STRATA_QUANT_HAVE_AVXVNNI)
+      if(STRATA_QUANT_HAVE_AVXVNNI)
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-mavxvnni;-ffp-contract=fast;${STRATA_QUANT_AVX2_EXTRA}")
+      else()
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_DEFINITIONS "STRATA_NO_COMPILER_AVXVNNI=1")
+      endif()
       # AVX2, FMA and F16C explicitly off: a -march=native build host must not leak wider code into the AVX-only tier
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "-mavx;-mno-avx2;-mno-fma;-mno-f16c;-ffp-contract=fast")
       # the 512-bit kernels of the Avx2 contract: F/DQ/BW/VL + VNNI (what Isa::Avx512 means), called only behind caps()

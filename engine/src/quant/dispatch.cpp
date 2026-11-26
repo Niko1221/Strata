@@ -27,7 +27,7 @@ int collect_dots(Type w, Arith a, const DotKernel** out, int cap) {
     const DotTable tables[] = {
         generic_dot_table(),
 #ifdef STRATA_QUANT_X86_TIERS
-        avx_dot_table(), avx2_dot_table(), avx512_dot_table(),
+        avx_dot_table(), avx2_dot_table(), avxvnni_dot_table(), avx512_dot_table(),
 #endif
 #ifdef STRATA_QUANT_ARM_TIERS
         neon_dot_table(),
@@ -65,7 +65,7 @@ const DotKernel* dot_kernel(Type w, Arith a) noexcept { return dot_kernel(w, a, 
 
 const DotX4Kernel* dot_x4_kernel(Type w, Arith a, Isa max_isa) noexcept {
 #ifdef STRATA_QUANT_X86_TIERS
-    const DotX4Table tables[] = {avx512_dot_x4_table(), avx2_dot_x4_table()};
+    const DotX4Table tables[] = {avx512_dot_x4_table(), avxvnni_dot_x4_table(), avx2_dot_x4_table()};
     const DotX4Kernel* best = nullptr;
     for (const DotX4Table& tb : tables) {
         for (int i = 0; i < tb.n; ++i) {

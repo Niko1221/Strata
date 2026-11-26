@@ -26,6 +26,8 @@ ActTable generic_act_table() noexcept;   // act_ref.cpp
 DotTable avx_dot_table() noexcept;       // x86/dot_avx.cpp      (Arith::Avx, Isa::Avx1)
 DotTable avx2_dot_table() noexcept;      // x86/dot_avx2.cpp     (Arith::Avx2, Isa::Avx2)
 DotX4Table avx2_dot_x4_table() noexcept; // x86/dot_avx2.cpp     (4-row shared-activation AVX2 kernels)
+DotTable avxvnni_dot_table() noexcept;   // x86/dot_avxvnni.cpp  (Arith::Avx2, Isa::AvxVnni)
+DotX4Table avxvnni_dot_x4_table() noexcept; // x86/dot_avxvnni.cpp (4-row shared-activation VEX VNNI kernels)
 ActTable avx_act_table() noexcept;       // x86/act_avx.cpp
 ActTable avx2_act_table() noexcept;      // x86/act_avx2.cpp
 ActTable avx512_act_table() noexcept;    // x86/act_avx512.cpp   (Arith::Avx2 bits in 512-bit lanes, Isa::Avx512)

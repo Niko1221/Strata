@@ -23,8 +23,11 @@ static int g_fail = 0;
 
 int main() {
     const sq::Caps& c = sq::caps();
-    std::printf("quant_selftest: best isa %s, default contract %s (avx=%d avx2=%d avx512=%d vnni=%d neon=%d)\n", sq::isa_name(sq::best_isa()),
-                sq::arith_name(sq::default_arith()), c.avx, c.avx2, c.avx512, c.avx512_vnni, c.neon);
+    std::printf("quant_selftest: best isa %s, default contract %s (avx=%d avx2=%d avx_vnni=%d avx512=%d vnni=%d neon=%d)\n", sq::isa_name(sq::best_isa()),
+                sq::arith_name(sq::default_arith()), c.avx, c.avx2, c.avx_vnni, c.avx512, c.avx512_vnni, c.neon);
+    if (c.avx_vnni && !(c.avx512 && c.avx512_vnni)) {
+        CHECK(sq::best_isa() == sq::Isa::AvxVnni && sq::isa_ok(sq::Isa::AvxVnni), "avx_vnni CPU selects Isa::AvxVnni");
+    }
 
     // the table: sizes the GGUF format fixes, unknown ids answered nullptr
     CHECK(sq::row_bytes(12, 256) == 144, "q4_K row of 256 is 144 bytes");

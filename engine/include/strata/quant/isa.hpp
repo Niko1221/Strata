@@ -15,7 +15,7 @@
 
 namespace strata::quant {
 
-enum class Isa : int { Scalar = 0, Neon = 1, Avx1 = 2, Avx2 = 3, Avx512 = 4 };
+enum class Isa : int { Scalar = 0, Neon = 1, Avx1 = 2, Avx2 = 3, AvxVnni = 4, Avx512 = 5 };
 
 /// The arithmetic contract of a kernel.  Generic = ggml's `_generic` C code (what a build without SIMD runs), Avx = its `__AVX__`
 /// branches, Avx2 = its `__AVX2__` branches (also what a native AVX-512 build runs for floats), Neon = its Arm branches.
@@ -32,7 +32,7 @@ struct Caps {
     bool bmi2 = false;
     bool avx512 = false;    ///< AVX-512 F, DQ, BW, VL with OS support
     bool avx512_vnni = false;
-    bool avx_vnni = false;
+    bool avx_vnni = false;  ///< VEX AVX-VNNI (CPUID 7.1:EAX[4]); STRATA_NO_AVXVNNI=1 disables it
     bool neon = false;      ///< arm64
     bool dotprod = false;
     bool i8mm = false;

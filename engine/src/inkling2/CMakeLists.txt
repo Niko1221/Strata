@@ -53,9 +53,11 @@ if(NOT TARGET strata_quant)
     set_source_files_properties(${_sq}/src/quant/dot_generic.cpp ${_sq}/src/quant/act_ref.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
   endif()
   if(_ink_cpu_x86)
+    include(CheckCXXCompilerFlag)
     target_sources(strata_quant PRIVATE
       ${_sq}/src/quant/x86/dot_avx2.cpp
       ${_sq}/src/quant/x86/act_avx2.cpp
+      ${_sq}/src/quant/x86/dot_avxvnni.cpp
       ${_sq}/src/quant/x86/dot_avx.cpp
       ${_sq}/src/quant/x86/act_avx.cpp
       ${_sq}/src/quant/x86/dot_avx512.cpp
@@ -84,12 +86,23 @@ if(NOT TARGET strata_quant)
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2;/clang:-mavxvnni")
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni")
+      elseif(MSVC_VERSION LESS 1929)
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2" COMPILE_DEFINITIONS "STRATA_NO_COMPILER_AVXVNNI=1")
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
       else()
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
       endif()
     else()
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-ffp-contract=fast")
+      check_cxx_compiler_flag("-mavxvnni" STRATA_INK_QUANT_HAVE_AVXVNNI)
+      if(STRATA_INK_QUANT_HAVE_AVXVNNI)
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-mavxvnni;-ffp-contract=fast")
+      else()
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avxvnni.cpp PROPERTIES COMPILE_DEFINITIONS "STRATA_NO_COMPILER_AVXVNNI=1")
+      endif()
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "-mavx;-mno-avx2;-mno-fma;-mno-f16c;-ffp-contract=fast")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx2;-mfma;-mf16c;-ffp-contract=fast")
     endif()

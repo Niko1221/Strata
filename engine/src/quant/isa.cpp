@@ -82,7 +82,9 @@ Caps probe() {
         c.avx_vnni = c.avx2 && ((r[0] >> 4) & 1);
     }
     const int cap = isa_cap();
-    if (cap < 3) c.avx512 = c.avx512_vnni = false;
+    if (cap < 3) c.avx512 = c.avx512_vnni = c.avx_vnni = false;
+    if (const char* nov = std::getenv("STRATA_NO_AVXVNNI"); nov != nullptr && *nov != 0 && std::strcmp(nov, "0") != 0)
+        c.avx_vnni = false;
     if (cap < 2) c.avx2 = c.avx_vnni = c.bmi2 = false;
     if (cap < 1) c.avx = false;
 #elif defined(STRATA_QUANT_ARM64)
@@ -114,6 +116,7 @@ const Caps& caps() noexcept {
 Isa best_isa() noexcept {
     const Caps& c = caps();
     if (c.avx512 && c.avx512_vnni) return Isa::Avx512;
+    if (c.avx_vnni) return Isa::AvxVnni;
     if (c.avx2) return Isa::Avx2;
     if (c.avx) return Isa::Avx1;
     if (c.neon && c.dotprod) return Isa::Neon;   // the tier is ggml-cpu's dotprod flavour (the i8mm two-row code is not in it)
@@ -135,6 +138,7 @@ bool isa_ok(Isa i) noexcept {
         case Isa::Neon: return c.neon && c.dotprod;
         case Isa::Avx1: return c.avx;
         case Isa::Avx2: return c.avx2;
+        case Isa::AvxVnni: return c.avx_vnni;
         case Isa::Avx512: return c.avx512 && c.avx512_vnni;
     }
     return false;
@@ -146,6 +150,7 @@ const char* isa_name(Isa i) noexcept {
         case Isa::Neon: return "neon";
         case Isa::Avx1: return "avx";
         case Isa::Avx2: return "avx2";
+        case Isa::AvxVnni: return "avx_vnni";
         case Isa::Avx512: return "avx512";
     }
     return "?";
