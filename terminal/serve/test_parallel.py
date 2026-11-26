@@ -401,7 +401,7 @@ class PickSlot(unittest.TestCase):
                     os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
                 e = self.inkling(3)
                 e.slot_held = [[1] * big, [], []]
-                e.slot_used = [9.0, 0.0, 1.0]
+                e.slot_used = [time.time(), 0.0, 1.0]                                  # the chat in slot 0 was used just now
                 self.assertEqual(e.pick_slot([7, 8]), want_cold)                       # a short cold request
                 self.assertEqual(e.pick_slot([7] * 5000), want_cold)                   # a large cold request
                 self.assertEqual(e.pick_slot([1] * big + [2]), 0)                      # the chat's own next turn keeps slot 0
@@ -410,6 +410,9 @@ class PickSlot(unittest.TestCase):
                 e.slot_held = [[1] * big, [], []]
                 e.slot_busy[1] = e.slot_busy[2] = True                                 # no other slot free: slot 0 as before
                 self.assertEqual(e.pick_slot([7, 8]), 0)
+                e.slot_busy = [False] * 3
+                e.slot_used[0] = time.time() - StrataEngine.KEEP_IDLE_S - 60           # a chat nobody has used for a long time is not kept: the lone client
+                self.assertEqual(e.pick_slot([7, 8]), 0)                               # that starts a new conversation drafts in slot 0, as in 0.2.22
 
     def test_the_keep_switch_is_on_unless_it_is_set_to_zero(self):
         for val, want in ((None, True), ("", True), ("1", True), ("0", False), ("false", False), ("No", False), ("off", False)):
