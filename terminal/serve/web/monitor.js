@@ -5,6 +5,9 @@ let apiKey = sessionStorage.getItem("strata.monitor.key") || "";
 document.documentElement.dataset.theme = localStorage.getItem("strata.theme") || "dark";
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
 const speed = n => typeof n === "number" ? n.toFixed(1) : "—";
+// Anthropic counts a prompt across three fields (new, written to the cache, read of it); the page shows the whole prompt.
+const promptTotal = u => u?.prompt_tokens ?? (u?.input_tokens != null
+  ? u.input_tokens + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) : null);
 const active = r => !["completed", "error", "disconnected"].includes(r.state);
 // The run's average decode speed: every token produced over the run divided by the run's decode time, from each
 // finished request's engine timings (predicted_n over predicted_ms). Token-weighted, so a short request does not
@@ -78,7 +81,7 @@ async function showDetail() {
   text("detail-time", new Date(value.started_at * 1000).toLocaleString());
   text("detail-wall", seconds(value.wallclock_s ?? ((Date.now() / 1000) - value.started_at)));
   text("detail-load", seconds(value.load_s)); text("detail-queue", seconds(value.queue_s)); text("detail-first", seconds(value.first_token_s));
-  text("detail-prompt", value.usage?.prompt_tokens ?? value.usage?.input_tokens ?? "—");
+  text("detail-prompt", promptTotal(value.usage) ?? "—");
   text("detail-tokens", value.usage?.completion_tokens ?? value.usage?.output_tokens ?? "—");
   text("detail-speed", speed(value.timings?.predicted_per_second)); text("detail-format", value.response_format || "text");
   $("detail-error").hidden = !value.error; text("detail-error", value.error?.message || ""); content();

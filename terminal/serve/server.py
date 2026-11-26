@@ -7152,6 +7152,8 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             delta_event = {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": x.get("stop_sequence")},
                            "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
                                      "cache_read_input_tokens": reused, "output_tokens": x["completion_tokens"]}}
+            if x.get("timings"):
+                delta_event["timings"] = x["timings"]             # llama.cpp's field, the top-level one the other two dialects carry
             if x.get("rejected_tool_calls"):
                 delta_event["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796
             if x.get("unread_tool_markup"):
@@ -8324,12 +8326,13 @@ def make_handler(svc: Service):
                             kind = item["type"]
                             content = item["delta"] if kind == "response.output_text.delta" else ""
                             reasoning = item["delta"] if kind == "response.reasoning_text.delta" else ""
-                            usage, timings = (item.get("response") or {}).get("usage"), None
+                            # the final event carries its top-level timings beside the response object (#107)
+                            usage, timings = (item.get("response") or {}).get("usage"), item.get("timings")
                         else:
                             _, event = item
                             delta = event.get("delta", {})
                             content, reasoning = delta.get("text", ""), delta.get("thinking", "")
-                            usage, timings = event.get("usage"), None
+                            usage, timings = event.get("usage"), event.get("timings")     # message_delta carries them
                         with svc.status_lock:
                             for name, value in (("output", content), ("reasoning", reasoning)):
                                 if value:

@@ -4368,12 +4368,23 @@ class UsageAndStatus(unittest.TestCase):
         self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
 
     def test_anthropic(self):
-        u = self.chat("/v1/messages")["usage"]
+        b = self.chat("/v1/messages")
+        u, t = b["usage"], b["timings"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
         self.assertEqual(u["input_tokens"], 1)                     # what was read now is kept: written to the cache
         self.assertEqual(u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"],
                          len(self.engine.last_prompt))
         self.assertGreater(u["output_tokens"], 0)
+        # the message carries the same top-level timings as the other two dialects' replies
+        self.assertEqual(t["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(t["predicted_n"], u["output_tokens"])
+        self.assertAlmostEqual(t["predicted_per_second"], 50.0, delta=0.1)            # 20 ms a token
+
+    def test_anthropic_stream(self):
+        # its final message_delta carries them too, as Chat Completions' last chunk does
+        delta = [e for e in self.chat("/v1/messages", stream=True) if e.get("type") == "message_delta"][-1]
+        self.assertEqual(delta["timings"]["predicted_n"], delta["usage"]["output_tokens"])
+        self.assertAlmostEqual(delta["timings"]["predicted_per_second"], 50.0, delta=0.1)
 
     def test_v1_status(self):
         self.chat("/v1/chat/completions")
