@@ -504,6 +504,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
     bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
     if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
+    else prefill_cap = backend.preferred_prefill_cap_with_decoders();   // 0 on every backend except one that opts in (HIP R9700 / Strix fast mode)
     const bool use_dspark = (cfg.draft_mode != "off") && backend.dspark_ready();   // the backend says whether a drafter runs: DSpark from the model file, or the DFlash 2 sidecar beside it
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
@@ -784,6 +785,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     reqs[s].cached_prefix.clear();
                     reqs[s].prompt_ckpt_prefix.clear();
                     reqs[s].shared_prefix.clear();
+                    if (backend.supports_bco_prewarm() && !cids.empty() && static_cast<int>(cids.size()) < eff_max_ctx) {
+                        std::string berr;
+                        if (backend.bco_prewarm(s, cids.data(), static_cast<int>(cids.size()), berr)) {
+                            reqs[s].cached_prefix = cids;
+                        }
+                    }
                     proto("BCOK %d %zu", s, cids.size());
                 }
             }
@@ -888,6 +895,58 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 const double gov_t0 = now_s();
                 const int n_emit = backend.dspark_spec_step_greedy(
                     rq.slot, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
+                if (n_emit < 0) {
+                    proto("ERR fatal GPU error: %s", serr.c_str());
+                    return 1;
+                }
+                if (n_emit > 0) {
+                    rq.drafts_offered += drafted;
+                    if (spec_adapt) gov_step(rq, n_emit, (now_s() - gov_t0) * 1000.0);
+                    int kept = 0;
+                    bool done = false;
+                    const char* fin = nullptr;
+                    for (int i = 0; i < n_emit; ++i) {
+                        const int32_t tok = emitted[i];
+                        rq.hist.push_back(tok);
+                        rq.gen_ids.push_back(tok);
+                        rq.cached_prefix.push_back(i == 0 ? rq.next_tok : emitted[i - 1]);
+                        ++rq.generated;
+                        ++kept;
+                        if (i + 1 < n_emit) ++rq.drafts_accepted;
+                        if (rq.is_solo) proto("T %d", tok);
+                        else if (rq.is_ext_gen) proto("T %s %d", rq.req_id.c_str(), tok);
+                        else proto("BT %d %d", rq.slot, tok);
+
+                        if (is_stop_tok(tok)) { fin = "stop"; done = true; break; }
+                        if (rq.generated >= rq.max_new) { fin = "length"; done = true; break; }
+                        if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; break; }
+                    }
+                    if (!done) {
+                        rq.next_tok = emitted[n_emit - 1];
+                        rq.cur_pos += n_emit;
+                    } else {
+                        if (kept < n_emit) {
+                            backend.rollback_slot(rq.slot, rq.cur_pos + kept);
+                        }
+                        rq.cur_pos += kept;
+                        if (fin) finish_req(rq, fin);
+                    }
+                    continue;
+                }
+            }
+            // 2a-sampled. Optional on-GPU lossless stochastic tree speculative step (temperature > 0, no penalties)
+            if (spec_tree && !rq.s.greedy() && !rq.s.penalties() && backend.supports_sampled_spec() && rq.cur_pos + 16 < eff_max_ctx) {
+                int32_t emitted[16]{};
+                int drafted = 0;
+                std::string serr;
+                const int max_emit = std::min(rq.max_new - rq.generated, std::max(1, eff_max_ctx - rq.cur_pos - 1));
+                const double gov_t0 = now_s();
+                const uint64_t rng_seed = rq.s.seed ? rq.s.seed : rq.rng();
+                const uint64_t rng_off = static_cast<uint64_t>(rq.cur_pos) * 65537ULL + static_cast<uint64_t>(rq.generated) * 131ULL;
+                const int n_emit = backend.dspark_spec_step_sampled(
+                    rq.slot, rq.next_tok, rq.cur_pos, max_emit,
+                    rq.s.temperature, rq.s.top_k, rq.s.top_p, rq.s.min_p,
+                    rng_seed, rng_off, emitted, &drafted, serr);
                 if (n_emit < 0) {
                     proto("ERR fatal GPU error: %s", serr.c_str());
                     return 1;
@@ -1120,7 +1179,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
                     int take = std::min(rem, token_budget);
-                    if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
+                    if (rq.ckpt_pending && !backend.prefers_async_prompt_ckpt() && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
                     }
                     if (rq.shared_pending && rq.prefill_pos < rq.pin) {
@@ -1145,7 +1204,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         const int rem = rq.prompt_len - rq.prefill_pos;
                         int take = std::min(rem, per_slot);
                         // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
-                        if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
+                        if (rq.ckpt_pending && !backend.prefers_async_prompt_ckpt() && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                             take = (rq.prompt_len - 1) - rq.prefill_pos;
                         }
                         if (rq.shared_pending && rq.prefill_pos < rq.pin) {
@@ -1225,10 +1284,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         rq.shared_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.pin);
                     }
                 }
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                if (rq.ckpt_pending && (rq.prefill_pos == rq.prompt_len - 1 || (backend.prefers_async_prompt_ckpt() && rq.prefill_pos == rq.prompt_len))) {
                     rq.ckpt_pending = false;
-                    if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
-                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
+                    const int ckpt_pos = rq.prompt_len - 1;
+                    if (backend.save_prompt_checkpoint(rq.slot, ckpt_pos)) {
+                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + ckpt_pos);
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {
