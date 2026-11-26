@@ -2985,6 +2985,7 @@ struct InkCudaRunner {
         const size_t mpad = (size_t)((max_batch + 7) / 8) * 8;
         const bool skip_bf16_screen = m.all_sf4_vram && (m.tinfo("model.llm.unembed.weight").fmt == FMT_Q8ROW);
 
+        screen_cap = (rtx5090::dspark_opt_on() && max_slots <= 4) ? 24 : 8;   // 5090 drafting: 24-row screened argmax; shipped: 8
         size_t act_slab_off = 0;
         auto bind_acts = [&](int pass) {
             act_slab_off = 0;
@@ -3053,11 +3054,11 @@ struct InkCudaRunner {
             al(d_xq8, mpad * kInkQDim);
             al(d_xs8, mpad * (kInkQDim / 32));
             if (!skip_bf16_screen) {
-                al(d_dot_hat, 8ull * kInkVocabUnpad);
-                al(d_h_norm2, 8);
-                al(d_max_lb, 8);
-                al(d_cand_ids, 8ull * 4096);
-                al(d_cand_cnt, 8);
+                al(d_dot_hat, (size_t)screen_cap * kInkVocabUnpad);
+                al(d_h_norm2, (size_t)screen_cap);
+                al(d_max_lb, (size_t)screen_cap);
+                al(d_cand_ids, (size_t)screen_cap * 4096);
+                al(d_cand_cnt, (size_t)screen_cap);
             }
             al(d_argmax, std::max(64, max_batch));
             al(d_tok_ids, MB);
@@ -3067,6 +3068,7 @@ struct InkCudaRunner {
             al(d_img_emb, (m.all_sf4_vram ? 1ull : MB) * kInkHidden);
             al(d_sconv_lag, kInkMaxTree * 3);
             al(d_tree_anc, kInkMaxTree * kInkMaxTreeDepth);
+            if (rtx5090::deep_tree_on()) al(d_tree_anc32, kInkMaxTree * kInkMaxTree);   // deep verify tree (RTX 50 fast mode)
             al(d_tree_dep, kInkMaxTree);
         };
         if (use_slab) {
@@ -3100,23 +3102,6 @@ struct InkCudaRunner {
             INK_CK(cudaStreamSynchronize(st));
         }
 
-        screen_cap  = (rtx5090::dspark_opt_on() && max_slots <= 4) ? 24 : 8;
-        d_dot_hat   = dalloc<float>((size_t)screen_cap * kInkVocabUnpad);
-        d_h_norm2   = dalloc<float>(screen_cap);
-        d_max_lb    = dalloc<int>(screen_cap);
-        d_cand_ids  = dalloc<int32_t>((size_t)screen_cap * 4096);
-        d_cand_cnt  = dalloc<int32_t>(screen_cap);
-        d_argmax    = dalloc<int32_t>(std::max(64, max_batch));
-
-        d_tok_ids   = dalloc<int32_t>(MB);
-        d_slots     = dalloc<int32_t>(MB);
-        d_pos       = dalloc<int32_t>(MB);
-        d_is_img    = dalloc<uint8_t>(MB);
-        d_img_emb   = dalloc<float>(MB * kInkHidden);
-        d_sconv_lag = dalloc<int8_t>(kInkMaxTree * 3);
-        d_tree_anc  = dalloc<uint8_t>(kInkMaxTree * kInkMaxTreeDepth);
-        if (rtx5090::deep_tree_on()) d_tree_anc32 = dalloc<uint8_t>(kInkMaxTree * kInkMaxTree);
-        d_tree_dep  = dalloc<uint8_t>(kInkMaxTree);
         meta_ring_stride = std::max<size_t>(MB * 3 + 256, d_tree_anc32 ? 1024 : 512);
         meta_ring_idx = 0;
         h_meta_pin  = halloc_pinned<int32_t>(64ull * meta_ring_stride);
