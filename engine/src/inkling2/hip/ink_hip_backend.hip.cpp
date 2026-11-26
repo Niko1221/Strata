@@ -19,6 +19,7 @@
 #include "ink_hip_tree.hip.h"
 #include "ink_hip_blaslt.hpp"
 #include "ink_hip_hybrid.hpp"
+#include "ink_hip_r9700_state.hpp"
 #include "strata/hip_uma_guard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
@@ -304,7 +305,7 @@ struct VisitKvPool {
         return true;
     }
 
-    bool grow_pool(int min_pages, hipStream_t st, std::string& err) {
+    bool grow_pool(int min_pages, hipStream_t st, std::string& err, size_t min_vram_headroom = 0) {
         const int max_total_pages = std::max(min_pages, max_slots * max_pages_per_slot);
         const size_t elem_b = is_fp8 ? 1u : 2u;
         const size_t page_b = static_cast<size_t>(kKvPageTokens) * kv_dim * elem_b;
@@ -312,27 +313,42 @@ struct VisitKvPool {
         int new_cap = std::min(max_total_pages, std::max(min_pages, std::max(16, cap_pages * 2)));
         size_t vfree = 0, vtot = 0;
         const bool have_vinfo = (!is_uma && !host_offload && hipMemGetInfo(&vfree, &vtot) == hipSuccess);
+        bool force_spill = false;
         if (have_vinfo) {
             // Avoid 3x doubling OOM spike on tight-VRAM 16 GB discrete GPUs (#6613 / #6621):
             // step conservatively when free VRAM < 1.5 GiB or when doubling exceeds 70% of remaining VRAM.
             const size_t need_bytes = static_cast<size_t>(new_cap) * page_b * 2u;
-            if (vfree < (1536ULL << 20) || need_bytes > (vfree * 7u) / 10u) {
+            if (min_vram_headroom == 0 && (vfree < (1536ULL << 20) || need_bytes > (vfree * 7u) / 10u)) {
                 const int step = (vfree < (512ULL << 20)) ? 8 : 32;
                 new_cap = std::min(max_total_pages, std::max(min_pages, cap_pages + step));
+            }
+            if (min_vram_headroom > 0) {
+                const int step_cap = std::min(max_total_pages, std::max(min_pages, cap_pages + std::max(128, max_slots * 8)));
+                if (new_cap > step_cap) new_cap = step_cap;
+                const size_t sc_b = is_fp8 ? (static_cast<size_t>(new_cap) * kKvPageTokens * sizeof(float) * 2u) : 0u;
+                const size_t need_step = static_cast<size_t>(new_cap) * page_b * 2u + sc_b;
+                if (vfree <= min_vram_headroom + need_step) {
+                    new_cap = min_pages;
+                    const size_t sc_min = is_fp8 ? (static_cast<size_t>(new_cap) * kKvPageTokens * sizeof(float) * 2u) : 0u;
+                    const size_t need_min = static_cast<size_t>(new_cap) * page_b * 2u + sc_min;
+                    if (vfree <= min_vram_headroom + need_min) force_spill = true;
+                }
             }
         }
 
         GpuBuffer nk, nv, nks, nvs;
         bool use_host = (is_uma || host_offload);
-        if (!try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
-            // Retry with exact min_pages before falling back to host-mapped pinned KV.
-            if (new_cap > min_pages) {
-                new_cap = min_pages;
-                if (!try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
+        if (force_spill || !try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
+            if (!force_spill) {
+                // Retry with exact min_pages before falling back to host-mapped pinned KV.
+                if (new_cap > min_pages) {
+                    new_cap = min_pages;
+                    if (!try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
+                        (void)hipGetLastError();
+                    }
+                } else {
                     (void)hipGetLastError();
                 }
-            } else {
-                (void)hipGetLastError();
             }
             if (!nk.dev_ptr && !use_host) {
                 // VRAM exhausted: seamlessly fall back to host-mapped pinned KV (zero kernel changes, zero OOM!).
@@ -386,7 +402,7 @@ struct VisitKvPool {
         return true;
     }
 
-    bool ensure_page(int slot, int logical_page, hipStream_t st, std::string& err) {
+    bool ensure_page(int slot, int logical_page, hipStream_t st, std::string& err, size_t min_vram_headroom = 0) {
         if (logical_page < 0 || logical_page >= max_pages_per_slot) {
             err = "KV logical page out of range (" + std::to_string(logical_page) + " >= " + std::to_string(max_pages_per_slot) + ")";
             return false;
@@ -399,7 +415,7 @@ struct VisitKvPool {
             free_pages.pop_back();
         } else {
             if (used_pages >= cap_pages) {
-                if (!grow_pool(used_pages + 1, st, err)) return false;
+                if (!grow_pool(used_pages + 1, st, err, min_vram_headroom)) return false;
             }
             phys = used_pages++;
         }
@@ -513,6 +529,10 @@ public:
 
     int effective_max_ctx() const override { return max_ctx_; }
 
+    int effective_chunk() const override {
+        return (r9700_ && r9700_->cfg.prefill_chunk > 0) ? r9700_->cfg.prefill_chunk : 0;
+    }
+
     bool dspark_ready() const override { return has_dspark_; }
 
     // Opt-in router tail skip (cuda/ink_tail_skip.cuh): the HIP router reads the process-wide setting at every launch; the direct MoE path applies it.
@@ -521,6 +541,58 @@ public:
         if (!strata::ink::ink_tail_parse(spec, c, err)) return false;
         (void)strata::ink::ink_tail_cfg();
         strata::ink::ink_tail_cfg_ref() = c;
+        return true;
+    }
+
+    bool supports_candidates() const noexcept override {
+        return r9700_ != nullptr && r9700_->cfg.cand_rows;
+    }
+
+    bool supports_sampled_spec() const noexcept override {
+        return r9700_ != nullptr && r9700_->cfg.spec_opt && has_dspark_;
+    }
+
+    bool supports_batched_spec() const noexcept override {
+        return r9700_ != nullptr && r9700_->cfg.spec_opt && max_slots_ > 1;
+    }
+
+    bool prefers_async_prompt_ckpt() const noexcept override {
+        return r9700_ != nullptr && r9700_->cfg.async_ckpt;
+    }
+
+    int preferred_prefill_cap_with_decoders() const noexcept override {
+        return (r9700_ != nullptr && r9700_->cfg.async_ckpt) ? 256 : 0;
+    }
+
+    bool supports_bco_prewarm() const noexcept override {
+        return r9700_ != nullptr && r9700_->cfg.async_ckpt;
+    }
+
+    bool bco_prewarm(int slot, const int32_t* ids, int count, std::string& err) override {
+        if (!r9700_ || slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return false;
+        const int target_ctx = std::max(64, count);
+        const int swa_pages = std::min(16, (swa_ring_ + kKvPageTokens - 1) / kKvPageTokens);
+        const int glob_pages = std::min(16, (target_ctx + kKvPageTokens - 1) / kKvPageTokens);
+        for (int lp = 0; lp < swa_pages; ++lp) {
+            for (auto& p : swa_pools_) { if (!p.ensure_page(slot, lp, stream_, err)) return false; }
+        }
+        for (int lp = 0; lp < glob_pages; ++lp) {
+            for (auto& p : glob_pools_) { if (!p.ensure_page(slot, lp, stream_, err)) return false; }
+        }
+        for (auto& p : swa_pools_) { if (!p.sync_pt(stream_, err)) return false; }
+        for (auto& p : glob_pools_) { if (!p.sync_pt(stream_, err)) return false; }
+        if (ids && count > 0) {
+            const int chunk = std::max(1, effective_chunk());
+            StepBatch batch;
+            int pos = 0;
+            while (pos < count) {
+                const int take = std::min(chunk, count - pos);
+                batch.clear();
+                for (int k = 0; k < take; ++k) batch.push(slot, pos + k, ids[pos + k], false);
+                if (!forward_batch(batch, nullptr, nullptr, err)) return false;
+                pos += take;
+            }
+        }
         return true;
     }
 
@@ -537,13 +609,24 @@ public:
                           blaslt_.ready() ? 1 : 0,
                           hybrid_.active() ? 1 : 0);
         } else {
-            std::snprintf(buf, sizeof(buf), "%s (%s, %d CUs, UMA=%d, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d)",
-                          mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
-                          mem_info_.is_uma ? 1 : 0,
-                          static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0,
-                          guard_.max_prefill_chunk,
-                          blaslt_.ready() ? 1 : 0,
-                          hybrid_.active() ? 1 : 0);
+            if (r9700_) {
+                std::snprintf(buf, sizeof(buf), "%s (%s, %d CUs, UMA=%d, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d, r9700=%s)",
+                              mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
+                              mem_info_.is_uma ? 1 : 0,
+                              static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0,
+                              guard_.max_prefill_chunk,
+                              blaslt_.ready() ? 1 : 0,
+                              hybrid_.active() ? 1 : 0,
+                              r9700_->cfg.exact ? "exact" : "fast");
+            } else {
+                std::snprintf(buf, sizeof(buf), "%s (%s, %d CUs, UMA=%d, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d)",
+                              mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
+                              mem_info_.is_uma ? 1 : 0,
+                              static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0,
+                              guard_.max_prefill_chunk,
+                              blaslt_.ready() ? 1 : 0,
+                              hybrid_.active() ? 1 : 0);
+            }
         }
         return std::string(buf);
     }
@@ -713,6 +796,34 @@ public:
 #endif
         );
 
+        // Opt-in AMD Radeon AI PRO R9700 32GB (gfx1201) fast/exact path (STRICTLY OFF by default!)
+        if (r9700::master_requested()) {
+            const r9700::Config rcfg = r9700::resolve_config(gpu0_id_, ep2_active_, gpu1_id_);
+            if (rcfg.enabled) {
+                r9700_ = std::make_unique<r9700::R9700State>();
+                r9700_->cfg = rcfg;
+                if (opts.parallel >= 16) {
+                    // Conserve VRAM for C16..C64 KV pools so maximum Global/SWA FP8 KV stays in GDDR6!
+                    r9700_->cfg.prefill_chunk = std::min(r9700_->cfg.prefill_chunk, 512);
+                    guard_.max_prefill_chunk = std::min(guard_.max_prefill_chunk, 512);
+                    if (r9700_->cfg.exact && !std::getenv("STRATA_INK_R9700_FIXED_SWA")) {
+                        r9700_->cfg.fixed_swa_ring = true;
+                    }
+                } else if (rcfg.prefill_chunk > 0) {
+                    const int cap_c = (opts.parallel > 1) ? std::min(rcfg.prefill_chunk, 2048) : rcfg.prefill_chunk;
+                    r9700_->cfg.prefill_chunk = cap_c;
+                    guard_.max_prefill_chunk = std::max(guard_.max_prefill_chunk, cap_c);
+                }
+                std::fprintf(stderr,
+                             "[ink-hip] R9700 opt-in active (mode=%s, fp8_trunk=%d, fp8_moe=%d, tree_fp8=%d, fused_attn=%d, fixed_swa=%d, nt_mall=%d, spec=%d, async_ckpt=%d, cand=%d, chunk=%d)\n",
+                             r9700_->cfg.exact ? "EXACT" : "FAST",
+                             (int)r9700_->cfg.fp8_trunk, (int)r9700_->cfg.fp8_moe, (int)r9700_->cfg.tree_fp8_moe,
+                             (int)r9700_->cfg.fused_rel_attn, (int)r9700_->cfg.fixed_swa_ring, (int)r9700_->cfg.nt_mall,
+                             (int)r9700_->cfg.spec_opt, (int)r9700_->cfg.async_ckpt, (int)r9700_->cfg.cand_rows,
+                             r9700_->cfg.prefill_chunk);
+            }
+        }
+
         // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU OR on <= 13 GiB discrete GPUs (8/10/12 GB)
         default_kv_dtype_ = opts.kv_dtype;
         if (opts.kv_dtype_auto &&
@@ -732,17 +843,27 @@ public:
         // (N = swa_win restores the old exact-window ring and its overwrite, for A/B checks only).
         {
             const int win = std::max(1, c_.swa_win);
-            int ring = win + std::max(opts.chunk, 64);
-            if (const char* e = std::getenv("STRATA_INK_SWA_RING"); e && *e) {
-                const int v = std::atoi(e);
-                if (v >= win) ring = v;
+            const char* env_ring = std::getenv("STRATA_INK_SWA_RING");
+            if (r9700_ && r9700_->cfg.fixed_swa_ring && !(env_ring && *env_ring)) {
+                // Fixed swa_ring_=1024: contiguous prefill chunks read intra-chunk K/V directly from contiguous buffers
+                // and commit only the final min(B, 1024) tail AFTER attention -> zero ring overwrite & saves GiBs at C64!
+                swa_ring_ = (win + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+                swa_span_cap_ = 0;
+                std::fprintf(stderr, "[ink-hip] R9700 fixed SWA KV ring %d positions (window %d, intra-chunk decoupled)\n",
+                             swa_ring_, win);
+            } else {
+                int ring = win + std::max(opts.chunk, 64);
+                if (env_ring && *env_ring) {
+                    const int v = std::atoi(env_ring);
+                    if (v >= win) ring = v;
+                }
+                ring = (ring + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+                const int ctx_cap = (std::max(max_ctx_, win) + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+                swa_ring_ = std::max(win, std::min(ring, ctx_cap));
+                swa_span_cap_ = (swa_ring_ > win && swa_ring_ < ctx_cap) ? (swa_ring_ - win) : 0;
+                std::fprintf(stderr, "[ink-hip] SWA KV ring %d positions (window %d, forward_batch span cap %d)\n",
+                             swa_ring_, win, swa_span_cap_);
             }
-            ring = (ring + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
-            const int ctx_cap = (std::max(max_ctx_, win) + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
-            swa_ring_ = std::max(win, std::min(ring, ctx_cap));
-            swa_span_cap_ = (swa_ring_ > win && swa_ring_ < ctx_cap) ? (swa_ring_ - win) : 0;
-            std::fprintf(stderr, "[ink-hip] SWA KV ring %d positions (window %d, forward_batch span cap %d)\n",
-                         swa_ring_, win, swa_span_cap_);
         }
 
         if (const char* ev = std::getenv("STRATA_INK_EXACT_ROWS")) exact_verify_enabled_ = !(ev[0] == '0');
@@ -1030,8 +1151,9 @@ public:
             // The K/V of every slot that will run and the batch scratch of the biggest step are reserved BEFORE the card is filled with experts (no cap
             // at a quarter of the card: 32 clients need 32 slots; a plan without them ended with "scratch alloc: out of memory" at the first batch).
             // (#6878: a slot's SWA pools grow past position swa_win up to the ring, which the slot estimate does not count.)
+            const bool est_dspark_kv = has_dspark_ && !(r9700_ && max_slots_ >= 16);
             const size_t kv_est =
-                (estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() +
+                (estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, est_dspark_kv).total_bytes() +
                  static_cast<size_t>(c_.n_swa_visits) * static_cast<size_t>(std::max(0, std::min(swa_ring_, std::min(max_ctx_, 4096)) - c_.swa_win)) *
                      2u * static_cast<size_t>(c_.n_kv * c_.head_dim) * (default_kv_dtype_ == KvDtype::FP8_E4M3 ? 1u : 2u)) *
                 static_cast<size_t>(max_slots_);
@@ -1543,6 +1665,146 @@ public:
         HIP_ZERO(d_sconv_attn_all_); HIP_ZERO(d_sconv_mlp_all_);
 
         slots_.resize(max_slots_);
+
+        // Opt-in R9700 post-init setup (ZERO work or allocations when r9700_ == nullptr!)
+        if (r9700_) {
+            r9700_->pld.resize(max_slots_);
+            r9700_->rng_ctr.assign(max_slots_, 1ULL);
+            r9700_->slot_rec16.resize(max_slots_);
+            if (max_slots_ > 1) {
+                // Pre-allocate sc_logits_ for C16..C64 BEFORE paged KV fills VRAM -> zero mid-decode OOM!
+                const size_t pre_lb = static_cast<size_t>(max_slots_) * c_.vocab_unpadded * sizeof(float);
+                if (sc_logits_.bytes < pre_lb) {
+                    free_gpu_buffer(sc_logits_);
+                    if (alloc_gpu_buffer(sc_logits_, pre_lb, false) != hipSuccess) {
+                        (void)hipGetLastError();
+                        (void)alloc_gpu_buffer(sc_logits_, pre_lb, true);
+                    }
+                }
+            }
+
+            if (r9700_->cfg.async_ckpt) {
+                (void)hipStreamCreateWithFlags(&r9700_->dma_stream, hipStreamNonBlocking);
+                (void)hipEventCreateWithFlags(&r9700_->ev_ckpt_ready, hipEventDisableTiming);
+                r9700_->pend_ckpt.resize(std::min(max_slots_, kPromptCkptMaxSlots));
+                for (auto& pc : r9700_->pend_ckpt) {
+                    (void)hipEventCreateWithFlags(&pc.ev_dma_done, hipEventDisableTiming);
+                }
+            }
+
+            // 1. Pre-transpose RelPos projection [d_rel, rel_extent] -> [rel_extent, 16] FP16 (787 KB total!)
+            if (r9700_->cfg.fused_rel_attn && c_.d_rel <= 16) {
+                r9700_->rel_proj_t_f16.resize(c_.n_phys);
+                const int tot = c_.rel_extent * 16;
+                for (int il = 0; il < c_.n_phys; ++il) {
+                    const std::string key = "model.llm.layers." + std::to_string(il) + ".attn.rel_logits_proj.proj";
+                    auto it = trunk_f32_.find(key);
+                    if (it != trunk_f32_.end() &&
+                        alloc_gpu_buffer(r9700_->rel_proj_t_f16[il], static_cast<size_t>(tot) * sizeof(half_t), false) == hipSuccess) {
+                        r9700::k_r9700_transpose_rel_proj_f16<<<(tot + 255) / 256, 256, 0, stream_>>>(
+                            reinterpret_cast<const float*>(it->second.dev_ptr),
+                            reinterpret_cast<half_t*>(r9700_->rel_proj_t_f16[il].dev_ptr),
+                            c_.d_rel, c_.rel_extent);
+                    }
+                }
+            }
+
+            // 2. Native FP8_E4M3FN dense trunk (FAST mode only; ~110 MiB total, skipped if VRAM very tight)
+            size_t free_now = 0, tot_now = 0;
+            (void)hipMemGetInfo(&free_now, &tot_now);
+            if (r9700_->cfg.fp8_trunk && free_now >= (1536ULL << 20)) {
+                if (r9700_->fp8_blaslt.init(stream_)) {
+                    std::fprintf(stderr, "[ink-hip] R9700 FP8 hipBLASLt Tensile GEMM active (233 TFLOP/s gfx1201)\n");
+                }
+                const int D = c_.hidden;
+                const int q_dim = c_.n_head * c_.head_dim;
+                const int r_dim = c_.n_head * c_.d_rel;
+                const int kv_dim = c_.n_kv * c_.head_dim;
+                const int tot_qkvrg = 2 * q_dim + r_dim + 2 * kv_dim;
+                const int qrg_n = 2 * q_dim + r_dim;
+                auto quant_add = [&](const uint16_t* bf_ptr, int N, int K, bool register_kv_slices) {
+                    if (!bf_ptr || N < 64 || K < 64 || (K & 15) != 0) return;
+                    r9700::Fp8TrunkOwned ow;
+                    if (alloc_gpu_buffer(ow.w, static_cast<size_t>(N) * K, false) != hipSuccess ||
+                        alloc_gpu_buffer(ow.sc, static_cast<size_t>(N) * sizeof(float), false) != hipSuccess) {
+                        (void)hipGetLastError();
+                        free_gpu_buffer(ow.w); free_gpu_buffer(ow.sc);
+                        return;
+                    }
+                    r9700::k_r9700_quant_bf16_to_fp8_row<<<N, 256, 0, stream_>>>(
+                        bf_ptr, ow.w.dev_ptr, reinterpret_cast<float*>(ow.sc.dev_ptr), N, K);
+                    const uint8_t* wp = ow.w.dev_ptr;
+                    const float* sp = reinterpret_cast<const float*>(ow.sc.dev_ptr);
+                    r9700_->fp8_owned.push_back(ow);
+                    r9700_->fp8_map[bf_ptr] = r9700::Fp8TrunkEntry{wp, sp, N, K};
+                    if (register_kv_slices && N == tot_qkvrg) {
+                        r9700_->fp8_map[bf_ptr + static_cast<size_t>(qrg_n) * K] =
+                            r9700::Fp8TrunkEntry{wp + static_cast<size_t>(qrg_n) * K, sp + qrg_n, kv_dim, K};
+                        r9700_->fp8_map[bf_ptr + static_cast<size_t>(qrg_n + kv_dim) * K] =
+                            r9700::Fp8TrunkEntry{wp + static_cast<size_t>(qrg_n + kv_dim) * K, sp + qrg_n + kv_dim, kv_dim, K};
+                    }
+                };
+                for (int il = 0; il < c_.n_phys; ++il) {
+                    if (trunk_qkvrg_[il].dev_ptr) {
+                        quant_add(reinterpret_cast<const uint16_t*>(trunk_qkvrg_[il].dev_ptr), tot_qkvrg, D, true);
+                    }
+                    const std::string wo_k = "model.llm.layers." + std::to_string(il) + ".attn.wo_ud.weight";
+                    auto it_wo = trunk_bf16_.find(wo_k);
+                    if (it_wo != trunk_bf16_.end() && it_wo->second.dev_ptr) {
+                        quant_add(reinterpret_cast<const uint16_t*>(it_wo->second.dev_ptr), D, q_dim, false);
+                    }
+                }
+            }
+
+            // 2b. High-concurrency (C16..C64) bounded VRAM reserve: let KV pools grow cleanly on demand while
+            // keeping >= 768 MiB free so amdgpu TTM never silently migrates VRAM to GTT/system RAM!
+            // (Avoid over-preallocating 4096-tok Global KV pools up front for short-prompt C64 requests.)
+
+            // 3. Persistent BM=16/64/128 active-tile MoE queue buffers (16 KB!)
+            if (r9700_->cfg.fp8_moe || r9700_->cfg.spec_opt) {
+                (void)alloc_gpu_buffer(r9700_->d_moe_tiles, 4096u * sizeof(r9700::MoeTile16), false);
+                (void)alloc_gpu_buffer(r9700_->d_moe_meta, 4u * sizeof(int32_t), false);
+            }
+
+            // 4. WinPath16 buffers (+ optional Top-32K INT4 DSpark Screen Head via STRATA_INK_R9700_INT4_SCREEN=1;
+            //    kept OFF by default because Inkling-2-Mini's 200K vocab places multi-char JSON/code tokens above 32K
+            //    and SQ-20's S6_K unembed is already 6.18-bit compact!)
+            if (r9700_->cfg.spec_opt && has_dspark_) {
+                (void)hipMemGetInfo(&free_now, &tot_now);
+                const int V = c_.vocab_unpadded;
+                const int D = c_.hidden;
+                const char* scr_env = std::getenv("STRATA_INK_R9700_INT4_SCREEN");
+                const bool want_int4_screen = scr_env && (std::atoi(scr_env) != 0);
+                if (want_int4_screen && !r9700_->cfg.exact && max_slots_ <= 8 && free_now >= (1024ULL << 20) && (D & 63) == 0) {
+                    const int V_scr = std::min(V, 32768);
+                    const size_t q4_b = static_cast<size_t>(V_scr) * (D >> 1);
+                    const size_t sc_b = static_cast<size_t>(V_scr) * (D >> 6) * sizeof(half_t);
+                    if (alloc_gpu_buffer(r9700_->d_screen_q4, q4_b, false) == hipSuccess &&
+                        alloc_gpu_buffer(r9700_->d_screen_sc64, sc_b, false) == hipSuccess) {
+                        const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
+                        r9700::k_r9700_build_unembed_int4_screen<<<(V_scr + 7) / 8, 256, 0, stream_>>>(
+                            unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                            r9700_->d_screen_q4.dev_ptr,
+                            reinterpret_cast<half_t*>(r9700_->d_screen_sc64.dev_ptr),
+                            V_scr, D);
+                        r9700_->screen_q4_vocab = V_scr;
+                    } else {
+                        (void)hipGetLastError();
+                        free_gpu_buffer(r9700_->d_screen_q4);
+                        free_gpu_buffer(r9700_->d_screen_sc64);
+                        r9700_->screen_q4_vocab = 0;
+                    }
+                }
+                (void)alloc_gpu_buffer(r9700_->d_st_tok, 16u * sizeof(int32_t), false);
+                (void)alloc_gpu_buffer(r9700_->d_st_par, 16u * sizeof(int32_t), false);
+                (void)alloc_gpu_buffer(r9700_->d_st_qprob, 16u * sizeof(float), false);
+                (void)alloc_gpu_buffer(r9700_->d_winpath, sizeof(r9700::WinPath16), false);
+                for (int k = 0; k < 4; ++k) {
+                    (void)alloc_gpu_buffer(r9700_->d_tree16_taps_win[k], 16u * static_cast<size_t>(D) * sizeof(float), false);
+                }
+            }
+            (void)hipStreamSynchronize(stream_);
+        }
         return true;
     }
 
@@ -1566,6 +1828,11 @@ public:
         for (auto& p : glob_pools_) p.free_slot_pages(slot);
         slots_[slot].release();
         if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // its SWA pages are unmapped
+        if (r9700_) {
+            if (slot < static_cast<int>(r9700_->pld.size())) r9700_->pld[slot].clear();
+            if (slot < static_cast<int>(r9700_->slot_rec16.size())) r9700_->slot_rec16[slot].release();
+            if (slot < static_cast<int>(r9700_->pend_ckpt.size())) r9700_->pend_ckpt[slot].valid = false;
+        }
     }
 
     void reset_slot(int slot) override {
@@ -1583,6 +1850,10 @@ public:
         sl.tree_cool_rem = 0;
         clear_slot_sconv(slot);
         if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // as in the CPU and CUDA backends
+        if (r9700_) {
+            if (slot < static_cast<int>(r9700_->pld.size())) r9700_->pld[slot].clear();
+            if (slot < static_cast<int>(r9700_->pend_ckpt.size())) r9700_->pend_ckpt[slot].valid = false;
+        }
     }
 
     void snapshot_slot(int slot) override {
@@ -1636,26 +1907,50 @@ public:
             }
             const int kv_dim = c_.n_kv * c_.head_dim;
             if (keep_steps >= 0 && keep_steps <= sl.sconv_rec_n) {
-                // 2 batched launches across all 48 visits instead of 192 kernel/memcpy submissions!
-                k_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-                    reinterpret_cast<const uint16_t*>(sl.sconv_snap_k.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_rec_k.dev_ptr),
-                    reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_snap_v.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_rec_v.dev_ptr),
-                    reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
-                    slot, max_slots_, c_.n_visits, keep_steps, kv_dim);
-                k_sconv_rollback_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-                    reinterpret_cast<const uint16_t*>(sl.sconv_snap_attn.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_rec_attn.dev_ptr),
-                    reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
-                    reinterpret_cast<const uint16_t*>(sl.sconv_rec_mlp.dev_ptr),
-                    reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
-                    slot, max_slots_, c_.n_visits, keep_steps, c_.hidden);
+                if (r9700_ && sl.sconv_rec_n > 8 && slot < static_cast<int>(r9700_->slot_rec16.size()) &&
+                    r9700_->slot_rec16[slot].cap >= 16) {
+                    auto& r16 = r9700_->slot_rec16[slot];
+                    r9700::k_r9700_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_k.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(r16.k.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_v.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(r16.v.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+                        slot, max_slots_, c_.n_visits, keep_steps, 16, kv_dim);
+                    r9700::k_r9700_sconv_rollback_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_attn.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(r16.attn.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(r16.mlp.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+                        slot, max_slots_, c_.n_visits, keep_steps, 16, c_.hidden);
+                } else {
+                    // 2 batched launches across all 48 visits instead of 192 kernel/memcpy submissions!
+                    k_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_k.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_rec_k.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_v.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_rec_v.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+                        slot, max_slots_, c_.n_visits, keep_steps, kv_dim);
+                    k_sconv_rollback_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_attn.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_rec_attn.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
+                        reinterpret_cast<const uint16_t*>(sl.sconv_rec_mlp.dev_ptr),
+                        reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+                        slot, max_slots_, c_.n_visits, keep_steps, c_.hidden);
+                }
             }
             sl.has_snap = false;
             sl.sconv_rec_n = 0;
+        }
+        if (r9700_ && slot < static_cast<int>(r9700_->pld.size())) {
+            r9700_->pld[slot].resize_to(keep_len);
         }
     }
 
@@ -1681,7 +1976,12 @@ public:
         PromptCkpt& ck = ckpts_[slot];
         ck.valid = false;
         // The SWA ring holds positions [seq_len - swa_win, seq_len) (and older ones up to the ring size) only when nothing past seq_len has been fed.
-        if (slots_[slot].seq_len != seq_len) return false;
+        // R9700 async_ckpt mode: prefill already ran through seq_len (prompt_len - 1) + 1 token while capturing exact ShortConv state at seq_len!
+        const bool use_async_r9700 = (r9700_ && r9700_->cfg.async_ckpt && r9700_->dma_stream != nullptr &&
+                                      slot < static_cast<int>(r9700_->pend_ckpt.size()) &&
+                                      r9700_->pend_ckpt[slot].valid && r9700_->pend_ckpt[slot].seq_len == seq_len &&
+                                      slots_[slot].seq_len == seq_len + 1);
+        if (!use_async_r9700 && slots_[slot].seq_len != seq_len) return false;
         const int n_pools = static_cast<int>(swa_pools_.size());
         const int mpp = swa_pools_[0].max_pages_per_slot;
         const bool fp8 = swa_pools_[0].is_fp8;
@@ -1705,6 +2005,11 @@ public:
                 return false;
             }
         }
+        hipStream_t copy_st = stream_;
+        if (use_async_r9700) {
+            copy_st = r9700_->dma_stream;
+            (void)hipStreamWaitEvent(copy_st, r9700_->ev_ckpt_ready, 0);
+        }
         // hipMemcpyDefault: the pools can be host-mapped (UMA, or the VRAM-tight fallback in grow_pool).
         bool ok = true;
         ck.phys.assign(static_cast<size_t>(n_pools) * mpp, -1);
@@ -1719,32 +2024,44 @@ public:
                 for (int k = 0; k < n; ++k) ck.phys[static_cast<size_t>(i) * mpp + lp + k] = ph + k;
                 const size_t hp = static_cast<size_t>(i) * mpp + lp;
                 ok = ok && hipMemcpyAsync(ck.h_k + hp * page_b, static_cast<const uint8_t*>(kvp.k_pool.dev_ptr) + ph * page_b,
-                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                                          n * page_b, hipMemcpyDefault, copy_st) == hipSuccess;
                 ok = ok && hipMemcpyAsync(ck.h_v + hp * page_b, static_cast<const uint8_t*>(kvp.v_pool.dev_ptr) + ph * page_b,
-                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                                          n * page_b, hipMemcpyDefault, copy_st) == hipSuccess;
                 if (fp8) {
                     ok = ok && hipMemcpyAsync(ck.h_ks + hp * sc_page_b, static_cast<const uint8_t*>(kvp.k_scales.dev_ptr) + ph * sc_page_b,
-                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                                              n * sc_page_b, hipMemcpyDefault, copy_st) == hipSuccess;
                     ok = ok && hipMemcpyAsync(ck.h_vs + hp * sc_page_b, static_cast<const uint8_t*>(kvp.v_scales.dev_ptr) + ph * sc_page_b,
-                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                                              n * sc_page_b, hipMemcpyDefault, copy_st) == hipSuccess;
                 }
                 lp += n;
             }
         }
         if (!ok) { (void)hipGetLastError(); return false; }
-        k_sconv_snapshot_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-            reinterpret_cast<const uint16_t*>(d_sconv_k_all_.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_sconv_v_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(ck.sc_k.dev_ptr),
-            reinterpret_cast<uint16_t*>(ck.sc_v.dev_ptr),
-            slot, max_slots_, c_.n_visits, kv_dim);
-        k_sconv_snapshot_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-            reinterpret_cast<const uint16_t*>(d_sconv_attn_all_.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_sconv_mlp_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(ck.sc_attn.dev_ptr),
-            reinterpret_cast<uint16_t*>(ck.sc_mlp.dev_ptr),
-            slot, max_slots_, c_.n_visits, c_.hidden);
-        if (hipGetLastError() != hipSuccess) return false;
+        if (use_async_r9700) {
+            auto& pc = r9700_->pend_ckpt[slot];
+            ok = ok && hipMemcpyAsync(ck.sc_k.dev_ptr, pc.sc_k.dev_ptr, static_cast<size_t>(c_.n_visits) * kv_one, hipMemcpyDeviceToDevice, copy_st) == hipSuccess;
+            ok = ok && hipMemcpyAsync(ck.sc_v.dev_ptr, pc.sc_v.dev_ptr, static_cast<size_t>(c_.n_visits) * kv_one, hipMemcpyDeviceToDevice, copy_st) == hipSuccess;
+            ok = ok && hipMemcpyAsync(ck.sc_attn.dev_ptr, pc.sc_attn.dev_ptr, static_cast<size_t>(c_.n_visits) * h_one, hipMemcpyDeviceToDevice, copy_st) == hipSuccess;
+            ok = ok && hipMemcpyAsync(ck.sc_mlp.dev_ptr, pc.sc_mlp.dev_ptr, static_cast<size_t>(c_.n_visits) * h_one, hipMemcpyDeviceToDevice, copy_st) == hipSuccess;
+            if (!ok) { (void)hipGetLastError(); return false; }
+            (void)hipEventRecord(pc.ev_dma_done, copy_st);
+            pc.dma_inflight = true;
+            pc.valid = false;
+        } else {
+            k_sconv_snapshot_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<const uint16_t*>(d_sconv_k_all_.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_sconv_v_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(ck.sc_k.dev_ptr),
+                reinterpret_cast<uint16_t*>(ck.sc_v.dev_ptr),
+                slot, max_slots_, c_.n_visits, kv_dim);
+            k_sconv_snapshot_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<const uint16_t*>(d_sconv_attn_all_.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(ck.sc_attn.dev_ptr),
+                reinterpret_cast<uint16_t*>(ck.sc_mlp.dev_ptr),
+                slot, max_slots_, c_.n_visits, c_.hidden);
+            if (hipGetLastError() != hipSuccess) return false;
+        }
         ck.seq_len = seq_len;
         ck.dspark_len = std::min(slots_[slot].dspark_len, seq_len);
         ck.valid = true;
@@ -1755,6 +2072,10 @@ public:
         if (slot < 0 || slot >= max_slots_ || slot >= static_cast<int>(ckpts_.size()) || !slots_[slot].allocated) return false;
         PromptCkpt& ck = ckpts_[slot];
         if (!ck.valid || ck.seq_len != seq_len || swa_pools_.empty()) return false;
+        if (r9700_ && slot < static_cast<int>(r9700_->pend_ckpt.size()) && r9700_->pend_ckpt[slot].dma_inflight) {
+            (void)hipStreamWaitEvent(stream_, r9700_->pend_ckpt[slot].ev_dma_done, 0);
+            r9700_->pend_ckpt[slot].dma_inflight = false;
+        }
         const int n_pools = static_cast<int>(swa_pools_.size());
         const int mpp = swa_pools_[0].max_pages_per_slot;
         if (ck.phys.size() != static_cast<size_t>(n_pools) * mpp) { ck.valid = false; return false; }
@@ -1894,6 +2215,53 @@ public:
         const bool fb_ok = forward_batch_chunk(batch, logits_out, taps_out, err);
         if (fb_ok && dbg_hash_on_) dbg_hash_print("fwd", B_tot, batch.pos.data(), -1, nullptr, batch.token_ids.data(), nullptr);
         return fb_ok;
+    }
+
+    bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) override {
+        if (!r9700_ || !r9700_->cfg.cand_rows) {
+            err = "hip: candidate rows require STRATA_INK_R9700=1";
+            return false;
+        }
+        const int B_tot = batch.n_tokens;
+        out.rows = 0;
+        out.k = std::min(kInkCandidates, c_.vocab_unpadded);
+        out.val.clear();
+        out.idx.clear();
+        out.finite.clear();
+        if (B_tot <= 0) return true;
+        if (!ckpts_.empty()) {
+            for (int b = 0; b < B_tot; ++b) {
+                const int s = batch.slot_ids[b];
+                if (s >= 0 && s < static_cast<int>(ckpts_.size()) && ckpts_[s].valid && batch.pos[b] < ckpts_[s].seq_len) {
+                    ckpts_[s].valid = false;
+                }
+            }
+        }
+        const int chunk_cap = batch_token_cap(batch);
+        if (B_tot > chunk_cap) {
+            for (int off = 0; off < B_tot; off += chunk_cap) {
+                const int sub_n = std::min(chunk_cap, B_tot - off);
+                StepBatch sub;
+                sub.n_tokens = sub_n;
+                sub.slot_ids.assign(batch.slot_ids.begin() + off, batch.slot_ids.begin() + off + sub_n);
+                sub.pos.assign(batch.pos.begin() + off, batch.pos.begin() + off + sub_n);
+                sub.token_ids.assign(batch.token_ids.begin() + off, batch.token_ids.begin() + off + sub_n);
+                sub.img_embed_idx.assign(batch.img_embed_idx.begin() + off, batch.img_embed_idx.begin() + off + sub_n);
+                sub.want_logits.assign(batch.want_logits.begin() + off, batch.want_logits.begin() + off + sub_n);
+                sub.img_embeds = batch.img_embeds;
+                sub.capture_taps = batch.capture_taps;
+                CandRows sub_out;
+                if (!forward_batch_chunk(sub, nullptr, nullptr, err, &sub_out)) return false;
+                if (sub_out.rows > 0) {
+                    out.rows += sub_out.rows;
+                    out.val.insert(out.val.end(), sub_out.val.begin(), sub_out.val.end());
+                    out.idx.insert(out.idx.end(), sub_out.idx.begin(), sub_out.idx.end());
+                    out.finite.insert(out.finite.end(), sub_out.finite.begin(), sub_out.finite.end());
+                }
+            }
+            return true;
+        }
+        return forward_batch_chunk(batch, nullptr, nullptr, err, &out);
     }
 
     int dspark_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) override {
@@ -2292,12 +2660,22 @@ public:
                 constexpr int kScreenBlks = 256;
                 constexpr int kNumCand = kScreenBlks * 2;  // 512
 
-                k5_dspark_base_top2_screen<<<kScreenBlks, 256, 0, stream_>>>(
-                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
-                    cur + D,
-                    reinterpret_cast<float*>(d_dspark_cand_v_.dev_ptr),
-                    reinterpret_cast<int32_t*>(d_dspark_cand_i_.dev_ptr),
-                    kBeamMaxSteps, D, V);
+                if (r9700_ && r9700_->cfg.spec_opt && r9700_->d_screen_q4.dev_ptr != nullptr && r9700_->screen_q4_vocab > 0 && D == 2304) {
+                    r9700::k_r9700_dspark_screen_int4<<<kScreenBlks, 256, 0, stream_>>>(
+                        r9700_->d_screen_q4.dev_ptr,
+                        reinterpret_cast<const half_t*>(r9700_->d_screen_sc64.dev_ptr),
+                        cur + D,
+                        reinterpret_cast<float*>(d_dspark_cand_v_.dev_ptr),
+                        reinterpret_cast<int32_t*>(d_dspark_cand_i_.dev_ptr),
+                        kBeamMaxSteps, D, r9700_->screen_q4_vocab);
+                } else {
+                    k5_dspark_base_top2_screen<<<kScreenBlks, 256, 0, stream_>>>(
+                        unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                        cur + D,
+                        reinterpret_cast<float*>(d_dspark_cand_v_.dev_ptr),
+                        reinterpret_cast<int32_t*>(d_dspark_cand_i_.dev_ptr),
+                        kBeamMaxSteps, D, V);
+                }
 
                 BeamTreeNode* d_pool = reinterpret_cast<BeamTreeNode*>(d_beam_pool_.dev_ptr);
                 int32_t* d_cnt  = reinterpret_cast<int32_t*>(d_beam_cnt_.dev_ptr);
@@ -2360,14 +2738,54 @@ public:
             h_cnt = std::max(1, std::min(h_cnt, kTreePoolMax));
 
             // Build connected prefix-closed tree ordered by descending acceptance probability exp(cum_lp)
-            const int max_depth_allowed = std::min(kBeamMaxSteps, max_emit - 1);
+            // Keep EXACT mode 100% bit-identical to OFF tree shape (no PLD tree alteration in EXACT!)
+            const bool use_r9700_tree = (r9700_ && r9700_->cfg.spec_opt && !r9700_->cfg.exact);
+            const int max_depth_allowed = std::min(use_r9700_tree ? 15 : kBeamMaxSteps, max_emit - 1);
             int pool_to_tree[kTreePoolMax];
             for (int i = 0; i < kTreePoolMax; ++i) pool_to_tree[i] = -1;
             pool_to_tree[0] = 0;
             int n_sel = 1;
-            constexpr int kMaxTreeSel = 12;
+            int max_tree_sel = 12;
+            bool pld_deep = false;
 
-            while (n_sel < kMaxTreeSel) {
+            // R9700 FAST PLD grafting: strict 5-gram match unlocks deep WinPath16 spine (up to 14 tokens, M<=16)
+            // for JSON/ToolCall/Code; 4-gram match grafts conservative <=6 tokens; prose stays compact M<=12!
+            if (use_r9700_tree && slot < static_cast<int>(r9700_->pld.size())) {
+                int32_t pld_cont[16];
+                int pld_ng = 0;
+                const int n_pld = r9700_->pld[slot].find_continuation(
+                    anchor_pos, anchor_tok, std::min(14, max_depth_allowed), pld_cont, &pld_ng);
+                if (pld_ng >= 5 && n_pld >= 4) {
+                    pld_deep = true;
+                    max_tree_sel = 16;
+                    int par_idx = 0;
+                    float pld_p = 0.88f;
+                    for (int k = 0; k < n_pld && n_sel < max_tree_sel; ++k) {
+                        t_tok[n_sel] = pld_cont[k];
+                        t_par[n_sel] = par_idx;
+                        t_dep[n_sel] = k + 1;
+                        t_prob[n_sel] = pld_p;
+                        par_idx = n_sel;
+                        pld_p *= 0.92f;
+                        ++n_sel;
+                    }
+                } else if (n_pld >= 3) {
+                    const int lim = std::min(6, n_pld);
+                    int par_idx = 0;
+                    float pld_p = 0.72f;
+                    for (int k = 0; k < lim && n_sel < max_tree_sel; ++k) {
+                        t_tok[n_sel] = pld_cont[k];
+                        t_par[n_sel] = par_idx;
+                        t_dep[n_sel] = k + 1;
+                        t_prob[n_sel] = pld_p;
+                        par_idx = n_sel;
+                        pld_p *= 0.85f;
+                        ++n_sel;
+                    }
+                }
+            }
+
+            while (n_sel < max_tree_sel) {
                 int best_p = -1;
                 float best_lp = -1e29f;
                 for (int i = 1; i < h_cnt; ++i) {
@@ -2381,24 +2799,47 @@ public:
                     }
                 }
                 if (best_p < 0) break;
+                const int par_t = pool_to_tree[h_pool[best_p].parent];
+                // Deduplicate against any already-grafted PLD sibling with identical (parent, tok)!
+                int dup_idx = -1;
+                for (int j = 1; j < n_sel; ++j) {
+                    if (t_par[j] == par_t && t_tok[j] == h_pool[best_p].tok) { dup_idx = j; break; }
+                }
+                if (dup_idx >= 0) {
+                    pool_to_tree[best_p] = dup_idx;
+                    t_prob[dup_idx] = std::max(t_prob[dup_idx], std::exp(std::max(-40.0f, std::min(0.0f, h_pool[best_p].cum_lp))));
+                    continue;
+                }
                 pool_to_tree[best_p] = n_sel;
                 t_tok[n_sel] = h_pool[best_p].tok;
-                t_par[n_sel] = pool_to_tree[h_pool[best_p].parent];
+                t_par[n_sel] = par_t;
                 t_dep[n_sel] = h_pool[best_p].depth;
                 t_prob[n_sel] = std::exp(std::max(-40.0f, std::min(0.0f, h_pool[best_p].cum_lp)));
                 ++n_sel;
             }
 
             // Sparse-MoE Bayes-optimal M* normalized to M=1 (1.0x) plain decode!
-            static const int kCandMs[] = {3, 4, 5, 6, 8, 10, 12};
+            // R9700 FAST uses the true GDDR6 MoE expert-union law: unique experts = 128*(1-(15/16)^M),
+            // so Prose falls straight into our ~187 tok/s 1-Graph B=1 path while high-accept Code/ToolCall fire WinPath16!
+            static const int kCandMsBase[] = {3, 4, 5, 6, 8, 10, 12};
+            static const int kCandMsFast[] = {2, 3, 4, 5, 6, 8, 10, 12};
+            static const int kCandMsDeep[] = {2, 3, 4, 5, 6, 8, 10, 12, 16};
+            const int* cand_ms = use_r9700_tree ? (pld_deep ? kCandMsDeep : kCandMsFast) : kCandMsBase;
+            const int n_cand_ms = use_r9700_tree ? (pld_deep ? 9 : 8) : 7;
+            const double min_score = use_r9700_tree ? 1.00 : 0.88;
             int best_M = 1;
-            double best_score = 0.88;  // reject flat high-entropy chat probes while never starving code/math!
+            double best_score = min_score;
             double best_cost = 1.0;
-            for (int cm : kCandMs) {
+            for (int ci = 0; ci < n_cand_ms; ++ci) {
+                const int cm = cand_ms[ci];
                 if (cm > n_sel) continue;
                 double exp_acc = 1.0;
                 for (int i = 1; i < cm; ++i) exp_acc += static_cast<double>(t_prob[i]);
-                const double cost = 1.0 + 4.2 * (1.0 - std::pow(15.0 / 16.0, static_cast<double>(cm)));
+                // Empirically calibrated to p620 R9700 real-text M=1 (12.4ms) vs M=8 (37.6ms = 3.04x):
+                // M=4 -> 2.05x, M=8 -> 3.04x, M=12 -> 3.80x, M=16 -> 4.39x!
+                const double cost = use_r9700_tree
+                    ? (0.78 + 5.60 * (1.0 - std::pow(15.0 / 16.0, static_cast<double>(cm))))
+                    : (1.0 + 4.2 * (1.0 - std::pow(15.0 / 16.0, static_cast<double>(cm))));
                 const double score = exp_acc / cost;
                 if (score > best_score) {
                     best_score = score;
@@ -2411,8 +2852,9 @@ public:
         }
         if (M < 2) {
             // Low-confidence probe -> fall straight into fused B=1 HIP Graph & enter cooldown!
+            const bool fast_gov = (r9700_ && r9700_->cfg.spec_opt && !r9700_->cfg.exact);
             sl.tree_ema_gain = 0.80f * sl.tree_ema_gain + 0.20f * 0.65f;
-            if (sl.tree_ema_gain < 0.82f) sl.tree_cool_rem = 12;
+            if (sl.tree_ema_gain < (fast_gov ? 0.94f : 0.82f)) sl.tree_cool_rem = fast_gov ? 16 : 12;
             sl.dspark_skip_rem = std::max(sl.dspark_skip_rem, 1);
             if (tprof) for (int i = 0; i < 4; ++i) (void)hipEventDestroy(tev[i]);
             return 0;
@@ -2501,15 +2943,21 @@ public:
         }
 
         // ---- STAGE 4: Walk Winning Path + 1-Launch Commit (ShortConv + Paged KV + DSpark Context!) ----
+        const bool use_wp16 = (r9700_ && r9700_->cfg.spec_opt);
+        r9700::WinPath16 wp16{};
         WinPath8 wp{};
         wp.n_acc = 0;
+        wp16.n_acc = 0;
         int cur_node = 0;
-        while (wp.n_acc < max_emit && wp.n_acc < 8) {
+        const int acc_cap = use_wp16 ? std::min(max_emit, 16) : std::min(max_emit, 8);
+        while (wp16.n_acc < acc_cap) {
             const int32_t pred = h_argmax[cur_node];
-            out_emitted[wp.n_acc] = pred;
-            wp.idx[wp.n_acc] = cur_node;
-            ++wp.n_acc;
-            if (wp.n_acc >= max_emit || wp.n_acc >= 8) break;
+            out_emitted[wp16.n_acc] = pred;
+            wp16.idx[wp16.n_acc] = cur_node;
+            wp16.emitted[wp16.n_acc] = pred;
+            if (wp16.n_acc < 8) { wp.idx[wp16.n_acc] = cur_node; wp.n_acc = wp16.n_acc + 1; }
+            ++wp16.n_acc;
+            if (wp16.n_acc >= acc_cap) break;
             int next_child = -1;
             for (int j = cur_node + 1; j < M; ++j) {
                 if (t_par[j] == cur_node && t_tok[j] == pred) {
@@ -2521,92 +2969,167 @@ public:
             cur_node = next_child;
         }
 
-        const int n_acc = wp.n_acc;
+        const int n_acc = wp16.n_acc;
         const int trunk_kvd = c_.n_kv * c_.head_dim;
         const bool is_fp8 = (default_kv_dtype_ == KvDtype::FP8_E4M3);
 
+        // Pre-ensure DSpark context capacity for anchor_pos + n_acc (needed when WinPath16 accepts > 8 tokens!)
+        if (n_acc > 8 && !ensure_dspark_slot_cap(sl, anchor_pos + n_acc, err)) return 0;
+
         // 4a. Commit ShortConv (all 48 visits x 4 pools in 2 launches + populate snap/rec for rollback_slot!)
-        k_sconv_commit_tree_pair<<<dim3((trunk_kvd + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-            reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_snap_k.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_rec_k.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_tree_rec_k_.dev_ptr),
-            reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_snap_v.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_rec_v.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_tree_rec_v_.dev_ptr),
-            wp, slot, max_slots_, c_.n_visits, trunk_kvd);
-        k_sconv_commit_tree_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
-            reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_snap_attn.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_rec_attn.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_tree_rec_attn_.dev_ptr),
-            reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
-            reinterpret_cast<uint16_t*>(sl.sconv_rec_mlp.dev_ptr),
-            reinterpret_cast<const uint16_t*>(d_tree_rec_mlp_.dev_ptr),
-            wp, slot, max_slots_, c_.n_visits, c_.hidden);
-
-        // 4b. Commit winning path K/V across ALL 48 visits in 1 launch!
-        if (is_fp8) {
-            k3_kv_commit_tree_all<true><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
-                reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
-                reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
-                reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
-                wp, slot, anchor_pos, c_.n_visits, trunk_kvd);
-        } else {
-            k3_kv_commit_tree_all<false><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
-                reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
-                reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
-                reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
-                wp, slot, anchor_pos, c_.n_visits, trunk_kvd);
-        }
-
-        // 4c. Commit DSpark context K/V/f_rnn ONLY for the n_acc winning tokens (100% async-safe GPU slot/pos + HIP-graphed!)
-        k_gather_tree_taps4<<<dim3((c_.hidden + 255) / 256, n_acc), 256, 0, stream_>>>(
-            reinterpret_cast<const float*>(sc_taps_[0].dev_ptr),
-            reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
-            reinterpret_cast<const float*>(sc_taps_[2].dev_ptr),
-            reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
-            reinterpret_cast<float*>(d_tree_taps_win_[0].dev_ptr),
-            reinterpret_cast<float*>(d_tree_taps_win_[1].dev_ptr),
-            reinterpret_cast<float*>(d_tree_taps_win_[2].dev_ptr),
-            reinterpret_cast<float*>(d_tree_taps_win_[3].dev_ptr),
-            wp, c_.hidden);
-        k_fill_win_slot_pos<<<1, 32, 0, stream_>>>(
-            reinterpret_cast<int32_t*>(sc_slot_ids_.dev_ptr),
-            reinterpret_cast<int32_t*>(sc_pos_.dev_ptr),
-            slot, anchor_pos, n_acc);
-        if (graph_tree_ctx_exec_[n_acc] != nullptr && tctx_graph_gen_[n_acc] == dspark_ptr_gen_ && tctx_graph_B_[n_acc] == scratch_B_) {
-            (void)hipGraphLaunch(graph_tree_ctx_exec_[n_acc], stream_);
-        } else {
-            if (graph_tree_ctx_exec_[n_acc]) {
-                (void)hipGraphExecDestroy(graph_tree_ctx_exec_[n_acc]);
-                graph_tree_ctx_exec_[n_acc] = nullptr;
+        if (use_wp16 && n_acc > 8) {
+            auto& r16 = r9700_->slot_rec16[slot];
+            if (r16.cap < 16) {
+                const size_t kv_r16 = 16u * static_cast<size_t>(trunk_kvd) * sizeof(uint16_t);
+                const size_t h_r16  = 16u * static_cast<size_t>(c_.hidden) * sizeof(uint16_t);
+                (void)alloc_gpu_buffer(r16.k, static_cast<size_t>(c_.n_visits) * kv_r16, false);
+                (void)alloc_gpu_buffer(r16.v, static_cast<size_t>(c_.n_visits) * kv_r16, false);
+                (void)alloc_gpu_buffer(r16.attn, static_cast<size_t>(c_.n_visits) * h_r16, false);
+                (void)alloc_gpu_buffer(r16.mlp, static_cast<size_t>(c_.n_visits) * h_r16, false);
+                r16.cap = 16;
             }
-            if (hipStreamBeginCapture(stream_, hipStreamCaptureModeThreadLocal) == hipSuccess) {
-                launch_dspark_ctx_kernels_from(
-                    n_acc,
-                    reinterpret_cast<const float*>(d_tree_taps_win_[0].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[1].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[2].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[3].dev_ptr));
-                hipGraph_t cg = nullptr;
-                if (hipStreamEndCapture(stream_, &cg) == hipSuccess) {
-                    if (hipGraphInstantiate(&graph_tree_ctx_exec_[n_acc], cg, nullptr, nullptr, 0) == hipSuccess) {
-                        tctx_graph_gen_[n_acc] = dspark_ptr_gen_;
-                        tctx_graph_B_[n_acc] = scratch_B_;
-                        (void)hipGraphLaunch(graph_tree_ctx_exec_[n_acc], stream_);
-                    }
-                    (void)hipGraphDestroy(cg);
-                }
+            r9700::k_r9700_sconv_commit_tree16_pair<<<dim3((trunk_kvd + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_k.dev_ptr),
+                reinterpret_cast<uint16_t*>(r16.k.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_k_.dev_ptr),
+                reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_v.dev_ptr),
+                reinterpret_cast<uint16_t*>(r16.v.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_v_.dev_ptr),
+                wp16, slot, max_slots_, c_.n_visits, 16, trunk_kvd);
+            r9700::k_r9700_sconv_commit_tree16_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_attn.dev_ptr),
+                reinterpret_cast<uint16_t*>(r16.attn.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_attn_.dev_ptr),
+                reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
+                reinterpret_cast<uint16_t*>(r16.mlp.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_mlp_.dev_ptr),
+                wp16, slot, max_slots_, c_.n_visits, 16, c_.hidden);
+            if (is_fp8) {
+                r9700::k_r9700_kv_commit_tree16_all<true><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                    reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                    wp16, slot, anchor_pos, c_.n_visits, trunk_kvd);
             } else {
-                launch_dspark_ctx_kernels_from(
-                    n_acc,
-                    reinterpret_cast<const float*>(d_tree_taps_win_[0].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[1].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[2].dev_ptr),
-                    reinterpret_cast<const float*>(d_tree_taps_win_[3].dev_ptr));
+                r9700::k_r9700_kv_commit_tree16_all<false><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                    reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                    wp16, slot, anchor_pos, c_.n_visits, trunk_kvd);
+            }
+            r9700::k_r9700_gather_tree16_taps4<<<dim3((c_.hidden + 255) / 256, n_acc), 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(sc_taps_[0].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[2].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_tree16_taps_win[0].dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_tree16_taps_win[1].dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_tree16_taps_win[2].dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_tree16_taps_win[3].dev_ptr),
+                wp16, c_.hidden);
+            k_fill_win_slot_pos<<<1, 32, 0, stream_>>>(
+                reinterpret_cast<int32_t*>(sc_slot_ids_.dev_ptr),
+                reinterpret_cast<int32_t*>(sc_pos_.dev_ptr),
+                slot, anchor_pos, n_acc);
+            launch_dspark_ctx_kernels_from(
+                n_acc,
+                reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[0].dev_ptr),
+                reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[1].dev_ptr),
+                reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[2].dev_ptr),
+                reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[3].dev_ptr));
+        } else {
+            k_sconv_commit_tree_pair<<<dim3((trunk_kvd + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_k.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_rec_k.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_k_.dev_ptr),
+                reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_v.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_rec_v.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_v_.dev_ptr),
+                wp, slot, max_slots_, c_.n_visits, trunk_kvd);
+            k_sconv_commit_tree_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_attn.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_rec_attn.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_attn_.dev_ptr),
+                reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
+                reinterpret_cast<uint16_t*>(sl.sconv_rec_mlp.dev_ptr),
+                reinterpret_cast<const uint16_t*>(d_tree_rec_mlp_.dev_ptr),
+                wp, slot, max_slots_, c_.n_visits, c_.hidden);
+
+            // 4b. Commit winning path K/V across ALL 48 visits in 1 launch!
+            if (is_fp8) {
+                k3_kv_commit_tree_all<true><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                    reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                    wp, slot, anchor_pos, c_.n_visits, trunk_kvd);
+            } else {
+                k3_kv_commit_tree_all<false><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                    reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr),
+                    reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                    wp, slot, anchor_pos, c_.n_visits, trunk_kvd);
+            }
+
+            // 4c. Commit DSpark context K/V/f_rnn ONLY for the n_acc winning tokens (100% async-safe GPU slot/pos + HIP-graphed!)
+            k_gather_tree_taps4<<<dim3((c_.hidden + 255) / 256, n_acc), 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(sc_taps_[0].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[2].dev_ptr),
+                reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
+                reinterpret_cast<float*>(d_tree_taps_win_[0].dev_ptr),
+                reinterpret_cast<float*>(d_tree_taps_win_[1].dev_ptr),
+                reinterpret_cast<float*>(d_tree_taps_win_[2].dev_ptr),
+                reinterpret_cast<float*>(d_tree_taps_win_[3].dev_ptr),
+                wp, c_.hidden);
+            k_fill_win_slot_pos<<<1, 32, 0, stream_>>>(
+                reinterpret_cast<int32_t*>(sc_slot_ids_.dev_ptr),
+                reinterpret_cast<int32_t*>(sc_pos_.dev_ptr),
+                slot, anchor_pos, n_acc);
+            if (graph_tree_ctx_exec_[n_acc] != nullptr && tctx_graph_gen_[n_acc] == dspark_ptr_gen_ && tctx_graph_B_[n_acc] == scratch_B_) {
+                (void)hipGraphLaunch(graph_tree_ctx_exec_[n_acc], stream_);
+            } else {
+                if (graph_tree_ctx_exec_[n_acc]) {
+                    (void)hipGraphExecDestroy(graph_tree_ctx_exec_[n_acc]);
+                    graph_tree_ctx_exec_[n_acc] = nullptr;
+                }
+                if (hipStreamBeginCapture(stream_, hipStreamCaptureModeThreadLocal) == hipSuccess) {
+                    launch_dspark_ctx_kernels_from(
+                        n_acc,
+                        reinterpret_cast<const float*>(d_tree_taps_win_[0].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[1].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[2].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[3].dev_ptr));
+                    hipGraph_t cg = nullptr;
+                    if (hipStreamEndCapture(stream_, &cg) == hipSuccess) {
+                        if (hipGraphInstantiate(&graph_tree_ctx_exec_[n_acc], cg, nullptr, nullptr, 0) == hipSuccess) {
+                            tctx_graph_gen_[n_acc] = dspark_ptr_gen_;
+                            tctx_graph_B_[n_acc] = scratch_B_;
+                            (void)hipGraphLaunch(graph_tree_ctx_exec_[n_acc], stream_);
+                        }
+                        (void)hipGraphDestroy(cg);
+                    }
+                } else {
+                    launch_dspark_ctx_kernels_from(
+                        n_acc,
+                        reinterpret_cast<const float*>(d_tree_taps_win_[0].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[1].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[2].dev_ptr),
+                        reinterpret_cast<const float*>(d_tree_taps_win_[3].dev_ptr));
+                }
+            }
+        }
+        if (use_wp16 && slot < static_cast<int>(r9700_->pld.size())) {
+            r9700_->pld[slot].record(anchor_pos, anchor_tok);
+            for (int k = 0; k < n_acc; ++k) {
+                r9700_->pld[slot].record(anchor_pos + 1 + k, out_emitted[k]);
             }
         }
         if (tprof) {
@@ -2630,15 +3153,502 @@ public:
 
         // Realized-gain adaptive cooldown: protect high-entropy chat prompts while never starving code/math!
         if (M >= 2) {
+            const bool fast_gov = (r9700_ && r9700_->cfg.spec_opt && !r9700_->cfg.exact);
             const float realized = static_cast<float>(n_acc) / static_cast<float>(chosen_cost_ratio);
             sl.tree_ema_gain = 0.80f * sl.tree_ema_gain + 0.20f * realized;
-            if (sl.tree_ema_gain < 0.82f) {
-                sl.tree_cool_rem = 12;
+            if (sl.tree_ema_gain < (fast_gov ? 0.94f : 0.82f)) {
+                sl.tree_cool_rem = fast_gov ? 16 : 12;
             }
         }
 
         if (out_drafted) *out_drafted = M - 1;
         return n_acc;
+    }
+
+    // Opt-in R9700 On-GPU Lossless Multi-Branch Stochastic Speculative Step (temperature > 0, zero full-vocab D2H!)
+    int dspark_spec_step_sampled(
+        int slot, int32_t anchor_tok, int anchor_pos, int max_emit,
+        float temperature, int top_k, float top_p, float min_p,
+        uint64_t rng_seed, uint64_t rng_offset,
+        int32_t* out_emitted, int* out_drafted, std::string& err) override {
+        if (!r9700_ || !r9700_->cfg.spec_opt || !has_dspark_ || max_emit <= 0 || !out_emitted) return 0;
+        if (temperature <= 0.0f || top_k > 128) return 0;
+        if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return 0;
+        auto& sl = slots_[slot];
+        if (anchor_pos < 1 || sl.dspark_len < anchor_pos || anchor_pos + kTreeMaxM >= sl.max_ctx) return 0;
+        if (c_.head_dim > 128 || c_.d_rel > 16 || (c_.rel_extent & 3) != 0) return 0;
+        if (static_cast<int>(dspark_qkv_.size()) != dspark_cfg_.n_layers ||
+            dspark_qkv_[0].dev_ptr == nullptr || dspark_gu_[0].dev_ptr == nullptr) return 0;
+        for (bool ok_l : layer_all_gpu_) if (!ok_l) return 0;
+        if (sl.tree_cool_rem > 0) {
+            --sl.tree_cool_rem;
+            sl.dspark_skip_rem = std::max(sl.dspark_skip_rem, 1);
+            return 0;
+        }
+
+        const int D = dspark_cfg_.hidden;
+        const int H = dspark_cfg_.n_head;
+        const int KV = dspark_cfg_.n_kv;
+        const int hd = dspark_cfg_.head_dim;
+        const int kv_dim = KV * hd;
+        const int q_dim = H * hd;
+        const int inter = dspark_cfg_.inter;
+        const int B_ds = dspark_cfg_.block_size;
+
+        if (!ensure_dspark_scratch(B_ds, D, q_dim, kv_dim, inter, err)) return 0;
+        if (!ensure_batch_scratch(kTreeMaxM, err)) return 0;
+        if (!ensure_tree_scratch(err)) return 0;
+        if (!sl.sconv_snap_k.dev_ptr) {
+            const int trunk_kvd = c_.n_kv * c_.head_dim;
+            const size_t kv_one = 3u * trunk_kvd * sizeof(uint16_t);
+            const size_t h_one  = 3u * c_.hidden * sizeof(uint16_t);
+            const size_t kv_rec = 8u * trunk_kvd * sizeof(uint16_t);
+            const size_t h_rec  = 8u * c_.hidden * sizeof(uint16_t);
+            if (!hip_ok(alloc_gpu_buffer(sl.sconv_snap_k, static_cast<size_t>(c_.n_visits) * kv_one, false), "st snap k", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_snap_v, static_cast<size_t>(c_.n_visits) * kv_one, false), "st snap v", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_snap_attn, static_cast<size_t>(c_.n_visits) * h_one, false), "st snap a", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_snap_mlp, static_cast<size_t>(c_.n_visits) * h_one, false), "st snap m", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_rec_k, static_cast<size_t>(c_.n_visits) * kv_rec, false), "st rec k", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_rec_v, static_cast<size_t>(c_.n_visits) * kv_rec, false), "st rec v", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_rec_attn, static_cast<size_t>(c_.n_visits) * h_rec, false), "st rec a", err) ||
+                !hip_ok(alloc_gpu_buffer(sl.sconv_rec_mlp, static_cast<size_t>(c_.n_visits) * h_rec, false), "st rec m", err)) {
+                return 0;
+            }
+        }
+        const int old_ds_cap = sl.dspark_cap;
+        if (!ensure_dspark_slot_cap(sl, anchor_pos + kTreeMaxM, err)) return 0;
+        if (!d_ds_k_ptrs_[0].dev_ptr || sl.dspark_cap != old_ds_cap) {
+            std::vector<uint16_t*> pt(max_slots_, nullptr);
+            for (int il = 0; il < dspark_cfg_.n_layers; ++il) {
+                for (int s = 0; s < max_slots_; ++s) pt[s] = reinterpret_cast<uint16_t*>(slots_[s].dspark_k[il].dev_ptr);
+                if (!d_ds_k_ptrs_[il].dev_ptr && !hip_ok(alloc_gpu_buffer(d_ds_k_ptrs_[il], max_slots_ * sizeof(uint16_t*), false), "st ds k", err)) return 0;
+                (void)hipMemcpyAsync(d_ds_k_ptrs_[il].dev_ptr, pt.data(), max_slots_ * sizeof(uint16_t*), hipMemcpyHostToDevice, stream_);
+                for (int s = 0; s < max_slots_; ++s) pt[s] = reinterpret_cast<uint16_t*>(slots_[s].dspark_v[il].dev_ptr);
+                if (!d_ds_v_ptrs_[il].dev_ptr && !hip_ok(alloc_gpu_buffer(d_ds_v_ptrs_[il], max_slots_ * sizeof(uint16_t*), false), "st ds v", err)) return 0;
+                (void)hipMemcpyAsync(d_ds_v_ptrs_[il].dev_ptr, pt.data(), max_slots_ * sizeof(uint16_t*), hipMemcpyHostToDevice, stream_);
+            }
+            for (int s = 0; s < max_slots_; ++s) pt[s] = reinterpret_cast<uint16_t*>(slots_[s].dspark_frnn.dev_ptr);
+            if (!d_ds_frnn_ptrs_.dev_ptr && !hip_ok(alloc_gpu_buffer(d_ds_frnn_ptrs_, max_slots_ * sizeof(uint16_t*), false), "st ds f", err)) return 0;
+            (void)hipMemcpyAsync(d_ds_frnn_ptrs_.dev_ptr, pt.data(), max_slots_ * sizeof(uint16_t*), hipMemcpyHostToDevice, stream_);
+            ++dspark_ptr_gen_;
+        }
+
+        // Reuse the same beam draft graph as greedy! (If not captured yet, run a quick greedy beam draft launch)
+        int32_t* d_hdr = reinterpret_cast<int32_t*>(d_dspark_toks_.dev_ptr);
+        const int32_t h_in[2] = {anchor_pos, anchor_tok};
+        if (!hip_ok(hipMemcpyAsync(d_hdr, h_in, 2 * sizeof(int32_t), hipMemcpyHostToDevice, stream_), "st beam hdr", err)) return 0;
+        if (graph_beam_draft_exec_ == nullptr || beam_graph_slot_ != slot || beam_graph_gen_ != dspark_ptr_gen_) {
+            // Fall back once if beam graph not yet initialized; build it cleanly now!
+            const int rank = dspark_cfg_.markov_rank;
+            if (graph_beam_draft_exec_) { (void)hipGraphExecDestroy(graph_beam_draft_exec_); graph_beam_draft_exec_ = nullptr; }
+            if (!hip_ok(hipStreamBeginCapture(stream_, hipStreamCaptureModeThreadLocal), "st beam cap begin", err)) return 0;
+            const auto& emb_pk = packed_trunk_.at("model.llm.embed.weight");
+            k_embed_lookup<<<1, 256, 0, stream_>>>(
+                emb_pk.buf.dev_ptr, emb_pk.info.fmt, static_cast<int>(emb_pk.info.rows()),
+                f32_ptr("model.llm.embed_norm.weight"), d_hdr + 1, nullptr, nullptr,
+                reinterpret_cast<float*>(ds_cur_.dev_ptr), 1, D, c_.rms_eps);
+            k_fill_dspark_masks<<<((B_ds - 1) * D + 255) / 256, 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(dspark_f32_.at("mask_embed").dev_ptr),
+                reinterpret_cast<float*>(ds_cur_.dev_ptr) + D, B_ds - 1, D);
+            float* cur = reinterpret_cast<float*>(ds_cur_.dev_ptr);
+            float* res = reinterpret_cast<float*>(ds_res_.dev_ptr);
+            float* h   = reinterpret_cast<float*>(ds_h_.dev_ptr);
+            float* q   = reinterpret_cast<float*>(ds_q_.dev_ptr);
+            float* kd  = reinterpret_cast<float*>(ds_k_.dev_ptr);
+            float* vd  = reinterpret_cast<float*>(ds_v_.dev_ptr);
+            float* ao  = reinterpret_cast<float*>(ds_ao_.dev_ptr);
+            float* mg  = reinterpret_cast<float*>(ds_mg_.dev_ptr);
+            float* qkv_cat = reinterpret_cast<float*>(ds_qkv_.dev_ptr);
+            float* gu_cat  = reinterpret_cast<float*>(ds_gu_.dev_ptr);
+            for (int il = 0; il < dspark_cfg_.n_layers; ++il) {
+                const std::string p = "layers." + std::to_string(il);
+                k_rms_norm_rows<<<B_ds, 256, 0, stream_>>>(cur, ds_f32(p + ".input_layernorm.weight"), h, B_ds, D, dspark_cfg_.rms_eps);
+                launch_bf16_opt(reinterpret_cast<const uint16_t*>(dspark_qkv_[il].dev_ptr), h, nullptr, qkv_cat, B_ds, q_dim + 2 * kv_dim, D);
+                k_dspark_split_qkv_norm_rope<<<dim3(H + 2 * KV, B_ds), 128, 0, stream_>>>(
+                    qkv_cat, ds_f32(p + ".self_attn.q_norm.weight"), ds_f32(p + ".self_attn.k_norm.weight"),
+                    d_hdr, q, kd, vd, B_ds, H, KV, hd, dspark_cfg_.rms_eps, dspark_cfg_.rope_theta);
+                const int swa_w = dspark_cfg_.is_swa[il] ? dspark_cfg_.swa_win : 0;
+                k_dspark_block_attn_dyn<<<dim3((H + 3) / 4, B_ds), 128, 0, stream_>>>(
+                    q, reinterpret_cast<const uint16_t*>(sl.dspark_k[il].dev_ptr),
+                    reinterpret_cast<const uint16_t*>(sl.dspark_v[il].dev_ptr),
+                    kd, vd, d_hdr, ao, B_ds, H, KV, swa_w);
+                launch_bf16_opt(ds_bf16(p + ".self_attn.o_proj.weight"), ao, nullptr, h, B_ds, D, q_dim);
+                k_vec_add<<<(B_ds * D + 255) / 256, 256, 0, stream_>>>(cur, h, cur, B_ds * D);
+                k_rms_norm_rows<<<B_ds, 256, 0, stream_>>>(cur, ds_f32(p + ".post_attention_layernorm.weight"), h, B_ds, D, dspark_cfg_.rms_eps);
+                launch_bf16_opt(reinterpret_cast<const uint16_t*>(dspark_gu_[il].dev_ptr), h, nullptr, gu_cat, B_ds, 2 * inter, D);
+                k_swiglu_split_f32<<<(B_ds * inter + 255) / 256, 256, 0, stream_>>>(gu_cat, mg, B_ds, inter);
+                launch_bf16_opt(ds_bf16(p + ".mlp.down_proj.weight"), mg, nullptr, h, B_ds, D, inter);
+                k_vec_add<<<(B_ds * D + 255) / 256, 256, 0, stream_>>>(cur, h, cur, B_ds * D);
+            }
+            k_rms_norm_rows<<<B_ds, 256, 0, stream_>>>(cur, ds_f32("norm.weight"), cur, B_ds, D, dspark_cfg_.rms_eps);
+            k_dspark_load_frnn_zero<<<(std::max(D, rank) + 255) / 256, 256, 0, stream_>>>(
+                reinterpret_cast<const uint16_t*>(sl.dspark_frnn.dev_ptr), d_hdr,
+                res, reinterpret_cast<float*>(d_beam_st_a_.dev_ptr), D, rank);
+            const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
+            const int V = c_.vocab_unpadded;
+            constexpr int kScreenBlks = 256;
+            constexpr int kNumCand = kScreenBlks * 2;
+            if (r9700_->d_screen_q4.dev_ptr != nullptr && r9700_->screen_q4_vocab > 0 && D == 2304) {
+                r9700::k_r9700_dspark_screen_int4<<<kScreenBlks, 256, 0, stream_>>>(
+                    r9700_->d_screen_q4.dev_ptr, reinterpret_cast<const half_t*>(r9700_->d_screen_sc64.dev_ptr),
+                    cur + D, reinterpret_cast<float*>(d_dspark_cand_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_dspark_cand_i_.dev_ptr), kBeamMaxSteps, D, r9700_->screen_q4_vocab);
+            } else {
+                k5_dspark_base_top2_screen<<<kScreenBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    cur + D, reinterpret_cast<float*>(d_dspark_cand_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_dspark_cand_i_.dev_ptr), kBeamMaxSteps, D, V);
+            }
+            BeamTreeNode* d_pool = reinterpret_cast<BeamTreeNode*>(d_beam_pool_.dev_ptr);
+            int32_t* d_cnt  = reinterpret_cast<int32_t*>(d_beam_cnt_.dev_ptr);
+            int32_t* d_btok = reinterpret_cast<int32_t*>(d_beam_tok_.dev_ptr);
+            int32_t* d_bnod = reinterpret_cast<int32_t*>(d_beam_node_.dev_ptr);
+            float*   d_blp  = reinterpret_cast<float*>(d_beam_lp_.dev_ptr);
+            float*   d_sta  = reinterpret_cast<float*>(d_beam_st_a_.dev_ptr);
+            float*   d_stb  = reinterpret_cast<float*>(d_beam_st_b_.dev_ptr);
+            float*   d_lat  = reinterpret_cast<float*>(d_beam_lat_.dev_ptr);
+            float*   d_cor  = reinterpret_cast<float*>(d_beam_corr_.dev_ptr);
+            float*   d_sco  = reinterpret_cast<float*>(d_beam_scores_.dev_ptr);
+            k5_beam_init<<<1, 32, 0, stream_>>>(d_hdr, d_pool, d_cnt, d_btok, d_bnod, d_blp);
+            for (int step = 1; step <= kBeamMaxSteps; ++step) {
+                const int w_in = (step == 1) ? 1 : kBeamW;
+                k5_beam_markov_proj_bf16<<<dim3((rank + 7) / 8, w_in), 256, 0, stream_>>>(
+                    d_btok, d_sta, d_stb, d_lat, cur + static_cast<size_t>(step) * D, res,
+                    ds_f32("markov_head.markov_w1.weight"), ds_bf16("markov_head.rnn_proj.weight"),
+                    ds_f32("markov_head.rnn_proj.bias"), D, rank);
+                k5_beam_markov_corr_bf16<<<dim3((D + 7) / 8, w_in), 256, 0, stream_>>>(
+                    d_lat, ds_bf16("markov_head.hidden_out.weight"), ds_f32("markov_head.hidden_out.bias"), d_cor, D, rank);
+                k5_beam_cand_scores<<<(kNumCand + 7) / 8, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    reinterpret_cast<const float*>(d_dspark_cand_v_.dev_ptr) + static_cast<size_t>(step - 1) * kNumCand,
+                    reinterpret_cast<const int32_t*>(d_dspark_cand_i_.dev_ptr) + static_cast<size_t>(step - 1) * kNumCand,
+                    d_cor, d_sco, w_in, kNumCand, D, V);
+                k5_beam_select_step<<<1, 256, 0, stream_>>>(
+                    d_sco, reinterpret_cast<const int32_t*>(d_dspark_cand_i_.dev_ptr) + static_cast<size_t>(step - 1) * kNumCand,
+                    d_stb, d_sta, d_btok, d_bnod, d_blp, d_pool, d_cnt, w_in, kNumCand, step, rank, c_.logit_softcap);
+            }
+            hipGraph_t g = nullptr;
+            if (!hip_ok(hipStreamEndCapture(stream_, &g), "st beam cap end", err)) return 0;
+            hipError_t ie = hipGraphInstantiate(&graph_beam_draft_exec_, g, nullptr, nullptr, 0);
+            (void)hipGraphDestroy(g);
+            if (!hip_ok(ie, "st beam inst", err)) return 0;
+            beam_graph_slot_ = slot;
+            beam_graph_gen_ = dspark_ptr_gen_;
+        }
+        if (!hip_ok(hipGraphLaunch(graph_beam_draft_exec_, stream_), "st beam launch", err)) return 0;
+
+        BeamTreeNode h_pool[kTreePoolMax];
+        int32_t h_cnt = 0;
+        if (!hip_ok(hipMemcpyAsync(h_pool, d_beam_pool_.dev_ptr, sizeof(h_pool), hipMemcpyDeviceToHost, stream_), "st pool D2H", err) ||
+            !hip_ok(hipMemcpyAsync(&h_cnt, d_beam_cnt_.dev_ptr, sizeof(int32_t), hipMemcpyDeviceToHost, stream_), "st cnt D2H", err) ||
+            !hip_ok(hipStreamSynchronize(stream_), "st beam sync", err)) return 0;
+        h_cnt = std::max(1, std::min(h_cnt, kTreePoolMax));
+
+        int32_t t_tok[kTreeMaxM], t_par[kTreeMaxM], t_dep[kTreeMaxM];
+        float t_prob[kTreeMaxM];
+        t_tok[0] = anchor_tok; t_par[0] = -1; t_dep[0] = 0; t_prob[0] = 1.0f;
+        const bool use_r9700_tree = !r9700_->cfg.exact;
+        const int max_depth_allowed = std::min(use_r9700_tree ? 11 : kBeamMaxSteps, max_emit - 1);
+        int pool_to_tree[kTreePoolMax];
+        for (int i = 0; i < kTreePoolMax; ++i) pool_to_tree[i] = -1;
+        pool_to_tree[0] = 0;
+        int n_sel = 1;
+        const int kMaxTreeSel = 12;
+        if (use_r9700_tree && slot < static_cast<int>(r9700_->pld.size())) {
+            int32_t pld_cont[16];
+            const int n_pld = r9700_->pld[slot].find_continuation(anchor_pos, anchor_tok, std::min(6, max_depth_allowed), pld_cont);
+            if (n_pld >= 3) {
+                int par_idx = 0; float pp = 0.72f;
+                for (int k = 0; k < n_pld && n_sel < kMaxTreeSel; ++k) {
+                    t_tok[n_sel] = pld_cont[k]; t_par[n_sel] = par_idx; t_dep[n_sel] = k + 1; t_prob[n_sel] = pp;
+                    par_idx = n_sel; pp *= 0.85f; ++n_sel;
+                }
+            }
+        }
+        while (n_sel < kMaxTreeSel) {
+            int best_p = -1; float best_lp = -1e29f;
+            for (int i = 1; i < h_cnt; ++i) {
+                if (pool_to_tree[i] >= 0 || h_pool[i].depth > max_depth_allowed) continue;
+                const int par_i = h_pool[i].parent;
+                if (par_i < 0 || par_i >= h_cnt || pool_to_tree[par_i] < 0) continue;
+                if (h_pool[i].cum_lp > best_lp) { best_lp = h_pool[i].cum_lp; best_p = i; }
+            }
+            if (best_p < 0) break;
+            const int par_t = pool_to_tree[h_pool[best_p].parent];
+            int dup = -1;
+            for (int j = 1; j < n_sel; ++j) if (t_par[j] == par_t && t_tok[j] == h_pool[best_p].tok) { dup = j; break; }
+            if (dup >= 0) { pool_to_tree[best_p] = dup; continue; }
+            pool_to_tree[best_p] = n_sel;
+            t_tok[n_sel] = h_pool[best_p].tok; t_par[n_sel] = par_t; t_dep[n_sel] = h_pool[best_p].depth;
+            t_prob[n_sel] = std::exp(std::max(-40.0f, std::min(0.0f, h_pool[best_p].cum_lp)));
+            ++n_sel;
+        }
+        static const int kCandMs[] = {2, 3, 4, 5, 6, 8, 10, 12};
+        int M = 1; double best_score = use_r9700_tree ? 1.00 : 0.88; double best_cost = 1.0;
+        for (int cm : kCandMs) {
+            if (cm > n_sel) continue;
+            double ea = 1.0; for (int i = 1; i < cm; ++i) ea += static_cast<double>(t_prob[i]);
+            const double cost = use_r9700_tree
+                ? (0.78 + 5.60 * (1.0 - std::pow(15.0 / 16.0, static_cast<double>(cm))))
+                : (1.0 + 4.2 * (1.0 - std::pow(15.0 / 16.0, static_cast<double>(cm))));
+            if (ea / cost > best_score) { best_score = ea / cost; M = cm; best_cost = cost; }
+        }
+        if (M < 2) {
+            sl.tree_ema_gain = 0.80f * sl.tree_ema_gain + 0.20f * 0.65f;
+            if (sl.tree_ema_gain < (use_r9700_tree ? 0.94f : 0.82f)) sl.tree_cool_rem = use_r9700_tree ? 16 : 10;
+            sl.dspark_skip_rem = std::max(sl.dspark_skip_rem, 1);
+            return 0;
+        }
+
+        TreeMetaDev h_tmeta{};
+        h_tmeta.base_pos = anchor_pos; h_tmeta.slot = slot;
+        int max_dep = 0;
+        int32_t h_sids[kTreeMaxM], h_pos[kTreeMaxM], h_img[kTreeMaxM];
+        for (int m = 0; m < M; ++m) {
+            const int a1 = t_par[m], a2 = (a1 >= 0) ? t_par[a1] : (a1 - 1), a3 = (a2 >= 0) ? t_par[a2] : (a2 - 1);
+            h_tmeta.anc1[m] = a1; h_tmeta.anc2[m] = a2; h_tmeta.anc3[m] = a3;
+            uint32_t msk = (1u << m); int p = a1;
+            while (p >= 0) { msk |= (1u << p); p = t_par[p]; }
+            h_tmeta.mask[m] = msk; h_sids[m] = slot; h_pos[m] = anchor_pos + t_dep[m]; h_img[m] = -1;
+            max_dep = std::max(max_dep, t_dep[m]);
+        }
+        for (int d = 0; d <= max_dep; ++d) {
+            const int p = anchor_pos + d;
+            for (auto& pool : swa_pools_) if (!pool.ensure_page(slot, (p % swa_ring_) >> 6, stream_, err)) return 0;
+            for (auto& pool : glob_pools_) if (!pool.ensure_page(slot, p >> 6, stream_, err)) return 0;
+        }
+        for (auto& p : swa_pools_) if (!p.sync_pt(stream_, err)) return 0;
+        for (auto& p : glob_pools_) if (!p.sync_pt(stream_, err)) return 0;
+        uint64_t kv_gen_sum = dspark_ptr_gen_;
+        for (const auto& p : swa_pools_) kv_gen_sum += p.pool_gen;
+        for (const auto& p : glob_pools_) kv_gen_sum += p.pool_gen;
+        if (kv_gen_sum != tree_kv_desc_gen_) {
+            std::vector<KvVisitDesc> h_descs(c_.n_visits);
+            for (int v = 0; v < c_.n_visits; ++v) {
+                const int ip = (v < c_.core_start) ? v
+                    : ((v < c_.core_start + c_.num_passes * (c_.core_end - c_.core_start))
+                        ? (c_.core_start + (v - c_.core_start) % (c_.core_end - c_.core_start))
+                        : (c_.core_end + (v - c_.core_start - c_.num_passes * (c_.core_end - c_.core_start))));
+                const bool is_swa = c_.is_swa[ip] != 0;
+                const VisitKvPool& kvp = is_swa ? swa_pools_[c_.visit_kv_slot[v]] : glob_pools_[c_.visit_kv_slot[v]];
+                h_descs[v] = {kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, reinterpret_cast<float*>(kvp.k_scales.dev_ptr),
+                              reinterpret_cast<float*>(kvp.v_scales.dev_ptr), reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr),
+                              kvp.max_pages_per_slot, is_swa ? swa_ring_ : 0};
+            }
+            if (!hip_ok(hipMemcpyAsync(d_tree_kv_descs_.dev_ptr, h_descs.data(), h_descs.size() * sizeof(KvVisitDesc), hipMemcpyHostToDevice, stream_), "st kv descs", err)) return 0;
+            tree_kv_desc_gen_ = kv_gen_sum;
+        }
+
+        (void)hipMemcpyAsync(d_tree_meta_.dev_ptr, &h_tmeta, sizeof(TreeMetaDev), hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(sc_slot_ids_.dev_ptr, h_sids, M * 4, hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(sc_pos_.dev_ptr, h_pos, M * 4, hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(sc_tok_ids_.dev_ptr, t_tok, M * 4, hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(sc_img_idx_.dev_ptr, h_img, M * 4, hipMemcpyHostToDevice, stream_);
+        if (!forward_tree_verify(M, slot, kv_gen_sum, err, /*sampled_mode=*/true)) return 0;
+
+        (void)hipMemcpyAsync(r9700_->d_st_tok.dev_ptr, t_tok, M * sizeof(int32_t), hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(r9700_->d_st_par.dev_ptr, t_par, M * sizeof(int32_t), hipMemcpyHostToDevice, stream_);
+        (void)hipMemcpyAsync(r9700_->d_st_qprob.dev_ptr, t_prob, M * sizeof(float), hipMemcpyHostToDevice, stream_);
+        const uint64_t off_use = rng_offset ? rng_offset : (r9700_->rng_ctr[slot] += 64ULL);
+        r9700::k_r9700_tree_verify_stochastic_walk<<<1, 32, 0, stream_>>>(
+            reinterpret_cast<const float*>(r9700_->d_cand_val.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_cand_idx.dev_ptr),
+            r9700_->d_cand_fin.dev_ptr,
+            reinterpret_cast<const int32_t*>(r9700_->d_st_tok.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_st_par.dev_ptr),
+            reinterpret_cast<const float*>(r9700_->d_st_qprob.dev_ptr),
+            temperature, top_k, top_p, min_p, rng_seed, off_use, M, c_.vocab_unpadded, max_emit,
+            reinterpret_cast<r9700::WinPath16*>(r9700_->d_winpath.dev_ptr));
+
+        r9700::WinPath16 wp16{};
+        if (!hip_ok(hipMemcpyAsync(&wp16, r9700_->d_winpath.dev_ptr, sizeof(r9700::WinPath16), hipMemcpyDeviceToHost, stream_), "st wp D2H", err) ||
+            !hip_ok(hipStreamSynchronize(stream_), "st wp sync", err)) return 0;
+        if (wp16.n_acc <= 0) {
+            if (wp16.n_acc < 0) { err = "non-finite target logits in sampled tree verify"; return -1; }
+            return 0;
+        }
+        const int n_acc = wp16.n_acc;
+        for (int k = 0; k < n_acc; ++k) out_emitted[k] = wp16.emitted[k];
+
+        const int trunk_kvd = c_.n_kv * c_.head_dim;
+        const bool is_fp8 = (default_kv_dtype_ == KvDtype::FP8_E4M3);
+        auto& r16 = r9700_->slot_rec16[slot];
+        if (r16.cap < 16) {
+            const size_t kv_r16 = 16u * static_cast<size_t>(trunk_kvd) * sizeof(uint16_t);
+            const size_t h_r16  = 16u * static_cast<size_t>(c_.hidden) * sizeof(uint16_t);
+            (void)alloc_gpu_buffer(r16.k, static_cast<size_t>(c_.n_visits) * kv_r16, false);
+            (void)alloc_gpu_buffer(r16.v, static_cast<size_t>(c_.n_visits) * kv_r16, false);
+            (void)alloc_gpu_buffer(r16.attn, static_cast<size_t>(c_.n_visits) * h_r16, false);
+            (void)alloc_gpu_buffer(r16.mlp, static_cast<size_t>(c_.n_visits) * h_r16, false);
+            r16.cap = 16;
+        }
+        r9700::k_r9700_sconv_commit_tree16_pair<<<dim3((trunk_kvd + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr), reinterpret_cast<uint16_t*>(sl.sconv_snap_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(r16.k.dev_ptr), reinterpret_cast<const uint16_t*>(d_tree_rec_k_.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr), reinterpret_cast<uint16_t*>(sl.sconv_snap_v.dev_ptr),
+            reinterpret_cast<uint16_t*>(r16.v.dev_ptr), reinterpret_cast<const uint16_t*>(d_tree_rec_v_.dev_ptr),
+            wp16, slot, max_slots_, c_.n_visits, 16, trunk_kvd);
+        r9700::k_r9700_sconv_commit_tree16_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr), reinterpret_cast<uint16_t*>(sl.sconv_snap_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(r16.attn.dev_ptr), reinterpret_cast<const uint16_t*>(d_tree_rec_attn_.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr), reinterpret_cast<uint16_t*>(sl.sconv_snap_mlp.dev_ptr),
+            reinterpret_cast<uint16_t*>(r16.mlp.dev_ptr), reinterpret_cast<const uint16_t*>(d_tree_rec_mlp_.dev_ptr),
+            wp16, slot, max_slots_, c_.n_visits, 16, c_.hidden);
+        if (is_fp8) {
+            r9700::k_r9700_kv_commit_tree16_all<true><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr), reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                wp16, slot, anchor_pos, c_.n_visits, trunk_kvd);
+        } else {
+            r9700::k_r9700_kv_commit_tree16_all<false><<<dim3(n_acc, c_.n_visits), 256, 0, stream_>>>(
+                reinterpret_cast<const KvVisitDesc*>(d_tree_kv_descs_.dev_ptr),
+                reinterpret_cast<const half_t*>(d_tree_k_.dev_ptr), reinterpret_cast<const half_t*>(d_tree_v_.dev_ptr),
+                wp16, slot, anchor_pos, c_.n_visits, trunk_kvd);
+        }
+        r9700::k_r9700_gather_tree16_taps4<<<dim3((c_.hidden + 255) / 256, n_acc), 256, 0, stream_>>>(
+            reinterpret_cast<const float*>(sc_taps_[0].dev_ptr), reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
+            reinterpret_cast<const float*>(sc_taps_[2].dev_ptr), reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
+            reinterpret_cast<float*>(r9700_->d_tree16_taps_win[0].dev_ptr), reinterpret_cast<float*>(r9700_->d_tree16_taps_win[1].dev_ptr),
+            reinterpret_cast<float*>(r9700_->d_tree16_taps_win[2].dev_ptr), reinterpret_cast<float*>(r9700_->d_tree16_taps_win[3].dev_ptr),
+            wp16, c_.hidden);
+        k_fill_win_slot_pos<<<1, 32, 0, stream_>>>(
+            reinterpret_cast<int32_t*>(sc_slot_ids_.dev_ptr), reinterpret_cast<int32_t*>(sc_pos_.dev_ptr), slot, anchor_pos, n_acc);
+        launch_dspark_ctx_kernels_from(
+            n_acc,
+            reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[0].dev_ptr),
+            reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[1].dev_ptr),
+            reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[2].dev_ptr),
+            reinterpret_cast<const float*>(r9700_->d_tree16_taps_win[3].dev_ptr));
+
+        sl.seq_len = anchor_pos + n_acc;
+        sl.dspark_len = anchor_pos + n_acc;
+        sl.has_snap = true;
+        sl.snap_seq_len = anchor_pos;
+        sl.sconv_rec_n = std::max(n_acc, 9);  // trigger slot_rec16 on rollback!
+        if (slot < static_cast<int>(r9700_->pld.size())) {
+            r9700_->pld[slot].record(anchor_pos, anchor_tok);
+            for (int k = 0; k < n_acc; ++k) r9700_->pld[slot].record(anchor_pos + 1 + k, out_emitted[k]);
+        }
+        const float realized = static_cast<float>(n_acc) / static_cast<float>(best_cost);
+        sl.tree_ema_gain = 0.80f * sl.tree_ema_gain + 0.20f * realized;
+        if (sl.tree_ema_gain < 0.78f) sl.tree_cool_rem = 10;
+        if (out_drafted) *out_drafted = M - 1;
+        return n_acc;
+    }
+
+    // Opt-in R9700 Multi-Slot Batched Speculative Step (C2..C64: PLD K=1..2 lookahead + 1-pass batched verify & rollback!)
+    int dspark_spec_step_batched(
+        const int* slots, const int32_t* anchor_toks, const int* anchor_pos, const int* max_emit,
+        int n_slots, int32_t* out_emitted, int* out_n_emit, int* out_drafted,
+        int max_stride, std::string& err) override {
+        if (!r9700_ || !r9700_->cfg.spec_opt || n_slots < 2 || max_stride < 2) return 0;
+        if (r9700_->bspec_cool_rem > 0) {
+            --r9700_->bspec_cool_rem;
+            return 0;
+        }
+        // Require uniform K=1..2 lookahead across active slots when PLD hits >= 50% of slots!
+        const int K = std::min(r9700_->cfg.bspec_k, std::min(max_stride - 1, 2));
+        if (K < 1) return 0;
+        for (int p = 0; p < n_slots; ++p) {
+            const int s = slots[p];
+            if (s < 0 || s >= max_slots_ || !slots_[s].allocated) return 0;
+            if (max_emit[p] < 1 + K || anchor_pos[p] + 1 + K >= slots_[s].max_ctx) return 0;
+        }
+        std::vector<int32_t> drafts(static_cast<size_t>(n_slots) * K, 0);
+        int hits = 0;
+        for (int p = 0; p < n_slots; ++p) {
+            const int s = slots[p];
+            int32_t tmp[4]{};
+            const int got = (s < static_cast<int>(r9700_->pld.size()))
+                ? r9700_->pld[s].find_continuation(anchor_pos[p], anchor_toks[p], K, tmp) : 0;
+            if (got >= 1) ++hits;
+            for (int k = 0; k < K; ++k) drafts[static_cast<size_t>(p) * K + k] = (k < got) ? tmp[k] : anchor_toks[p];
+        }
+        if (hits * 2 < n_slots) return 0;  // fall back cleanly to M=1 graphed C64 decode when no PLD matches!
+
+        const int L = 1 + K;
+        const int kv_dim = c_.n_kv * c_.head_dim;
+        const int D = c_.hidden;
+        if (!r9700_->ensure_bspec_cap(n_slots, c_.n_visits, kv_dim, D)) return 0;
+
+        // 1. Snapshot all P slots' ShortConv state in 2 launches!
+        std::vector<int32_t> h_slots(slots, slots + n_slots);
+        (void)hipMemcpyAsync(r9700_->d_bspec_slots.dev_ptr, h_slots.data(), n_slots * sizeof(int32_t), hipMemcpyHostToDevice, stream_);
+        r9700::k_r9700_bspec_sconv_snapshot_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits, n_slots), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_k_all_.dev_ptr), reinterpret_cast<const uint16_t*>(d_sconv_v_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(r9700_->d_bspec_snap_k.dev_ptr), reinterpret_cast<uint16_t*>(r9700_->d_bspec_snap_v.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_bspec_slots.dev_ptr), n_slots, max_slots_, c_.n_visits, kv_dim);
+        r9700::k_r9700_bspec_sconv_snapshot_pair<<<dim3((D + 255) / 256, c_.n_visits, n_slots), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_attn_all_.dev_ptr), reinterpret_cast<const uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(r9700_->d_bspec_snap_attn.dev_ptr), reinterpret_cast<uint16_t*>(r9700_->d_bspec_snap_mlp.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_bspec_slots.dev_ptr), n_slots, max_slots_, c_.n_visits, D);
+
+        // 2. Pack P * L contiguous slot-major StepBatch and run ONE batched verify via forward_batch_cand!
+        StepBatch batch;
+        batch.capture_taps = has_dspark_;
+        for (int p = 0; p < n_slots; ++p) {
+            batch.push(slots[p], anchor_pos[p], anchor_toks[p], true);
+            for (int k = 0; k < K; ++k) {
+                batch.push(slots[p], anchor_pos[p] + 1 + k, drafts[static_cast<size_t>(p) * K + k], true);
+            }
+        }
+        if (batch_token_cap(batch) < n_slots * L) return 0;
+        r9700_->bspec_rec_active = true;
+        r9700_->bspec_rec_P = n_slots;
+        r9700_->bspec_rec_L = L;
+        CandRows cands;
+        const bool ok = forward_batch_cand(batch, cands, err);
+        r9700_->bspec_rec_active = false;
+        if (!ok || cands.rows != n_slots * L) return -1;
+
+        // 3. Exact greedy verification per slot & 2-launch multi-slot ShortConv rollback!
+        std::vector<int32_t> h_keeps(n_slots, 1);
+        int total_emitted = 0;
+        for (int p = 0; p < n_slots; ++p) {
+            int acc = 0;
+            for (int k = 0; k < L; ++k) {
+                const int row = p * L + k;
+                const int32_t pred = cands.idx[static_cast<size_t>(row) * kInkCandidates];
+                out_emitted[static_cast<size_t>(p) * max_stride + acc] = pred;
+                ++acc;
+                if (k < K && pred != drafts[static_cast<size_t>(p) * K + k]) break;
+            }
+            out_n_emit[p] = acc;
+            if (out_drafted) out_drafted[p] = K;
+            h_keeps[p] = acc;
+            total_emitted += acc;
+            const int s = slots[p];
+            slots_[s].seq_len = anchor_pos[p] + acc;
+            slots_[s].dspark_len = std::min(slots_[s].dspark_len, anchor_pos[p] + acc);
+            if (s < static_cast<int>(r9700_->pld.size())) {
+                r9700_->pld[s].record(anchor_pos[p], anchor_toks[p]);
+                for (int k = 0; k < acc; ++k) {
+                    r9700_->pld[s].record(anchor_pos[p] + 1 + k, out_emitted[static_cast<size_t>(p) * max_stride + k]);
+                }
+            }
+        }
+        (void)hipMemcpyAsync(r9700_->d_bspec_keeps.dev_ptr, h_keeps.data(), n_slots * sizeof(int32_t), hipMemcpyHostToDevice, stream_);
+        r9700::k_r9700_bspec_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits, n_slots), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(r9700_->d_bspec_snap_k.dev_ptr), reinterpret_cast<const uint16_t*>(r9700_->d_bspec_rec_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(r9700_->d_bspec_snap_v.dev_ptr), reinterpret_cast<const uint16_t*>(r9700_->d_bspec_rec_v.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_bspec_slots.dev_ptr), reinterpret_cast<const int32_t*>(r9700_->d_bspec_keeps.dev_ptr),
+            n_slots, max_slots_, c_.n_visits, kv_dim);
+        r9700::k_r9700_bspec_sconv_rollback_pair<<<dim3((D + 255) / 256, c_.n_visits, n_slots), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(r9700_->d_bspec_snap_attn.dev_ptr), reinterpret_cast<const uint16_t*>(r9700_->d_bspec_rec_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(r9700_->d_bspec_snap_mlp.dev_ptr), reinterpret_cast<const uint16_t*>(r9700_->d_bspec_rec_mlp.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            reinterpret_cast<const int32_t*>(r9700_->d_bspec_slots.dev_ptr), reinterpret_cast<const int32_t*>(r9700_->d_bspec_keeps.dev_ptr),
+            n_slots, max_slots_, c_.n_visits, D);
+        const float avg_acc = static_cast<float>(total_emitted) / static_cast<float>(n_slots);
+        r9700_->bspec_ema_acc = 0.70f * r9700_->bspec_ema_acc + 0.30f * avg_acc;
+        if (r9700_->bspec_ema_acc < 1.45f) {
+            r9700_->bspec_cool_rem = 16;
+            r9700_->bspec_ema_acc = 1.65f;
+        }
+        return total_emitted;
     }
 
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
@@ -2929,6 +3939,26 @@ private:
             launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
             return;
         }
+        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
+            auto it = r9700_->fp8_map.find(W);
+            if (it != r9700_->fp8_map.end() && it->second.K == K && N <= it->second.N &&
+                (M <= 4 || r9700_->ensure_x_fp8(M, K))) {
+                if (M >= 128 && (N & 3) == 0 && r9700_->fp8_blaslt.ready()) {
+                    r9700::k_r9700_quant_f32_to_fp8_row<<<M, 256, 0, stream_>>>(
+                        X, r9700_->sc_x_fp8.dev_ptr, reinterpret_cast<float*>(r9700_->sc_x_fp8_sc.dev_ptr), M, K);
+                    if (r9700_->fp8_blaslt.gemm_fp8_f32(it->second.w_ptr, r9700_->sc_x_fp8.dev_ptr, Y, M, N, K, stream_)) {
+                        r9700::k_r9700_apply_rc_scale<<<dim3(((N >> 2) + 255) / 256, M), 256, 0, stream_>>>(
+                            Y, reinterpret_cast<const float*>(r9700_->sc_x_fp8_sc.dev_ptr), it->second.sc_ptr, bias, M, N);
+                        return;
+                    }
+                }
+                r9700::launch_r9700_fp8_linear(
+                    it->second.w_ptr, it->second.sc_ptr,
+                    X, r9700_->sc_x_fp8.dev_ptr, reinterpret_cast<float*>(r9700_->sc_x_fp8_sc.dev_ptr),
+                    bias, Y, M, N, K, stream_);
+                return;
+            }
+        }
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
             if (sc_x_bf16_.bytes >= need) {
@@ -3087,6 +4117,7 @@ private:
         for (const auto& p : swa_pools_) tot += p.allocated_bytes();
         for (const auto& p : glob_pools_) tot += p.allocated_bytes();
         tot += d_sconv_k_all_.bytes + d_sconv_v_all_.bytes + d_sconv_attn_all_.bytes + d_sconv_mlp_all_.bytes;
+        if (r9700_) tot += r9700_->allocated_bytes();
         return tot;
     }
 
@@ -3287,7 +4318,7 @@ private:
             !re(sc_q_, static_cast<size_t>(B) * q_dim * 4) || !re(sc_k_raw_, static_cast<size_t>(B) * kv_dim * 4) ||
             !re(sc_v_raw_, static_cast<size_t>(B) * kv_dim * 4) || !re(sc_k_conv_, static_cast<size_t>(B) * kv_dim * 4) ||
             !re(sc_v_conv_, static_cast<size_t>(B) * kv_dim * 4) || !re(sc_r_raw_, static_cast<size_t>(B) * r_dim * 4) ||
-            !re(sc_rel_bias_, static_cast<size_t>(B) * c_.n_head * c_.rel_extent * 4) ||
+            !re(sc_rel_bias_, static_cast<size_t>((r9700_ && r9700_->cfg.fused_rel_attn && max_slots_ == 1) ? std::min(B, 64) : B) * c_.n_head * c_.rel_extent * 4) ||
             !re(sc_sinks_, static_cast<size_t>(B) * c_.n_head * 4) || !re(sc_gate_a_, static_cast<size_t>(B) * q_dim * 4) ||
             !re(sc_k_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) || !re(sc_v_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) ||
             !re(sc_attn_out_, static_cast<size_t>(B) * q_dim * 4) ||
@@ -3425,7 +4456,8 @@ private:
         return true;
     }
 
-    bool forward_batch_chunk(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) {
+    bool forward_batch_chunk(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err,
+                             CandRows* cand_out = nullptr) {
         const int B = batch.n_tokens;
         const int D = c_.hidden;
         const int q_dim = c_.n_head * c_.head_dim;
@@ -3466,16 +4498,18 @@ private:
         }
 
         // Pre-ensure KV pages exist for all tokens in batch across all 40 SWA & 8 Global pools
+        // Keep >= 768 MiB free headroom on R9700 so amdgpu TTM never crosses the 31.8 GiB eviction cliff!
+        const size_t kv_headroom = r9700_ ? (768ULL << 20) : 0u;
         for (int b = 0; b < B; ++b) {
             const int s = batch.slot_ids[b];
             const int p = batch.pos[b];
             const int swa_lp = (p % swa_ring_) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
-                if (!swa_pools_[i].ensure_page(s, swa_lp, stream_, err)) return false;
+                if (!swa_pools_[i].ensure_page(s, swa_lp, stream_, err, kv_headroom)) return false;
             }
             for (int i = 0; i < c_.n_global_visits; ++i) {
-                if (!glob_pools_[i].ensure_page(s, glb_lp, stream_, err)) return false;
+                if (!glob_pools_[i].ensure_page(s, glb_lp, stream_, err, kv_headroom)) return false;
             }
         }
         for (auto& p : swa_pools_) if (!p.sync_pt(stream_, err)) return false;
@@ -3486,6 +4520,16 @@ private:
         (void)hipMemcpyAsync(sc_pos_.dev_ptr, batch.pos.data(), B * 4, hipMemcpyHostToDevice, stream_);
         (void)hipMemcpyAsync(sc_tok_ids_.dev_ptr, batch.token_ids.data(), B * 4, hipMemcpyHostToDevice, stream_);
         (void)hipMemcpyAsync(sc_img_idx_.dev_ptr, batch.img_embed_idx.data(), B * 4, hipMemcpyHostToDevice, stream_);
+
+        // Record PLD token history ONLY when opt-in R9700 spec is enabled (ZERO work when OFF!)
+        if (r9700_ && r9700_->cfg.spec_opt && !r9700_->bspec_rec_active) {
+            for (int b = 0; b < B; ++b) {
+                const int s = batch.slot_ids[b];
+                if (s >= 0 && s < static_cast<int>(r9700_->pld.size())) {
+                    r9700_->pld[s].record(batch.pos[b], batch.token_ids[b]);
+                }
+            }
+        }
 
         // Upload image embeddings if present in this batch
         int max_img_row = -1;
@@ -3517,6 +4561,26 @@ private:
             }
         }
 
+        // R9700 async_ckpt: capture exact ShortConv state at prompt_len - 1 during single-pass prefill!
+        int async_ckpt_slot = -1;
+        if (r9700_ && r9700_->cfg.async_ckpt && is_contiguous_single_slot && B >= 2 &&
+            batch.want_logits[B - 1] && batch.slot_ids[0] < static_cast<int>(r9700_->pend_ckpt.size())) {
+            const int s0 = batch.slot_ids[0];
+            auto& pc = r9700_->pend_ckpt[s0];
+            const size_t kv_one = 3u * static_cast<size_t>(kv_dim) * sizeof(uint16_t);
+            const size_t h_one  = 3u * static_cast<size_t>(D) * sizeof(uint16_t);
+            if (!pc.sc_k.dev_ptr) {
+                if (alloc_gpu_buffer(pc.sc_k, static_cast<size_t>(c_.n_visits) * kv_one, false) != hipSuccess ||
+                    alloc_gpu_buffer(pc.sc_v, static_cast<size_t>(c_.n_visits) * kv_one, false) != hipSuccess ||
+                    alloc_gpu_buffer(pc.sc_attn, static_cast<size_t>(c_.n_visits) * h_one, false) != hipSuccess ||
+                    alloc_gpu_buffer(pc.sc_mlp, static_cast<size_t>(c_.n_visits) * h_one, false) != hipSuccess) {
+                    (void)hipGetLastError();
+                    pc.release();
+                }
+            }
+            if (pc.sc_k.dev_ptr) async_ckpt_slot = s0;
+        }
+
         auto run_sconv = [&](const float* in_ptr, const std::string& sw_key, const float* dyn_ptr,
                              GpuBuffer& hist_pool_all, float* out_ptr, int C, int n_heads,
                              GpuBuffer* rec_pool = nullptr, int rec_visit = 0) {
@@ -3524,6 +4588,18 @@ private:
                 const size_t one_visit = 8u * static_cast<size_t>(C) * sizeof(uint16_t);
                 k_f32_to_bf16_vec<<<(B * C + 255) / 256, 256, 0, stream_>>>(
                     in_ptr, reinterpret_cast<uint16_t*>(rec_pool->dev_ptr + rec_visit * one_visit), B * C);
+            }
+            if (r9700_ && r9700_->bspec_rec_active) {
+                GpuBuffer* brec = nullptr;
+                if (&hist_pool_all == &d_sconv_k_all_) brec = &r9700_->d_bspec_rec_k;
+                else if (&hist_pool_all == &d_sconv_v_all_) brec = &r9700_->d_bspec_rec_v;
+                else if (&hist_pool_all == &d_sconv_attn_all_) brec = &r9700_->d_bspec_rec_attn;
+                else if (&hist_pool_all == &d_sconv_mlp_all_) brec = &r9700_->d_bspec_rec_mlp;
+                if (brec && brec->dev_ptr) {
+                    r9700::k_r9700_bspec_sconv_record<<<dim3((C + 255) / 256, B), 256, 0, stream_>>>(
+                        in_ptr, reinterpret_cast<uint16_t*>(brec->dev_ptr),
+                        rec_visit, r9700_->bspec_rec_P, c_.n_visits, r9700_->bspec_rec_L, C);
+                }
             }
             const float* sw = reinterpret_cast<const float*>(static_sconv_.at(sw_key).dev_ptr);
             const size_t visit_stride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(C) * sizeof(uint16_t);
@@ -3535,6 +4611,18 @@ private:
                 uint16_t* h_slot = hp + static_cast<size_t>(batch.slot_ids[0]) * 3 * C;
                 k2_shortconv4_prefill_par<<<dim3((C + 255) / 256, (B + 15) / 16), 256, 0, stream_>>>(
                     in_ptr, sw, dyn_ptr, h_slot, out_ptr, B, C, n_heads);
+                if (async_ckpt_slot >= 0) {
+                    auto& pc = r9700_->pend_ckpt[async_ckpt_slot];
+                    GpuBuffer* psc = nullptr;
+                    if (&hist_pool_all == &d_sconv_k_all_) psc = &pc.sc_k;
+                    else if (&hist_pool_all == &d_sconv_v_all_) psc = &pc.sc_v;
+                    else if (&hist_pool_all == &d_sconv_attn_all_) psc = &pc.sc_attn;
+                    else if (&hist_pool_all == &d_sconv_mlp_all_) psc = &pc.sc_mlp;
+                    if (psc && psc->dev_ptr) {
+                        uint16_t* dst = reinterpret_cast<uint16_t*>(psc->dev_ptr) + static_cast<size_t>(rec_visit) * 3u * C;
+                        r9700::k_r9700_sconv_save_prelast<<<(C + 255) / 256, 256, 0, stream_>>>(in_ptr, h_slot, dst, B - 1, C);
+                    }
+                }
                 k2_shortconv4_update_hist<<<(C + 255) / 256, 256, 0, stream_>>>(in_ptr, h_slot, B, C);
             } else {
                 k2_shortconv4_grouped_seq<<<dim3((C + 255) / 256, n_groups), 256, 0, stream_>>>(
@@ -3580,7 +4668,7 @@ private:
         // Check eligibility for HIP Graph Capture (all distinct slots, all GPU-resident layers, no images/host-taps, want all logits)
         bool all_gpu_layers = true;
         for (bool ok_l : layer_all_gpu_) if (!ok_l) { all_gpu_layers = false; break; }
-        bool all_want_logits = (logits_out != nullptr);
+        bool all_want_logits = (logits_out != nullptr || cand_out != nullptr);
         for (int b = 0; b < B && all_want_logits; ++b) if (!batch.want_logits[b]) all_want_logits = false;
         const bool need_taps = (taps_out != nullptr) || (has_dspark_ && batch.capture_taps);
 
@@ -3590,9 +4678,40 @@ private:
 
         const int prof_mode = (std::getenv("STRATA_HIP_PROF") ? std::atoi(std::getenv("STRATA_HIP_PROF")) : 0);
         const bool use_graph = (prof_mode < 2) && all_gpu_layers && all_want_logits && max_img_row < 0 && taps_out == nullptr &&
+                               !(r9700_ && r9700_->bspec_rec_active) &&
                                ((all_distinct_slots && rec_slot < 0 && B <= 64) ||
                                 (!all_distinct_slots && rec_slot >= 0 && n_groups == 1 && B >= 2 && B <= 8));
         const bool is_verify_graph = use_graph && !all_distinct_slots;
+
+        auto finish_cand_extract = [&](int n_want) -> bool {
+            if (!cand_out || !r9700_) return true;
+            const int V = c_.vocab_unpadded;
+            const int K = std::min(kInkCandidates, V);
+            cand_out->rows = n_want;
+            cand_out->k = K;
+            if (n_want <= 0) return true;
+            if (!r9700_->ensure_cand_cap(n_want)) {
+                err = "[ink-hip] r9700 cand_rows scratch alloc failed";
+                return false;
+            }
+            r9700::k_r9700_logits_topk128<<<n_want, 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(sc_logits_.dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_cand_val.dev_ptr),
+                reinterpret_cast<int32_t*>(r9700_->d_cand_idx.dev_ptr),
+                r9700_->d_cand_fin.dev_ptr, n_want, V);
+            const size_t vb = static_cast<size_t>(n_want) * kInkCandidates * sizeof(float);
+            const size_t ib = static_cast<size_t>(n_want) * kInkCandidates * sizeof(int32_t);
+            if (!hip_ok(hipMemcpyAsync(r9700_->h_cand_val, r9700_->d_cand_val.dev_ptr, vb, hipMemcpyDeviceToHost, stream_), "cand val D2H", err) ||
+                !hip_ok(hipMemcpyAsync(r9700_->h_cand_idx, r9700_->d_cand_idx.dev_ptr, ib, hipMemcpyDeviceToHost, stream_), "cand idx D2H", err) ||
+                !hip_ok(hipMemcpyAsync(r9700_->h_cand_fin, r9700_->d_cand_fin.dev_ptr, n_want, hipMemcpyDeviceToHost, stream_), "cand fin D2H", err) ||
+                !hip_ok(hipStreamSynchronize(stream_), "cand sync", err)) {
+                return false;
+            }
+            cand_out->val.assign(r9700_->h_cand_val, r9700_->h_cand_val + static_cast<size_t>(n_want) * kInkCandidates);
+            cand_out->idx.assign(r9700_->h_cand_idx, r9700_->h_cand_idx + static_cast<size_t>(n_want) * kInkCandidates);
+            cand_out->finite.assign(r9700_->h_cand_fin, r9700_->h_cand_fin + n_want);
+            return true;
+        };
 
         if (use_graph) {
             const int V = c_.vocab_unpadded;
@@ -3600,7 +4719,12 @@ private:
             if (sc_logits_.bytes < lbytes) {
                 invalidate_graph();
                 free_gpu_buffer(sc_logits_);
-                if (!hip_ok(alloc_gpu_buffer(sc_logits_, lbytes, mem_info_.is_uma), "logits buf", err)) return false;
+                hipError_t le = alloc_gpu_buffer(sc_logits_, lbytes, mem_info_.is_uma);
+                if (le != hipSuccess && r9700_) {
+                    (void)hipGetLastError();
+                    le = alloc_gpu_buffer(sc_logits_, lbytes, true);
+                }
+                if (!hip_ok(le, "logits buf", err)) return false;
             }
             std::vector<int32_t> want_seq(B);
             for (int b = 0; b < B; ++b) want_seq[b] = b;
@@ -3620,6 +4744,7 @@ private:
                     sl.seq_len = std::max(sl.seq_len, batch.pos[b] + 1);
                     if (do_dspark_ctx) sl.dspark_len = std::max(sl.dspark_len, batch.pos[b] + 1);
                 }
+                if (cand_out != nullptr) return finish_cand_extract(B);
                 if (!hip_ok(hipMemcpyAsync(logits_out, sc_logits_.dev_ptr, lbytes, hipMemcpyDeviceToHost, stream_),
                             "logits D2H", err)) return false;
                 return hip_ok(hipStreamSynchronize(stream_), "graph sync", err);
@@ -3913,11 +5038,25 @@ private:
                     const int tot_n = 2 * q_dim + r_dim + 2 * kv_dim;
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
-                        k_bf16_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
-                            w_cat, q_in, q, r_raw, gatea, k_raw, v_raw,
-                            sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
-                            sink_is_f32 ? sinks : nullptr,
-                            q_dim, r_dim, kv_dim, tot_n, ns, D);
+                        bool ran_fp8_qkv = false;
+                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                            auto it_fp8 = r9700_->fp8_map.find(w_cat);
+                            if (it_fp8 != r9700_->fp8_map.end()) {
+                                r9700::k_r9700_fp8_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                    it_fp8->second.w_ptr, it_fp8->second.sc_ptr, q_in, q, r_raw, gatea, k_raw, v_raw,
+                                    sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                    sink_is_f32 ? sinks : nullptr,
+                                    q_dim, r_dim, kv_dim, tot_n, ns, D);
+                                ran_fp8_qkv = true;
+                            }
+                        }
+                        if (!ran_fp8_qkv) {
+                            k_bf16_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, k_raw, v_raw,
+                                sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                sink_is_f32 ? sinks : nullptr,
+                                q_dim, r_dim, kv_dim, tot_n, ns, D);
+                        }
                         sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, tot_n, D);
@@ -3928,11 +5067,25 @@ private:
                     const int qrg_n = 2 * q_dim + r_dim;
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
-                        k_bf16_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
-                            w_cat, q_in, q, r_raw, gatea, nullptr, nullptr,
-                            sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
-                            sink_is_f32 ? sinks : nullptr,
-                            q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                        bool ran_fp8_qrg = false;
+                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                            auto it_fp8 = r9700_->fp8_map.find(w_cat);
+                            if (it_fp8 != r9700_->fp8_map.end()) {
+                                r9700::k_r9700_fp8_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                    it_fp8->second.w_ptr, it_fp8->second.sc_ptr, q_in, q, r_raw, gatea, nullptr, nullptr,
+                                    sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                    sink_is_f32 ? sinks : nullptr,
+                                    q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                                ran_fp8_qrg = true;
+                            }
+                        }
+                        if (!ran_fp8_qrg) {
+                            k_bf16_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, nullptr, nullptr,
+                                sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                sink_is_f32 ? sinks : nullptr,
+                                q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                        }
                         sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, qrg_n, D);
@@ -3986,6 +5139,100 @@ private:
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
             const int swa_r = is_swa ? swa_ring_ : 0;
+            const bool use_r9700_chunk_attn =
+                (r9700_ && is_contiguous_single_slot && B >= 64 && c_.head_dim == 128 && c_.d_rel <= 16 &&
+                 (!r9700_->cfg.exact || B > 512) &&
+                 (r9700_->cfg.fixed_swa_ring || r9700_->cfg.fused_rel_attn) &&
+                 r9700_->ensure_attn_chunk(B, c_.n_head, kv_dim));
+            if (!use_r9700_chunk_attn) {
+                const size_t rb_need = static_cast<size_t>(B) * c_.n_head * c_.rel_extent * sizeof(float);
+                if (sc_rel_bias_.bytes < rb_need) {
+                    invalidate_graph();
+                    free_gpu_buffer(sc_rel_bias_);
+                    if (!hip_ok(alloc_gpu_buffer(sc_rel_bias_, rb_need, mem_info_.is_uma), "rel_bias grow", err)) return false;
+                    rbias = reinterpret_cast<float*>(sc_rel_bias_.dev_ptr);
+                }
+            }
+            if (use_r9700_chunk_attn) {
+                half_t* r_clip = reinterpret_cast<half_t*>(r9700_->d_r_clip_f16.dev_ptr);
+                half_t* k_chk  = reinterpret_cast<half_t*>(r9700_->d_k_chunk_f16.dev_ptr);
+                half_t* v_chk  = reinterpret_cast<half_t*>(r9700_->d_v_chunk_f16.dev_ptr);
+                r9700::k_r9700_qrkv_norm_chunk<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
+                    q, f32_ptr(q_sc_k), q_sc_stride,
+                    r_raw, f32_ptr(r_sc_k), r_sc_stride, r_clip,
+                    k_cv, v_cv, k_chk, v_chk,
+                    batch.pos[0], !is_swa, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
+                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel);
+                const bool use_fused_rel = (r9700_->cfg.fused_rel_attn &&
+                                            ip < static_cast<int>(r9700_->rel_proj_t_f16.size()) &&
+                                            r9700_->rel_proj_t_f16[ip].dev_ptr != nullptr);
+                if (!use_fused_rel) {
+                    const size_t rb_need = static_cast<size_t>(B) * c_.n_head * c_.rel_extent * sizeof(float);
+                    if (sc_rel_bias_.bytes < rb_need) {
+                        invalidate_graph();
+                        free_gpu_buffer(sc_rel_bias_);
+                        if (!hip_ok(alloc_gpu_buffer(sc_rel_bias_, rb_need, mem_info_.is_uma), "rel_bias grow", err)) return false;
+                        rbias = reinterpret_cast<float*>(sc_rel_bias_.dev_ptr);
+                    }
+                    // EXACT mode with fixed_swa_ring: normalize r_raw in-place & project exact FP32 rel_bias
+                    k2_head_l2_clip<<<dim3(c_.n_head, B), 128, 0, stream_>>>(
+                        r_raw, f32_ptr(r_sc_k), r_sc_stride, is_swa ? nullptr : pos_dev, c_.rel_l2_clip, B, c_.n_head, c_.d_rel);
+                    k_relpos_bias_proj<<<dim3(c_.n_head, B), 256, 0, stream_>>>(
+                        r_raw, f32_ptr(p + ".attn.rel_logits_proj.proj"), pos_dev, rbias, B, c_.n_head, c_.d_rel, c_.rel_extent);
+                }
+                pmark(3);
+                const dim3 fgrid(c_.n_head, (B + 63) / 64);
+                const half_t* rpt = use_fused_rel ? reinterpret_cast<const half_t*>(r9700_->rel_proj_t_f16[ip].dev_ptr) : nullptr;
+                if (is_fp8) {
+                    if (use_fused_rel) {
+                        r9700::k_r9700_flash_swa_gqa_prefill_fused<true, true><<<fgrid, 128, 0, stream_>>>(
+                            q, gatea, nullptr, r_clip, rpt, sinks, batch.slot_ids[0], batch.pos[0],
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                            reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
+                            k_chk, v_chk, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    } else {
+                        r9700::k_r9700_flash_swa_gqa_prefill_fused<true, false><<<fgrid, 128, 0, stream_>>>(
+                            q, gatea, rbias, nullptr, nullptr, sinks, batch.slot_ids[0], batch.pos[0],
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                            reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
+                            k_chk, v_chk, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    }
+                } else {
+                    if (use_fused_rel) {
+                        r9700::k_r9700_flash_swa_gqa_prefill_fused<false, true><<<fgrid, 128, 0, stream_>>>(
+                            q, gatea, nullptr, r_clip, rpt, sinks, batch.slot_ids[0], batch.pos[0],
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                            k_chk, v_chk, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    } else {
+                        r9700::k_r9700_flash_swa_gqa_prefill_fused<false, false><<<fgrid, 128, 0, stream_>>>(
+                            q, gatea, rbias, nullptr, nullptr, sinks, batch.slot_ids[0], batch.pos[0],
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                            k_chk, v_chk, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    }
+                }
+                const int start_m = is_swa ? std::max(0, B - swa_r) : 0;
+                const int n_commit = B - start_m;
+                if (n_commit > 0) {
+                    if (is_fp8) {
+                        r9700::k_r9700_kv_commit_chunk_tail<true><<<n_commit, 256, 0, stream_>>>(
+                            k_chk, v_chk, batch.slot_ids[0], batch.pos[0], start_m, B,
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                            reinterpret_cast<float*>(kvp.k_scales.dev_ptr), reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
+                            kv_dim, swa_r);
+                    } else {
+                        r9700::k_r9700_kv_commit_chunk_tail<false><<<n_commit, 256, 0, stream_>>>(
+                            k_chk, v_chk, batch.slot_ids[0], batch.pos[0], start_m, B,
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                            kv_dim, swa_r);
+                    }
+                }
+            } else {
             if (!is_fp8 && c_.head_dim <= 128 && c_.d_rel <= 16 && (c_.rel_extent & 3) == 0) {
                 k2_qrkv_kvstore_relpos_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
                     q, f32_ptr(q_sc_k), q_sc_stride,
@@ -4097,6 +5344,7 @@ private:
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
                     aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             }
+            }  // end else (!use_r9700_chunk_attn)
 
             // O-proj + post-attention ShortConv + AttnRes block boundary rule (1-launch super-fused at B=1 distinct-slot!)
             if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
@@ -4244,15 +5492,30 @@ private:
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                 }
                 const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
+                const bool use_nt = (r9700_ && r9700_->cfg.nt_mall && B == 1 &&
+                                     (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
+                                     (layer_dn_class_[ip] == 1 || layer_dn_class_[ip] == 2));
                 pmark(6);
-                k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
-                    d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
-                    B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                if (use_nt) {
+                    r9700::k_r9700_moe_direct_w13_situ_nt<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
+                        B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                } else {
+                    k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
+                        B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                }
                 pmark(7);
                 float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
-                k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
-                    d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
-                    y_part, B, c_.top_k, D, c_.inter);
+                if (use_nt) {
+                    r9700::k_r9700_moe_direct_w2_par_nt<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
+                        y_part, B, c_.top_k, D, c_.inter);
+                } else {
+                    k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
+                        y_part, B, c_.top_k, D, c_.inter);
+                }
                 if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 if (all_distinct_slots && rec_slot < 0) {
                     const size_t vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
@@ -4327,7 +5590,93 @@ private:
                 } else {
                     k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
                 }
-                if (mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
+                if (r9700_ && r9700_->cfg.fp8_moe && !exact_rows_ &&
+                    (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
+                    layer_dn_class_[ip] == layer_gu_class_[ip]) {
+                    // R9700 Native Zero-Spill Persistent FP8 WMMA MoE (BM=64 prefill, BM=16 decode/C64)
+                    uint8_t* xf = reinterpret_cast<uint8_t*>(sc_x_q8_.dev_ptr);
+                    float*   xd = reinterpret_cast<float*>(sc_x_d_.dev_ptr);
+                    uint8_t* af = reinterpret_cast<uint8_t*>(sc_act_q8_.dev_ptr);
+                    float*   ad = reinterpret_cast<float*>(sc_act_d_.dev_ptr);
+                    const bool is_sf4 = (layer_gu_class_[ip] == 1);
+                    r9700::k_r9700_quant_f32_to_fp8_row<<<B, 256, 0, stream_>>>(mlpin, xf, xd, B, D);
+                    r9700::MoeTile16* tiles = reinterpret_cast<r9700::MoeTile16*>(r9700_->d_moe_tiles.dev_ptr);
+                    int32_t* meta = reinterpret_cast<int32_t*>(r9700_->d_moe_meta.dev_ptr);
+                    if (B >= 1024) {
+                        r9700::k_r9700_moe_build_tiles<128><<<1, 128, 0, stream_>>>(d_off, tiles, meta, 4096);
+                        pmark(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_fp8_persist<1, 128><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_fp8_persist<2, 128><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pmark(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_fp8_persist<1, 128><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_fp8_persist<2, 128><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        }
+                    } else if (B >= 128) {
+                        r9700::k_r9700_moe_build_tiles<64><<<1, 128, 0, stream_>>>(d_off, tiles, meta, 4096);
+                        pmark(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_fp8_persist<1, 64><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_fp8_persist<2, 64><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pmark(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_fp8_persist<1, 64><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_fp8_persist<2, 64><<<128, 256, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        }
+                    } else if (B <= 16 && !r9700_->cfg.tree_fp8_moe) {
+                        k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
+                        r9700::k_r9700_moe_build_tiles<16><<<1, 128, 0, stream_>>>(d_off, tiles, meta, 4096);
+                        pmark(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_f16_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_f16_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pmark(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_f16_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, d_act, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_f16_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, d_act, d_by, D, c_.inter);
+                        }
+                    } else {
+                        r9700::k_r9700_moe_build_tiles<16><<<1, 128, 0, stream_>>>(d_off, tiles, meta, 4096);
+                        pmark(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_fp8_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_fp8_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pmark(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_fp8_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_fp8_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        }
+                    }
+                } else if (mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                     if (B >= 64) {
                         // Wave-5 BM=128, BN=128 Grouped-MoE with m_tiles=8 hot-expert fan-out!
                         // Cold/avg experts (m_e <= 128) exit z>=1 on instruction #1 -> 1.0x W reads;
@@ -4884,6 +6233,7 @@ private:
                 sl.seq_len = std::max(sl.seq_len, batch.pos[b] + 1);
                 if (do_dspark_ctx) sl.dspark_len = std::max(sl.dspark_len, batch.pos[b] + 1);
             }
+            if (cand_out != nullptr) return finish_cand_extract(B);
             const size_t lbytes = static_cast<size_t>(B) * V * sizeof(float);
             if (!hip_ok(hipMemcpyAsync(logits_out, sc_logits_.dev_ptr, lbytes, hipMemcpyDeviceToHost, stream_),
                         "logits D2H", err)) return false;
@@ -4891,6 +6241,11 @@ private:
         }
 
         // Update slot seq_len + on-GPU DSpark context KV/f_rnn
+        if (async_ckpt_slot >= 0) {
+            (void)hipEventRecord(r9700_->ev_ckpt_ready, stream_);
+            r9700_->pend_ckpt[async_ckpt_slot].seq_len = batch.pos[B - 1];
+            r9700_->pend_ckpt[async_ckpt_slot].valid = true;
+        }
         for (int b = 0; b < B; ++b) {
             auto& sl = slots_[batch.slot_ids[b]];
             sl.seq_len = std::max(sl.seq_len, batch.pos[b] + 1);
@@ -4911,7 +6266,7 @@ private:
         }
 
         // 4. Unembed + softcap(30.0) ONLY for tokens with want_logits[b] == 1
-        if (logits_out != nullptr) {
+        if (logits_out != nullptr || cand_out != nullptr) {
             std::vector<int32_t> want_idx;
             for (int b = 0; b < B; ++b) if (batch.want_logits[b]) want_idx.push_back(b);
             const int n_want = static_cast<int>(want_idx.size());
@@ -4919,8 +6274,14 @@ private:
                 const int V = c_.vocab_unpadded;
                 const size_t lbytes = static_cast<size_t>(n_want) * V * sizeof(float);
                 if (sc_logits_.bytes < lbytes) {
+                    invalidate_graph();
                     free_gpu_buffer(sc_logits_);
-                    if (!hip_ok(alloc_gpu_buffer(sc_logits_, lbytes, mem_info_.is_uma), "logits buf", err)) return false;
+                    hipError_t le = alloc_gpu_buffer(sc_logits_, lbytes, mem_info_.is_uma);
+                    if (le != hipSuccess && r9700_) {
+                        (void)hipGetLastError();
+                        le = alloc_gpu_buffer(sc_logits_, lbytes, true);
+                    }
+                    if (!hip_ok(le, "logits buf", err)) return false;
                 }
                 (void)hipMemcpyAsync(sc_want_idx_.dev_ptr, want_idx.data(), n_want * 4, hipMemcpyHostToDevice, stream_);
                 const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
@@ -4930,8 +6291,15 @@ private:
                     h_norm, reinterpret_cast<const int32_t*>(sc_want_idx_.dev_ptr),
                     reinterpret_cast<float*>(sc_logits_.dev_ptr), n_want, V, D, c_.logit_softcap);
                 if (prof_on) (void)hipEventRecord(pev[10], stream_);
+                if (cand_out != nullptr) {
+                    const bool cok = finish_cand_extract(n_want);
+                    free_gpu_buffer(d_img_emb);
+                    return cok;
+                }
                 if (!hip_ok(hipMemcpyAsync(logits_out, sc_logits_.dev_ptr, lbytes, hipMemcpyDeviceToHost, stream_),
                             "logits D2H", err)) return false;
+            } else if (cand_out != nullptr) {
+                cand_out->rows = 0;
             }
         }
 
@@ -5068,16 +6436,41 @@ private:
         return true;
     }
 
-    // Exact 48-Visit Tree Verify + On-GPU Greedy Argmax (100% HIP-Graphable per tree size M=2..12!)
-    bool forward_tree_verify(int B, int slot, uint64_t kv_gen_sum, std::string& err) {
-        if (B < 1 || B > 12) return false;
-        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_);
+    // Exact 48-Visit Tree Verify + On-GPU Greedy Argmax (or Top-128 Sampled) (100% HIP-Graphable!)
+    bool forward_tree_verify(int B, int slot, uint64_t kv_gen_sum, std::string& err, bool sampled_mode = false) {
+        const int max_b = (r9700_ && r9700_->cfg.spec_opt) ? kTreeMaxM : 12;
+        if (B < 1 || B > max_b) return false;
+        const bool want_exact = exact_verify_enabled_ && !(r9700_ && !r9700_->cfg.exact);
+        const ExactRowsScope exact_scope(exact_rows_, want_exact);
         const int tprof_lvl = (std::getenv("STRATA_HIP_TREE_PROF") ? std::atoi(std::getenv("STRATA_HIP_TREE_PROF")) : 0);
         const bool tprof_detail = (tprof_lvl >= 2);
-        hipGraphExec_t& g_exec = graph_tree_verify_exec_[B];
+        const bool use_r9700_tgraph = (r9700_ && (B > 12 || sampled_mode));
+        if (sampled_mode) {
+            if (!r9700_ || !r9700_->ensure_cand_cap(B)) return false;
+            const size_t lbytes = static_cast<size_t>(B) * c_.vocab_unpadded * sizeof(float);
+            if (sc_logits_.bytes < lbytes) {
+                invalidate_graph();
+                free_gpu_buffer(sc_logits_);
+                if (!hip_ok(alloc_gpu_buffer(sc_logits_, lbytes, mem_info_.is_uma), "tree sampled logits", err)) return false;
+            }
+            std::vector<int32_t> want_seq(B);
+            for (int b = 0; b < B; ++b) want_seq[b] = b;
+            (void)hipMemcpyAsync(sc_want_idx_.dev_ptr, want_seq.data(), B * 4, hipMemcpyHostToDevice, stream_);
+        }
+        hipGraphExec_t& g_exec = use_r9700_tgraph
+            ? (sampled_mode ? r9700_->graph_tree16_sampled[B] : r9700_->graph_tree16_greedy[B])
+            : graph_tree_verify_exec_[B];
+        int& tg_slot = use_r9700_tgraph
+            ? (sampled_mode ? r9700_->t16_s_slot[B] : r9700_->t16_g_slot[B])
+            : tgraph_slot_[B];
+        uint64_t& tg_gen = use_r9700_tgraph
+            ? (sampled_mode ? r9700_->t16_s_gen[B] : r9700_->t16_g_gen[B])
+            : tgraph_kv_gen_[B];
+        int& tg_scB = use_r9700_tgraph
+            ? (sampled_mode ? r9700_->t16_s_scB[B] : r9700_->t16_g_scB[B])
+            : tgraph_scratch_B_[B];
         if (!tprof_detail) {
-            if (g_exec != nullptr && tgraph_slot_[B] == slot &&
-                tgraph_kv_gen_[B] == kv_gen_sum && tgraph_scratch_B_[B] == scratch_B_) {
+            if (g_exec != nullptr && tg_slot == slot && tg_gen == kv_gen_sum && tg_scB == scratch_B_) {
                 return hip_ok(hipGraphLaunch(g_exec, stream_), "tree graph launch", err);
             }
             if (g_exec != nullptr) { (void)hipGraphExecDestroy(g_exec); g_exec = nullptr; }
@@ -5315,11 +6708,25 @@ private:
                     const int tot_n = 2 * q_dim + r_dim + 2 * kv_dim;
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
-                        k_bf16_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
-                            w_cat, q_in, q, r_raw, gatea, k_raw, v_raw,
-                            sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
-                            sink_is_f32 ? sinks : nullptr,
-                            q_dim, r_dim, kv_dim, tot_n, ns, D);
+                        bool ran_fp8_qkv = false;
+                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                            auto it_fp8 = r9700_->fp8_map.find(w_cat);
+                            if (it_fp8 != r9700_->fp8_map.end()) {
+                                r9700::k_r9700_fp8_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                    it_fp8->second.w_ptr, it_fp8->second.sc_ptr, q_in, q, r_raw, gatea, k_raw, v_raw,
+                                    sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                    sink_is_f32 ? sinks : nullptr,
+                                    q_dim, r_dim, kv_dim, tot_n, ns, D);
+                                ran_fp8_qkv = true;
+                            }
+                        }
+                        if (!ran_fp8_qkv) {
+                            k_bf16_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, k_raw, v_raw,
+                                sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                sink_is_f32 ? sinks : nullptr,
+                                q_dim, r_dim, kv_dim, tot_n, ns, D);
+                        }
                         sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, tot_n, D);
@@ -5330,11 +6737,25 @@ private:
                     const int qrg_n = 2 * q_dim + r_dim;
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
-                        k_bf16_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
-                            w_cat, q_in, q, r_raw, gatea, nullptr, nullptr,
-                            sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
-                            sink_is_f32 ? sinks : nullptr,
-                            q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                        bool ran_fp8_qrg = false;
+                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                            auto it_fp8 = r9700_->fp8_map.find(w_cat);
+                            if (it_fp8 != r9700_->fp8_map.end()) {
+                                r9700::k_r9700_fp8_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                    it_fp8->second.w_ptr, it_fp8->second.sc_ptr, q_in, q, r_raw, gatea, nullptr, nullptr,
+                                    sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                    sink_is_f32 ? sinks : nullptr,
+                                    q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                                ran_fp8_qrg = true;
+                            }
+                        }
+                        if (!ran_fp8_qrg) {
+                            k_bf16_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
+                                w_cat, q_in, q, r_raw, gatea, nullptr, nullptr,
+                                sink_is_f32 ? f32_ptr(p + ".attn.attn_sink_proj.weight") : nullptr,
+                                sink_is_f32 ? sinks : nullptr,
+                                q_dim, r_dim, kv_dim, qrg_n, ns, D);
+                        }
                         sink_done = sink_is_f32;
                     } else {
                         launch_bf16_opt(w_cat, q_in, nullptr, cat_out, B, qrg_n, D);
@@ -5467,7 +6888,11 @@ private:
                 launch_f32_linear(f32_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D, stream_, mem_info_.gen);
             }
             dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
-            const bool use_direct_moe = (B <= 6 || exact_rows_);
+            const bool r9700_tree_compact_f16 = (r9700_ && !r9700_->cfg.exact && !exact_rows_ && B >= 2 &&
+                                                 r9700_->d_moe_tiles.dev_ptr != nullptr &&
+                                                 (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
+                                                 layer_dn_class_[ip] == layer_gu_class_[ip]);
+            const bool use_direct_moe = !r9700_tree_compact_f16 && (B <= 6 || exact_rows_);
             const bool fused_router_f16 = ((D & 3) == 0);
             const HipTailArgs tail_a = hip_tail_args(visit, use_direct_moe);
             if (fused_router_f16) {
@@ -5480,20 +6905,36 @@ private:
             const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
             if (use_direct_moe) {
                 if (!fused_router_f16) k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
+                const bool use_nt = (r9700_ && r9700_->cfg.nt_mall && B == 1 &&
+                                     (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
+                                     (layer_dn_class_[ip] == 1 || layer_dn_class_[ip] == 2));
                 pm(6);
-                k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
-                    d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
-                    B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                if (use_nt) {
+                    r9700::k_r9700_moe_direct_w13_situ_nt<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
+                        B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                } else {
+                    k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
+                        B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                }
                 pm(7);
                 float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
-                k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
-                    d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
-                    y_part, B, c_.top_k, D, c_.inter);
+                if (use_nt) {
+                    r9700::k_r9700_moe_direct_w2_par_nt<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
+                        y_part, B, c_.top_k, D, c_.inter);
+                } else {
+                    k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
+                        d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
+                        y_part, B, c_.top_k, D, c_.inter);
+                }
                 if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 k_moe_direct_reduce<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     y_part, tk_w, moeout, B, c_.top_k, D);
             } else {
-                // Wave-7E: WMMA Grouped-MoE for B>=7 on RDNA3/3.5/4 (zero-WMMA register grouped MoE on RDNA2!)
+                // Grouped MoE for B=2..16 tree verify:
+                // R9700 FAST uses compact active-tile BM=16 exact FP16 WMMA (dedups shared experts, 0 empty WGs, 0 idle waves!)
                 int32_t* d_off = reinterpret_cast<int32_t*>(sc_exp_off_.dev_ptr);
                 int32_t* d_btk = reinterpret_cast<int32_t*>(sc_bucket_tok_.dev_ptr);
                 int32_t* d_s2b = reinterpret_cast<int32_t*>(sc_slotk_bidx_.dev_ptr);
@@ -5501,7 +6942,52 @@ private:
                 float*   d_by  = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
                 k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
                 if (!fused_router_f16) k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
-                if (mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
+                if (r9700_tree_compact_f16) {
+                    r9700::MoeTile16* tiles = reinterpret_cast<r9700::MoeTile16*>(r9700_->d_moe_tiles.dev_ptr);
+                    int32_t* meta = reinterpret_cast<int32_t*>(r9700_->d_moe_meta.dev_ptr);
+                    r9700::k_r9700_moe_build_tiles<16><<<1, 128, 0, stream_>>>(d_off, tiles, meta, 4096);
+                    const bool is_sf4 = (layer_gu_class_[ip] == 1);
+                    if (r9700_->cfg.tree_fp8_moe) {
+                        uint8_t* xf = reinterpret_cast<uint8_t*>(sc_x_q8_.dev_ptr);
+                        float*   xd = reinterpret_cast<float*>(sc_x_d_.dev_ptr);
+                        uint8_t* af = reinterpret_cast<uint8_t*>(sc_act_q8_.dev_ptr);
+                        float*   ad = reinterpret_cast<float*>(sc_act_d_.dev_ptr);
+                        r9700::k_r9700_quant_f32_to_fp8_row<<<B, 256, 0, stream_>>>(mlpin, xf, xd, B, D);
+                        pm(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_fp8_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_fp8_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, xf, xd, af, ad, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pm(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_fp8_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_fp8_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, af, ad, d_by, D, c_.inter);
+                        }
+                    } else {
+                        pm(6);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w13_situ_f16_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        } else {
+                            r9700::k_r9700_moe_w13_situ_f16_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, d_btk, tiles, meta, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        }
+                        pm(7);
+                        if (is_sf4) {
+                            r9700::k_r9700_moe_w2_f16_bm16_persist<1><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, d_act, d_by, D, c_.inter);
+                        } else {
+                            r9700::k_r9700_moe_w2_f16_bm16_persist<2><<<192, 128, 0, stream_>>>(
+                                d_exps, d_off, tiles, meta, d_act, d_by, D, c_.inter);
+                        }
+                    }
+                } else if (mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                     const dim3 g13((2 * c_.inter + 127) / 128, c_.n_experts, 1);
                     const dim3 g2((D + 127) / 128, c_.n_experts, 1);
                     pm(6);
@@ -5576,41 +7062,60 @@ private:
         constexpr int kArgBlks = 256;
         half_t* h_f16 = reinterpret_cast<half_t*>(d_tree_h_f16_.dev_ptr);
         pm(9);
-        k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(h_norm, h_f16, B * D);
-        if (B <= 4) {
-            k_unembed_argmax_batch_stage1<4><<<kArgBlks, 256, 0, stream_>>>(
+        if (sampled_mode && r9700_) {
+            k_unembed_softcap<<<dim3((V + 7) / 8, (B + 15) / 16), 256, 0, stream_>>>(
                 unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
-                h_norm, h_f16,
-                reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
-                reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
-                B, V, D);
-        } else if (B <= 6) {
-            k_unembed_argmax_batch_stage1<6><<<kArgBlks, 256, 0, stream_>>>(
-                unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
-                h_norm, h_f16,
-                reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
-                reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
-                B, V, D);
-        } else if (B <= 8) {
-            k_unembed_argmax_batch_stage1<8><<<kArgBlks, 256, 0, stream_>>>(
-                unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
-                h_norm, h_f16,
-                reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
-                reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
-                B, V, D);
+                h_norm, reinterpret_cast<const int32_t*>(sc_want_idx_.dev_ptr),
+                reinterpret_cast<float*>(sc_logits_.dev_ptr), B, V, D, c_.logit_softcap);
+            r9700::k_r9700_logits_topk128<<<B, 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(sc_logits_.dev_ptr),
+                reinterpret_cast<float*>(r9700_->d_cand_val.dev_ptr),
+                reinterpret_cast<int32_t*>(r9700_->d_cand_idx.dev_ptr),
+                r9700_->d_cand_fin.dev_ptr, B, V);
         } else {
-            k_unembed_argmax_batch_stage1<12><<<kArgBlks, 256, 0, stream_>>>(
-                unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
-                h_norm, h_f16,
-                reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
-                reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
-                B, V, D);
+            k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(h_norm, h_f16, B * D);
+            if (B <= 4) {
+                k_unembed_argmax_batch_stage1<4><<<kArgBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    h_norm, h_f16,
+                    reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
+                    B, V, D);
+            } else if (B <= 6) {
+                k_unembed_argmax_batch_stage1<6><<<kArgBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    h_norm, h_f16,
+                    reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
+                    B, V, D);
+            } else if (B <= 8) {
+                k_unembed_argmax_batch_stage1<8><<<kArgBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    h_norm, h_f16,
+                    reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
+                    B, V, D);
+            } else if (B <= 12) {
+                k_unembed_argmax_batch_stage1<12><<<kArgBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    h_norm, h_f16,
+                    reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
+                    B, V, D);
+            } else {
+                k_unembed_argmax_batch_stage1<16><<<kArgBlks, 256, 0, stream_>>>(
+                    unemb_pk.buf.dev_ptr, unemb_pk.info.fmt, static_cast<int>(unemb_pk.info.rows()),
+                    h_norm, h_f16,
+                    reinterpret_cast<float*>(d_tree_arg_v_.dev_ptr),
+                    reinterpret_cast<int32_t*>(d_tree_arg_i_.dev_ptr),
+                    B, V, D);
+            }
+            k_unembed_argmax_batch_stage2<<<B, 256, 0, stream_>>>(
+                reinterpret_cast<const float*>(d_tree_arg_v_.dev_ptr),
+                reinterpret_cast<const int32_t*>(d_tree_arg_i_.dev_ptr),
+                reinterpret_cast<int32_t*>(d_tree_arg_out_.dev_ptr),
+                B, kArgBlks);
         }
-        k_unembed_argmax_batch_stage2<<<B, 256, 0, stream_>>>(
-            reinterpret_cast<const float*>(d_tree_arg_v_.dev_ptr),
-            reinterpret_cast<const int32_t*>(d_tree_arg_i_.dev_ptr),
-            reinterpret_cast<int32_t*>(d_tree_arg_out_.dev_ptr),
-            B, kArgBlks);
         pm(10);
 
         if (tprof_detail) {
@@ -5632,9 +7137,9 @@ private:
         hipError_t ie = hipGraphInstantiate(&g_exec, g, nullptr, nullptr, 0);
         (void)hipGraphDestroy(g);
         if (!hip_ok(ie, "tree graph instantiate", err)) return false;
-        tgraph_slot_[B] = slot;
-        tgraph_kv_gen_[B] = kv_gen_sum;
-        tgraph_scratch_B_[B] = scratch_B_;
+        tg_slot = slot;
+        tg_gen = kv_gen_sum;
+        tg_scB = scratch_B_;
         return hip_ok(hipGraphLaunch(g_exec, stream_), "tree graph launch(first)", err);
     }
 
@@ -5688,10 +7193,15 @@ private:
         graph_B_ = 0;
         graph_kv_gen_ = 0;
         graph_scratch_B_ = 0;
+        if (r9700_) r9700_->invalidate_graphs();
     }
 
     void cleanup() {
         invalidate_graph();
+        if (r9700_) {
+            r9700_->release();
+            r9700_.reset();
+        }
         hybrid_.release();
         blaslt_.release();
         if (peer_stream_ || ev_g1_done_ || peer_expert_gpu_arena_.dev_ptr || !peer_d_layer_exps_.empty() || peer_scratch_B_ > 0) {
@@ -6009,6 +7519,7 @@ private:
     hipGraphExec_t graph_tree_ctx_exec_[9]{};
     uint64_t tctx_graph_gen_[9]{};
     int tctx_graph_B_[9]{};
+    std::unique_ptr<r9700::R9700State> r9700_;
 };
 
 }  // namespace
