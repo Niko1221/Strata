@@ -238,6 +238,72 @@ void test_split_lend_region_budget_with_complement() {
     require(!rig.src.has_resident(1, 3), "coldest complement expert should be the one left on file fallback");
 }
 
+void set_env(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value != nullptr ? value : "");
+#else
+    if (value != nullptr) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
+// #7089: the share of the lend regions the budget reserves before the complement: all by default, the setting changes it.
+void test_lend_reserve_percent_rule() {
+    using strata::core::detail::split_lend_reserve_percent;
+    std::string why;
+    require(split_lend_reserve_percent(nullptr, &why) == 100 && !why.empty(), "unset reserves all (#6583)");
+    require(split_lend_reserve_percent("") == 100, "empty reserves all");
+    require(split_lend_reserve_percent("auto") == 100, "auto is the default: all");
+    require(split_lend_reserve_percent("0") == 0, "0 reserves nothing (PR #7091)");
+    require(split_lend_reserve_percent("full") == 100, "full reserves all");
+    require(split_lend_reserve_percent("100") == 100, "100 reserves all");
+    require(split_lend_reserve_percent("25") == 25, "a percent is taken as given");
+    require(split_lend_reserve_percent("101") == 100, "an out-of-range number falls back to all");
+    require(split_lend_reserve_percent("-5") == 100, "a negative number falls back to all");
+    require(split_lend_reserve_percent("yes") == 100, "an unknown word falls back to all");
+}
+
+// #7089: the same fixture at the three reservations, budget 4 blobs, complement (0,3) hot + (1,3) cold, each stage lends 2 slots.
+//   all   : reserve 4 -> no complement, all 4 lent slots kept
+//   half  : reserve 2 (the first slot of each region) -> both complement experts, the two first slots, no more room
+//   none  : both complement experts first, then region 0 takes what is left: the stages are not balanced
+void run_percent(const char* setting, int64_t want_lent, bool c03, bool c13, bool l02, bool l01, bool l12, bool l11) {
+    Rig rig("split lend partial reservation");
+    std::string err;
+    strata::core::ExpertCache s0, s1;
+    require(s0.open(3, kLayers, kExperts, rig.blob, err), err);
+    require(s1.open(3, kLayers, kExperts, rig.blob, err), err);
+    for (int64_t e = 0; e < 3; ++e) {
+        const int32_t a0 = s0.admit(0, e);
+        require(a0 >= 0 && s0.fill_slot_blocking(a0, rig.truth[(size_t) e].data(), err), err);
+        const int32_t a1 = s1.admit(1, e);
+        require(a1 >= 0 && s1.fill_slot_blocking(a1, rig.truth[(size_t) kExperts + e].data(), err), err);
+    }
+    std::vector<std::pair<int32_t, int32_t>> s1_pairs{{1, 0}, {1, 1}, {1, 2}};
+    std::vector<std::pair<int32_t, int32_t>> rank{{0, 3}, {1, 3}};
+    rig.src.stage_lend_regions({{{0, 2}, {0, 1}}, {{1, 2}, {1, 1}}});
+    set_env("STRATA_SPLIT_LEND_RESERVE", setting);
+    const uint64_t budget = 4 * (uint64_t) rig.blob;
+    const bool ok = rig.src.pin_cache_complement(s0, err, false, s1_pairs, -1, 0, budget, &rank);
+    set_env("STRATA_SPLIT_LEND_RESERVE", nullptr);
+    require(ok, err);
+    const std::string tag = std::string("STRATA_SPLIT_LEND_RESERVE=") + setting + ": ";
+    require(rig.src.resident_bytes() == budget, tag + "the copy did not fill the 4-blob budget");
+    require(rig.src.resident_lent_slots() == want_lent, tag + "lent slots kept: " + std::to_string(rig.src.resident_lent_slots()));
+    require(rig.src.has_resident(0, 3) == c03, tag + "complement (0,3)");
+    require(rig.src.has_resident(1, 3) == c13, tag + "complement (1,3)");
+    require(rig.src.has_resident(0, 2) == l02, tag + "lend (0,2)");
+    require(rig.src.has_resident(0, 1) == l01, tag + "lend (0,1)");
+    require(rig.src.has_resident(1, 2) == l12, tag + "lend (1,2)");
+    require(rig.src.has_resident(1, 1) == l11, tag + "lend (1,1)");
+}
+
+void test_split_lend_partial_reservation() {
+    run_percent("full", 4, false, false, true, true, true, true);
+    run_percent("50", 2, true, true, true, false, true, false);
+    run_percent("0", 2, true, true, true, true, false, false);
+}
+
 }  // namespace
 
 int main() {
@@ -246,6 +312,8 @@ int main() {
         test_split_lend_region_budget();
         test_split_without_regions_keeps_nothing();
         test_split_lend_region_budget_with_complement();
+        test_lend_reserve_percent_rule();
+        test_split_lend_partial_reservation();
         std::cout << "split_lend_complement_test: PASS\n";
         return 0;
     } catch (const std::exception& error) {

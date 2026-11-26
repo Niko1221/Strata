@@ -50,7 +50,13 @@ Strata comes in three parts that share one engine: the **desktop app**, the **Te
 the model. The section above is about the engine's HTTP server. This is what the other two add.
 
 - **The app's host listens on this PC only.** The app serves its page from a local host process on `127.0.0.1` (port 8791 unless
-  changed). A request to its `/api/` endpoints that carries a browser `Origin` from any other site gets 403. The app shell holds a
+  changed). It answers only a `Host` that names this PC (`localhost`, `127.x.x.x`, `[::1]`), so a web site that points its own name at
+  this PC gets 403. A request to its `/api/` endpoints that carries a browser `Origin` must come from the host's own page (its own
+  address and port): another site, **another port of localhost** and a page that was framed or sent by another site get 403, and so
+  does a request the browser marks cross-site or same-site. Every change a browser sends to `/api/` must also carry this launch's random
+  token, which the host puts in the page it serves; `/api/` and the page answer no other origin (CORS is open for `/v1` only, so local
+  web UIs can use the model, and `/v1` with MCP tools still needs an API key). Scripts and the Terminal send no `Origin` and are not
+  asked for the token. A development run (`STRATA_PACKAGED` not 1) also accepts Vite on port 5199. The app shell holds a
   random secret (32 characters or more, compared in constant time) that is needed to quit the host or tell it which window is open,
   and the host gives its own helper processes a second random secret. By default the models the app starts are served on this PC only.
 - **Sharing is a separate, key-protected listener.** "Share with other devices" (and the Cloudflare tunnel) will not start until an

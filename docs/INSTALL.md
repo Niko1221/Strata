@@ -1,6 +1,6 @@
 # Install Strata
 
-This page is for anyone installing or updating Strata (version 0.2.21). Use the **desktop app** for a graphical
+This page is for anyone installing or updating Strata (version 0.2.22). Use the **desktop app** for a graphical
 interface, or the **Terminal** for `strata launch` and coding tools. Both use released engine packages. A normal
 install does not need a source checkout or a startup `.bat` file.
 
@@ -21,7 +21,7 @@ install does not need a source checkout or a startup `.bat` file.
 | Windows 10/11 or Linux x86-64 with an NVIDIA RTX GPU | Use the app or the Terminal. The engine for your card is downloaded for you. [Older NVIDIA cards](OLDER_GPUS.md) use the CUDA 12 engine. |
 | Windows or Linux x86-64 with a supported AMD Radeon | [AMD guide](AMD_HIP.md), including the card-to-package table. |
 | Linux x86-64 with Intel Arc | [Intel Arc guide](INTEL_ARC.md); install the driver/compute runtime and check model preparation requirements |
-| Apple Silicon Mac, macOS 15 or newer | [Mac guide](MAC.md). Intel Macs are not supported by the Mac package. |
+| Apple Silicon Mac, macOS 15 or newer | [Mac guide](MAC.md). macOS 15 is supported; on it the Qwen engine reads prompts more slowly (about 10x on our measurement) because a macOS 26 feature is off. Intel Macs are not supported by the Mac package. |
 | AMD Ryzen AI Max / Strix Halo | [Strix Halo guide](STRIX_HALO.md) |
 | NVIDIA DGX Spark (Linux ARM64) | [DGX Spark guide](DGX_SPARK_LINUX.md). Use the Terminal; there is no desktop app for ARM64 Linux. |
 
@@ -37,10 +37,10 @@ hardware drivers. Models and updates need an internet connection to download.
 
 1. Open the [latest release](https://github.com/Niko1221/Strata/releases/latest).
 2. Download the one installer for your system. There is one per system, not one per graphics card:
-   - **Windows:** run `Strata-0.2.21-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
-   - **Linux:** make `Strata-0.2.21-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
+   - **Windows:** run `Strata-0.2.22-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
+   - **Linux:** make `Strata-0.2.22-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
      downloaded file with `--appimage-extract-and-run`. [Linux help](TROUBLESHOOTING.md).
-   - **Mac:** open `Strata-0.2.21-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
+   - **Mac:** open `Strata-0.2.22-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
 3. On Windows and Linux the installer has no engine inside. On first start the app shows the engine for your
    graphics card with its size and one **Download** button, with progress and resume. If you already downloaded the
    engine file, choose **I already have the file** and it installs without internet. The Mac file keeps its small

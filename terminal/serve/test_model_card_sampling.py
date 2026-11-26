@@ -165,6 +165,29 @@ class ModelCardSampling(unittest.TestCase):
         self.assertNotIn("temperature", k)
         self.assertNotIn("penalty_present", k)
 
+    def test_flash_next_keeps_the_card_with_mtp(self):
+        # #7070: Flash-Next (Qwen3.8, Gyro) verifies the drafts of sampled requests, so a request that names no sampling keeps the card's
+        # thinking sampling on an MTP / DFlash2 setup (0.2.20 and 0.2.21 sent it greedy).  Only Qwen3.6 (the #3354 case) stays greedy.
+        self.svc.model_arch = "qwen4exp"
+        self.svc.has_mtp = True
+        k = self.keys(reasoning_effort="medium")
+        for want in ("temperature=1.0", "top_p=0.95", "top_k=20"):
+            self.assertIn(want, k)
+        self.assertNotIn("penalty_present", k)
+        self.assertIn("penalty_present=1.5", self.keys(reasoning_effort="none"))     # the instruct card, as before
+        self.svc.has_mtp = False
+        self.assertIn("temperature=1.0", self.keys(reasoning_effort="medium"))
+
+    def test_mtp_greedy_default_table(self):
+        from serve.server_parts.http_api import GREEDY_FOR_DRAFTS, mtp_greedy_default
+        self.assertEqual(GREEDY_FOR_DRAFTS, frozenset({"qwen35moe"}))
+        self.assertTrue(mtp_greedy_default("qwen35moe", True, {}, {}, {}))
+        self.assertFalse(mtp_greedy_default("qwen35moe", False, {}, {}, {}))
+        self.assertFalse(mtp_greedy_default("qwen35moe", True, {"temperature": 0.6}, {}, {}))
+        self.assertFalse(mtp_greedy_default("qwen35moe", True, {}, {}, {"top_k": 20}))
+        for arch in ("qwen4exp", "hy4flash", "deepseek41", None):
+            self.assertFalse(mtp_greedy_default(arch, True, {}, {}, {}), arch)
+
     def test_request_asks_sampling(self):
         self.assertFalse(request_asks_sampling())
         self.assertFalse(request_asks_sampling({}))

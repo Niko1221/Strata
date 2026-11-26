@@ -95,7 +95,7 @@ SQ-20 は 24 GiB、SQ-15 は 16 GiB、SQ-10 は 12 GiB のグラフィックス�
 
 アプリをインストールし、モデルを選んで、チャットを始めましょう。インストーラーはシステムごとに1つです。初回起動時に、アプリがお使いのグラフィックスカード用のエンジンをダウンロードします。[インストーラーのヘルプ](../INSTALL.md#the-app)。
 
-<sub>ファイル: `Strata-0.2.21-windows-x64-setup.exe` · `Strata-0.2.21-linux-x86_64.AppImage` · `Strata-0.2.21-macos-arm64.dmg`</sub>
+<sub>ファイル: `Strata-0.2.22-windows-x64-setup.exe` · `Strata-0.2.22-linux-x86_64.AppImage` · `Strata-0.2.22-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="チャットとライブのコードプレビューを並べて表示した Strata デスクトップアプリ">

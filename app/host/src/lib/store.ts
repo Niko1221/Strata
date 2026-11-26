@@ -30,6 +30,7 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { copyChatFolder, folderCopied } from './chat-folder';
 import { mcpToolsPatch } from './mcp-tools-switch';
 import { createSessionWriter, exportSessions, readBrowserSessions, HOST_FLAG_KEY, PENDING_KEY, type SaveResult, type StorageLike } from './session-persist';
 import { createHttpTransport, hydrateChats, keepLastMomentCopy, WINDOW_ID } from './chat-sync';
@@ -1902,6 +1903,7 @@ export async function retryLast(messageId?: string) {
   if (prompt !== null) {
     // Retry sends immediately; only Edit should leave the prompt in the composer.
     sessionStorage.setItem(`strata.chat-draft.${state.activeSession}`, '');
+    await folderCopied(state.activeSession);
     await sendMessage(prompt);
   }
 }
@@ -1992,6 +1994,7 @@ export function branchFrom(messageId: string): string | null {
   // while the transcript still shows the original, which reads as a broken
   // button rather than a created branch.
   navigate('chat', branch.id);
+  void copyChatFolder(source.id, branch.id);
   return branch.id;
 }
 

@@ -297,6 +297,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     origins_of,
     parse_config_text,
     read_config,
+    mtp_greedy_default,
     request_asks_sampling,
     sampling_defaults_from_config,
     split_joined_args,
@@ -460,6 +461,49 @@ ADMIT_MAX_WAIT_S = _timeout_env("STRATA_ADMIT_MAX_WAIT_S", 30.0) or 0.0
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
+# #7060: ENGINE_READY_S (config "engine_ready_s", STRATA_ENGINE_READY_S) is how long a start may go WITHOUT A SIGN OF LIFE, not
+# how long it may take in all: a model read from a slow disk can need much longer than 15 minutes.  A sign of life is a new line in the
+# engine's log or more bytes read from disk by the engine process; each one moves the deadline to ENGINE_READY_S after it.  The whole
+# start ends at READY_CEILING_S (or four windows, whichever is longer) after it began, whatever it prints.
+READY_CEILING_S = 7200.0
+READY_POLL_S = 5.0
+
+
+class ReadyDeadline:
+    """The READY deadline of an engine start (#7060): `window_s` after the start, moved to `window_s` after the latest sign of life.
+    `probe()` returns a tuple of counters that only grow while the engine works (log size, bytes read); any one growing is a sign of life.
+    A probe that fails (psutil missing, the process gone) shows no sign: the deadline stays where it is, as before this existed."""
+
+    def __init__(self, window_s: float, probe, now=time.monotonic, ceiling_s: float = READY_CEILING_S):
+        self.window = float(window_s)
+        self.probe, self.now = probe, now
+        self.start = now()
+        self.deadline = self.start + self.window
+        self.hard = self.start + max(float(ceiling_s), 4.0 * self.window)
+        self.moved = False
+        self.seen = self._look()
+
+    def _look(self):
+        try:
+            return tuple(self.probe())
+        except Exception:  # noqa: BLE001 - a probe that cannot be read is no sign of life
+            return None
+
+    def left(self) -> float:
+        """Seconds until the deadline now (<= 0: it has passed), after looking for a sign of life."""
+        t = self.now()
+        cur = self._look()
+        if cur is not None:
+            if self.seen is not None and any(c > s for c, s in zip(cur, self.seen)):
+                later = min(t + self.window, self.hard)
+                if later > self.deadline:
+                    self.deadline, self.moved = later, True
+            self.seen = cur
+        return self.deadline - t
+
+    def elapsed(self) -> float:
+        return self.now() - self.start
+
 
 # A stalled peer must release the request turn; 0 preserves unbounded socket waits.
 PEER_STALL_S = _timeout_env("STRATA_PEER_STALL_S", 120.0)
@@ -844,15 +888,16 @@ class StrataEngine:
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
         threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True).start()
-        ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
+        ready_window = ENGINE_READY_S                    # (read once: a config's engine_ready_s is applied before this start)
+        ready_deadline = None if ready_window is None else ReadyDeadline(ready_window, self._ready_signs)
         timed_out = False
         while True:
-            left = None if ready_deadline is None else ready_deadline - time.monotonic()
+            left = None if ready_deadline is None else ready_deadline.left()
             if left is not None and left <= 0:
                 timed_out = True
                 break
             try:
-                line = ready_q.get(timeout=left)
+                line = ready_q.get(timeout=left if left is None or ready_window is None else min(left, READY_POLL_S))
             except queue.Empty:
                 continue
             if line is None:
@@ -926,8 +971,13 @@ class StrataEngine:
                 drafting.remember_note(drafting.DIDNT_START)
                 StrataEngine.__init__(self, exe, retry_args, cwd, log, env, lazy, cpus, 0, None, None)
                 return
-            why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
+            why = (f"the engine did not report READY within {ready_window:.0f} s" if timed_out else
                    "the engine exited before it was ready")
+            if timed_out:                               # #7060: the wait counts from the last sign of life (a new line in the log, a read from disk)
+                if ready_deadline.moved:
+                    why += f" of its last sign of life (it ran {ready_deadline.elapsed():.0f} s in all)"
+                why += ("; \"engine_ready_s\" in the run config (seconds, 0 = no limit) or STRATA_ENGINE_READY_S sets how long a "
+                        "start may stay without a sign of life")
             # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
             # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
             note = "" if timed_out else start_exit_note(proc.returncode, exe)
@@ -1186,6 +1236,22 @@ class StrataEngine:
         self.unloaded = True
 
     RESTART_RETRY_S = 15.0   # between the tries of restart(): a dying engine's VRAM may take a while to come back
+
+    def _ready_signs(self) -> tuple[int, int]:
+        """#7060: (size of the engine's log, bytes this engine process has read from disk): both only grow while a start works,
+        so a start that is slow but moving is not ended by the READY deadline.  A part that cannot be read counts as 0."""
+        size = read = 0
+        if self.log_path:
+            try:
+                size = os.path.getsize(self.log_path)
+            except OSError:
+                pass
+        try:
+            import psutil
+            read = psutil.Process(self.proc.pid).io_counters().read_bytes
+        except Exception:  # noqa: BLE001 - psutil missing, the process gone, no permission: the log alone
+            pass
+        return size, read
 
     @staticmethod
     def _ready_pump(proc, out: queue.Queue) -> None:
@@ -2663,6 +2729,9 @@ class StrataEngine:
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
         silence = float(self.silence_s or 0)
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
+        picture_s, self.picture_allow_s = float(getattr(self, "picture_allow_s", 0.0) or 0.0), 0.0    # #7043: the CPU picture reader's time, this request only
+        if allow > 0 and picture_s > allow:
+            allow = picture_s                          # (a larger engine_silence_s of the person's stays: it is already above)
         heard, read_to = time.monotonic(), 0
         beat = heard
         stall_s = ENGINE_STALL_S or 0.0
@@ -3763,6 +3832,7 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         if announce:
             print("[strata] This engine does not support spreading prompt cache checkpoints, so it uses its usual checkpoint policy.", flush=True)
     args = conversation_cache_min_tokens_args(args, exe or cfg.get("exe"))
+    args = conversation_cache_budget_args(args, exe or cfg.get("exe"), announce)
     return draft_costs_args(cfg, learned_profile_args(cfg, args), exe or cfg.get("exe"))
 
 
@@ -3785,6 +3855,16 @@ def conversation_cache_min_tokens_args(args: list[str], exe: str | None = None) 
     if not exe or engine_has_text(exe, b"--conversation-cache-min-tokens") is not True:
         return args
     return [*args, "--conversation-cache-min-tokens", str(CONVERSATION_CACHE_MIN_TOKENS_DEFAULT)]
+
+
+def conversation_cache_budget_args(args: list[str], exe: str | None, announce: bool = True) -> list[str]:
+    """#7044: on a PC with a lot of RAM the conversation cache is sized from it, not capped at the engine's 8 GiB: the
+    engine's own `--conversation-cache-mib N` (an option it has had since #3493), only for an engine program that has it, only when the start sets none of the cache's options itself, and
+    only when N is above 8 GiB (strata_control/conversation_cache_size.py).  STRATA_NO_AUTO_CONVERSATION_CACHE=1 leaves it to the engine."""
+    if not exe or engine_has_text(exe, b"--conversation-cache-mib") is not True:
+        return args
+    from strata_control import conversation_cache_size
+    return conversation_cache_size.args_with_budget(args, say=(lambda text: print(f"[strata] {text}", flush=True)) if announce else None)
 
 
 DRAFT_COSTS_DEFAULT = draft_costs_default()    # "draft_costs": true / false in a config overrides it
@@ -4004,6 +4084,26 @@ def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
 # src/core/arch_defaults.cpp, generate.cpp, metal window.cpp.  Nothing here sets them.)
 
 
+_PRE26_SAID: set = set()
+
+
+def pre26_metal_defaults(env: dict, cfg: dict, *, platform_name: str | None = None, version: str | None = None) -> list[str]:
+    """#7082: the Qwen Metal engine on macOS below 26 (no MetalPerformancePrimitives header) starts with the prompt through the decode
+    windows, no prompt GEMM and no matmul layout probe, unless the person set those.  Inkling and Hy4 have their own guards (Inkling asks
+    supports_metal4(), Hy4 compiles with a fallback) and are left alone.  Says why, once per process and macOS version.  Returns the names added."""
+    if (platform_name or sys.platform) != "darwin" or cfg.get("backend") != "metal":
+        return []
+    if hy4_kind.is_hy4(cfg) or inkling_kind.is_inkling(cfg):
+        return []
+    from strata_control import mac_fit
+    ver = mac_fit.macos_version() if version is None else version
+    added = mac_fit.pre26_metal_env(env, ver)
+    if added and ver not in _PRE26_SAID:
+        _PRE26_SAID.add(ver)
+        print(mac_fit.pre26_metal_note(ver, added), flush=True)
+    return added
+
+
 def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -4034,6 +4134,7 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     # 0.2.17 (owner 11-19): the route tail skip is Off unless the person turned it on (STRATA_ROUTE_TAIL_SKIP=7 in the config or in their own environment).
     # The engine's own rule for an unset value is rank 7, so an unset one is set to 0 here, for a config made before 0.2.17 too.
     speed_switches.engine_env_defaults(env)
+    pre26_metal_defaults(env, cfg)
     # Strict offline reaches children through the environment, because a tool subprocess or a model
     # loader is code this server does not own. Applied last so a profile's own `env` cannot remove
     # the policy by naming the same variable.
@@ -4171,6 +4272,12 @@ def refuse_for_split(engine, req: dict) -> None:
         raise ValueError("logprobs: not supported by the all-cards split engine; start with --split-engine off")
 
 
+#: #7084: Inkling's thinking budget stays armed after a wrap-up, for a thinking turn the model opens again: at most this many tokens of it (or the budget, when smaller).
+#: 0 spends the budget once, as 0.2.21 did.
+INKLING_REWRAP_BUDGET = 512
+INKLING_ANSWER_OPENER = "<|message_model|><|content_text|>"     # what opens the model's text turn (finish_prompt's, the empty-reply retry's)
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4186,6 +4293,12 @@ class Service:
             self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
         except ValueError:
             self.inkling_thinking_budget = None
+        # #7133: Claude Code's DEFAULT thinking budget (budget_tokens 31999 on /v1/messages) is held to the default budget of the level it maps to, so 31,999 is 8,192 (high), not
+        # minutes of hidden thinking; any other budget a client sends is used as it is.  STRATA_INKLING_BUDGET_CAP=0 / the config's inkling_budget_cap false: the full budget.
+        self.inkling_budget_cap = os.environ.get("STRATA_INKLING_BUDGET_CAP", "").strip().lower() not in ("0", "false", "no", "off")
+        self.inkling_budget_cap_said = False          # the line that says a client's budget was lowered is printed once
+        self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
+        self.inkling_image_max_px = 0                 # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -4624,7 +4737,7 @@ class Service:
                 word = None
         return INKLING_BUDGET_BY_EFFORT.get(word or inkling_dialect.normalize_effort(None), INKLING_BUDGET_BY_EFFORT["low"])
 
-    def reasoning_budget(self, req) -> int | None:
+    def reasoning_budget(self, req, announce: bool = False) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
         llama.cpp reads it, `thinking_budget_tokens`; or vLLM's `thinking_token_budget`, or Qwen's `thinking_budget`: the
         three names pi's thinkingTokenBudgetField can send), else the config's.  The request's own `reasoning_budget_tokens`
@@ -4635,6 +4748,7 @@ class Service:
         for alias in ("thinking_token_budget", "thinking_budget", "thinking_budget_tokens"):
             if value is None:                            # a null does not hide the other names
                 value = req.get(alias)
+        from_client = value is not None
         if value is None:
             value = self.reasoning_budget_tokens
             if not value and not self.reasoning_budget_configured and getattr(self, "inkling", False):
@@ -4643,6 +4757,17 @@ class Service:
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
+        if (from_client and value > 0 and req.get("strata_default_thinking_budget") is True and getattr(self, "inkling", False)
+                and getattr(self, "inkling_budget_cap", True)):
+            # #7133 (owner, option B): only Claude Code's own default (thinking.budget_tokens 31999 on /v1/messages, marked by the frontend) is held to the default of its level
+            # (0: no default configured, so no cap); every other number a client sends goes through as it was
+            cap = self.inkling_default_budget(req.get("strata_effort"))
+            if cap and value > cap:
+                if announce and not self.inkling_budget_cap_said:
+                    self.inkling_budget_cap_said = True
+                    print(f"[strata] the client's default thinking budget of {value} tokens is held to {cap} for Inkling at this level "
+                          "(inkling_budget_cap false in the run config, or STRATA_INKLING_BUDGET_CAP=0, keeps the full budget)", flush=True)
+                value = cap
         return value if value > 0 else None
 
     def _release_orphan_encoder(self) -> bool:
@@ -5145,11 +5270,11 @@ class Service:
                 print(f"[strata] could not save the shared settings: {e}", flush=True)
         return self.shared
 
-    def effort_default(self) -> str | None:
+    def effort_default(self) -> str | None:  # (see also thinking_level_line, the start-up line that says the same)
         """The thinking level of a request that names none: the Chat settings shared with apps first, then the config's
-        "reasoning_effort" (#1641).  Every API reads it here (the Responses API did not: 0.1.44.1)."""
-        if self.inkling:
-            return None
+        "reasoning_effort" (#1641).  Every API reads it here (the Responses API did not: 0.1.44.1).  Inkling-2-Mini
+        too (#7035; it used to return None here, from the time it could not think): a request that names a level and
+        finds none here gets inkling_dialect.DEFAULT_EFFORT (low, or STRATA_INKLING_EFFORT)."""
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
@@ -5561,10 +5686,28 @@ class Service:
                 raise ValueError(kind_mod.NO_IMAGES_REPLY)
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+            sizes: list[int] = []
+
+            def picture(data, _cap=self.inkling_image_max_px if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
+                data = Vision.normalize(data)
+                if _cap:
+                    data, note = inkling_kind.cap_picture(data, _cap)
+                    if note:
+                        print(f"[strata] {note}", flush=True)
+                if self.inkling:
+                    sizes.append(inkling_kind.picture_pixels(data))
+                return data
             written = kind_mod.write_images(
-                images, lambda s: fetched[s] if s in fetched else Vision.load(s), Vision.normalize, cancel)
+                images, lambda s: fetched[s] if s in fetched else Vision.load(s), picture, cancel)
             if self.inkling:
                 self.embeddings.inkling = written
+                # #7043: where the reader is the CPU, the engine says nothing while it reads a picture: this request may stay silent for as long as the
+                # pictures take (measured), at least engine_silence_s (StrataEngine.generate)
+                allow = inkling_kind.picture_allowance_s(sizes, self.inkling_image_max_px) if self.inkling_cpu_pictures else 0.0
+                self.embeddings.inkling_allow = allow
+                if allow > float(getattr(self.engine, "silence_s", 0) or 0):
+                    print(f"[strata] {len(sizes)} picture(s), {sum(sizes) / 1e6:.2f} MP in all: the engine's CPU picture reader may take a while, "
+                          f"this request may stay silent for up to {allow:.0f} s", flush=True)
             else:
                 self.embeddings.hy4 = written
             images = []
@@ -5872,9 +6015,14 @@ class Service:
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
-        # #3354: when MTP drafting is active (has_mtp) and the request does not explicitly ask for sampling,
-        # omitted sampling parameters remain greedy so MTP drafts are not silently disabled by model card defaults.
-        mtp_greedy = self.has_mtp and not request_asks_sampling(sampling, self.shared, self.sampling_defaults)
+        # #3354: when MTP drafting is active (has_mtp) and the request does not explicitly ask for sampling, a family whose engine drafts only
+        # greedy requests (Qwen3.6, http_api.GREEDY_FOR_DRAFTS) stays greedy, so the MTP drafts are not silently disabled by the model card.
+        # Every other family keeps the card (#7070: Flash-Next / Gyro drafts sampled requests fine).
+        mtp_greedy = mtp_greedy_default(self.model_arch, self.has_mtp, sampling, self.shared, self.sampling_defaults)
+        if mtp_greedy and not getattr(self, "_mtp_greedy_said", False):
+            self._mtp_greedy_said = True
+            print("[strata] a request that names no sampling runs greedy on this model so its MTP drafts can run; send temperature / top_p / top_k "
+                  "with the request, or a \"sampling\" block in the run config, for the model card's sampling", flush=True)
         card = {} if mtp_greedy else model_card_sampling(
             self.model_arch, thinking,
             greedy=asks_greedy(sampling, self.shared, self.sampling_defaults),
@@ -5887,7 +6035,7 @@ class Service:
         # #6734: Inkling-2-Mini writes hidden thinking whatever the request asks for (even with its effort at "none"), so its budget
         # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
         think_budget = thinking or self.inkling
-        budget = self.reasoning_budget(sampling) if think_budget else None
+        budget = self.reasoning_budget(sampling, announce=True) if think_budget else None
         room_cap = INKLING_ROOM_MIN_CAP if self.inkling else ANSWER_ROOM_MIN_CAP     # Inkling: whatever max_tokens, the answer keeps its share
         if think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
@@ -6081,7 +6229,7 @@ class Service:
                         rate.clear()                    # the previous request's samples must not leak into this one
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
-                    prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    prompt, thought, wraps = ids, 0, 0  # thought: the reasoning tokens so far (the budget's count); wraps: the wrap-ups done
                     # the engine stops at the budget itself (HOLD_KEY), when it can and </think> is one token: a --batch engine
                     # only when its slots say they hold too (READY holdb)
                     hold_end = None
@@ -6111,6 +6259,8 @@ class Service:
                             # (STRATA_INKLING_PROMPT_CKPT=0: no pass saves one: for an exactness A/B against an engine that has none)
                             pass_sampling = {**(pass_sampling or {}), KEEP_CKPT_KEY: True}
                         pass_n += 1
+                        if emb and self.inkling:
+                            self.engine.picture_allow_s = float(getattr(self.embeddings, "inkling_allow", 0.0) or 0.0)   # #7043 (read once by generate)
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None
@@ -6378,8 +6528,19 @@ class Service:
                         # A forced call (tool_choice) is opened the same way: after the wrap-up, or where the
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
-                            budget = st["thinking_budget"] = None
-                            text = (getattr(parser, "wrap_up", None) or REASONING_WRAP_UP) + (force or "")
+                            wraps += 1
+                            reached, opener = thought, ""
+                            if self.inkling and INKLING_REWRAP_BUDGET > 0 and budget:
+                                # #7084: the model may open a second thinking turn after the wrap-up; with the budget cleared nothing capped it (32,000 hidden
+                                # tokens, an empty reply).  Keep it armed for such a turn, shorter; the second wrap-up also opens the text turn so the model answers.
+                                budget = min(budget, INKLING_REWRAP_BUDGET)
+                                st["thinking_budget"] = budget
+                                thought = 0
+                                if wraps >= 2 and not force:
+                                    opener = INKLING_ANSWER_OPENER
+                            else:
+                                budget = st["thinking_budget"] = None
+                            text = (getattr(parser, "wrap_up", None) or REASONING_WRAP_UP) + opener + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6390,7 +6551,8 @@ class Service:
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
-                            print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
+                            print(f"[strata] thinking budget reached ({reached} tokens): wrapping up the thinking"
+                                  + (" (a thinking turn the model opened again: the answer is opened too)" if opener else ""),
                                   flush=True)
                         for t in extra:
                             n += 1
@@ -7979,7 +8141,7 @@ def make_handler(svc: Service):
             if not svc.loaded() and not getattr(svc.engine, "unloaded", False):
                 self._json(503, {"error": {"message": "the engine is not running"}})
                 return
-            card_defaults = {} if (svc.has_mtp and not request_asks_sampling(svc.shared, svc.sampling_defaults)) else \
+            card_defaults = {} if mtp_greedy_default(svc.model_arch, svc.has_mtp, svc.shared, svc.sampling_defaults) else \
                 model_card_sampling(svc.model_arch, True, greedy=asks_greedy(svc.shared, svc.sampling_defaults))
             defaults = {**card_defaults,
                         **svc.sampling_defaults, **svc.shared}
@@ -8349,11 +8511,19 @@ def make_handler(svc: Service):
             def events():
                 yield from asm.start()
                 done = None
+                quiet = time.monotonic()                     # #7132: the last time a byte went out
                 for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force):
                     if kind == "ping":
+                        quiet = time.monotonic()
                         yield None
                     elif kind == "event":
-                        yield from asm.feed(x)
+                        out = asm.feed(x)
+                        if out:
+                            quiet = time.monotonic()
+                            yield from out
+                        elif time.monotonic() - quiet >= KEEPALIVE_S:   # a custom tool's input is held until its end
+                            quiet = time.monotonic()
+                            yield None
                     elif kind == "done":
                         done = x
                 if done is not None and done["finish"] != "cancel" and not cancel.is_set():
@@ -9136,6 +9306,19 @@ def _ensure_shape_tokenizer(cfg: dict, tpath: Path) -> bool:
     return (tpath / "vocab.json").exists()
 
 
+def thinking_level_line(config_effort: str | None, inkling: bool) -> str | None:
+    """The start-up line about the thinking level of requests that name none, or None when nothing is set.  It names only a
+    level that is used (#7035): the config's `reasoning_effort` (every model), else, for Inkling-2-Mini, the level it falls
+    back to (low, or STRATA_INKLING_EFFORT).  A level from a request or from the Chat settings shared with other apps wins."""
+    if config_effort:
+        return (f"[strata] thinking level: {config_effort} (reasoning_effort in the config; a request, or the "
+                "Chat settings shared with other apps, can set its own)")
+    if inkling:
+        return (f"[strata] thinking level: {inkling_dialect.normalize_effort(None)} (the Inkling default, no reasoning_effort in the "
+                "config; a request, or the Chat settings shared with other apps, can set its own)")
+    return None
+
+
 def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
@@ -9516,11 +9699,24 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (CUDA, cpu), its own setting, 0 = off
+        svc.inkling_cpu_pictures = inkling_kind.cpu_picture_reader(cfg)
+        try:
+            svc.inkling_image_max_px = inkling_kind.image_cap_pixels(cfg)
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if svc.inkling_image_max_px:
+            print(f"[strata] pictures: scaled down to at most {svc.inkling_image_max_px / 1e6:.2f} MP before the engine reads them "
+                  "(inkling_image_max_mp in the run config, in megapixels, sets another size, 0 turns it off)", flush=True)
     if cfg.get("inkling_thinking_budget") is not None:     # Inkling-2-Mini's default thinking budget (tokens, 0 = none); else STRATA_INKLING_THINKING_BUDGET
         v = cfg["inkling_thinking_budget"]
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise SystemExit(f"[strata] config \"inkling_thinking_budget\" must be a whole number of tokens (0: none), not {v!r}")
         svc.inkling_thinking_budget = v
+    if cfg.get("inkling_budget_cap") is not None:          # #7133: false = Claude Code's default thinking budget is used as asked (else held to its level's default); STRATA_INKLING_BUDGET_CAP=0 does the same
+        if not isinstance(cfg["inkling_budget_cap"], bool):
+            raise SystemExit(f"[strata] config \"inkling_budget_cap\" must be true or false, not {cfg['inkling_budget_cap']!r}")
+        svc.inkling_budget_cap = cfg["inkling_budget_cap"]
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
@@ -9552,9 +9748,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             svc.config_effort = clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}, hy4=hy4_kind.is_hy4(cfg)).get("reasoning_effort")
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
-        if svc.config_effort:
-            print(f"[strata] thinking level: {svc.config_effort} (reasoning_effort in the config; a request, or the "
-                  "Chat settings shared with other apps, can set its own)", flush=True)
+    line = thinking_level_line(svc.config_effort, svc.inkling)
+    if line:
+        print(line, flush=True)
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:

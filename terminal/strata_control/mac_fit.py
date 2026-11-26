@@ -145,6 +145,46 @@ def mac_info(run=subprocess.run) -> dict:
             "clt": clt_path, "perf_cores": int(_sysctl("hw.perflevel0.physicalcpu", run) or 0)}
 
 
+# #7082 (also #3915): the Qwen Metal engine compiles kernels that include <MetalPerformancePrimitives/...>, a header only macOS 26 ships.
+# Context::compile() ends the process (exit 3) when a library does not build, so on macOS 15 the engine stopped at the first prompt kernel
+# library (resident Macs: the prompt chain, streaming Macs: the prompt GEMM set up with the arena) or at the matmul layout probe of the
+# decode window.  These three settings keep every one of those compiles away (engine 0.1.67 read at v0.2.21: the prompt goes through the
+# decode windows, no prompt GEMM, no layout probe).  The decode kernels do not change: a GPU without the M5 layout (every chip a Mac
+# below macOS 26 can have) answers COOP_K4=0 by itself.  Prompts read slower (the window path; MAC.md).
+MPP_MACOS = (26, 0)
+PRE26_METAL_ENV: tuple = (("STRATA_METAL_PROMPT", "window"), ("STRATA_METAL_PROMPT_GEMM", "0"), ("COOP_K4", "0"))
+
+
+def macos_version(run=subprocess.run) -> str:
+    """`sw_vers -productVersion` ("" when it cannot be read, or off a Mac)."""
+    try:
+        return run(["sw_vers", "-productVersion"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def pre26_metal_env(env: dict, version: str | None = None) -> list[str]:
+    """Add the three settings above to ``env`` (in place) when the Mac runs macOS below 26, for each one the person has not set (the
+    person's own environment and the run config's "env" are already in ``env``; any value there, even 0, is kept).  Returns the names added.
+    An unreadable macOS version adds nothing."""
+    ver = macos_version() if version is None else version
+    mt = macos_tuple(ver) if ver else (0, 0)
+    if mt == (0, 0) or mt >= MPP_MACOS:
+        return []
+    added = []
+    for name, value in PRE26_METAL_ENV:
+        if name not in env:
+            env[name] = value
+            added.append(name)
+    return added
+
+
+def pre26_metal_note(version: str, added: list[str]) -> str:
+    return (f"[strata] macOS {version}: its Metal has no MetalPerformancePrimitives (macOS 26 brings it), so the engine starts with "
+            + " ".join(f"{n}={dict(PRE26_METAL_ENV)[n]}" for n in added)
+            + ": prompts are read through the decode windows (slower), generation is unchanged (#7082)")
+
+
 def macos_tuple(ver: str) -> tuple:
     try:
         return tuple(int(x) for x in ver.split(".")[:2])

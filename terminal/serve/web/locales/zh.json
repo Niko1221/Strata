@@ -236,6 +236,7 @@
   "toast.httpAnswer": "服务器返回了 HTTP {code}。",
   "toast.keyAbout": "此服务器需要密钥: 请在“关于”>“设置”中填写。",
   "toast.keyAbout2": "需要 API 密钥: 请在“关于”>“设置”中填写。",
+  "toast.keyFrom": "它是启动服务器时使用的密钥: --api-key、STRATA_API_KEY、运行配置中的 api_key，或向本机以外共享时 strata launch 生成的 sk-strata- 密钥。",
   "toast.keyNeeded": "此服务器需要 API 密钥: 请在“关于”>“设置”中填写。",
   "toast.requestFailed": "请求失败",
   "tool.arguments": "参数",

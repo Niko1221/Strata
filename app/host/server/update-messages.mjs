@@ -20,6 +20,8 @@ export const UPDATE_WAITING_FOR_LOCK = 'Waiting for the update check to finishâ€
 export const APP_UPDATER_NOT_READY = 'The app updater is not ready yet. Try again in a moment.';
 /** The shell's own check for a new app version did not work (feed unreachable...). Same rule; Settings shows the same sentence after every finished update. */
 export const APP_CHECK_FAILED = "Strata couldn't check for a new version of the app itself. Try again later.";
+/** A Control update was installed. The host keeps running the Control it started with until it starts again (it only switches without a restart on the first-run card), so say how to get the new one. */
+export const CONTROL_UPDATED = 'Strata is updated. The new version is used the next time Strata starts: quit Strata completely (also from the tray icon, if it runs there), then open it again.';
 
 /** True when the failure looks like a computer with no internet (no DNS, no route, refused), not a slow or broken server. */
 export function looksOffline(error) {

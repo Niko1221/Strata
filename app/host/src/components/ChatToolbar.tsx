@@ -13,10 +13,13 @@ import { agentCounts } from '../lib/agents';
 import { dismissAgent, useStore } from '../lib/store';
 import { recordOf, updateHelperRecords, useHelperRecords } from '../lib/helper-records';
 import { plainFailureText } from '../lib/plain-errors';
+import { api } from '../lib/client';
+import { useStrataUpdateWaiting } from '../lib/update-check';
 import type { Session, SessionAgent } from '../lib/types';
 import type { PreviewArtifact } from '../lib/artifacts';
-export function ChatToolbar({ onPauseForUpdate, session, items, selected, onSelect, onClose, onCloseTab, inline, expanded, onExpand, extraTabs = [], previewWidth }: {
-    onPauseForUpdate: () => Promise<void>;
+export function ChatToolbar({ onPauseForUpdate, onResumeAfterUpdate, session, items, selected, onSelect, onClose, onCloseTab, inline, expanded, onExpand, extraTabs = [], previewWidth }: {
+    onPauseForUpdate: () => Promise<boolean>;
+    onResumeAfterUpdate: () => Promise<boolean>;
     previewWidth?: number;
     extraTabs?: ExtraPreviewTab[];
     session: Session | null;
@@ -33,6 +36,17 @@ export function ChatToolbar({ onPauseForUpdate, session, items, selected, onSele
     const [agents, setAgents] = useState(false), [menu, setMenu] = useState(false), [settings, setSettings] = useState(false);
     const [openHelperId, setOpenHelperId] = useState<string | null>(null);
     const [pausing, setPausing] = useState(false);
+    // The host's pause is shared by every chat and lasts until it is lifted or Strata restarts (#7099): the button says which of the two it does now.
+    const [paused, setPaused] = useState(false);
+    // The button is only for the moment an update is waiting (the kept check from the updater / Control feed), or to undo a pause that is still on. /pause-for-update and /resume-agents always work.
+    const updateWaiting = useStrataUpdateWaiting();
+    useEffect(() => {
+        let alive = true;
+        api.get<{ paused?: boolean }>('/api/agent/status').then(s => { if (alive) setPaused(s.paused === true); }, () => { /* the button stays "Pause for update" */ });
+        const changed = (e: Event) => setPaused((e as CustomEvent<boolean>).detail === true);
+        window.addEventListener('strata:agents-paused', changed);
+        return () => { alive = false; window.removeEventListener('strata:agents-paused', changed); };
+    }, []);
     const [showArchived, setShowArchived] = useState(false);
     const [archiving, setArchiving] = useState(false);
     const [archiveProblem, setArchiveProblem] = useState('');
@@ -76,10 +90,13 @@ export function ChatToolbar({ onPauseForUpdate, session, items, selected, onSele
         : 'View subagent overview';
     return <header className="chat-toolbar" style={previews && !expanded && previewWidth ? { gridTemplateColumns: `minmax(0,1fr) ${previewWidth}px` } : undefined} data-timeskip={selected?.startsWith('time-skip:') || undefined} data-preview={previews || undefined} data-expanded={expanded && previews || undefined}>
     <div className="chat-toolbar__conversation"><h1 title={title}>{title}</h1><ChatModelPicker /><span className="chat-agents-wrap"><button ref={agentsRef} className="chat-agents" title={tr(agentsTitle)} aria-label={tr(count ? `${count} working, ${notWorking} not working — show overview` : visible.length ? `0 working, ${notWorking} not working — show overview` : 'Subagents — show overview')} aria-haspopup="dialog" aria-expanded={agents} data-working={count > 0 || undefined} onClick={() => setAgents(v => !v)}><Icon name="experts" size={17}/>{tr(count > 0 ? <span className="agent-live-dot"/> : null)}<span className="chat-agents__label">{tr("Subagents")}</span>{visible.length > 0 && <span className="chat-agents__count" aria-label={tr('{0} working, {1} not working', [count, notWorking])}>{count}/{notWorking}</span>}<Icon name="chevron" className={agents ? 'is-open' : ''} size={13}/></button>{count > 0 && !agents && <div className="chat-agents__hover" role="tooltip"><strong>{tr('{0} working / {1} not working', [count, notWorking])}</strong><ul>{workingList.slice(0, 5).map(a => <li key={a.id}><span>{a.name}</span><small>{tr(a.description)}</small></li>)}</ul></div>}</span><span className="spacer"/>
-      <Btn size="sm" icon="stop" disabled={pausing} title={tr('Save progress and pause all agents for an update')} onClick={async () => {
+      {(paused || updateWaiting) && <Btn size="sm" icon={paused ? 'refresh' : 'stop'} disabled={pausing} title={tr(paused ? 'Let the paused agents work again' : 'Save progress and pause all agents for an update')} onClick={async () => {
         setPausing(true);
-        try { await onPauseForUpdate(); } finally { setPausing(false); }
-      }}>{tr('Pause for update')}</Btn>
+        try {
+          if (paused) { if (await onResumeAfterUpdate()) setPaused(false); }
+          else if (await onPauseForUpdate()) setPaused(true);
+        } finally { setPausing(false); }
+      }}>{tr(paused ? 'Resume agents' : 'Pause for update')}</Btn>}
       <button ref={menuRef} className="st-btn st-btn--icon" title={tr("Chat options")} aria-label={tr("Chat options")} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(v => !v)}><Icon name="ellipsis"/></button>{tr(!selected && (items.length || extraTabs.length) ? <IconBtn name="panel" title={tr("Open previews")} onClick={() => onSelect(extraTabs.at(-1)?.id ?? items[0].id)}/> : null)}</div>
     {tr(previews ? <div className="chat-toolbar__previews"><ArtifactTabs extraTabs={extraTabs} onCloseTab={onCloseTab} items={items} selected={selected} onSelect={onSelect}/><div className="preview-window-actions"><div id="preview-file-actions" className="preview-file-actions"/><IconBtn name={expanded ? 'contract' : 'expand'} title={tr(expanded ? 'Exit full screen preview' : 'Full screen preview')} onClick={onExpand}/><IconBtn name="panel" title={tr("Collapse preview sidebar")} onClick={onClose}/></div></div> : null)}
     {agents && <Popover anchor={agentsRef.current} title={visible.length || archived.length ? "Subagents" : "No subagents recorded"}

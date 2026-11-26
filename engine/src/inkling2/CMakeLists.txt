@@ -2,7 +2,7 @@
 # MIT License - Copyright (c) 2026 Strata contributors
 cmake_minimum_required(VERSION 3.24)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(strata_inkling VERSION 0.1.67 LANGUAGES C CXX)
+  project(strata_inkling VERSION 0.1.69 LANGUAGES C CXX)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)
@@ -11,6 +11,7 @@ else()
   set(_ink_engine_root "${CMAKE_SOURCE_DIR}")
   enable_language(C)
 endif()
+include(${_ink_engine_root}/cmake/strata_symbols.cmake)   # -DSTRATA_KEEP_SYMBOLS=ON: host debug information, same machine code (the release scripts keep the symbol files)
 
 # Vendored ZSTD decompressor (zero external libzstd dependency on Win/Linux/macOS)
 set(_zstd_dir "${_ink_engine_root}/third_party/zstd-dec")

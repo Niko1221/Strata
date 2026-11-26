@@ -44,6 +44,7 @@ case "$cudafull" in
   *) echo "build_engine.sh: needs the CUDA 13 toolkit (nvcc here: ${cudafull:-missing})" >&2; exit 2 ;;
 esac
 . "$repo/tools/packaging/shape_build.sh"; shape_setup "$repo"
+. "$repo/tools/packaging/symbols_build.sh"   # sym_cmake: -DSTRATA_KEEP_SYMBOLS=ON (the symbol files are split off by the package script, tools/packaging/build_cuda_linux_aarch64.sh)
 
 real=""; for a in $(echo "$archs" | tr ';,' '  '); do real="$real;${a}-real"; done; real=${real#;}
 last=$(echo "$archs" | tr ';,' '  ' | awk '{print $NF}')
@@ -51,7 +52,7 @@ cd "$repo"
 "$cmake" -G Ninja -S engine -B "$build" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_SKIP_BUILD_RPATH=OFF '-DCMAKE_INSTALL_RPATH=$ORIGIN' \
-    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake
+    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake
 # without llama.cpp's MMQ, as the x86 release builds since 0.2.14 (the MMQ build path left the tree in 0.2.16).
 # Such a build turns Strata's fused prompt kernels on for every layer they cover (engine/src/prefill/prefill.cpp, own_only_switches.hpp), on the
 # GB10 too: IQ3_S, UD-IQ4_XS and UD-Q4_K_XL ran 48 of 48 layers on them on a GB10 (par/RESULTS-SPARK-R1.md, 11-14 / 11-15), the rest
@@ -68,7 +69,7 @@ if [ "${BUILD_VISION:-1}" = 1 ]; then
   # strata-vision is Strata's own reader (terminal/tools/vision/own): no llama.cpp source, STRATA_GGML_DIR does not reach it
   "$cmake" -G Ninja -S terminal/tools/vision -B "$vision_dir" -DCMAKE_BUILD_TYPE=Release \
       -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON \
-      "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"
+      "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $sym_cmake
   "$cmake" --build "$vision_dir" --target strata-vision -j "$jobs"
 fi
 

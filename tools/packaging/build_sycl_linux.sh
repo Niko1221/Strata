@@ -39,6 +39,7 @@ iccver=$(icpx --version | sed -n 's/.*Compiler \([0-9][0-9.]*\).*/\1/p' | head -
 
 cd "$repo"
 . "$repo/tools/packaging/shape_build.sh"; shape_setup "$repo"
+. "$repo/tools/packaging/symbols_build.sh"
 ggml=""
 # ggml is the vendored third_party/strata-ggml. STRATA_GGML_DIR=<llama.cpp checkout> (or LLAMA_CPP=, the name this script used before) builds from that
 # checkout instead: an override kept for two releases. (LLAMA_CPP used to set a FetchContent variable that the CMake files stopped reading when ggml was
@@ -47,7 +48,7 @@ override=${STRATA_GGML_DIR:-${LLAMA_CPP:-}}
 [ -z "$override" ] || ggml="-DSTRATA_GGML_DIR=$override"
 # shellcheck disable=SC2086
 cmake -S engine/sycl -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
-    -DSTRATA_SYCL_PARITY=OFF -DSTRATA_SYCL_IQ_DECODE_FAST=${IQ_DECODE_FAST:-ON} ${aot:+"-DSTRATA_SYCL_AOT=$aot"} $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake   # STRATA_CMAKE_EXTRA: e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp
+    -DSTRATA_SYCL_PARITY=OFF -DSTRATA_SYCL_IQ_DECODE_FAST=${IQ_DECODE_FAST:-ON} ${aot:+"-DSTRATA_SYCL_AOT=$aot"} "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--build-id=sha1" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake   # STRATA_CMAKE_EXTRA: e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp
 cmake --build "$build" --target strata -j "$jobs"
 
 ver=$(sed -n 's/^[[:space:]]*project([^)]*VERSION[[:space:]]*\([0-9][0-9.]*\).*/\1/p' engine/CMakeLists.txt | head -1)
@@ -67,6 +68,7 @@ done
 for f in "$stage/strata" "$stage"/*.so "$stage"/*.so.*; do
   [ -f "$f" ] && [ ! -L "$f" ] && { readelf -d "$f" | grep -q 'RUNPATH.*\[\$ORIGIN\]' || { echo "build_sycl_linux.sh: $(basename "$f") has no RUNPATH \$ORIGIN" >&2; exit 1; }; }
 done
+symbols_keep elf "$repo" "$(if [ -n "${SHAPE:-}" ]; then echo "strata-$(echo "$SHAPE" | tr _ -)"; else echo strata-engine; fi)-$ver-linux-x86_64-sycl" "$stage/strata"   # (owner decision 2026-11-25: the symbol file, kept outside the package)
 shape_check "$stage/strata"
 if [ -n "$aot" ]; then arch_args=$(echo "$aot" | tr ',' '\n' | sed 's/^/--arch /' | tr '\n' ' '); else arch_args="--arch intel-arc"; fi
 mkdir -p "$out"

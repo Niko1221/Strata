@@ -357,7 +357,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (123)
+## Switches that go back to earlier behaviour (124)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -467,6 +467,7 @@ version made it the default.
 | `STRATA_SM70_PERF` | text | NVIDIA and AMD | - | [DETAILS.md](DETAILS.md), [NVIDIA_V100.md](NVIDIA_V100.md) |
 | `STRATA_SPLIT_CHUNK16K` | number | NVIDIA and AMD | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_SPLIT_FEWER_PCT` | number | NVIDIA and AMD | - | [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_SPLIT_LEND_RESERVE` | on / off | NVIDIA and AMD | - | [DETAILS.md](DETAILS.md) |
 | `STRATA_SPLIT_OWN` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md), [README.md](bench-results/2026-10-02-community-2x5060ti/README.md), [README.md](bench-results/2026-10-06-community-2x-rx-7900-gre/README.md) |
 | `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |
 | `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.16 | [INTEL_ARC.md](INTEL_ARC.md) |

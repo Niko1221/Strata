@@ -48,9 +48,6 @@ DEFAULT_VISION = True
 DEFAULT_PARALLEL = inkling_fit.DEFAULT_PARALLEL
 PARALLEL_CHOICES = inkling_fit.PARALLEL_CHOICES
 MAX_PARALLEL = inkling_fit.MAX_PARALLEL
-REASONING_EFFORTS = ("none",)
-DEFAULT_REASONING_EFFORT = "none"
-HAS_THINKING = False
 
 #: Unsloth Dynamic GGUF files hosted on huggingface.co/unsloth/Inkling-2-Mini-GGUF (exact byte sizes & LFS SHA-256 digests).
 UNSLOTH_GGUF_FILES = {

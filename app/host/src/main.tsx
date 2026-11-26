@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles/kit/tokens.css';
 import './styles/kit/components.css';
 import './styles/app.css';
+import { installHostToken } from './lib/host-token';
 import { App } from './app/App';
 import { installDropGuard } from './components/DropZone';
 import { startRecovery } from './lib/recovery';
@@ -12,6 +13,7 @@ import { loadHighlighter } from './components/SyntaxCode';
 const el = document.getElementById('root');
 if (!el) throw new Error('#root missing');
 
+installHostToken();   // #7130: before any request, the page's changes carry the host's launch secret
 installDropGuard();
 startRecovery();
 
