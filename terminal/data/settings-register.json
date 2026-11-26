@@ -16501,6 +16501,34 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_5060TI_MACRO_BF16",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_rtx5060ti_opt.cuh",
+     "line": 2714,
+     "backend": "cuda-hip",
+     "fn": "ink_5060ti_env_flag"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_CHUNK_AUTO",
    "backends": [
     "cuda-hip"
@@ -16602,6 +16630,36 @@
    "status": "default",
    "owner": "inkling2",
    "note": "Fraction of missed MoE experts streamed to GPU over PCIe concurrently with CPU workers during inkling2 decode/verify (-1=auto, 0=off, 0..1=fixed share).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ELASTIC_1M",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 76,
+     "backend": "cuda-hip",
+     "fn": "ink_elastic_env_on"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_SM120.md:18"
+   ],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA: the 3-tier elastic K/V cache (VRAM, host RAM, SSD) for 64K to 1M tokens, off unless =1. A separate feature of the long-context lane, not part of the RTX 50 fast mode.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16840,6 +16898,118 @@
    "status": "rollback",
    "owner": "program",
    "note": "strata-inkling GGUF loader (0221 INKCUDA): the pages of a range already copied out of the read-only mapping are given back to the OS; =1 keeps them (the old double count in the resident set).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_KV_K8V4",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 179,
+     "backend": "cuda-hip",
+     "fn": "ink_elastic_env_on"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, elastic K/V (STRATA_INK_ELASTIC_1M): K8V4 K/V type selection.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_KV_RAM_MB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 600,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, elastic K/V: host RAM cap in MiB for the tier-1 K/V.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_KV_SSD_DIR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 807,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, elastic K/V: the directory of the tier-2 SSD file (a private per-user directory by default).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_KV_SSD_FORCE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 603,
+     "backend": "cuda-hip",
+     "fn": "ink_elastic_env_on"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, elastic K/V: force the SSD tier for testing.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17252,6 +17422,412 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_RAM_CAP_MB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_elastic_kv_ssd.cuh",
+     "line": 83,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, elastic K/V: explicit host RAM ceiling in MiB for the host-expert and K/V budgets.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_BEAM",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 107,
+     "backend": "cuda",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_BSPEC_KD",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 1757,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "3",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_C64_DRAFT_K",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 106,
+     "backend": "cuda",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_C64_TAIL_MODE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 1883,
+     "backend": "cuda-hip",
+     "fn": "env2"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "1",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_CHAIN2",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 1512,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_CHAIN2_THR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 1516,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "0.55",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_CHUNK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 191,
+     "backend": "cuda-hip",
+     "fn": "env2"
+    },
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 197,
+     "backend": "cuda-hip",
+     "fn": "env2"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "256",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_M1_TC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_rtx5090_kernels.cuh",
+     "line": 3368,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_MACRO_BF16",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_rtx5060ti_opt.cuh",
+     "line": 2714,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/cuda/ink_rtx5060ti_opt.cuh",
+     "line": 2714,
+     "backend": "cuda-hip",
+     "fn": "ink_5060ti_env_flag"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_MAX_NODES",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 108,
+     "backend": "cuda",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_MOE_FORCE",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 160,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_SM120.md:17"
+   ],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_MX8_TO_SF4",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_rtx5090_kernels.cuh",
+     "line": 3162,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_PCIE_SHARE",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 105,
+     "backend": "cuda",
+     "fn": "env_f32"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_SM120_PF",
    "backends": [
     "cuda"
@@ -17347,6 +17923,146 @@
    "status": "opt-in",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA sm_120 (0221 INKSPEED): L2 prefetch window of the MX8 gate/up expert kernel (layers 20-23 of a native NVFP4 file such as SQ-20), 1 = 128 B or a window in bytes, default 0 = off until its memcheck has run; becomes the default in 0.2.22.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_PLD",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 1360,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_PLD_MAX_M",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 110,
+     "backend": "cuda",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_SF4_TRUNK",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 102,
+     "backend": "cuda",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_SPEC_COST",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 111,
+     "backend": "cuda",
+     "fn": "env_f32"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_SPEC_PLAIN",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_sm120_cfg.cuh",
+     "line": 112,
+     "backend": "cuda",
+     "fn": "env_f32"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, RTX 50 (sm_120) fast mode (docs/INKLING_SM120.md): a tuning number or part of the fast mode; has no effect unless STRATA_INK_SM120 (or an alias) is on for a card with a measured table row.",
    "retire_after": "",
    "retired_in": ""
   },

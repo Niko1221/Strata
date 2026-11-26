@@ -347,7 +347,7 @@ struct InkCudaModel {
         INK_CK(ink_cuda_mem_info(&vfree_pre, &vtot_pre));
         const bool do_compact_vram = opt5060_ld.compact_vram && !ssd_experts && vram_experts_gb <= 0.0 &&
                                      ram_experts_gb != 0.0 && sm_cc >= 120 &&
-                                     ink_elastic_ram_cap_bytes() == 0 && vtot_pre <= (20ull << 30);
+                                     ink_elastic_ram_cap_bytes() == 0 && vtot_pre <= ((size_t)std::max(1, sm120_cfg(primary_gpu).compact_max_vram_gib) << 30);   // the table row says how big a card "compact" is tried on
         if (do_compact_vram) {
             // Opt-in RTX 5060 Ti 16 GB 100%-VRAM Compact Trunk Loader:
             //   - embed.weight (883 MiB BF16)       -> pinned mapped host RAM (0 MiB VRAM!)
