@@ -22,13 +22,46 @@ class NotInklingTokenizer(ValueError):
     """The file's tokenizer is not the o200k byte-level BPE tokenizer Inkling-2-Mini uses."""
 
 
+def _section0(frame: bytes, file_size: int) -> tuple[int, int]:
+    """(offset, length) of Section 0 in the 4 KiB header frame of a `.strata` file, for either header layout.
+
+    The 4 KiB layout (every file up to 0.2.22) has its six 64-byte section entries at 0x10; the 16 KiB-aligned layout (the
+    re-adjusted Inkling SQ-20 and Vision) at 0x20, with a u16 tile_layout_id at 0x10.  Nothing in the header names the layout, so a
+    table is taken only when it is valid: every section_id is its index, every non-empty section is aligned to the layout's page
+    (4 KiB / 16 KiB), starts after the first 4 KiB, lies inside the file and overlaps no other.  Same rule as the engine's reader
+    (engine/include/strata/artifact/strata_layout.hpp).  A header that reads as both, or whose table points nowhere, raises ValueError; one that fits neither layout exactly is read as the 4 KiB layout, as before."""
+    if len(frame) < 0x20 + 6 * 64 + 32:
+        raise ValueError("a .strata header frame is 4096 bytes; this one is shorter")
+    entry = struct.Struct("<QQ32sIIQ")
+
+    def probe(base: int, page: int):
+        ents = [entry.unpack_from(frame, base + 64 * i) for i in range(6)]
+        ids = all(e[3] == i for i, e in enumerate(ents))
+        live = sorted((e[0], e[0] + e[1], i) for i, e in enumerate(ents) if e[1])
+        aligned = all(a % page == 0 for a, _, _ in live)
+        ranges = all(a >= 4096 and (not file_size or b <= file_size) for a, b, _ in live) and all(y[0] >= x[1] for x, y in zip(live, live[1:]))
+        return ents, aligned, ids, ranges, bool(live)
+
+    a, b = probe(0x10, 4096), probe(0x20, 16384)
+    a_strict, b_strict = all(a[1:]), all(b[1:])
+    if a_strict and b_strict:
+        raise ValueError("ambiguous .strata header: the section table reads as both the 4 KiB and the 16 KiB layout")
+    # the 16 KiB table only when it is valid and the 4 KiB one is not; otherwise the 4 KiB table, read as it always was
+    off, length = (b if b_strict else a)[0][0][:2]
+    if not length or off < 4096 or (file_size and off + length > file_size):
+        raise ValueError("invalid .strata header: no usable Section 0 in either the 4 KiB or the 16 KiB section table")
+    return off, length
+
+
 def read_manifest(path) -> dict:
     """Read Section 0 of a `.strata` v1.1 file as a dict. Raises RuntimeError if Python has no zstd module."""
     with open(path, "rb") as f:
         frame = f.read(4096)
         if frame[:8] != b"STRATA\x00\x01":
             raise ValueError(f"{path} is not a .strata file (no STRATA\\x00\\x01 magic)")
-        off, length = struct.unpack_from("<QQ", frame, 16)
+        f.seek(0, 2)
+        size = f.tell()
+        off, length = _section0(frame, size)   # either header layout (4 KiB or 16 KiB aligned)
         f.seek(off)
         raw = f.read(length)
     try:
