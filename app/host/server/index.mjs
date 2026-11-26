@@ -12,6 +12,7 @@ import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.m
 import { createLocalShare } from './local-share.mjs';
 import { workspaceBases } from './model-directory-default.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
+import { listClusters, createCluster, addNode, removeNode, deleteCluster } from './cluster.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
@@ -1373,6 +1374,29 @@ async function api(req, res, path, method, url) {
       return json(res, result.conflict ? 409 : 400, { error: result.error, conflict: Boolean(result.conflict) });
     }
     return json(res, 200, { apply: result.apply });
+  }
+  if (path === '/api/cluster/status' && method === 'GET') {
+    try { return json(res, 200, { clusters: await listClusters() }); }
+    catch (e) { return error(res, 400, e.message); }
+  }
+  if (path === '/api/cluster' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 201, await createCluster(body.name)); }
+    catch (e) { return error(res, 400, e.message); }
+  }
+  if (path === '/api/cluster/node' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 201, await addNode(body.cluster, body)); }
+    catch (e) { return error(res, 400, e.message); }
+  }
+  if (path.startsWith('/api/cluster/node/') && method === 'DELETE') {
+    const parts = path.split('/').filter(Boolean);
+    try { return json(res, 200, await removeNode(parts[2], decodeURIComponent(parts[3] ?? ''))); }
+    catch (e) { return error(res, 400, e.message); }
+  }
+  if (path.startsWith('/api/cluster/') && method === 'DELETE') {
+    try { return json(res, 200, await deleteCluster(decodeURIComponent(path.split('/').pop() ?? ''))); }
+    catch (e) { return error(res, 400, e.message); }
   }
   if (path === '/api/tasks' && method === 'GET') return json(res, 200, { tasks: tasks.list() });
   if (path === '/api/tasks/draft' && method === 'POST') {

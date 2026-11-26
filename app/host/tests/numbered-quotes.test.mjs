@@ -113,6 +113,6 @@ test('the two labels and the switch texts are in the guic catalog in all ten lan
   for (const text of ['Number quotes', 'When one message quotes several passages, each gets a number and says who wrote it, so the assistant can tell them apart. Start a line with [1] or [2] to answer one of them.', 'Quote {0} · you', 'Quote {0} · the assistant']) {
     const key = Object.keys(en).find(k => en[k] === text);
     assert.ok(key, text);
-    for (const l of ['en', 'de', 'es', 'fr', 'he', 'ja', 'ko', 'pt', 'ru', 'zh']) assert.ok(JSON.parse(src(`src/locales/guic-${l}.json`))[key], `${l}: ${key}`);
+    for (const l of ['en', 'ar', 'de', 'es', 'fr', 'he', 'ja', 'ko', 'pt', 'ru', 'zh']) assert.ok(JSON.parse(src(`src/locales/guic-${l}.json`))[key], `${l}: ${key}`);
   }
 });

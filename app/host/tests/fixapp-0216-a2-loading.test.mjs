@@ -9,7 +9,7 @@ import { build } from 'esbuild';
 
 const here = p => fileURLToPath(new URL(p, import.meta.url));
 const src = name => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const nativeBuild = await build({ entryPoints: [here('../src/lib/native.ts')], bundle: true, format: 'esm', platform: 'node', write: false, logLevel: 'silent', alias: { react: here('./helpers/react-stub.mjs') }, loader: { '.json': 'json' } });
 const { catalogLoading } = await import(`data:text/javascript;base64,${Buffer.from(nativeBuild.outputFiles[0].text).toString('base64')}`);
 

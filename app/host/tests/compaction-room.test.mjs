@@ -10,7 +10,7 @@ const load = async name => {
   const { code } = await transform(src(name), { loader: 'ts', format: 'esm' });
   return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 };
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const LABEL = 'Room left before older messages are summarized';
 
 test('room left = the host\'s summarising point minus what the chat holds, only for the window the chat runs with', async () => {

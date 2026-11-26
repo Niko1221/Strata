@@ -9,7 +9,7 @@ const load = async name => {
   const { code } = await transform(src(name), { loader: 'ts', format: 'esm' });
   return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 };
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const TITLE = 'Picture not added', BODY = 'Strata is still busy with this chat. Add the picture again when it is done.';
 
 test('what came in decides what the notice says', async () => {

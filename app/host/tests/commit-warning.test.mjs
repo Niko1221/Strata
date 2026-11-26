@@ -8,7 +8,7 @@ import { transform } from 'esbuild';
 const src = name => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const { code } = await transform(src('lib/commit-warning.ts'), { loader: 'ts', format: 'esm' });
 const { commitWarning } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const NOTICE = 'Windows is close to its memory limit (memory plus page file). Strata may stop without a message. Make the Windows page file larger, or choose a shorter context.';
 const LEFT = '{0} GB of {1} GB are left.';
 

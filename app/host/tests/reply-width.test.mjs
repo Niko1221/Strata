@@ -9,7 +9,7 @@ const load = async name => {
   const { code } = await transform(src(name), { loader: 'ts', format: 'esm' });
   return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 };
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const STRINGS = ['Reply width', 'How wide the text of an answer can be. Tables and code always use the whole width.', 'Wide', 'Full width'];
 
 test('the choice is one of three words; anything else is the default (today\'s width)', async () => {
