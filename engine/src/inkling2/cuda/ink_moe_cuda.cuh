@@ -3693,6 +3693,24 @@ inline void (*g_ink_moe_hook)(int tag, void* ctx) = nullptr;
 inline void* g_ink_moe_hook_ctx = nullptr;
 inline void ink_moe_mark(int tag) { if (g_ink_moe_hook) g_ink_moe_hook(tag, g_ink_moe_hook_ctx); }
 
+// The opt-in tail skip's router arguments for the visit being launched (ink_tail_cur_visit(), set by the runner); on = 0 when it is off or the visit is not in its mask.
+inline InkTailArgs ink_tail_args_now(float* y_pair) {
+    InkTailArgs ta;
+    const InkTailCfg& tc = ink_tail_cfg();
+    const int tv = ink_tail_cur_visit();
+    if (tc.on && tv >= 0 && tv < kInkTailVisits && ((tc.visit_mask >> tv) & 1ull)) {
+        ta.on = 1;
+        ta.first_rank0 = tc.first_rank - 1;
+        ta.renorm = tc.renorm;
+        ta.visit = tv;
+        ta.thr = tc.thr;
+        ta.cap = tc.cap;
+        ta.y_pair = y_pair;
+        ta.cnt = tc.stats ? ink_tail_cnt_dev() : nullptr;
+    }
+    return ta;
+}
+
 inline void launch_ink_moe_router(
     cudaStream_t st,
     cublasHandle_t cublas,
@@ -3718,21 +3736,7 @@ inline void launch_ink_moe_router(
             (!force_exact_dec && ink_has_int8_tc()) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    InkTailArgs ta;   // on = 0: the kernel runs as before
-    if (tail_ok) {
-        const InkTailCfg& tc = ink_tail_cfg();
-        const int tv = ink_tail_cur_visit();
-        if (tc.on && tv >= 0 && tv < kInkTailVisits && ((tc.visit_mask >> tv) & 1ull)) {
-            ta.on = 1;
-            ta.first_rank0 = tc.first_rank - 1;
-            ta.renorm = tc.renorm;
-            ta.visit = tv;
-            ta.thr = tc.thr;
-            ta.cap = tc.cap;
-            ta.y_pair = ws.y_pair;
-            ta.cnt = tc.stats ? ink_tail_cnt_dev() : nullptr;
-        }
-    }
+    const InkTailArgs ta = tail_ok ? ink_tail_args_now(ws.y_pair) : InkTailArgs{};   // on = 0: the kernel runs as before
     k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, ta);
     ink_moe_mark(0);
 }
