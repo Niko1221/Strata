@@ -19,6 +19,7 @@ import { SubagentRow } from '../components/SubagentRow';
 import { api } from '../lib/client';
 import { recordOf, useHelperRecords } from '../lib/helper-records';
 import type { SessionAgent } from '../lib/types';
+import { RecordLogButton } from '../components/RecordLogButton';
 import { lazyScreen, useLoadedModule } from '../lib/lazy-screen';
 // The start screen is Chat. Every other screen loads the first time it is opened (7.1), so the first start reads and runs less code.
 const loadSetup = () => import('../screens/Setup');
@@ -88,6 +89,8 @@ function AppShell() {
           </div>
         </div>) : null)}
       <Toasts />
+
+      <RecordLogButton />
     </div>);
 }
 /**
