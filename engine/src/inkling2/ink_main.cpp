@@ -1135,10 +1135,8 @@ int main(int argc, char** argv) {
     if (const char* ts = std::getenv("STRATA_INK_TAIL_SKIP"); ts && ts[0] && std::string(ts) != "off" && std::string(ts) != "0") {
         // the opt-in tail skip (--turbo, STRATA_INK_TAIL_SKIP): only the CUDA and HIP backends have it; say so where it has no effect
         std::string terr;
-        if (backend->set_tail_skip(ts, terr)) fprintf(stderr, "[inkling] tail skip on (%s): answers differ slightly from exact
-", ts);
-        else fprintf(stderr, "[inkling] STRATA_INK_TAIL_SKIP=%s has no effect on the %s backend (%s): answers are exact
-", ts, backend->backend_name(), terr.c_str());
+        if (backend->set_tail_skip(ts, terr)) fprintf(stderr, "[inkling] tail skip on (%s): answers differ slightly from exact\n", ts);
+        else fprintf(stderr, "[inkling] STRATA_INK_TAIL_SKIP=%s has no effect on the %s backend (%s): answers are exact\n", ts, backend->backend_name(), terr.c_str());
     }
 
     if (mode_serve) {
