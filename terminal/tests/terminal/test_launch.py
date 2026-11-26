@@ -949,6 +949,25 @@ class FlagsCommand(unittest.TestCase):
         code, out, err = run_cli(["launch", "--plan", "--mtp", "maybe"])
         self.assertNotEqual(code, 0)
 
+    def test_turbo_flags_are_listed_planned_and_copyable(self):
+        """Owner 2026-11-26: --turbo and --turbo-max are the two opt-in Inkling tail-skip presets; both off unless asked, mapped onto STRATA_INK_TAIL_SKIP."""
+        code, out, err = run_cli(["launch", "--help"])
+        for flag in ("--turbo", "--turbo-max"):
+            self.assertIn(flag, out)
+        self.assertEqual(self.plan("--model", "q2_0")["settings"]["extra"], {})              # off by default
+        for flag, word in (("--turbo", "turbo"), ("--turbo-max", "turbo-max")):
+            p = self.plan("--model", "q2_0", flag)
+            self.assertEqual(p["settings"]["extra"], {"STRATA_INK_TAIL_SKIP": word})
+            self.assertIn(flag, p["flags"])                                                   # the copyable line says what was typed
+            self.assertNotIn("--set STRATA_INK_TAIL_SKIP", p["flags"])
+            self.assertTrue(any("differ slightly from exact" in w for w in p["warnings"]), p["warnings"])
+        # the person's own --set wins over the flag, with a warning
+        p = self.plan("--model", "q2_0", "--turbo", "--set", "STRATA_INK_TAIL_SKIP=thr=0.05")
+        self.assertEqual(p["settings"]["extra"], {"STRATA_INK_TAIL_SKIP": "thr=0.05"})
+        self.assertTrue(any("is ignored" in w for w in p["warnings"]), p["warnings"])
+        code, out, err = run_cli(["launch", "--plan", "--turbo", "--turbo-max"])              # one of the two
+        self.assertNotEqual(code, 0)
+
     def test_vision_help_says_the_picture_rule(self):
         code, out, err = run_cli(["launch", "--help"])
         text = " ".join(out.split())

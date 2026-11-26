@@ -455,6 +455,9 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
         elif s.gpus:
             parts.append("--gpu " + ",".join(str(g) for g in s.gpus))
     for k, v in sorted(s.extra.items()):
+        if k == "STRATA_INK_TAIL_SKIP" and v in ("turbo", "turbo-max"):
+            parts.append("--" + v)                      # the copyable line says --turbo / --turbo-max, as typed
+            continue
         parts.append(f"--set {k[2:] if k.startswith('--') else k}={v}" if v else f"--set {k[2:] if k.startswith('--') else k}")
     return " ".join(parts)
 

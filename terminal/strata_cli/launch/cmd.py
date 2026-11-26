@@ -121,6 +121,12 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--dspark", metavar="WORD", help=argparse.SUPPRESS)               # DeepSeek (no longer run): accepted, answered in plain words
+    g.add_argument("--turbo", action="store_true",
+                   help="Inkling-2-Mini on NVIDIA or AMD cards: skip the experts that matter least for a word in the last pass (about 3 percent of the expert reads). "
+                        "Faster answers on cards that read the model from RAM or the SSD; answers differ slightly from exact. Off unless you ask. See docs/INKLING_TURBO.md")
+    g.add_argument("--turbo-max", action="store_true",
+                   help="like --turbo but skips about 16 percent of the expert reads in every pass: faster still, answers differ more (the exact setting is in docs/INKLING_TURBO.md). "
+                        "Off unless you ask")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
     g.add_argument("--pool-cores", metavar="LIST",
@@ -301,6 +307,16 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if getattr(a, "turbo", False) or getattr(a, "turbo_max", False):
+        if a.turbo and a.turbo_max:
+            raise ValueError("--turbo and --turbo-max cannot be used together: choose one.")
+        word = "turbo-max" if a.turbo_max else "turbo"
+        if str(s.extra.get("STRATA_INK_TAIL_SKIP") or "") not in ("", word):
+            notices.append(S.Notice("warn", f"--{word} is ignored because STRATA_INK_TAIL_SKIP is set with --set.", "The setting you wrote wins."))
+        else:
+            s.extra = {**s.extra, "STRATA_INK_TAIL_SKIP": word}
+            notices.append(S.Notice("warn", f"--{word} is on: answers differ slightly from exact. It only works for Inkling-2-Mini on NVIDIA and AMD cards.",
+                                    "Take the flag away to get exact answers again."))
     if a.pool_cores:
         text = a.pool_cores.replace(" ", "")
         if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):

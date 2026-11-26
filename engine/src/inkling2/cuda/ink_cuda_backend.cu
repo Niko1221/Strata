@@ -104,6 +104,7 @@ public:
         }
         cudaStreamSynchronize(runner_->st);
         strata::ink::ink_tail_cfg_ref() = c;
+        if (c.on) strata::ink::ink_tail_sync_tables(c);   // load the tables now, outside any graph capture
         // the CUDA graphs of the one-token step carry the old arguments: drop them so the next step captures the new ones
         for (auto& e : runner_->graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
         runner_->graph_cache.clear();
@@ -411,6 +412,10 @@ public:
         prompt_ckpts_.assign(max_slots_, PromptCkpt{});
         shared_ckpts_.assign(max_slots_, PromptCkpt{});
         initialized_ = true;
+        {   // the opt-in tail skip (environment): its tables are loaded now, never inside a CUDA graph capture
+            const strata::ink::InkTailCfg& tc0 = strata::ink::ink_tail_cfg();
+            if (tc0.on) strata::ink::ink_tail_sync_tables(tc0);
+        }
         return true;
     }
 
