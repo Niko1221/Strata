@@ -6,6 +6,7 @@
 
 #include "ink_attn.cuh"
 #include "ink_cuda.cuh"
+#include "ink_dflash2_path.cuh"
 #include "ink_hybrid.cuh"
 #include "ink_elastic_kv_ssd.cuh"
 #include "ink_rtx5060ti_opt.cuh"
@@ -528,7 +529,7 @@ struct InkCudaModel {
                 }
             };
             add_map(man.trunk);
-            add_map(man.dspark);
+            if (!df2_replaces_dspark(path)) add_map(man.dspark);   // DFlash 2 (STRATA_INK_DRAFTER=dflash2) is the drafter: DSpark's weights stay off the card
             if (fp8_layout_ok) {
                 new_trunk_bytes = (new_trunk_bytes + 255ull) & ~255ull;
                 for (int ip = 0; ip < man.c.n_phys; ++ip) {
@@ -2827,9 +2828,11 @@ struct InkCudaRunner {
             // Every other case, with every switch off included, keeps the shipped reserve (the 5060 Ti hand-over applied the smaller one to every
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
             // the small compact reserve was sized with the FP8 KV: COMPACT_KV=0 (FP16 KV) left 43 MiB and crashed at the first top-k, so it takes the shipped reserve
-            const size_t ws_reserve = (opt5060_r.compact_vram && opt5060_r.compact_kv && m.all_sf4_vram)
+            // DFlash 2 as the drafter (STRATA_INK_DRAFTER=dflash2): its weights, rings and scratch come out of what the K/V may take
+            const size_t df2_extra = df2_replaces_dspark(m.path) ? ((opt5060_r.compact_vram && m.all_sf4_vram) ? (440ull << 20) : (620ull << 20)) : 0ull;
+            const size_t ws_reserve = df2_extra + ((opt5060_r.compact_vram && opt5060_r.compact_kv && m.all_sf4_vram)
                 ? ((size_t)max_batch * (size_t)(520ull << 10) + (320ull << 20))
-                : (strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark) + (wddm_fl / 2) + rtx_extra_res);
+                : (strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark) + (wddm_fl / 2) + rtx_extra_res));
             swa_in_host = (opt5060_r.compact_vram && max_slots >= 16 && !m.ls_active);
             std::memset(swa_pinned, 0, sizeof(swa_pinned));
             n_swa_pinned = 0;
