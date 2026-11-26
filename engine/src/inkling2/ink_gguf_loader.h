@@ -74,6 +74,26 @@ inline void quantize_row_q8_0_bytes(const float* x, uint8_t* out, int64_t cols) 
     }
 }
 
+// STRATA_INK_DRAFTER=dflash2 and its weights found: STRATA_INK_DFLASH2 (a file or a folder with model.safetensors / dflash2.safetensors), else a sidecar in the model's folder
+// (the same lookup as cuda/ink_dflash2_path.cuh).
+inline bool dflash2_sidecar_wanted(const std::string& model_path) {
+    const char* d = std::getenv("STRATA_INK_DRAFTER");
+    if (!d) return false;
+    std::string s(d);
+    for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (s != "dflash2") return false;
+    auto exists = [](const std::string& p) { std::FILE* f = std::fopen(p.c_str(), "rb"); if (f) { std::fclose(f); return true; } return false; };
+    if (const char* e = std::getenv("STRATA_INK_DFLASH2")) {
+        const std::string v(e);
+        return exists(v) || exists(v + "/model.safetensors") || exists(v + "/dflash2.safetensors");
+    }
+    std::string dir = model_path;
+    const size_t sl = dir.find_last_of("/\\");
+    dir = (sl == std::string::npos) ? std::string(".") : dir.substr(0, sl);
+    return exists(dir + "/dflash2.safetensors") || exists(dir + "/Inkling-2-Mini-DFlash2.safetensors") ||
+           exists(dir + "/Inkling-2-Mini-DFlash2/model.safetensors") || exists(dir + "/Inkling-2-Mini-DFlash2/dflash2.safetensors");
+}
+
 inline bool has_gguf_magic(const std::string& path) {
     std::FILE* fp = std::fopen(path.c_str(), "rb");
     if (!fp) return false;
@@ -955,6 +975,9 @@ struct GgufAdapter {
                 }
             }
         }
+        // A GGUF has no drafter of its own (GSQ-RCO files ship none). With STRATA_INK_DRAFTER=dflash2 and its sidecar file at hand the model is marked as having one:
+        // the CUDA engine's DFlash 2 drafter brings its own weights, so there are no DSpark tensors to load (opt-in; the CUDA backend reads the same switch).
+        if (!m.dspark.present && gguf_detail::dflash2_sidecar_wanted(path)) m.dspark.present = true;
 
         // Compact trunk: the embedding is the last tensor of Section 1 (BF16, 0.93 GB), the runner keeps it in pinned host RAM and uploads the rest.
         if (compact_trunk && !copy_mat_bf16("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D)) return false;
