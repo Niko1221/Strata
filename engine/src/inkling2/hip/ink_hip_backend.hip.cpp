@@ -2716,6 +2716,7 @@ public:
         if (const char* e = std::getenv("STRATA_INK_DFLASH2_RATIO"); e && *e && std::atof(e) > 0.0) df2_ratio_ = std::atof(e);
         else if (opts.spec_cost > 0.0) df2_ratio_ = opts.spec_cost;
         if (opts.spec_plain > 0.0) df2_plain_ = opts.spec_plain;
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_PLAIN"); e && *e) df2_plain_ = std::atof(e);
         size_t f0 = 0, t0 = 0, f1 = 0, t1 = 0;
         (void)hipMemGetInfo(&f0, &t0);
         std::string e2;
@@ -2780,6 +2781,13 @@ public:
             if (rate > best_rate) { best_rate = rate; best_m = mb; }
         }
         const int nd = best_m - 1;
+        if (df2_trace_) {
+            std::fprintf(stderr, "[df2] pos %d anchor %d -> nd %d  conf", anchor_pos, anchor_tok, nd);
+            for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %.2f", conf[i]);
+            std::fprintf(stderr, "  ids");
+            for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %d", ids[i]);
+            std::fprintf(stderr, "\n");
+        }
         for (int i = 0; i < nd; ++i) out_ids[i] = ids[i];
         return nd;
     }
@@ -9588,6 +9596,7 @@ private:
     }
 
     void invalidate_graph() {
+        if (df2_) df2_->drop_graph();   // the drafter's graph holds scratch pointers of the GEMM hook
         if (graph_exec_) {
             (void)hipGraphExecDestroy(graph_exec_);
             graph_exec_ = nullptr;
@@ -9840,7 +9849,8 @@ private:
     bool has_df2_ = false;                                   // DFlash 2 is the drafter (ink_hip_df2.hip.h)
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
     double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
-    double df2_plain_ = 0.0;                                 // > 0: a plain step is allowed when the window does not pay (--draft-plain)
+    bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
+    double df2_plain_ = 0.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain)
     int max_slots_ = 1;
     int max_ctx_ = 32768;
     int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)

@@ -20,6 +20,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1258,7 +1259,7 @@ struct InkHipDFlash2 {
     bool draft(int slot, int32_t anchor, int32_t pos0, int32_t* out_ids, float* out_conf, std::string& err) {
         using namespace hdf2;
         if (!ready || slot < 0 || slot >= max_slots || !ensure_slot(slot)) return false;
-        const int R = kBlock, R7 = kDraft;
+        if (prof) t_draft0 = std::chrono::steady_clock::now();
         const int64_t lo_eff0 = std::max<int64_t>(lo[slot], (int64_t)pos0 - (kWindow - 1));
         int64_t hc = std::min<int64_t>((int64_t)pos0, hi[slot]);
         int64_t lo_eff = lo_eff0 > pos0 ? pos0 : lo_eff0;
@@ -1270,7 +1271,77 @@ struct InkHipDFlash2 {
         h_meta[5] = (int32_t)hc;   // meta[B * 5 + b]: where the context ends
         hipStream_t st = h.stream;
         if (hipMemcpyAsync(d_meta, h_meta, 6 * 4, hipMemcpyHostToDevice, st) != hipSuccess) { err = "dflash2 meta upload"; return false; }
+        // The kernels read everything that changes per draft (slot, position, window, anchor) from d_meta, so one captured graph serves every draft. The first draft runs
+        // directly (library first-use work must not happen inside a capture); a failed capture falls back to direct launches for good.
+        if (graph_enabled && !prof_stages && n_drafts_run >= 1 && !graph_failed) {
+            if (!g_draft) {
+                hipGraph_t g = nullptr;
+                bool ok = hipStreamBeginCapture(st, hipStreamCaptureModeThreadLocal) == hipSuccess;
+                if (ok) {
+                    emit_draft(st);
+                    ok = hipStreamEndCapture(st, &g) == hipSuccess && g != nullptr;
+                }
+                if (ok) ok = hipGraphInstantiate(&g_draft, g, nullptr, nullptr, 0) == hipSuccess;
+                if (g) (void)hipGraphDestroy(g);
+                if (!ok) {
+                    (void)hipGetLastError();
+                    g_draft = nullptr;
+                    graph_failed = true;
+                    std::fprintf(stderr, "[InkHipDFlash2] the draft graph could not be captured: direct launches\n");
+                    return draft_launch_direct(out_ids, out_conf, err);
+                }
+            }
+            if (hipGraphLaunch(g_draft, st) != hipSuccess) { err = "dflash2 graph launch"; return false; }
+        } else {
+            emit_draft(st);
+        }
+        return draft_finish(out_ids, out_conf, err);
+    }
+
+    bool draft_launch_direct(int32_t* out_ids, float* out_conf, std::string& err) {
+        emit_draft(h.stream);
+        return draft_finish(out_ids, out_conf, err);
+    }
+
+    bool draft_finish(int32_t* out_ids, float* out_conf, std::string& err) {
+        hipStream_t st = h.stream;
+        (void)hipMemcpyAsync(h_ids, d_ids, hdf2::kDraft * 4, hipMemcpyDeviceToHost, st);
+        (void)hipMemcpyAsync(h_conf, d_conf, hdf2::kDraft * 4, hipMemcpyDeviceToHost, st);
+        const hipError_t se = hipStreamSynchronize(st);
+        if (se != hipSuccess) { err = std::string("dflash2 draft: ") + hipGetErrorString(se); return false; }
+        std::memcpy(out_ids, h_ids, hdf2::kDraft * 4);
+        std::memcpy(out_conf, h_conf, hdf2::kDraft * 4);
+        ++n_drafts_run;
+        if (prof) {
+            prof_draft_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_draft0).count();
+            stages_collect();
+            if (n_drafts_run % 50 == 0) {
+                std::fprintf(stderr, "[InkHipDFlash2 prof] %ld drafts, %.2f ms per draft (wall, incl. launch and sync), %ld ingest rows\n", n_drafts_run,
+                             prof_draft_ms / (double)n_drafts_run, n_ingest_rows);
+                if (prof_stages)
+                    std::fprintf(stderr, "[InkHipDFlash2 stages] ms per draft: embed+attn L0 %.3f | ffn L0 %.3f | layers 1-4 %.3f | head logits %.3f | top16 %.3f | select %.3f\n",
+                                 pst[1] / (double)n_drafts_run, pst[2] / (double)n_drafts_run, pst[3] / (double)n_drafts_run, pst[4] / (double)n_drafts_run,
+                                 pst[5] / (double)n_drafts_run, pst[6] / (double)n_drafts_run);
+            }
+        }
+        return true;
+    }
+    std::chrono::steady_clock::time_point t_draft0;
+
+    void drop_graph() {
+        if (g_draft) { (void)hipGraphExecDestroy(g_draft); g_draft = nullptr; }
+    }
+
+    hipGraphExec_t g_draft = nullptr;
+    bool graph_enabled = !(std::getenv("STRATA_INK_DFLASH2_GRAPH") && std::getenv("STRATA_INK_DFLASH2_GRAPH")[0] == '0');
+    bool graph_failed = false;
+
+    // the whole block forward + head + selector on stream st (everything it needs per draft is in d_meta)
+    void emit_draft(hipStream_t st) {
+        using namespace hdf2;
+        const int R = kBlock, R7 = kDraft;
         const int32_t* d_anchor = d_meta + 4;
+        mark(0, st);
         h.embed(d_anchor, d_anchor_emb, 1);
         k_hdf2_build_x<<<R, 256, 0, st>>>(d_anchor_emb, mask_row, d_x, 1);
         k_hdf2_block_pos<<<1, 64, 0, st>>>(d_meta, 1, d_pos, d_srow);
@@ -1291,6 +1362,7 @@ struct InkHipDFlash2 {
             k_hdf2_attn_combine<<<dim3(kKvHeads, 1, 32), 128, 0, st>>>(p_m, p_l, p_o, split, d_attn);
             mv(y.wo, y.so, y.ko, d_attn, d_z, R, kHidden, kQ);
             k_hdf2_conv_post_add<<<R, 256, 0, st>>>(d_z, d_dyn, y.base_a, d_x, R);
+            if (l == 0) mark(1, st);
             // ---- feed-forward sublayer
             k_hdf2_rms_norm<<<R, 256, 0, st>>>(d_x, y.post_norm, d_xn, R);
             h.gemm(y.conv_f, d_xn, d_dyn, R, kDyn, kHidden);
@@ -1300,27 +1372,43 @@ struct InkHipDFlash2 {
             k_hdf2_swiglu<<<(unsigned)(((size_t)R * kFF + 255) / 256), 256, 0, st>>>(d_g, d_u, d_act, (size_t)R * kFF);
             mv(y.wd, y.sd, y.kd, d_act, d_z, R, kHidden, kFF);
             k_hdf2_conv_post_add<<<R, 256, 0, st>>>(d_z, d_dyn, y.base_f, d_x, R);
+            if (l == 0) mark(2, st);
         }
+        mark(3, st);
         // ---- head
         k_hdf2_rms_norm<<<R, 256, 0, st>>>(d_x, norm, d_hd, R);
         h.gemm(sel_h, d_hd, d_gsel, R, kRank, kHidden);
-        const int head_blocks = 384;
+        const int head_blocks = head_blocks_n;
         k_hdf2_head_logits<<<head_blocks, 256, 0, st>>>(h.unemb, h.unemb_fmt, h.unemb_rows, d_hd + kHidden, d_logits, R7, kHidden, V);
+        mark(4, st);
         const int nchunk = (V + kTopChunk - 1) / kTopChunk;
         k_hdf2_tile_part<<<dim3(nchunk, R7), 256, 0, st>>>(d_logits, V, cap, d_part, d_part_lse);
         k_hdf2_top16_merge<<<R7, 512, 0, st>>>(d_part, d_part_lse, nchunk, V, cap, d_cand, d_tail);
+        mark(5, st);
         k_hdf2_select<<<1, 512, 0, st>>>(d_meta, d_cand, d_tail, d_gsel, pred, succ, kDraft, V, cap, d_ids, d_conf);
-        (void)hipMemcpyAsync(h_ids, d_ids, kDraft * 4, hipMemcpyDeviceToHost, st);
-        (void)hipMemcpyAsync(h_conf, d_conf, kDraft * 4, hipMemcpyDeviceToHost, st);
-        const hipError_t se = hipStreamSynchronize(st);
-        if (se != hipSuccess) { err = std::string("dflash2 draft: ") + hipGetErrorString(se); return false; }
-        std::memcpy(out_ids, h_ids, kDraft * 4);
-        std::memcpy(out_conf, h_conf, kDraft * 4);
-        ++n_drafts_run;
-        return true;
+        mark(6, st);
+    }
+
+    // STRATA_INK_DFLASH2_PROF=2: GPU time of the stages of a draft (direct launches, no graph); printed with the draft timing
+    bool prof_stages = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_PROF"); return e && e[0] == '2'; }();
+    hipEvent_t pev[8] = {};
+    double pst[8] = {};
+    int head_blocks_n = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_HEAD_BLOCKS"); return e && std::atoi(e) > 0 ? std::atoi(e) : 384; }();
+    void mark(int i, hipStream_t st) {
+        if (!prof_stages) return;
+        if (!pev[i]) (void)hipEventCreate(&pev[i]);
+        (void)hipEventRecord(pev[i], st);
+    }
+    void stages_collect() {
+        if (!prof_stages || !pev[0] || !pev[6]) return;
+        for (int i = 1; i <= 6; ++i) {
+            float ms = 0;
+            if (hipEventElapsedTime(&ms, pev[i - 1], pev[i]) == hipSuccess) pst[i] += ms;
+        }
     }
 
     void free_all() {
+        drop_graph();
         for (auto& p : ring_k_h) if (p) (void)hipFree(p);
         for (auto& p : ring_v_h) if (p) (void)hipFree(p);
         ring_k_h.clear();
