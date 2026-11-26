@@ -12,7 +12,7 @@
 // Safety argument: a registered kernel B behind a programmatic edge from A is only ever started early relative to A. Everything B reads or writes that an
 // earlier kernel touches comes after B's INK_PDL_WAIT(). B's own predecessors other than A are ordinary edges (complete before B starts). A kernel behind B
 // that is not registered has an ordinary edge to B and starts after B completed; B completes after A has (B waited for it in every block).
-// The switch is STRATA_INK_PDL=0|1 (default: kDefaultOn below), the port STRATA_INK_PDL_PORT=2 (all blocks begun, default) | 1 (kernel's own trigger / exit).
+// The switch is STRATA_INK_PDL=0|1 (default: on for the RTX 5090 only, see wanted()), the port STRATA_INK_PDL_PORT=2 (all blocks begun, default) | 1 (kernel's own trigger / exit).
 // On a card below sm_90, with CUDA below 12.3 or when a kernel's loaded code is below sm_90 (no wait in it), nothing is rewritten.
 #pragma once
 
@@ -43,16 +43,26 @@
 
 namespace strata::ink::pdl {
 
-// Flipped to true once identity and speed passed on the cards that run it (PERF-STEP RESULTS.md).
-constexpr bool kDefaultOn = false;
+// On by default only on the RTX 5090 (cc 12.x with 160..192 SMs; measured: tokens identical, plain decode +5 %, nothing slower; PERF-STEP RESULTS.md).
+// STRATA_INK_PDL=1 turns it on for any sm_90+ card, STRATA_INK_PDL=0 off everywhere.
+constexpr int kDefaultOnMajor = 12;
+
+inline int device_major() {
+    int dev = 0, major = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) { (void)cudaGetLastError(); return 0; }
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) { (void)cudaGetLastError(); return 0; }
+    return major;
+}
 
 inline bool wanted() {
-    static const bool v = [] {
+    static const int env = [] {
         const char* e = std::getenv("STRATA_INK_PDL");
-        if (e != nullptr && *e != '\0') return std::atoi(e) != 0;
-        return kDefaultOn;
+        return (e != nullptr && *e != '\0') ? (std::atoi(e) != 0 ? 1 : 0) : -1;
     }();
-    return v;
+    if (env >= 0) return env == 1;
+    int dev = 0, sms = 0;   // the measured card: the 5090 row (160..192 SMs); other cc 12.x cards (5060 Ti, ...) stay off until measured
+    if (device_major() != kDefaultOnMajor || cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess) { (void)cudaGetLastError(); return false; }
+    return sms >= 160 && sms <= 192;
 }
 
 inline int port_mode() {

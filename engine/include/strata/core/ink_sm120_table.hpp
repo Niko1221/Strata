@@ -144,7 +144,7 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         {"5090", "RTX 5090", 160, 192, 30, 34, true, "measured on a 32 GB RTX 5090 (hand-over 11-26)",
          kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f},
         {"5060ti-16", "RTX 5060 Ti", 34, 38, 15, 17, true, "measured on a 16 GB RTX 5060 Ti (hand-over 11-26)",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 512, 768, 0, 1,   // the 5090's FP8 cache: 512 MiB headroom, 768 MiB reserved for it in the K/V sizing (PLACEHOLDER: measure on a 5060 Ti)
