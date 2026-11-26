@@ -106,3 +106,10 @@ target_link_libraries(strata_inkling_cuda PUBLIC
 
 target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_CUDA=1)
 target_link_libraries(strata-inkling PRIVATE strata_inkling_cuda)
+
+# The GPU picture reader against the CPU reference on real pictures (error, time, memory); not part of the release build
+add_executable(strata-inkling-vit-check EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/ink_vit_check.cu")
+target_include_directories(strata-inkling-vit-check PRIVATE ${_ink_cuda_inc})
+set_target_properties(strata-inkling-vit-check PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "${STRATA_INK_CUDA_ARCHS}" CUDA_RUNTIME_LIBRARY Shared)
+target_compile_options(strata-inkling-vit-check PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+target_link_libraries(strata-inkling-vit-check PRIVATE strata_inkling_core CUDA::cudart CUDA::cublas)
