@@ -1229,6 +1229,9 @@ Windows by default, which is a little faster). Use it when sharing the machine m
 
 ### Route tail skip (`STRATA_ROUTE_TAIL_SKIP`): off by default since 0.2.17
 
+(Inkling-2-Mini has its own, separate opt-in tail skip, `strata launch --turbo` and `--turbo-max`, also off by default: see
+[INKLING_TURBO.md](INKLING_TURBO.md).)
+
 A missed expert (one that is not on the card) that every token of a verify window routes at rank 7 or lower is neither copied nor
 computed: its weight is dropped. It applies on CUDA and on HIP gfx1200/gfx1201, with one GPU or a layer split. It does not apply
 when every expert is in VRAM, with `--batch` slots, with a peer tier or helper GPU, on other HIP and SYCL, or when 90% or more of
