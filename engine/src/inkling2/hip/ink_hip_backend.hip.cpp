@@ -4411,10 +4411,8 @@ private:
                                     d_exps, d_off, d_act, d_by, D, c_.inter);
                             }
                         } else {
-                            k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
-                                d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
-                            k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
-                                d_exps, d_off, d_act, d_by, D, c_.inter);
+                            launch_moe_w13_rdna2(d_exps, d_off, d_btk, mlpf16, d_act, B, D, c_.inter, c_.n_experts, c_.situ_beta, c_.situ_lb, stream_);
+                            launch_moe_w2_rdna2(d_exps, d_off, d_act, d_by, B, D, c_.inter, c_.n_experts, stream_);
                         }
                         k_moe_reduce_buckets_masked<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                             d_exps, tk_i, d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
@@ -4609,10 +4607,8 @@ private:
                     }
                 } else {
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
-                    k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
-                        d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
-                    k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
-                        d_exps, d_off, d_act, d_by, D, c_.inter);
+                    launch_moe_w13_rdna2(d_exps, d_off, d_btk, mlpf16, d_act, B, D, c_.inter, c_.n_experts, c_.situ_beta, c_.situ_lb, stream_);
+                    launch_moe_w2_rdna2(d_exps, d_off, d_act, d_by, B, D, c_.inter, c_.n_experts, stream_);
                 }
 
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
@@ -5699,11 +5695,9 @@ private:
                         d_exps, d_off, d_act, d_by, D, c_.inter);
                 } else {
                     pm(6);
-                    k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
-                        d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    launch_moe_w13_rdna2(d_exps, d_off, d_btk, mlpf16, d_act, B, D, c_.inter, c_.n_experts, c_.situ_beta, c_.situ_lb, stream_);
                     pm(7);
-                    k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
-                        d_exps, d_off, d_act, d_by, D, c_.inter);
+                    launch_moe_w2_rdna2(d_exps, d_off, d_act, d_by, B, D, c_.inter, c_.n_experts, stream_);
                 }
 
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
