@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "contexts": 4,
+  "requests": 20,
+  "recall_passed": 8,
+  "speed_answers": 12,
+  "speed_capped": 0,
+  "recall_capped": 0,
+  "cached_tokens": 0,
+  "peak_gpu_temp_c": 72.0
+}

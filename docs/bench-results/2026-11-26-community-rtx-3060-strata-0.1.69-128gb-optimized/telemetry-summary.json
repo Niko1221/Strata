@@ -1,0 +1,102 @@
+{
+  "32k": {
+    "samples": 64,
+    "min_available_ram_gib": 80.4351,
+    "peak_swap_mib": 2.7773,
+    "peak_gpu_power_w": 169.1,
+    "peak_vram_mib": 11384,
+    "peak_gpu_temp_c": 70,
+    "pcie_gen4_x4_samples": 64,
+    "first_sample_utc": "2026-11-25T23:34:07Z",
+    "last_sample_utc": "2026-11-25T23:36:16Z",
+    "actual_speed_input": 32051,
+    "actual_recall_input": 30510,
+    "speed_decode_range": [
+      45.8,
+      49.2
+    ],
+    "speed_prefill_range": [
+      1439.4,
+      1461.9
+    ],
+    "speed_ttft_range": [
+      21.9596,
+      22.304
+    ]
+  },
+  "64k": {
+    "samples": 124,
+    "min_available_ram_gib": 77.2908,
+    "peak_swap_mib": 2.7773,
+    "peak_gpu_power_w": 168.81,
+    "peak_vram_mib": 11386,
+    "peak_gpu_temp_c": 72,
+    "pcie_gen4_x4_samples": 124,
+    "first_sample_utc": "2026-11-25T23:36:39Z",
+    "last_sample_utc": "2026-11-25T23:40:52Z",
+    "actual_speed_input": 64044,
+    "actual_recall_input": 63262,
+    "speed_decode_range": [
+      45.9,
+      49.5
+    ],
+    "speed_prefill_range": [
+      1399.0,
+      1411.2
+    ],
+    "speed_ttft_range": [
+      45.4283,
+      45.8245
+    ]
+  },
+  "128k": {
+    "samples": 249,
+    "min_available_ram_gib": 71.9881,
+    "peak_swap_mib": 2.7812,
+    "peak_gpu_power_w": 168.7,
+    "peak_vram_mib": 11382,
+    "peak_gpu_temp_c": 72,
+    "pcie_gen4_x4_samples": 249,
+    "first_sample_utc": "2026-11-25T23:41:16Z",
+    "last_sample_utc": "2026-11-25T23:49:45Z",
+    "actual_speed_input": 128030,
+    "actual_recall_input": 128030,
+    "speed_decode_range": [
+      46.0,
+      47.9
+    ],
+    "speed_prefill_range": [
+      1325.1,
+      1337.9
+    ],
+    "speed_ttft_range": [
+      95.7656,
+      96.6894
+    ]
+  },
+  "262k": {
+    "samples": 558,
+    "min_available_ram_gib": 65.403,
+    "peak_swap_mib": 3909.9961,
+    "peak_gpu_power_w": 169.58,
+    "peak_vram_mib": 11384,
+    "peak_gpu_temp_c": 72,
+    "pcie_gen4_x4_samples": 558,
+    "first_sample_utc": "2026-11-25T23:50:10Z",
+    "last_sample_utc": "2026-11-26T00:09:14Z",
+    "actual_speed_input": 260050,
+    "actual_recall_input": 259889,
+    "speed_decode_range": [
+      43.7,
+      46.5
+    ],
+    "speed_prefill_range": [
+      1179.0,
+      1187.0
+    ],
+    "speed_ttft_range": [
+      219.2074,
+      220.6929
+    ]
+  }
+}
