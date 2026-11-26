@@ -168,6 +168,46 @@ __global__ void __launch_bounds__(256) k_df2_bf16_to_q4(const uint16_t* __restri
     }
 }
 
+// ---- the pre-quantized formats back to bf16 (a sidecar loaded on a big card; value as the GEMV kernels read it) --------------------------------------------------------------------------
+__device__ __forceinline__ uint16_t df2_f32_to_bf16(float v) { return __bfloat16_as_ushort(__float2bfloat16_rn(v)); }
+
+__global__ void __launch_bounds__(256) k_df2_q8row_to_bf16(const int8_t* __restrict__ q, const float* __restrict__ sc, uint16_t* __restrict__ out, int N, int K) {
+    const size_t total = (size_t)N * K;
+    for (size_t i = (size_t)blockIdx.x * 256 + threadIdx.x; i < total; i += (size_t)gridDim.x * 256) out[i] = df2_f32_to_bf16((float)q[i] * sc[i / (size_t)K]);
+}
+
+// 4-bit groups of 32 (low nibble = element j, high nibble = element j + 16, two's complement), half scale per 32: value = nibble * scale
+__global__ void __launch_bounds__(256) k_df2_q4_to_bf16(const uint8_t* __restrict__ w, const __half* __restrict__ sc, uint16_t* __restrict__ out, int N, int K) {
+    const size_t total = (size_t)N * K / 32;   // groups
+    for (size_t g = (size_t)blockIdx.x * 256 + threadIdx.x; g < total; g += (size_t)gridDim.x * 256) {
+        const float s = __half2float(sc[g]);
+        const uint8_t* d = w + g * 16;
+        uint16_t* o = out + g * 32;
+        for (int j = 0; j < 16; ++j) {
+            const int lo = (int)(d[j] & 0xF) - ((d[j] & 0x8) ? 16 : 0);
+            const int hi = (int)(d[j] >> 4) - ((d[j] & 0x80) ? 16 : 0);
+            o[j] = df2_f32_to_bf16((float)lo * s);
+            o[j + 16] = df2_f32_to_bf16((float)hi * s);
+        }
+    }
+}
+
+// SF4: E2M1 x2 per byte (low nibble first), UE4M3 scale per 16, fp32 tensor scale: value = E2M1 * e4m3(scale) * w_outer
+__global__ void __launch_bounds__(256) k_df2_sf4_to_bf16(const uint8_t* __restrict__ p, const uint8_t* __restrict__ s, float w_outer, uint16_t* __restrict__ out, int N, int K) {
+    const float mag[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    const size_t blocks = (size_t)N * K / 16;
+    for (size_t b = (size_t)blockIdx.x * 256 + threadIdx.x; b < blocks; b += (size_t)gridDim.x * 256) {
+        const float sc = __half2float(__half(__nv_cvt_fp8_to_halfraw(s[b], __NV_E4M3))) * w_outer;
+        const uint8_t* d = p + b * 8;
+        uint16_t* o = out + b * 16;
+        for (int j = 0; j < 8; ++j) {
+            const uint8_t lo = d[j] & 0xF, hi = d[j] >> 4;
+            o[2 * j] = df2_f32_to_bf16((lo & 8 ? -mag[lo & 7] : mag[lo & 7]) * sc);
+            o[2 * j + 1] = df2_f32_to_bf16((hi & 8 ? -mag[hi & 7] : mag[hi & 7]) * sc);
+        }
+    }
+}
+
 template <int MR>
 __global__ void __launch_bounds__(256) k_df2_gemv_q4(const uint8_t* __restrict__ W, const __half* __restrict__ wsc, const int8_t* __restrict__ xq,
                                                      const float* __restrict__ xs, float* __restrict__ Y, int M, int N, int K, int n_chunks) {

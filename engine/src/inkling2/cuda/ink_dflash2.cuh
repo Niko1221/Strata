@@ -48,6 +48,7 @@ struct InkDFlash2 {
     Df2Variant var;
     __nv_bfloat16* d_xb = nullptr;   // bf16 copy of the activation for the bf16 variant
     uint32_t* d_amax = nullptr;
+    bool expand_bf16 = false;   // a pre-quantized sidecar on a card whose row is bf16: dequantized at load
     size_t bytes_weights = 0, bytes_scratch = 0;
 
     struct Layer {
@@ -226,6 +227,7 @@ struct InkDFlash2 {
             const bool small_vram = m.all_sf4_vram || (vt > 0 && vt < (24ull << 30));
             var = df2_variant(small_vram);
             w4 = (var.attn == 2 || var.ffn == 2);
+            expand_bf16 = (var.attn == 0 && var.ffn == 0);   // the format the card's row asks for is bf16: a pre-quantized sidecar is expanded to it
         }
         uint16_t* tmp = dalloc<uint16_t>((size_t)df2::kFF * df2::kHidden);   // the largest matrix, bf16, before it is quantized
         d_amax = dalloc<uint32_t>(1);
@@ -237,6 +239,30 @@ struct InkDFlash2 {
                 const size_t qb = kind == 1 ? (size_t)N * K : (size_t)N * K / 2;
                 const size_t sb = kind == 1 ? (size_t)N * 4 : (size_t)N * K / 16;
                 if (!getraw(name + ".q", qb, kind == 1 ? "I8" : "U8")) return false;
+                if (expand_bf16) {   // a big card: the matrix goes back to bf16 (cuBLAS tensor cores beat the skinny GEMV from 16 slots on), the download stayed small
+                    uint8_t* tq = dalloc<uint8_t>(qb);
+                    uint8_t* ts_ = dalloc<uint8_t>(sb);
+                    INK_CK(cudaMemcpy(tq, host.data(), qb, cudaMemcpyHostToDevice));
+                    if (!getraw(name + ".s", sb, kind == 1 ? "F32" : (kind == 2 ? "F16" : "U8"))) { cudaFree(tq); cudaFree(ts_); return false; }
+                    INK_CK(cudaMemcpy(ts_, host.data(), sb, cudaMemcpyHostToDevice));
+                    float wo = 1.0f;
+                    if (kind == 3) {
+                        if (!getraw(name + ".o", 4, "F32")) { cudaFree(tq); cudaFree(ts_); return false; }
+                        std::memcpy(&wo, host.data(), 4);
+                    }
+                    uint16_t* ob = wal<uint16_t>((size_t)N * K);
+                    if (kind == 1) df2::k_df2_q8row_to_bf16<<<1024, 256>>>((const int8_t*)tq, (const float*)ts_, ob, N, K);
+                    else if (kind == 2) df2::k_df2_q4_to_bf16<<<1024, 256>>>(tq, (const __half*)ts_, ob, N, K);
+                    else df2::k_df2_sf4_to_bf16<<<1024, 256>>>(tq, ts_, wo, ob, N, K);
+                    INK_CK(cudaDeviceSynchronize());
+                    cudaFree(tq);
+                    cudaFree(ts_);
+                    q = ob;
+                    sc = nullptr;
+                    kind = 0;
+                    outer = 1.0f;
+                    return true;
+                }
                 q = wal<uint8_t>(qb);
                 INK_CK(cudaMemcpy(q, host.data(), qb, cudaMemcpyHostToDevice));
                 if (!getraw(name + ".s", sb, kind == 1 ? "F32" : (kind == 2 ? "F16" : "U8"))) return false;

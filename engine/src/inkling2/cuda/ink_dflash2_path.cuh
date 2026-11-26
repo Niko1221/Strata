@@ -104,8 +104,10 @@ inline Df2Variant df2_variant(bool small_vram) {
     if (const char* e = std::getenv("STRATA_INK_DFLASH2_W4")) v.attn = v.ffn = (std::string(e) == "1") ? 2 : 1;
     if (const char* e = std::getenv("STRATA_INK_DFLASH2_WQ")) df2_parse_variant(std::string(e), v);
     // a pre-quantized sidecar decides its own format
+    // (on a card of 24 GiB and more whose row is bf16 the file's format is not taken: the loader expands the sidecar to bf16, which is faster at 16 and more slots)
     const std::string fv = df2_file_variant(df2_resolve_path(df2_model_path()));
-    if (!fv.empty()) df2_parse_variant(fv, v);
+    // (a card below sm_80 takes the file's format as before: there is no BF16 form there to expand to)
+    if (!fv.empty() && (small_vram || df2_f32_path() || std::getenv("STRATA_INK_DFLASH2_WQ"))) df2_parse_variant(fv, v);
     // NV-OLDER: no BF16 block weights on a card below sm_80 (the BF16 GEMM of kind 0 is not there): Q8 instead; the other kinds are dp4a GEMVs and run everywhere
     if (df2_f32_path() && v.attn == 0) v.attn = 1;
     if (df2_f32_path() && v.ffn == 0) v.ffn = 1;

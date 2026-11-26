@@ -1233,7 +1233,7 @@ struct InkDSpark {
             size_t vf_s = 0, vt_s = 0;
             (void)ink_cuda_mem_info(&vf_s, &vt_s);
             const bool small_card = m.all_sf4_vram || (vt_s > 0 && vt_s < (24ull << 30));
-            slots = std::min(slots, small_card ? 16 : 64);   // rings are 42 MiB a slot; a 16 GB card keeps its memory for the experts, slots above 16 of it decode without a drafter
+            slots = std::min(slots, small_card ? 16 : 32);   // rings are 42 MiB a slot; a 16 GB card keeps its memory for the experts, slots above 16 of it decode without a drafter; on a 32 GB card DFlash 2 won +12% at 32 slots and lost 7% at 64 (RTX 5090, fast), so batches of more than 32 decode plainly
         }
         auto d = std::make_unique<InkDFlash2>(r);
         std::string err;
