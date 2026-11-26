@@ -240,6 +240,12 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
     // DFlash 2 on a card with hybrid experts (not the compact 16 GB mode): hold back what its weights, rings and graphs need, as --vram-reserve-mib 1850 does
     if (in.build_screen && !strata::ink::sm120_cfg(in.gpu_id).fast && strata::ink::InkDFlash2::requested()) p.min_reserve_bytes = std::max<size_t>(p.min_reserve_bytes, (size_t)(1850.0 + strata::ink::df2_big_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30))) - strata::ink::df2_big_mib(strata::ink::Df2Variant{2, 2})) << 20);
+    // RTX 50 fast path (the big-card rows, not the 16 GB compact mode, which has its own precheck with the same margin): the start must end with a crash margin free. The reserve above
+    // is what the K/V, workspaces and drafter are PLANNED to take; the real runner, K/V and DFlash 2 took ~370 MiB more, which left 24-32 MiB free on a 5090 whose other programs held
+    // 11.8-12.7 GB, and the first graph capture / top-k / tier swap then died (CUDA error 1 or out of memory). The old path keeps its sizing (same memory as main).
+    if (strata::ink::sm120_cfg(in.gpu_id).fast && !opt5060.compact_vram && !opt5060.pack && in.max_slots <= 8) {
+        p.min_reserve_bytes += (size_t)256 << 20;
+    }
     if (opts.vram_reserve_mib >= 0) {
         p.min_reserve_bytes = std::max(p.min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
     }

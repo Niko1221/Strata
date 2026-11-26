@@ -77,6 +77,9 @@ inline void ink_alloc_failed(cudaError_t e, size_t bytes, const char* file, int 
     std::snprintf(_what, sizeof(_what), "strata-inkling CUDA error %d at %s:%d (allocating %.0f MiB; %.0f of %.0f MiB free)",
                   (int)e, file, line, (double)bytes / 1048576.0, (double)vf / 1048576.0, (double)vt / 1048576.0);
     if (ink_alloc_throws()) throw InkAllocFailure(_what);
+    if (e == cudaErrorMemoryAllocation)
+        std::fprintf(stderr, "[InkCUDA] The card has too little free memory for this model and these settings (%.0f of %.0f MiB free): close other programs that use the GPU, or use a smaller model or a smaller --max-context.\n",
+                     (double)vf / 1048576.0, (double)vt / 1048576.0);
     strata::core::exit_device_error(_what, cudaGetErrorString(e));
 }
 
