@@ -37,6 +37,8 @@ constexpr int kTile = 32;                 // keys per tile
 constexpr int kLd = 136;                  // padded FP16 row stride (272 B): ldmatrix rows land on different banks
 constexpr float kPScale = 32768.0f;       // 2^15, probabilities x kPScale go into the FP16 PV operand
 constexpr int kMinSlice = 128;            // smallest key slice of a block (keys)
+// flags (drafter block attention): no relative bias, no sink in the softmax, every row sees every tail key (a block, not a chain)
+constexpr int kFlagNoBias = 1, kFlagNoSink = 2, kFlagBlockTail = 4;
 constexpr int kMaxSplits = 96;        // most slices of the committed keys per KV head (the buffers are sized for this)
 constexpr int kSlots = kMaxSplits + 1;   // + the verify tail
 #define kNegInf __int_as_float(0xff800000)   // -inf (the INFINITY macro warns on MSVC)
@@ -184,7 +186,7 @@ struct alignas(16) TcSmem {
 
 // Tail of a verify row: the row's ancestors (FP32 K/V of the uncommitted tree nodes), exact, with the sink. One warp per query head, a lane per ancestor.
 __device__ __forceinline__ void tail_rows(const float* q, const float* rel_table, const float* sinks, const int32_t* q_pos, const float* tree_k, const float* tree_v,
-                                          const uint8_t* tree_anc, const uint8_t* tree_dep, int anc_stride, int chain_k, int kh, int r0, int nrows, float* part_m, float* part_l,
+                                          const uint8_t* tree_anc, const uint8_t* tree_dep, int anc_stride, int chain_k, int flags, int kh, int r0, int nrows, float* part_m, float* part_l,
                                           float* part_o, int slots_per_head, int tail_slot) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     if (warp >= 3) return;
@@ -193,8 +195,8 @@ __device__ __forceinline__ void tail_rows(const float* q, const float* rel_table
     for (int rr = 0; rr < nrows; ++rr) {
         const int m = r0 + rr;
         const int h = 3 * kh + warp;
-        const int qp = q_pos[m];
-        const int dep = chain_k > 0 ? rr : (int)tree_dep[m];
+        const int qp = (flags & kFlagNoBias) ? 0 : q_pos[m];
+        const int dep = (flags & kFlagBlockTail) ? (nrows - 1) : (chain_k > 0 ? rr : (int)tree_dep[m]);
         const float* qh = q + ((size_t)m * kInkHeads + h) * kInkHeadDim;
         const float* rt = rel_table + ((size_t)m * kInkHeads + h) * (kInkRelExtent + 1);
         int node = 0;
@@ -210,10 +212,10 @@ __device__ __forceinline__ void tail_rows(const float* q, const float* rel_table
                 const float4 a = __ldg(q4 + d4), b = kp[d4];
                 acc = fmaf(a.x, b.x, acc); acc = fmaf(a.y, b.y, acc); acc = fmaf(a.z, b.z, acc); acc = fmaf(a.w, b.w, acc);
             }
-            const int dist = min(max(qp - (tp0 + lane), 0), kInkRelExtent);
-            s = acc * scale + rt[dist];
+            const int dist = min(max(qp - (tp0 + lane), 0), kInkRelExtent);   // (qp = 0 and no bias with kFlagNoBias)
+            s = acc * scale + ((flags & kFlagNoBias) ? 0.0f : rt[dist]);
         }
-        const float sink = sinks[(size_t)m * kInkHeads + h];
+        const float sink = (flags & kFlagNoSink) ? kNegInf : sinks[(size_t)m * kInkHeads + h];
         float mx = fmaxf(s, sink);
 #pragma unroll
         for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
@@ -221,7 +223,7 @@ __device__ __forceinline__ void tail_rows(const float* q, const float* rel_table
         float l = p;
 #pragma unroll
         for (int o = 16; o; o >>= 1) l += __shfl_xor_sync(0xffffffffu, l, o);
-        l += __expf(sink - mx);
+        if (!(flags & kFlagNoSink)) l += __expf(sink - mx);
         float4 acc4 = make_float4(0.f, 0.f, 0.f, 0.f);
         for (int k = 0; k <= dep; ++k) {
             const float pk = __shfl_sync(0xffffffffu, p, k);
@@ -253,6 +255,7 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
     const uint8_t* __restrict__ tree_dep, // [M]
     int anc_stride,
     int chain_k,                          // > 0: batched drafting, groups of chain_k consecutive rows = one slot (anc / dep are null)
+    int flags,
     float* __restrict__ part_m,           // [M, 24, nsp + 1]
     float* __restrict__ part_l,
     float* __restrict__ part_o,           // [M, 24, nsp + 1, 128]
@@ -266,12 +269,12 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
     if (nrows <= 0) return;
     const int slots_per_head = nsp + 1;
     if (sp == nsp) {   // verify tail
-        if (tree) tail_rows(q, rel_table, sinks, q_pos, tree_k, tree_v, tree_anc, tree_dep, anc_stride, chain_k, kh, r0, nrows, part_m, part_l, part_o, slots_per_head, nsp);
+        if (tree) tail_rows(q, rel_table, sinks, q_pos, tree_k, tree_v, tree_anc, tree_dep, anc_stride, chain_k, flags, kh, r0, nrows, part_m, part_l, part_o, slots_per_head, nsp);
         return;
     }
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     const int sl = ((!tree || chain_k > 0) && slots) ? slots[r0] : slot0;
-    int nc = chain_k > 0 ? q_pos[r0] : (tree ? q_pos[0] : (q_pos[r0] + 1));
+    int nc = ((flags & kFlagBlockTail) || chain_k <= 0) ? (tree ? q_pos[0] : (q_pos[r0] + 1)) : q_pos[r0];
     nc = min(nc, kv.cap_pos);
     const int per = slice_len(nc, nsp);
     const int lo = sp * per;
@@ -310,9 +313,9 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
                 qf[d][0] = pack_h2(f0.x, f0.y);
                 qf[d][2] = pack_h2(f1.x, f1.y);
             }
-            qpA = q_pos[mA];
-            rtA = rel_table + ((size_t)mA * kInkHeads + hA) * (kInkRelExtent + 1);
-            if (!tree && sp == 0) { mrA = sinks[(size_t)mA * kInkHeads + hA]; lrA = (c == 0) ? 1.0f : 0.0f; }
+            qpA = (flags & kFlagNoBias) ? 0 : q_pos[mA];
+            rtA = rel_table ? rel_table + ((size_t)mA * kInkHeads + hA) * (kInkRelExtent + 1) : nullptr;
+            if (!tree && sp == 0 && !(flags & kFlagNoSink)) { mrA = sinks[(size_t)mA * kInkHeads + hA]; lrA = (c == 0) ? 1.0f : 0.0f; }
         }
         if (vB) {
             const float* qb = q + ((size_t)mB * kInkHeads + hB) * kInkHeadDim;
@@ -323,9 +326,9 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
                 qf[d][1] = pack_h2(f0.x, f0.y);
                 qf[d][3] = pack_h2(f1.x, f1.y);
             }
-            qpB = q_pos[mB];
-            rtB = rel_table + ((size_t)mB * kInkHeads + hB) * (kInkRelExtent + 1);
-            if (!tree && sp == 0) { mrB = sinks[(size_t)mB * kInkHeads + hB]; lrB = (c == 0) ? 1.0f : 0.0f; }
+            qpB = (flags & kFlagNoBias) ? 0 : q_pos[mB];
+            rtB = rel_table ? rel_table + ((size_t)mB * kInkHeads + hB) * (kInkRelExtent + 1) : nullptr;
+            if (!tree && sp == 0 && !(flags & kFlagNoSink)) { mrB = sinks[(size_t)mB * kInkHeads + hB]; lrB = (c == 0) ? 1.0f : 0.0f; }
         }
     }
     float acc[16][4];
@@ -355,9 +358,10 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
             }
             // scale, K scale, relative bias, mask
             float sA[4][2], sB[4][2];
-            const bool near_rows = (vA && qpA - tile < kInkRelExtent + kTile) || (vB && qpB - tile < kInkRelExtent + kTile);
-            const float tailA = (vA && !near_rows) ? rtA[kInkRelExtent] : 0.0f;   // every key of the tile is 1024+ positions away: one bias value
-            const float tailB = (vB && !near_rows) ? rtB[kInkRelExtent] : 0.0f;
+            const bool no_bias = (flags & kFlagNoBias) != 0;
+            const bool near_rows = !no_bias && ((vA && qpA - tile < kInkRelExtent + kTile) || (vB && qpB - tile < kInkRelExtent + kTile));
+            const float tailA = (vA && !near_rows && !no_bias) ? rtA[kInkRelExtent] : 0.0f;   // every key of the tile is 1024+ positions away: one bias value
+            const float tailB = (vB && !near_rows && !no_bias) ? rtB[kInkRelExtent] : 0.0f;
 #pragma unroll
             for (int n = 0; n < 4; ++n) {
 #pragma unroll
@@ -469,10 +473,10 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
 template <bool H2>
 __global__ void __launch_bounds__(128) k_ink_tc_merge(
     const float* __restrict__ part_m, const float* __restrict__ part_l, const float* __restrict__ part_o, const float* __restrict__ gate_attn,
-    float* __restrict__ out, __half2* __restrict__ out_h2, const int32_t* __restrict__ q_pos, bool tree, int chain_k, int cap_pos, int M, int nsp) {
+    float* __restrict__ out, __half2* __restrict__ out_h2, const int32_t* __restrict__ q_pos, bool tree, int chain_k, int flags, int cap_pos, int M, int nsp) {
     const int h = blockIdx.x, m = blockIdx.y, d = threadIdx.x;
     if (h >= kInkHeads || m >= M) return;
-    int nc = chain_k > 0 ? q_pos[m - m % chain_k] : (tree ? q_pos[0] : (q_pos[m] + 1));
+    int nc = ((flags & kFlagBlockTail) || chain_k <= 0) ? (tree ? q_pos[0] : (q_pos[m] + 1)) : q_pos[m - m % chain_k];
     nc = min(nc, cap_pos);
     const int per = slice_len(nc, nsp);
     const int n_act = (nc + per - 1) / per;
@@ -554,7 +558,7 @@ inline int depth_cfg() {
 
 template <int FMT, int NBUF, int D>
 inline void launch_one(cudaStream_t st, const float* q, const float* rel, const float* sinks, const InkKvVisitDesc& kv, const int32_t* slots, int slot0, const int32_t* q_pos,
-                       const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, int chain_k, float* pm, float* pl, float* po, int M,
+                       const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, int chain_k, int flags, float* pm, float* pl, float* po, int M,
                        int rows_per_cta, int nslab) {
     constexpr size_t kSmem = sizeof(TcSmem<NBUF>);
     static bool attr = false;
@@ -564,12 +568,12 @@ inline void launch_one(cudaStream_t st, const float* q, const float* rel, const 
     }
     const int nsp = splits_cur();
     const dim3 grid(kInkKVHeads, nsp + 1, (M + rows_per_cta - 1) / rows_per_cta);
-    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, pm, pl, po, M, rows_per_cta, nslab, nsp);
+    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, flags, pm, pl, po, M, rows_per_cta, nslab, nsp);
 }
 
 // Returns false when the kernel does not apply (the caller keeps the old one). tree = verify step (tk / tv / anc / dep set); else a plain step / batched rows.
 inline bool launch(cudaStream_t st, const float* q, const float* rel, const float* sinks, const InkKvVisitDesc& kv, const int32_t* slots, int slot0, const int32_t* q_pos,
-                   const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int chain_k = 0,
+                   const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int chain_k = 0, int flags = 0,
                    int nbuf = nbuf_cfg(), int depth = depth_cfg()) {
     if (kv.is_swa || (kv.kv_fmt != 0 && kv.kv_fmt != 1) || M < 1) return false;
     const bool tree = (tk != nullptr);
@@ -585,7 +589,7 @@ inline bool launch(cudaStream_t st, const float* q, const float* rel, const floa
     }
 #define INK_TC_CASE(F, NB, DD)                                                                                                          \
     if (kv.kv_fmt == F && nbuf == NB && depth == DD) {                                                                                  \
-        launch_one<F, NB, DD>(st, q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, pm, pl, po, M, rows, nslab);    \
+        launch_one<F, NB, DD>(st, q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, flags, pm, pl, po, M, rows, nslab);    \
         return true;                                                                                                                    \
     }
     INK_TC_CASE(1, 2, 1) INK_TC_CASE(1, 2, 2) INK_TC_CASE(1, 2, 3) INK_TC_CASE(1, 1, 1) INK_TC_CASE(1, 1, 2) INK_TC_CASE(1, 1, 3)
@@ -596,10 +600,10 @@ inline bool launch(cudaStream_t st, const float* q, const float* rel, const floa
 
 // The merge that goes with launch(): tree = verify step (the same flag as tk != nullptr), cap_pos = kv.cap_pos.
 inline void merge(cudaStream_t st, const float* pm, const float* pl, const float* po, const float* gate, float* out, __half2* out_h2, const int32_t* q_pos, bool tree,
-                  int cap_pos, int M, int chain_k = 0) {
+                  int cap_pos, int M, int chain_k = 0, int flags = 0) {
     const dim3 grid(kInkHeads, M);
-    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, chain_k, cap_pos, M, splits_cur());
-    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, chain_k, cap_pos, M, splits_cur());
+    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, chain_k, flags, cap_pos, M, splits_cur());
+    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, chain_k, flags, cap_pos, M, splits_cur());
 }
 
 }  // namespace tcattn

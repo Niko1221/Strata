@@ -2018,6 +2018,18 @@ struct InkDSpark {
                     d_q, d_k, d_v, d_ctx_k[il], d_ctx_v[il], nullptr, d_apos,
                     m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ctx_cap[il], 1, d_attn_out);
             } else {
+                // fast only (TC_ATTN): the drafter's global layers read the whole committed context for every block row (4.5 ms a call at 128K, one block per head and row): the
+                // tensor-core kernel in block mode (no bias, no sink, every row sees the whole block) reads each K/V tile once for the 8 rows
+                bool tc_done = false;
+                if (m.man.c.dspark_is_swa[il] == 0 && sm120_cfg(m.primary_gpu).tc_attn && tcattn::force_ref() != 0 && B <= 10 && B <= r.tree_cap) {
+                    InkKvVisitDesc cd{};
+                    cd.k_f16 = const_cast<__half*>(reinterpret_cast<const __half*>(d_ctx_k[il])); cd.v_f16 = const_cast<__half*>(reinterpret_cast<const __half*>(d_ctx_v[il]));
+                    cd.cap_pos = ctx_cap[il]; cd.dev_cap = ctx_cap[il]; cd.host_cap = 0; cd.is_swa = false; cd.kv_fmt = 0;
+                    constexpr int kBlk = tcattn::kFlagNoBias | tcattn::kFlagNoSink | tcattn::kFlagBlockTail;
+                    tc_done = tcattn::launch(r.st, d_q, nullptr, nullptr, cd, nullptr, 0, d_apos, d_k, d_v, nullptr, nullptr, 0, r.d_attn_pm, r.d_attn_pl, r.d_attn_po, B, B, kBlk);
+                    if (tc_done) tcattn::merge(r.st, r.d_attn_pm, r.d_attn_pl, r.d_attn_po, nullptr, d_attn_out, nullptr, d_apos, true, ctx_cap[il], B, B, kBlk);
+                }
+                if (!tc_done)
                 k_dspark_block_attn<<<dim3(kInkHeads, B), 128, 0, r.st>>>(
                     d_q, d_k, d_v, d_ctx_k[il], d_ctx_v[il], d_apos,
                     m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ctx_cap[il], B, d_attn_out);

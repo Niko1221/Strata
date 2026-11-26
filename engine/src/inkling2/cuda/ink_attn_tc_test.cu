@@ -149,7 +149,7 @@ static int run_chain(Bufs& b, int fmt, int B, int K, int nc, const char* tag) {
         rtx5090::k_ink_flash_gqa_bspec<<<dim3(kInkKVHeads, M), 128, 0, st>>>(b.q, b.rel, b.sinks, nullptr, b.kv, dslots, b.pos, b.tk, b.tv, b.out[0], K, M);
     };
     auto new_path = [&](cudaStream_t st) -> bool {
-        const bool ok = strata::ink::tcattn::launch(st, b.q, b.rel, b.sinks, b.kv, dslots, 0, b.pos, b.tk, b.tv, nullptr, nullptr, 0, b.pm, b.pl, b.po, M, K, g_nbuf, g_depth);
+        const bool ok = strata::ink::tcattn::launch(st, b.q, b.rel, b.sinks, b.kv, dslots, 0, b.pos, b.tk, b.tv, nullptr, nullptr, 0, b.pm, b.pl, b.po, M, K, 0, g_nbuf, g_depth);
         if (ok) strata::ink::tcattn::merge(st, b.pm, b.pl, b.po, nullptr, b.out[1], nullptr, b.pos, true, b.kv.cap_pos, M, K);
         return ok;
     };
@@ -209,7 +209,7 @@ static int run_case(Bufs& b, int fmt, int M, int nc, bool tree, uint32_t seed, c
     };
     auto new_path = [&](cudaStream_t st) -> bool {
         const bool ok = strata::ink::tcattn::launch(st, b.q, b.rel, b.sinks, b.kv, nullptr, 0, b.pos, tree ? b.tk : nullptr, tree ? b.tv : nullptr, tree ? b.anc : nullptr,
-                                                    tree ? b.dep : nullptr, kInkMaxTreeDepth, b.pm, b.pl, b.po, M, 0, g_nbuf, g_depth);
+                                                    tree ? b.dep : nullptr, kInkMaxTreeDepth, b.pm, b.pl, b.po, M, 0, 0, g_nbuf, g_depth);
         if (ok) strata::ink::tcattn::merge(st, b.pm, b.pl, b.po, nullptr, b.out[1], nullptr, b.pos, tree, b.kv.cap_pos, M);
         return ok;
     };
