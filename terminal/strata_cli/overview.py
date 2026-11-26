@@ -164,6 +164,8 @@ def build(metrics: dict | None) -> dict | None:
                 "vram_hist": _series(history, "gpu_mem_used", GIB), "temp": _num(hw.get("gpu_temp")), "temp_hist": _series(history, "gpu_temp"),
                 "power": _num(hw.get("gpu_power")), "power_limit": _num(hw.get("gpu_power_limit")), "power_hist": _series(history, "gpu_power"),
                 "pcie_rx": _num(hw.get("gpu_pcie_rx_mb")), "pcie_hist": _series(history, "gpu_pcie_rx_mb"),
+                # the engine's own figure, for a card whose driver has no PCIe traffic counter (AMD and Intel on Linux)
+                "pcie_engine": _num(hw.get("pcie_engine_mb")), "pcie_engine_hist": _series(history, "pcie_engine_mb"),
                 "pcie_gen": gen if gen is not None else genmax, "pcie_gen_max": genmax, "pcie_width": width, "pcie_width_max": width_cap,
                 "count": _num(static.get("gpu_count"))},
         "cpu": {"load": _num(hw.get("cpu_pct") if hw.get("cpu_pct") is not None else hw.get("cpu")), "hist": _series(history, "cpu"),
@@ -457,6 +459,13 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     # 0217 item 16: a card at rest runs its link slower to save power (NVML: Gen1 on a Gen4 card); the tile says so instead of reading like a slot that is limited
     gmax = g.get("pcie_gen_max")
     link_note = f"idle, max Gen{int(gmax)}" if g["pcie_gen"] and gmax and g["pcie_gen"] < gmax else ""
+    # the driver's counter where it exists (NVML); otherwise what Strata's engine put on the link, said plainly
+    pcie_from_engine = g["pcie_rx"] is None and g.get("pcie_engine") is not None
+    pcie_rx = g["pcie_rx"] if g["pcie_rx"] is not None else g.get("pcie_engine")
+    pcie_hist = g["pcie_engine_hist"] if pcie_from_engine else g["pcie_hist"]
+    rate = f"{fmt(pcie_rx)} MB/s"
+    pcie_sub = ((f"staged to GPU {rate}", rate) if pcie_from_engine else
+                (f"to GPU {rate}", rate) if pcie_rx is not None else "to GPU --")
     cpu_sub = ((f"{int(c['sockets'])} CPUs {dot} {int(c['cores'])} cores", f"{int(c['sockets'])} CPUs") if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
                (f"{int(c['cores'])} cores {dot} {int(c['threads'])} threads", f"{int(c['cores'])} cores", f"{int(c['threads'])} threads") if c["cores"] and c["threads"] else
                f"{int(c['threads'])} threads" if c["threads"] else "")
@@ -472,9 +481,8 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
               tile_w, accent=accent, box_style=box_style),
         (_tile("PCIe", "not used", ("memory is shared", "memory shared"), spark([], inner, glyphs, lo=0), tile_w, accent=accent, box_style=box_style)
          if unified else
-         _tile("PCIe", link, link_note if link_note else (f"slowest of {ncards} cards", "slowest card") if ncards else
-               ((f"to GPU {fmt(g['pcie_rx'])} MB/s", f"{fmt(g['pcie_rx'])} MB/s") if g["pcie_rx"] is not None else "to GPU --"),
-               spark(g["pcie_hist"], inner, glyphs, lo=0), tile_w, accent=accent, box_style=box_style)),
+         _tile("PCIe", link, link_note if link_note else (f"slowest of {ncards} cards", "slowest card") if ncards else pcie_sub,
+               spark(pcie_hist, inner, glyphs, lo=0), tile_w, accent=accent, box_style=box_style)),
         _tile("CPU", f"{fmt(c['load'])} %", cpu_sub, spark(c["hist"], inner, glyphs, lo=0, hi=100), tile_w, accent=accent, box_style=box_style),
         _tile("Disk read", f"{fmt(d['read'], 1)} MB/s", f"write {fmt(d['write'], 1)} MB/s" if d["write"] is not None else "write --",
               spark(d["hist"], inner, glyphs, lo=0), tile_w, accent=accent, box_style=box_style),
