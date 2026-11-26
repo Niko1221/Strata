@@ -358,7 +358,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # prompt path borrows are served from RAM (the file source reads none of them).  The device calls are
     # wrapped - conversation_transfer_test's pattern - and `pin = false` keeps the copy pageable, so this
     # runs on a CPU-only PC.
-    if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(NOT STRATA_ENABLE_HIP AND NOT STRATA_HYBRID AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(split_lend_complement_test tests/core/split_lend_complement_test.cpp)
       target_link_libraries(split_lend_complement_test PRIVATE strata_engine)
       target_link_options(split_lend_complement_test PRIVATE
@@ -462,7 +462,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
     set_tests_properties(conversation_validation_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
-    if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(NOT STRATA_ENABLE_HIP AND NOT STRATA_HYBRID AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(conversation_transfer_test src/core/conversation_validation_test.cpp)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
       target_link_options(conversation_transfer_test PRIVATE
