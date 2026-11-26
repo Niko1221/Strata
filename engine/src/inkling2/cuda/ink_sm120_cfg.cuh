@@ -89,8 +89,9 @@ inline void fill(Sm120Cfg& c, const strata::core::Sm120Decision& d) {
     c.moe_opt = (p & P_MOE_OPT) != 0;
     c.dense_opt = (p & P_DENSE_OPT) != 0;
     c.dspark_opt = (p & P_DSPARK_OPT) != 0;
-    c.fp8_cache = (p & P_FP8_TRUNK) != 0 && r && r->fp8_mode == Sm120Fp8::Cache;
-    c.fp8_inplace = (p & P_FP8_TRUNK) != 0 && r && r->fp8_mode == Sm120Fp8::InPlace;
+    // one FP8 trunk: the 5090's cache. The in-place one runs only when FP8_INPLACE is asked for by name (and then instead of the cache).
+    c.fp8_inplace = (p & P_FP8_INPLACE) != 0 && r != nullptr;
+    c.fp8_cache = (p & P_FP8_TRUNK) != 0 && r && r->fp8_mode == Sm120Fp8::Cache && !c.fp8_inplace;
     c.c64_bspec = (p & P_C64_SPEC) != 0 && r && r->c64_mode == Sm120C64::Bspec;
     c.c64_k8v4 = (p & P_C64_SPEC) != 0 && r && r->c64_mode == Sm120C64::K8v4;
     c.compact = (p & P_COMPACT) != 0;

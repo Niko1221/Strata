@@ -95,7 +95,10 @@ int main() {
         CHECK((c3.parts & P_COMPACT) && !(c3.parts & P_COMPACT_XCODE) && (c3.parts & P_COMPACT_KV));
         const Sm120Decision c4 = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_COMPACT_KV", "1"}});   // a half without COMPACT does nothing
         CHECK(!(c4.parts & P_COMPACT) && !(c4.parts & P_COMPACT_KV));
-        CHECK(y.row->fp8_mode == Sm120Fp8::InPlace && x.row->fp8_mode == Sm120Fp8::Cache);
+        CHECK(y.row->fp8_mode == Sm120Fp8::Cache && x.row->fp8_mode == Sm120Fp8::Cache);   // one FP8 trunk (the 5090's) on every card
+        CHECK(!(y.parts & P_FP8_INPLACE) && !(x.parts & P_FP8_INPLACE));                    // the in-place one is explicit-only
+        const Sm120Decision ip = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_FP8_INPLACE", "1"}});
+        CHECK((ip.parts & P_FP8_INPLACE) && (ip.parts & P_FP8_TRUNK));
         CHECK(y.row->c64_mode == Sm120C64::K8v4 && x.row->c64_mode == Sm120C64::Bspec);
     }
     // ---- the old switch names are aliases; the new name wins ----

@@ -53,11 +53,15 @@ enum Sm120Part : uint32_t {
     // and the LM head into Q8_ROW / FP8 and the embedding into mapped host memory: that part cannot be split off (it is what makes room).
     P_COMPACT_XCODE = 1u << 13,  // compact: MX8 experts of layers 20-23 are transcoded to SF4 on load (without it SQ-20 does not fit and compact falls back)
     P_COMPACT_KV    = 1u << 14,  // compact: FP8 (E4M3) KV cache on a one-slot run
+    P_FP8_INPLACE   = 1u << 15,  // the 5060 Ti hand-over's in-place FP8 trunk (known bad: FASTQ failed); in no fast set, explicit request only
 };
-constexpr uint32_t kSm120AllParts = (1u << 15) - 1u;
+constexpr uint32_t kSm120AllParts = (1u << 16) - 1u;
 constexpr uint32_t kSm120CompactSubParts = P_COMPACT_XCODE | P_COMPACT_KV;
 
-enum class Sm120Fp8 : uint8_t { None, Cache, InPlace };   // Cache: +641 MiB copy next to the BF16 trunk (5090); InPlace: converted in place (16 GB cards)
+// ONE FP8 trunk for every card: Cache = the 5090 implementation (a +641 MiB FP8 copy next to the BF16 / Q8_ROW trunk; it simply does not start when the card
+// has no room for the copy, and the trunk keeps its BF16 / Q8_ROW GEMMs). InPlace = the 5060 Ti hand-over's in-place conversion: FASTQ 2026-11-26 failed with it
+// (tool calls 6/26 against 23/26 off; with FP8_TRUNK=0 24/26); it is reachable only by the explicit part FP8_INPLACE and is in no fast set.
+enum class Sm120Fp8 : uint8_t { None, Cache, InPlace };
 enum class Sm120C64  : uint8_t { None, Bspec, K8v4 };     // Bspec: mode-3 batched spec with staging (5090); K8v4: K8V4 multi-slot DSpark chain verify (5060 Ti)
 // MoE kernel variant for one batch range. For tile_rows <= 64: Base (shipped k_moe_*_tc), Bk128 (5090: BK=128 SF4 / BK=64 MX8 pipelined kernels),
 // Direct (5060 Ti: direct-MMA SF4, per-row global scale). For tile_rows == 128: Tr128 (5090 512-thread kernels), Tr128Small (5060 Ti 256-thread),
@@ -138,32 +142,32 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
         {"5060ti-16", "RTX 5060 Ti", 34, 38, 15, 17, true, "measured on a 16 GB RTX 5060 Ti (hand-over 11-26)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
-         0, 0, 256, 20, 0, 0, 0, 1,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         0, 0, 256, 20, 512, 768, 0, 1,   // the 5090's FP8 cache: 512 MiB headroom, 768 MiB reserved for it in the K/V sizing (PLACEHOLDER: measure on a 5060 Ti)
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         // ---- placeholders: not measured, the old path runs unless STRATA_INK_SM120_ROW names a row ----
         {"5080", "RTX 5080", 80, 88, 15, 17, false, "placeholder: 16 GB, 84 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"5070ti", "RTX 5070 Ti", 66, 74, 15, 17, false, "placeholder: 16 GB, 70 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"5070", "RTX 5070", 44, 52, 11, 13, false, "PLACEHOLDER: 12 GB, 48 SMs; the owner's card, numbers from a rental later (compact does not fit: pack path)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"5060ti-8", "RTX 5060 Ti", 34, 38, 7, 9, false, "placeholder: 8 GB variant of the 5060 Ti",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"5060", "RTX 5060", 28, 32, 7, 9, false, "placeholder: 8 GB, 30 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"5050", "RTX 5050", 18, 22, 7, 9, false, "PLACEHOLDER: 8 GB, 20 SMs; numbers from a rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"pro6000", "RTX PRO 6000", 180, 200, 90, 100, false, "placeholder: RTX PRO 6000 Blackwell (96 GB, 188 SMs)",
@@ -179,11 +183,11 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
         {"pro4000", "RTX PRO 4000", 66, 74, 22, 26, false, "placeholder: RTX PRO 4000 Blackwell (24 GB, 70 SMs)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
         {"pro2000", "RTX PRO 2000", 24, 32, 15, 17, false, "placeholder: RTX PRO 2000 Blackwell (16 GB)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::InPlace, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
     };
@@ -265,6 +269,7 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
         {P_COMPACT, "COMPACT", "STRATA_INK_5060TI_COMPACT"},
         {P_COMPACT_XCODE, "COMPACT_XCODE", nullptr},
         {P_COMPACT_KV, "COMPACT_KV", nullptr},
+        {P_FP8_INPLACE, "FP8_INPLACE", nullptr},
         {P_TC_SMALLM, "TC_SMALLM", "STRATA_INK_5060TI_TC_SMALLM"},
         {P_PLD, "PLD", "STRATA_INK_5060TI_PLD"},
         {P_PACK, "PACK", "STRATA_INK_5060TI_PACK"},
