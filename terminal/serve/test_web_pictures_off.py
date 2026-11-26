@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 WEB = Path(__file__).parent / "web"
-LOCALES = ("en", "de", "es", "fr", "he", "ja", "ko", "pt", "ru", "zh")
+LOCALES = ("en", "ar", "de", "es", "fr", "he", "ja", "ko", "pt", "ru", "zh")
 OLD_HINT = "Attach a text file (or drop it here)"
 OLD_NOTE = "This model was set up for text only."
 

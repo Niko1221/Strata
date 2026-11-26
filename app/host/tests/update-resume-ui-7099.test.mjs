@@ -12,7 +12,7 @@ import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
  */
 
 const src = p => readFileSync(new URL(p, import.meta.url), 'utf8');
-const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const langs = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const catalogs = Object.fromEntries(langs.map(l => [l, JSON.parse(src(`../src/locales/${l}.json`))]));
 
 test('the agent status says whether the host is paused, so the toolbar can show Resume (also after a reload)', async () => {

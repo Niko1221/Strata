@@ -1,4 +1,4 @@
-// #6060: Hebrew reads right to left. The page gets dir="rtl" for it (app: store.ts, web page: i18n.js), and the composer's send arrow
+// #6060: Hebrew and Arabic read right to left. The page gets dir="rtl" for it (app: store.ts, web page: i18n.js), and the composer's send arrow
 // is mirrored there so it points the way the text runs. The other languages keep dir="ltr" and the arrow as it is.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,15 +6,15 @@ import { readFileSync } from 'node:fs';
 
 const read = rel => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-test('the app sets dir=rtl for Hebrew only', () => {
+test('the app sets dir=rtl for Hebrew and Arabic', () => {
   const store = read('../src/lib/store.ts');
-  assert.match(store, /root\.dir = state\.language === 'he' \? 'rtl' : 'ltr'/);
+  assert.match(store, /root\.dir = state\.language === 'ar' \|\| state\.language === 'he' \? 'rtl' : 'ltr'/);
 });
 
-test('the web page sets dir=rtl for Hebrew only', () => {
+test('the web page sets dir=rtl for Hebrew and Arabic', () => {
   const js = read('../../../terminal/serve/web/i18n.js');
   assert.match(js, /RTL\.includes\(lang\) \? "rtl" : "ltr"/);
-  assert.match(js, /RTL\s*=\s*\[\s*"he"\s*\]/);
+  assert.match(js, /RTL\s*=\s*\[\s*"ar"\s*,\s*"he"\s*\]/);
 });
 
 test('the send arrow is mirrored in a right-to-left page, in the app and on the web page', () => {

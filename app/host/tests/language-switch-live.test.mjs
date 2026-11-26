@@ -6,7 +6,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { build } from 'esbuild';
 
-const LANGS = ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const built = await build({ stdin: { contents: "export * from './src/lib/i18n'; export * from './src/lib/group-line';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
 const { tr, setTranslationLanguage, loadCatalog, groupSentence } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 for (const l of LANGS) await loadCatalog(l);

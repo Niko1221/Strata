@@ -36,6 +36,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 - [Contribution rules](../.github/CONTRIBUTING.md)
 - [Community benchmarks](COMMUNITY_BENCHMARKS.md) and the [standard benchmark protocol](BENCHMARK_PROTOCOL.md)
 - [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md) and [Terminal reference](TERMINAL.md)
+- [LAN cluster groundwork (opt-in, draft)](CLUSTER_LAN.md)
 - [KVA: approximate prompt processing for the late layers (experimental, opt-in)](KVA.md)
 - [App development](../app/host/README.md) and [packaging](../tools/packaging/README.md)
 

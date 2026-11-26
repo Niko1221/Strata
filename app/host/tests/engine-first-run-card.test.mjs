@@ -21,7 +21,7 @@ test('the new line exists in all ten languages', () => {
   const en = JSON.parse(readFileSync(new URL('../src/locales/guic-en.json', import.meta.url), 'utf8'));
   const key = Object.keys(en).find(k => en[k] === LINE);
   assert.ok(key, 'the English key');
-  for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he']) {
+  for (const l of ['ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he']) {
     const text = JSON.parse(readFileSync(new URL(`../src/locales/guic-${l}.json`, import.meta.url), 'utf8'))[key];
     assert.ok(text && text !== LINE, l);
   }

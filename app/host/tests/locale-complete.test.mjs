@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const APP = join(here, '..', 'src', 'locales');
 const WEB = join(here, '..', '..', '..', 'terminal', 'serve', 'web', 'locales');
-const LANGS = ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 const load = file => JSON.parse(readFileSync(file, 'utf8'));
 
 /** family -> { lang -> parsed catalog }: app:main (en.json ...), app:<fam> (<fam>-en.json ...), web (serve/web/locales). */

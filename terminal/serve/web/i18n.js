@@ -13,9 +13,9 @@
 "use strict";
 (function (root) {
   // [code, the language's own name].  A new language is a locales/<code>.json file plus one line here.
-  const LANGUAGES = [["en", "English"], ["de", "Deutsch"], ["fr", "Français"], ["es", "Español"], ["ja", "日本語"], ["ko", "한국어"],
+  const LANGUAGES = [["en", "English"], ["ar", "العربية"], ["de", "Deutsch"], ["fr", "Français"], ["es", "Español"], ["ja", "日本語"], ["ko", "한국어"],
                      ["pt", "Português"], ["ru", "Русский"], ["zh", "中文"], ["he", "עברית"]];
-  const RTL = ["he"];                                   // the languages written right to left
+  const RTL = ["ar", "he"];                             // the languages written right to left
   let lang = "en", catalog = null, rules = null;
 
   const fill = (s, vars) => String(s).replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? String(vars[k]) : m));
@@ -52,7 +52,7 @@
     }
     if (root.document && root.document.documentElement) {
       root.document.documentElement.lang = lang;
-      root.document.documentElement.dir = RTL.includes(lang) ? "rtl" : "ltr";      // #6060: Hebrew reads right to left
+      root.document.documentElement.dir = RTL.includes(lang) ? "rtl" : "ltr";      // Arabic and Hebrew (#6060) read right to left
     }
   }
 

@@ -65,7 +65,7 @@ test('a turn that ends with no words reports whether any tool work was done', ()
 });
 
 test('every message is a plain sentence with a next step, carries its interface key, and is in the catalog in all nine languages', () => {
-  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+  const langs = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
   const catalogs = Object.fromEntries(langs.map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
   const idOf = text => Object.entries(catalogs.en).find(([, v]) => v === text)?.[0];
   for (const [reason, text] of Object.entries(GUARD_NOTES)) {

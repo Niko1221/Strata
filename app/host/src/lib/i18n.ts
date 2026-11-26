@@ -32,16 +32,16 @@ import fixa_en from '../locales/fixa-en.json';
 /* The 0.2.17 strings of lane GUI-TUI (gtui-<lang>.json). */
 import gtui_en from '../locales/gtui-en.json';
 
-export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'fr',label:'Français'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'},{value:'he',label:'עברית'}] as const;
+export const LANGUAGES=[{value:'en',label:'English'},{value:'ar',label:'العربية'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'fr',label:'Français'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'},{value:'he',label:'עברית'}] as const;
 export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (app/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
 /* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
 /* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
 const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en,...ui_en,...engine_en,...pick_en,...df2_en,...upd_en,...r3_en,...pic_en,...gui_en,...sav_en,...net_en,...dmg_en,...guic_en,...fixa_en,...gtui_en};
-/* English is the key of every string, so it stays in the main file. The other eight languages are one file each, fetched the first time a language is used
-   (the saved language before the first screen is drawn, a language picked later when it is picked): most people read one of the nine. */
+/* English is the key of every string, so it stays in the main file. The other ten languages are one file each, fetched the first time a language is used
+   (the saved language before the first screen is drawn, a language picked later when it is picked). */
 type Catalog=Record<string,string>;
-const loaders:Record<Exclude<Language,'en'>,()=>Promise<{default:Catalog}>>={zh:()=>import('./catalog-zh'),ja:()=>import('./catalog-ja'),de:()=>import('./catalog-de'),fr:()=>import('./catalog-fr'),es:()=>import('./catalog-es'),ru:()=>import('./catalog-ru'),pt:()=>import('./catalog-pt'),ko:()=>import('./catalog-ko'),he:()=>import('./catalog-he')};
+const loaders:Record<Exclude<Language,'en'>,()=>Promise<{default:Catalog}>>={ar:()=>import('./catalog-ar'),zh:()=>import('./catalog-zh'),ja:()=>import('./catalog-ja'),de:()=>import('./catalog-de'),fr:()=>import('./catalog-fr'),es:()=>import('./catalog-es'),ru:()=>import('./catalog-ru'),pt:()=>import('./catalog-pt'),ko:()=>import('./catalog-ko'),he:()=>import('./catalog-he')};
 const catalogs:Partial<Record<Language,Catalog>>={en:english};
 const loading=new Map<Language,Promise<void>>();
 export const catalogLoaded=(value:Language)=>!!catalogs[value];

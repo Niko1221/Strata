@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-for (const lang of ['zh', 'ja', 'de', 'fr', 'es', 'ru', 'pt', 'ko', 'he']) {
+for (const lang of ['ar', 'zh', 'ja', 'de', 'fr', 'es', 'ru', 'pt', 'ko', 'he']) {
   const file = join(root, 'src', 'lib', `catalog-${lang}.ts`);
   let text = readFileSync(file, 'utf8');
   if (text.includes('gtui')) continue;

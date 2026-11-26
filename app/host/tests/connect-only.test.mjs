@@ -83,7 +83,7 @@ test('the engine card comes back while setup is dismissed but not complete, and 
 test('the two sentences are in the guic catalog in all ten languages', () => {
   const dir = new URL('src/locales/', here);
   const langs = readdirSync(fileURLToPath(dir)).filter(f => /^guic-[a-z]{2}\.json$/.test(f));
-  assert.equal(langs.length, 10);
+  assert.equal(langs.length, 11);
   const en = JSON.parse(readFileSync(fileURLToPath(new URL('guic-en.json', dir)), 'utf8'));
   const values = Object.values(en);
   for (const text of ['Only connect to Strata on another computer', 'Nothing is downloaded. You can add the engine later from the Models page.']) {

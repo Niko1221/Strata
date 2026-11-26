@@ -9,6 +9,7 @@ export const ROUTES = [
   'serving',
   'monitor',
   'tasks',
+  'cluster',
   'skills',
   'settings',
 ] as const;
