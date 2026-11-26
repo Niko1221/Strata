@@ -1033,6 +1033,13 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
     }
 }
 
+// bit of a GSQ-RCO expert type in the STRATA_INK_IQ_TC_MASK word (the dp4a kernels skip the types whose bit is set; bits 8.. of their skip argument)
+__device__ __forceinline__ bool ink_rco_tc_skips(int skip, uint32_t t) {
+    if (!(skip & 4)) return false;
+    const int bit = (t == 16u) ? 0 : (t == 17u) ? 1 : (t == 18u) ? 2 : (t == 19u) ? 3 : (t == 21u) ? 4 : (t == 22u) ? 5 : (t == 42u) ? 6 : -1;
+    return bit >= 0 && ((skip >> (8 + bit)) & 1);
+}
+
 // Grouped GGUF_RAW Gate+Up+SITU DP4A kernel with multi-token activation reuse (MAX_M = 1, 4, 16)!
 template <int MAX_M>
 __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
@@ -1057,7 +1064,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
     const InkGgufExpertHeader* hdr = reinterpret_cast<const InkGgufExpertHeader*>(body);
     if (skip_q80 && hdr->gu_type == 8u) return;   // done by k_ink_moe_q80_tc
     if ((skip_q80 & 2) && hdr->gu_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<true, 20>
-    if ((skip_q80 & 4) && (hdr->gu_type == 16u || hdr->gu_type == 17u || hdr->gu_type == 18u || hdr->gu_type == 19u || hdr->gu_type == 21u || hdr->gu_type == 22u)) return;   // k_ink_moe_iq_tc
+    if (ink_rco_tc_skips(skip_q80, hdr->gu_type)) return;   // k_ink_moe_iq_tc
     const size_t rb = ink_gguf_row_bytes(hdr->gu_type, kInkHidden);
     const uint8_t* base = body + sizeof(InkGgufExpertHeader);
     const uint8_t* rg = base + (size_t)f * rb;
@@ -1113,7 +1120,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
     const InkGgufExpertHeader* hdr = reinterpret_cast<const InkGgufExpertHeader*>(body);
     if (skip_q80 && hdr->dn_type == 8u) return;   // done by k_ink_moe_q80_tc
     if ((skip_q80 & 2) && hdr->dn_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<false, 20>
-    if ((skip_q80 & 4) && hdr->dn_type == 42u) return;   // Q2_0: k_ink_moe_iq_tc<false, 42>
+    if (ink_rco_tc_skips(skip_q80, hdr->dn_type)) return;   // Q2_0: k_ink_moe_iq_tc<false, 42>
     const size_t rb = ink_gguf_row_bytes(hdr->dn_type, kInkInter);
     const uint8_t* rr = body + ex.dn_off + (size_t)r * rb;
     constexpr int NBH = kInkInter >> 5;
@@ -1288,7 +1295,6 @@ __global__ void __launch_bounds__(128) k_ink_moe_q80_tc(
 // (4 magnitudes) and one sign nibble. IQ2_XS and IQ2_S carry a different scale for the groups 0..1 and 2..3, so their two halves run as two mmas (the other half's
 // registers zero); IQ1_S adds delta * (sum of the token's activation codes) per block (the Q8_1 block's s). Not bit-identical to the dp4a kernels (the float order differs).
 // ============================================================================
-#if defined(__CUDACC__)
 template <int WT>
 __device__ __forceinline__ void ink_iq_wfrag(const uint8_t* row, int b, int tig, uint32_t& wlo, uint32_t& whi, float& dlo, float& dhi, float& delta) {
     const int h = tig & 1;
@@ -1488,7 +1494,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_iq_tc(
     (void)sec4_base; (void)experts; (void)tb; (void)aq; (void)topk_w; (void)out;
 #endif
 }
-#endif  // __CUDACC__ (the RCO tensor-core kernels)
+#endif  // __CUDACC__
 
 // ============================================================================
 // 3. Universal Q8_1_G64 Quantizer (for S_K experts, matches sk_codecs.cpp bit-for-bit!)
@@ -4233,16 +4239,17 @@ inline void launch_ink_moe_dispatch_only(
         static const int nl_tc_on = [] { const char* e = std::getenv("STRATA_INK_IQ4NL_TC"); return !(e && e[0] == '0'); }();
         const int skip_tc = (q80_tc_min > 0 && M >= q80_tc_min && ink_has_int8_tc()) ? 1 : 0;
         static const int rco_tc_on = [] { const char* e = std::getenv("STRATA_INK_IQ_TC"); return !(e && e[0] == '0'); }();   // the IQ / Q2_0 types of the GSQ-RCO files
-        const int skip_q80 = skip_tc ? (1 | (nl_tc_on ? 2 : 0) | (rco_tc_on ? 4 : 0)) : 0;   // bit 0: Q8_0, bit 1: IQ4_NL, bit 2: IQ1_S / IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS / IQ3_S / Q2_0
+        static const unsigned rco_mask = [] { const char* e = std::getenv("STRATA_INK_IQ_TC_MASK"); return e ? (unsigned)std::strtoul(e, nullptr, 0) : 0x7Fu; }();
+        const int skip_q80 = skip_tc ? (1 | (nl_tc_on ? 2 : 0) | (rco_tc_on ? 4 : 0) | (int)((rco_mask & 0x7Fu) << 8)) : 0;   // bit 0: Q8_0, bit 1: IQ4_NL, bit 2: the RCO types in bits 8..14
         if (skip_q80) k_ink_moe_q80_tc<true><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         if (skip_q80 & 2) k_ink_moe_q80_tc<true, 20><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         if (skip_q80 & 4) {
-            k_ink_moe_iq_tc<true, 16><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            k_ink_moe_iq_tc<true, 17><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            k_ink_moe_iq_tc<true, 18><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            k_ink_moe_iq_tc<true, 19><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            k_ink_moe_iq_tc<true, 21><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            k_ink_moe_iq_tc<true, 22><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 1u) k_ink_moe_iq_tc<true, 16><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 2u) k_ink_moe_iq_tc<true, 17><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 4u) k_ink_moe_iq_tc<true, 18><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 8u) k_ink_moe_iq_tc<true, 19><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 16u) k_ink_moe_iq_tc<true, 21><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if (rco_mask & 32u) k_ink_moe_iq_tc<true, 22><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         }
         if (gmt == 1) {
             k_ink_moe_gu_gguf_dp4a<1><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
@@ -4260,7 +4267,7 @@ inline void launch_ink_moe_dispatch_only(
         k_ink_quant_q8_1_g32<<<(nblk_h + 7) / 8, 256, 0, st>>>(ws.h_f32, ws.hq_g32, P, kInkInter);
         if (skip_q80) k_ink_moe_q80_tc<false><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
         if (skip_q80 & 2) k_ink_moe_q80_tc<false, 20><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
-        if (skip_q80 & 4) k_ink_moe_iq_tc<false, 42><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
+        if ((skip_q80 & 4) && (rco_mask & 64u)) k_ink_moe_iq_tc<false, 42><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
         if (gmt == 1) {
             k_ink_moe_dn_gguf_dp4a<1><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
         } else if (gmt == 2) {
