@@ -12,6 +12,7 @@
 #pragma once
 
 #include "ink_runner.cuh"
+#include "ink_dflash2.cuh"   // opt-in DFlash 2 drafter (STRATA_INK_DRAFTER=dflash2); every hook of it below starts with `if (df2)`
 
 namespace strata::ink {
 
@@ -1172,10 +1173,64 @@ struct InkDSpark {
     float   *ms_top_tmp_vals= nullptr;  // [R_pad, 2048]
     int      ms_vt_nom      = 0;
 
+    // Opt-in DFlash 2 drafter (STRATA_INK_DRAFTER=dflash2): when set, the entry points below hand over to it and DSpark's own buffers are not allocated.
+    InkDFlash2* df2 = nullptr;
+
     InkDSpark(InkCudaRunner& runner) : r(runner), m(runner.m) {}
+
+    bool init_dflash2(int ctx) {
+        const std::string path = InkDFlash2::resolve_path(df2_model_path());
+        if (path.empty()) {
+            std::fprintf(stderr, "[InkDFlash2] DFlash 2 is the drafter, but no weights file was found (STRATA_INK_DFLASH2, or dflash2.safetensors next to "
+                                 "the model)\n");
+            return false;
+        }
+        int slots = std::max(1, r.max_slots);
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_SLOTS")) slots = std::max(1, std::min(slots, std::atoi(e)));
+        else {
+            size_t vf_s = 0, vt_s = 0;
+            (void)ink_cuda_mem_info(&vf_s, &vt_s);
+            const bool small_card = m.all_sf4_vram || (vt_s > 0 && vt_s < (24ull << 30));
+            slots = std::min(slots, small_card ? 16 : 64);   // rings are 42 MiB a slot; a 16 GB card keeps its memory for the experts, slots above 16 of it decode without a drafter
+        }
+        auto d = std::make_unique<InkDFlash2>(r);
+        std::string err;
+        size_t vf0 = 0, vt0 = 0, vf1 = 0;
+        (void)ink_cuda_mem_info(&vf0, &vt0);
+        const auto t_load0 = std::chrono::steady_clock::now();
+        if (!d->load(path, slots, err)) {
+            std::fprintf(stderr, "[InkDFlash2] %s\n", err.c_str());
+            d->free_all();
+            return false;
+        }
+        (void)ink_cuda_mem_info(&vf1, &vt0);
+        df2 = d.release();
+        max_ctx = ctx;
+        ready = true;
+        // the 5060 Ti family's multi-user chain verify asks for this flag (it was DSpark's mapped-host multi-slot mode)
+        if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16 && m.all_sf4_vram) multislot_ready = true;
+        std::fprintf(stderr, "[InkDFlash2] DFlash 2 drafter on: %s, %d slot(s), weights %.0f MiB + scratch %.0f MiB (GPU memory taken %.0f MiB), codebooks on the %s, %s block weights, loaded in %.2f s\n",
+                     path.c_str(), df2->max_slots, (double)df2->bytes_weights / 1048576.0, (double)df2->bytes_scratch / 1048576.0,
+                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->var.attn == 0 ? "bf16" : (df2->var.attn == 1 && df2->var.ffn == 1 ? "Q8" : (df2->var.attn == 2 ? "4-bit groups" : (df2->var.ffn == 3 ? (df2->var.attn == 1 ? "mix Q8 + SF4" : "SF4") : "mixed"))),
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load0).count());
+        return true;
+    }
 
     void init(int ctx, int k_cand = 512, int init_glob_ctx = 0) {
         if (!m.man.has_dspark) return;
+        if (InkDFlash2::requested()) {
+            if (init_dflash2(ctx)) return;
+        }
+        if (!df2_dspark_selected()) {   // DFlash 2 is the only drafter (owner, 2026-11-26): no sidecar, or it could not start, means no drafter, not DSpark
+            std::fprintf(stderr, "[InkDFlash2] this run has no drafter (DFlash 2 is the only drafter; STRATA_INK_DRAFTER=dspark selects the dormant DSpark)\n");
+            ready = false;
+            return;
+        }
+        if (m.man.dspark.empty()) {
+            std::fprintf(stderr, "[InkDSpark] the model file carries no DSpark weights; this run has no drafter\n");
+            ready = false;
+            return;
+        }
         max_ctx = ctx;
         K_cand = m.all_sf4_vram ? std::min(k_cand, 128) : k_cand;
         const int swa_cap = std::min(max_ctx, m.man.c.dspark_swa_win + std::max(r.max_batch, 64));
@@ -1616,6 +1671,7 @@ struct InkDSpark {
 
     // Ingest arbitrary-slot target taps [4, M, 2304] into multi-slot DSpark context KV + f_rnn!
     void ingest_taps_slots(float* const taps[4], const int32_t* h_slots, const int32_t* h_pos, int M) {
+        if (df2) { if (M > 0) df2->ingest(taps, nullptr, h_slots, h_pos, M); return; }
         if (!multislot_ready || M <= 0) return;
         const int cap = std::min(M, r.max_batch);
         int32_t* ing_buf = h_ms_ing_meta + (ms_ing_ring_idx++ & 63ull) * ms_ing_ring_stride;
@@ -1664,6 +1720,7 @@ struct InkDSpark {
 
     // Compact selected rows `h_src_rows[0..n_tot-1]` from r.d_taps[0..3] and ingest into multi-slot DSpark!
     void ingest_taps_selected(const int32_t* h_src_rows, const int32_t* h_slots, const int32_t* h_pos, int n_tot) {
+        if (df2) { if (n_tot > 0) df2->ingest(r.d_taps, h_src_rows, h_slots, h_pos, n_tot); return; }
         if (!multislot_ready || n_tot <= 0) return;
         const int cap = std::min(n_tot, r.max_batch);
         int32_t* row_buf = h_ms_ing_meta + (ms_ing_ring_idx++ & 63ull) * ms_ing_ring_stride;
@@ -1683,6 +1740,12 @@ struct InkDSpark {
         const int32_t* h_apos,
         int32_t* out_drafts_7,
         int k_draft = 7) {
+        if (df2) {
+            std::vector<float> conf((size_t)std::max(1, B) * 7);
+            if (B > 0 && !df2->draft(B, h_slots, h_anchor_toks, h_apos, out_drafts_7, conf.data()))
+                for (int i = 0; i < B * 7; ++i) out_drafts_7[i] = h_anchor_toks[i / 7];
+            return;
+        }
         if (!multislot_ready || B <= 0) return;
         const int n_dr = std::max(1, std::min(7, k_draft));
         std::memcpy(h_ms_meta, h_slots, (size_t)B * 4);
@@ -1900,6 +1963,7 @@ struct InkDSpark {
 
     // Elastic growth for DSpark Global layer(s) (e.g. layer 1) as sequence length grows!
     bool ensure_ctx_cap(int needed_pos) {
+        if (df2) return true;   // DFlash 2's rings are fixed-size sliding windows
         if (!ready || needed_pos <= 0) return true;
         const int target = std::min(max_ctx, std::max(needed_pos, ((needed_pos + 8191) / 8192) * 8192));
         bool grew = false;
@@ -1946,6 +2010,7 @@ struct InkDSpark {
 
     // Ingest target taps [4, M, 2304] at positions [p0 .. p0 + M - 1] into DSpark context KV & f_rnn (ZERO host sync!)
     void ingest_taps_from(float* const taps[4], int p0, int M) {
+        if (df2) { if (M > 0) df2->ingest_seq(taps, 0, p0, M); return; }
         if (!ready || M <= 0) return;
         if (!ensure_ctx_cap(p0 + M)) return;
         for (int i = 0; i < M; ++i) h_pos_pin[i] = p0 + i;
@@ -2179,6 +2244,17 @@ struct InkDSpark {
 
     // Draft 7 tokens (Block-8) at custom RoPE position pos0 while attending committed ctx [0..ctx_apos-1]!
     void draft_block8_at(int32_t anchor_tok, int ctx_apos, int pos0, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+        if (df2) {
+            // a block that starts past the committed context (the 2-block chain) attends the context and its own rows; the gap in between is masked
+            float conf[7];
+            const int32_t slot0 = 0;
+            const bool ok = df2->draft(1, &slot0, &anchor_tok, &pos0, out_ids_7, conf, &ctx_apos);
+            for (int s = 0; s < 7; ++s) {
+                if (!ok) out_ids_7[s] = anchor_tok;
+                if (out_conf_7) out_conf_7[s] = ok ? conf[s] : 0.0f;
+            }
+            return;
+        }
         const int B = kInkDsparkBlock;  // 8
         h_meta_pin[0] = anchor_tok;
         h_meta_pin[1] = ctx_apos;
@@ -2227,9 +2303,81 @@ struct InkDSpark {
         draft_block8_at(anchor_tok, apos, apos, out_ids_7, out_conf_7);
     }
 
+    // DFlash 2 drafts one linear chain, so its "tree" is a path of the anchor and up to 7 drafts. The node count follows the same expected-tokens-per-cost rule
+    // as the beam tree below (adaptive_moe_ratio > 0), with the chain's cumulative confidences as the prefix probabilities.
+    // Cost of one more verify row, in plain steps, at context position apos: 0 where the K/V is in VRAM (a 24 GB card or more), else about 2.2e-5 per context token
+    // (RTX 5060 Ti: 32K -> 0.7, 128K -> 1.3 measured). A step at or above 0.5 (about 25K tokens) is a plain step.
+    double df2_ctx_cost(int apos) const {
+        return (df2 && df2->host_codebooks) ? std::min(3.0, 2.2e-5 * (double)std::max(0, apos - 2048)) : 0.0;
+    }
+    bool df2_plain_ctx(int apos) const { return df2_ctx_cost(apos) >= 0.5; }
+
+    void draft_chain_tree_df2(int32_t anchor_tok, int apos, int max_nodes, InkTreeSpec& out_tree, float adaptive_moe_ratio, float plain_margin) {
+        max_nodes = std::max(2, std::min(r.tree_cap, max_nodes));
+        if (df2_plain_ctx(apos)) {   // a plain step: no draft, no window (the ring keeps being fed by the ingest)
+            out_tree = InkTreeSpec{};
+            out_tree.M = 1;
+            out_tree.tok[0] = anchor_tok;
+            out_tree.parent[0] = -1;
+            out_tree.depth[0] = 0;
+            out_tree.build();
+            last_pred_etok = 1.0;
+            last_m = 1;
+            last_deepest_node = 0;
+            last_deepest_logp = -1e30f;
+            return;
+        }
+        int32_t ids[7] = {};
+        float conf[7] = {};
+        const int32_t slot0 = 0;
+        if (!df2->draft(1, &slot0, &anchor_tok, &apos, ids, conf))
+            for (int s = 0; s < 7; ++s) { ids[s] = anchor_tok; conf[s] = 0.0f; }
+        double pref_p[9];
+        pref_p[0] = 1.0;
+        double cum = 1.0;
+        for (int i = 0; i < 7; ++i) {
+            conf[i] = (float)std::pow(std::max(0.0, std::min(1.0, (double)conf[i])), df2->conf_pow);
+            cum *= std::max(0.0, std::min(1.0, (double)conf[i]));
+            pref_p[i + 1] = pref_p[i] + cum;
+        }
+        int want = std::min(max_nodes, 8);
+        // On a card whose K/V lives (partly) in host memory every verify row reads the whole context again: a window row costs more the longer the context. Measured on the
+        // RTX 5060 Ti (32K: a step at M = 8 took 3.3x a plain step, 128K: 8.6x): about 1.3e-5 of a plain step per row and context token, so wide windows are not worth it there.
+        const double ctx_row_cost = df2_ctx_cost(apos);
+        if (adaptive_moe_ratio > 0.0f || ctx_row_cost > 0.0) {
+            double best_rate = -1.0;
+            int best_m = std::min(rtx5090::dspark_opt_on() ? 4 : 3, 8);
+            const double ratio = std::max(0.0f, adaptive_moe_ratio);
+            for (int mb = 1; mb <= want; ++mb) {
+                if (mb < 3 && plain_margin <= 0.0f && ctx_row_cost <= 0.1) continue;
+                const double e_tok = pref_p[mb - 1];
+                const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)mb);
+                double rate = e_tok / (1.0 + ratio * exp_frac + ctx_row_cost * (double)(mb - 1));
+                if (mb < 3) rate *= (plain_margin > 0.0f ? (double)plain_margin : 1.0);
+                if (rate > best_rate) { best_rate = rate; best_m = mb; }
+            }
+            want = best_m;
+            last_pred_etok = pref_p[best_m - 1];
+            last_m = best_m;
+        }
+        out_tree = InkTreeSpec{};
+        for (int i = 0; i < want; ++i) {
+            const int nid = out_tree.M++;
+            out_tree.tok[nid] = (i == 0) ? anchor_tok : ids[i - 1];
+            out_tree.parent[nid] = (i == 0) ? -1 : (int8_t)(i - 1);
+            out_tree.depth[nid] = (uint8_t)i;
+        }
+        last_deepest_node = want - 1;
+        // the log-probability of the chain to its end: the 2-block chain (fast mode, depth 7) asks for exp(it) >= 0.55
+        last_deepest_logp = 0.0f;
+        for (int i = 0; i + 1 < want; ++i) last_deepest_logp += std::log(std::max(1e-9f, conf[i]));
+        out_tree.build();
+    }
+
     // Draft True W=2..4 Multi-Branch Bayes-Optimal Connected Tree (M <= 16..32 nodes, CUDA Graph captured!)
     // When adaptive_moe_ratio > 0, dynamically picks M* in {4, 6, 8, 10, 12, 16} maximizing E[emit(M)] / (1 + ratio*(1-(15/16)^M))!
     void draft_beam_tree(int32_t anchor_tok, int apos, int beam_w, int max_nodes, InkTreeSpec& out_tree, float adaptive_moe_ratio = 0.0f, float plain_margin = 0.0f) {
+        if (df2) { draft_chain_tree_df2(anchor_tok, apos, max_nodes, out_tree, adaptive_moe_ratio, plain_margin); return; }
         beam_w = std::max(1, std::min(kInkMaxBeam, beam_w));
         max_nodes = std::max(2, std::min(r.tree_cap, max_nodes));
         const int B = kInkDsparkBlock;  // 8
@@ -2371,6 +2519,7 @@ struct InkDSpark {
     }
 
     void free_all() {
+        if (df2) { df2->free_all(); delete df2; df2 = nullptr; }
         free_multislot();
         if (draft_graph) { cudaGraphExecDestroy(draft_graph); draft_graph = nullptr; }
         if (beam_graph)  { cudaGraphExecDestroy(beam_graph);  beam_graph = nullptr; beam_graph_w = 0; }

@@ -517,6 +517,7 @@ struct Rtx5090BatchedSpec {
 
     void ingest_slot_seq(InkDSpark& ds, int slot, int p0, int M) {
         if (!ready || !ds.ready || slot < 0 || slot >= max_slots || M <= 0) return;
+        if (ds.df2) { ds.df2->ingest_seq(ds.r.d_taps, slot, p0, M); return; }   // DFlash 2 (STRATA_INK_DRAFTER=dflash2)
         auto& r = ds.r;
         auto& m = ds.m;
         const float* fw = (const float*)m.trunk_ptr("dspark.fuse_weight");
@@ -577,6 +578,7 @@ struct Rtx5090BatchedSpec {
             if (sl >= 0 && sl < max_slots) slot_synced_pos[sl] = p0_b[b] + na;
         }
         if (n_tot <= 0) return;
+        if (ds.df2) { ds.df2->ingest(r.d_taps, h_src, h_sl, h_pos, n_tot); return; }   // DFlash 2 (STRATA_INK_DRAFTER=dflash2)
         int32_t* d_src = d_meta;
         int32_t* d_sl  = d_meta + m_cap;
         int32_t* d_pos = d_meta + 2 * m_cap;
@@ -614,6 +616,14 @@ struct Rtx5090BatchedSpec {
     void draft_batched(InkDSpark& ds, int B, int K_draft,
                        const int* slots_b, const int32_t* anchor_toks, const int* apos_b,
                        int32_t* h_out_draft) {
+        if (ds.df2) {   // DFlash 2 (STRATA_INK_DRAFTER=dflash2): the first K_draft of its 7 chain tokens per slot
+            std::vector<int32_t> ids((size_t)std::max(1, B) * 7);
+            std::vector<float> conf((size_t)std::max(1, B) * 7);
+            const bool ok = B > 0 && B <= ds.df2->max_slots && ds.df2->draft(B, slots_b, anchor_toks, apos_b, ids.data(), conf.data());
+            for (int b = 0; b < B; ++b)
+                for (int k = 0; k < K_draft; ++k) h_out_draft[b * K_draft + k] = ok ? ids[(size_t)b * 7 + k] : anchor_toks[b];
+            return;
+        }
         auto& r = ds.r;
         auto& m = ds.m;
         const int N_blk = B * 8;

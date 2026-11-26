@@ -202,6 +202,8 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     // Include O(1) prefill ws (~114 MiB) + DSpark (~224 MiB when enabled) + activation ws (WDDM floor added inside loader!)
     // Note: unembed_screen (441 MiB) is allocated INSIDE load_from_model_file BEFORE expert packing.
     p.dspark_pad = in.build_screen ? (opt5060.pack ? (540ull << 20) : (224ull << 20)) : 0ull;
+    // STRATA_INK_DRAFTER=dflash2: the DFlash 2 drafter's weights (Q8 + bf16) and scratch, ~480 MiB more than DSpark's buffers, are held back
+    if (in.build_screen && strata::ink::InkDFlash2::requested()) p.dspark_pad += (strata::ink::sm120_cfg(in.gpu_id).fast ? (strata::ink::df2_total_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30)), in.max_slots) - 200ull) : 42ull * (size_t)std::min(in.max_slots, 8)) << 20;   // the compact (pack) loader leaves DSpark's weights off the card
     p.ws_pad = opt5060.pack
         ? ((in.max_slots >= 16 ? (700ull << 20) : (420ull << 20)) + p.dspark_pad)
         : (((in.max_slots >= 8) ? (1280ull << 20)
@@ -209,6 +211,8 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
             : (in.total_vram <= (13ull << 30)) ? (512ull << 20)
                                                : (832ull << 20))) + p.dspark_pad);
     p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
+    // DFlash 2 on a card with hybrid experts (not the compact 16 GB mode): hold back what its weights, rings and graphs need, as --vram-reserve-mib 1850 does
+    if (in.build_screen && !strata::ink::sm120_cfg(in.gpu_id).fast && strata::ink::InkDFlash2::requested()) p.min_reserve_bytes = std::max<size_t>(p.min_reserve_bytes, (size_t)(1850.0 + strata::ink::df2_big_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30))) - strata::ink::df2_big_mib(strata::ink::Df2Variant{2, 2})) << 20);
     if (opts.vram_reserve_mib >= 0) {
         p.min_reserve_bytes = std::max(p.min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
     }
@@ -296,6 +300,7 @@ public:
     }
 
     bool init(const InkModelFile& mf, const BackendOpts& opts, std::string& err) override {
+        strata::ink::df2_model_path() = mf.path;   // where DFlash 2 looks for its sidecar: needed by the reserves below as well
         if (const char* e = std::getenv("STRATA_INK_SPEC_BEAM")) spec_cfg_.beam = std::atoi(e);
         if (const char* e = std::getenv("STRATA_INK_SPEC_COST")) spec_cfg_.cost = (float)std::atof(e);
         if (const char* e = std::getenv("STRATA_INK_SPEC_PLAIN")) spec_cfg_.plain = (float)std::atof(e);
@@ -370,6 +375,7 @@ public:
         // Compute exact minimum KV + ShortConv + workspace headroom BEFORE pinning experts!
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
+        strata::ink::df2_parallel() = max_slots_;   // DFlash 2 as the default drafter only up to 16 slots (see ink_dflash2_path.cuh)
         const int kv_offload_mode = (opts.kv_offload == "on") ? 1 : ((opts.kv_offload == "off") ? -1 : 0);
         // all of the sizing below is plan_vram_reserve() / plan_prefill_chunk() (top of this file)
         VramPlanIn plan_in;
@@ -379,7 +385,7 @@ public:
         plan_in.total_vram = prop.totalGlobalMem;
         plan_in.max_slots = max_slots_;
         plan_in.kv_offload_mode = kv_offload_mode;
-        plan_in.build_screen = (opts.enable_dspark && mf.m.dspark.present) || strata::ink::ink_head_screen_wanted(gpu_id_);   // PERF-STEP: the head screen needs the INT8 index of the unembed
+        plan_in.build_screen = (opts.enable_dspark && (mf.m.dspark.present || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);   // DFlash 2 (a sidecar) also needs the screen; PERF-STEP: the head screen needs the INT8 index of the unembedding
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
         const VramPlan plan = plan_vram_reserve(plan_in);
@@ -500,6 +506,7 @@ public:
         const double led_runner = free_mib();
 
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
+            strata::ink::df2_model_path() = mf.path;   // where DFlash 2 looks for its sidecar weights (STRATA_INK_DRAFTER=dflash2)
             dspark_ = std::make_unique<strata::ink::InkDSpark>(*runner_);
             try {
                 dspark_->init(eff_max_ctx_, 512);
@@ -702,7 +709,7 @@ public:
         }
         // 3. Save DSpark SWA-1025 context KV (layers 0 & 2) + f_rnn row at seq_len-1 for slot 0
         ck.has_dspark = false;
-        if (slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0) {
+        if (slot == 0 && dspark_ && dspark_->ready && !dspark_->df2 && dspark_slot_ == 0) {
             ck.dspark_k.clear(); ck.dspark_v.clear();
             {
                 size_t nd = 0;
@@ -798,7 +805,7 @@ public:
             }
         }
         // 3. Restore DSpark SWA-1025 context KV + f_rnn row for slot 0
-        if (slot == 0 && ck.has_dspark && dspark_ && dspark_->ready) {
+        if (slot == 0 && ck.has_dspark && dspark_ && dspark_->ready && !dspark_->df2) {
             size_t dk_o = 0, dv_o = 0;
             for (int il = 0; il < 3; ++il) {
                 if (model_.man.c.dspark_is_swa[il] == 0) continue;
@@ -826,6 +833,7 @@ public:
             dspark_slot_ = 0;
         } else if (slot == 0) {
             dspark_slot_ = -1;
+            if (dspark_ && dspark_->df2) dspark_->df2->reset_slot(0, seq_len);   // DFlash 2: the ring is rebuilt from the next ingest on
         }
         ckpt_sync();
         return true;
@@ -1653,7 +1661,8 @@ public:
         const float eff_cost = (opt5060_sp.core_graph && !std::getenv("STRATA_INK_SPEC_COST")) ? opt5060_sp.c1_spec_cost : spec_cfg_.cost;
         const float eff_plain = (opt5060_sp.core_graph && !std::getenv("STRATA_INK_SPEC_PLAIN")) ? opt5060_sp.c1_spec_plain : spec_cfg_.plain;
         bool used_root_pld = false;
-        if (opt5060_sp.pld && !slot0_hist_.empty()) {
+        const bool df2_long = dspark_->df2 && dspark_->df2_plain_ctx(anchor_pos);   // DFlash 2 on a small card at long context: plain steps
+        if (opt5060_sp.pld && !slot0_hist_.empty() && !df2_long) {
             int32_t pld_cont[16];
             const int max_d = std::min(14, std::max(0, eff_max_ctx_ - anchor_pos - 2));
             const int nc = strata::ink::ink_pld_find_chain(slot0_hist_, anchor_tok, std::min(max_d, runner_->tree_cap - 1), pld_cont);
@@ -1673,7 +1682,7 @@ public:
         }
         if (!used_root_pld) {
             dspark_->draft_beam_tree(anchor_tok, anchor_pos, eff_beam, max_nodes, tr, eff_cost, eff_plain);
-            if (opt5060_sp.pld && !slot0_hist_.empty()) {
+            if (opt5060_sp.pld && !slot0_hist_.empty() && !df2_long) {
                 const int max_d = std::min(strata::ink::kInkDeepTreeDepth - 1, std::max(1, eff_max_ctx_ - anchor_pos - 2));
                 const int pld_cap = std::min(opt5060_sp.c1_pld_max_m, runner_->tree_cap);
                 strata::ink::ink_pld_graft_tree(slot0_hist_, anchor_tok, tr, pld_cap, max_d);
@@ -1852,6 +1861,7 @@ public:
         std::string& /*err*/) {
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || !bspec_ || !bspec_->ready) return 0;
         if (B < 2 || B > bspec_->max_slots || max_stride < 4 || !slots || !anchor_toks || !anchor_pos || !max_emits || !out_emitted || !out_n_emit) return 0;
+        if (dspark_->df2 && B > dspark_->df2->max_slots) return 0;   // DFlash 2 keeps context rings for at most STRATA_INK_DFLASH2_SLOTS (16) slots
         if (bspec_->gov_plain_steps > 0) { --bspec_->gov_plain_steps; return 0; }
 
         static const int k_draft_cfg = [] {
@@ -1978,6 +1988,7 @@ public:
         int32_t* out_drafted,
         std::string& err) {
         if (B <= 0 || B > max_slots_) return 0;
+        if (dspark_->df2 && B > dspark_->df2->max_slots) return 0;   // DFlash 2 keeps context rings for at most STRATA_INK_DFLASH2_SLOTS (16) slots
         const auto& opt5060 = strata::ink::ink_rtx5060ti_cfg(gpu_id_);
         const int base_kd = std::max(1, std::min(7, opt5060.c64_draft_k));
         const int max_kd_fit = std::max(1, std::min(7, (runner_->max_batch / B) - 1));

@@ -891,7 +891,7 @@ public:
         }
 
         // 2. Load embedded DSpark tensors to GPU if present & enabled
-        has_dspark_ = opts.enable_dspark && dspark_cfg_.present;
+        has_dspark_ = opts.enable_dspark && ink2::dormant_dspark_allowed() && dspark_cfg_.present;   // DFlash 2 is the only drafter: no embedded DSpark until its HIP port lands
         if (has_dspark_) {
             for (const auto& kv : model.m.dspark_tensors) {
                 std::string k = kv.first;

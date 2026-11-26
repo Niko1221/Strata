@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,6 +14,16 @@
 namespace ink2 {
 
 struct ImageRec;  // defined in ink_vision.h
+
+// DFlash 2 is the only drafter of Inkling 2 Mini (owner, 2026-11-26). A model file's embedded DSpark is not used on any backend: the CUDA backend drafts with DFlash 2 (its sidecar file),
+// the other backends have no DFlash 2 port yet and run without a drafter (as --draft off) until it lands. STRATA_INK_DRAFTER=dspark asks for the dormant DSpark code by name (measurements).
+inline bool dormant_dspark_allowed() {
+    const char* e = std::getenv("STRATA_INK_DRAFTER");
+    if (!e) return false;
+    std::string s(e);
+    for (auto& ch : s) ch = (char)((ch >= 'A' && ch <= 'Z') ? ch - 'A' + 'a' : ch);
+    return s == "dspark";
+}
 
 struct BackendOpts {
     int max_ctx = 32768;

@@ -104,7 +104,7 @@ public:
         const int par = std::max(1, std::min(64, opts.parallel));
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
-                          opts.enable_dspark, opts.vision_path, "", err)) {
+                          opts.enable_dspark && ink2::dormant_dspark_allowed(), opts.vision_path, "", err)) {
             return false;
         }
         snaps_.resize((size_t)par);

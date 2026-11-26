@@ -89,7 +89,7 @@ public:
         fit.n_kv = mc.n_kv;
         fit.head_dim = mc.head_dim;
         fit.hidden = mc.hidden;
-        fit.dspark = opts.enable_dspark && model.m.dspark.present;
+        fit.dspark = opts.enable_dspark && ink2::dormant_dspark_allowed() && model.m.dspark.present;
         fit.vision = !opts.vision_path.empty();
         const size_t extra_reserve = ink_sycl::ink_sy_runner_reserve(fit, par, ctx, opts.chunk);
         ink_sycl::ensure_l0_v1_default();
@@ -108,7 +108,7 @@ public:
                 return false;
             }
         }
-        if (!runner_.init(mod_, par, ctx, batch_cap, opts.enable_dspark, err)) {
+        if (!runner_.init(mod_, par, ctx, batch_cap, opts.enable_dspark && ink2::dormant_dspark_allowed(), err)) {
             return false;
         }
         if (!opts.vision_path.empty()) {
