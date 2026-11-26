@@ -54,6 +54,7 @@ import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
+import { shownToolCard } from '../lib/tool-cards';
 // The Time-skip panel and its progress card are only drawn in a chat that has a Time-skip run: their code loads then (and a few seconds after start, see main.tsx).
 const TimeSkipPanel = lazyScreen(() => import('../components/TimeSkipPanel'), (m) => m.TimeSkipPanel);
 const TimeSkipWorking = lazyScreen(() => import('../components/TimeSkipWorking'), (m) => m.TimeSkipWorking);
@@ -811,6 +812,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
     const streaming = useStore(s => s.streaming);
     const activeSession = useStore(s => s.activeSession);
     const hostLive = useStore(s => s.connection !== 'offline');
+    const hideFailedTools = useStore(s => s.hideFailedTools);   // #7184: Settings > General; its default is features.ts HIDE_FAILED_TOOLS_BY_DEFAULT
     const liveStatus = useLiveStatus(m.role === 'assistant' && m.streaming ? activeSession : null);
     // A reply that proposed a plan shows the plan card in place of its closing text (which is the plan in prose).
     const storedPlan = usePlanQuiet(m.planId ? activeSession : null);
@@ -845,7 +847,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
 
       {/* In a reply with activity lines the line is the one live cue for a running or finished tool (and the status line below says what it is doing now); the
           card stays only for what needs the person: a question waiting, a denied or failed call. A card that came and went above the text moved the whole reply. */}
-      {tr((m.tools ?? []).filter(t => !grouped || t.state === 'proposed' || t.state === 'denied' || t.state === 'error').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
+      {tr((m.tools ?? []).filter(t => shownToolCard(t, grouped, hideFailedTools)).map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || m.activity?.length || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}

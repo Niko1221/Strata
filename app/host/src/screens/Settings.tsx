@@ -11,7 +11,7 @@ import { AboutVersions, SettingsUpdates } from '../components/SettingsUpdates';
 import { NativeOperations } from '../components/NativeOperations';
 import { FontChoice } from '../components/FontChoice';
 import { ElectricityPrice } from '../components/ElectricityPrice';
-import { ApprovalNotifySetting, DoneSoundSetting, NumberQuotesSetting, PortSetting, TraySetting, useShellState } from '../components/ShellSettings';
+import { ApprovalNotifySetting, DoneSoundSetting, HideFailedToolsSetting, NumberQuotesSetting, PortSetting, TraySetting, useShellState } from '../components/ShellSettings';
 import { ModelPortSetting } from '../components/ModelPortSetting';
 import { PromptCacheSpreadSetting } from '../components/PromptCacheSpreadSetting';
 import { CompactionSetting } from '../components/CompactionSetting';
@@ -45,6 +45,7 @@ export function SettingsScreen() {
         ...(shell?.desktop ? [{ section: 'General', label: 'App port', hint: 'The port Strata’s window and local address use. Leave it empty to let Strata choose (47831 when it is free). Applies the next time Strata starts.', aliases: 'network address 47831 localhost api', control: <PortSetting shell={shell} save={saveShell} /> }] : []),
         { section: 'General', label: 'Model server port', hint: 'The starting port local model servers use (default 18500). Leave empty for automatic; Strata avoids probing port 8080 so it does not conflict with other local apps such as Spring Boot. Applies the next time a model loads.', aliases: '8080 18500 spring boot port conflict engine model server localhost api', control: <ModelPortSetting /> },
         { section: 'General', label: 'Number quotes', hint: 'When one message quotes several passages, each gets a number and says who wrote it, so the assistant can tell them apart. Start a line with [1] or [2] to answer one of them.', aliases: 'quote quoting numbered reference passages', control: <NumberQuotesSetting /> },
+        { section: 'General', label: 'Hide failed steps', hint: 'A step the assistant tried that did not work, such as a page that would not open, is left out of the conversation. The assistant still sees the error and can try again. A step that was refused, or that needs your answer, is always shown.', aliases: 'tool call failed error row cross red hide steps noise', control: <HideFailedToolsSetting /> },
         { section: 'General', label: 'Your rules', hint: 'Rules the assistant follows in every chat, for example "Answer in German" or "Keep answers short". New answers use them right away.', aliases: 'instructions system prompt agents.md custom global always', control: <UserRulesSetting /> },
         { section: 'General', label: 'Electricity price', hint: 'Price of one kilowatt-hour. The Monitor then shows what your graphics card has cost since Strata started. Leave it empty to hide the cost.', aliases: 'cost power energy kwh currency money', control: <ElectricityPrice /> },
         { section: 'Chat context', label: 'Summarize older messages', hint: 'How full a chat has to get before the assistant condenses its beginning to make room. Later keeps more of the conversation and leaves less room for one answer; the assistant picks the new number up on its next message.', aliases: 'compact compaction context window threshold summarize tokens history memory', control: <CompactionSetting /> },

@@ -148,6 +148,13 @@ export function presentTool({ callId, name, args, reason = null }) {
   return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(verbsFor(name).known ? preview : name, 300), ask: askFor(name, args, typeof args.description === 'string' ? args.description : null) };
 }
 
+/** The tool and its arguments as one string, keys in a fixed order: two cards with the same signature are the same call (#7184). */
+export function callSignature(card) {
+  const sorted = value => Array.isArray(value) ? value.map(sorted)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, sorted(value[k])])) : value;
+  try { return `${card.name}\u0000${JSON.stringify(sorted(card.args ?? {}))}`; } catch { return `${card.name}\u0000?${card.id}`; }
+}
+
 /** A tool's failure in plain words, or null when there is nothing better than the original text. */
 export function plainToolError(text) {
   const t = String(text ?? '');
@@ -247,6 +254,25 @@ export class TurnProjector {
     const card = id ? this.tools.get(id)?.card : null;
     if (card) this.#status(toolUpdate('tool', 'tool', card.name, card.args, {}, { args: { tool: card.name, verb: card.verb, target: card.target } }));
     else this.#status({ phase: 'waiting', code: 'model-working', text: 'Working out the next step…' });
+  }
+
+  /**
+   * #7184: a call that worked marks the earlier FAILED cards of the same tool with the same arguments (this turn) `superseded`, and the page stops
+   * drawing them: it said "failed" about a step that later went through (a page that did not open and then opened). Only an identical call counts;
+   * the same goal reached by another tool or other arguments cannot be told from a new step without guessing, so that row stays.
+   */
+  #supersede(callId) {
+    const done = this.tools.get(callId);
+    if (!done || done.card.state !== 'done') return [];
+    const key = callSignature(done.card);
+    const frames = [];
+    for (const [id, entry] of this.tools) {
+      if (id === callId || entry.card.state !== 'error' || entry.card.superseded || callSignature(entry.card) !== key) continue;
+      if ((entry.calledAt ?? 0) > (done.calledAt ?? 0)) continue;
+      const frame = this.#card(id, { superseded: true });
+      if (frame) frames.push(frame);
+    }
+    return frames;
   }
 
   #card(callId, patch) {
@@ -395,6 +421,8 @@ export class TurnProjector {
           durationMs: Math.max(0, (e.time ?? 0) - entry.calledAt),
         });
         if (frame) out.push(frame);
+        // #7184: the same call failed earlier in this turn and has now worked: the failed row is no longer true
+        if (!denied && !isError) out.push(...this.#supersede(callId));
         // #5968: the person chose No at the Windows administrator prompt: one plain line in the reply, in their language
         if (!denied && entry.card.name === ADMIN_TOOL_NAME && resultText(d.message).startsWith(ADMIN_REFUSED)) {
           out.push({ type: 'delta', own: true, text: `\n\n${ADMIN_REFUSED_LINE}`, key: ADMIN_REFUSED_LINE, values: [], noteReason: 'admin-refused' });

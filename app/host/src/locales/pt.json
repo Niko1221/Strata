@@ -3630,6 +3630,8 @@
   "modelPortHint": "A porta inicial usada pelos servidores de modelos locais (padrão 18500). Deixe vazio para automático; o Strata evita sondar a porta 8080 para não entrar em conflito com outros aplicativos locais, como o Spring Boot. Aplica-se na próxima vez que um modelo for carregado.",
   "promptCacheSpreadLabel": "Distribuir pontos de verificação do cache de prompt",
   "promptCacheSpreadHint": "Passa --prompt-cache-spread para modelos locais para que os pontos de verificação fiquem distribuídos ao longo de conversas longas em vez de concentrados no final. Usa a mesma RAM e reduz o tempo de releitura na compactação em modelos híbridos. Aplica-se na próxima vez que um modelo for carregado.",
+  "hideFailedToolsLabel": "Ocultar as etapas que falharam",
+  "hideFailedToolsHint": "Uma etapa que o assistente tentou e não funcionou, como uma página que não abriu, não aparece na conversa. O assistente continua a ver o erro e pode tentar de novo. Uma etapa recusada, ou que precisa da sua resposta, é sempre mostrada.",
   "s9160": "Não é mais oferecido",
   "s9161": "Atualização disponível"
 }

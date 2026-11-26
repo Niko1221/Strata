@@ -430,6 +430,8 @@ export interface ToolCall {
   live?: boolean;
   /** The person approved this call. A finished card without it was never asked about. */
   approved?: boolean;
+  /** #7184: this call failed, and the same call (same tool, same arguments) worked later in the turn. The host sets it; the page does not draw the card. */
+  superseded?: boolean;
 }
 
 /** A folder the model may read, and that sessions are grouped under. */

@@ -2,6 +2,7 @@ import { moveSessionToWorkspace, workspaceIdForSession } from './session-workspa
 import { shortTitle } from './title-text';
 import { DEFAULT_CONTENT_FS, DEFAULT_UI_SCALE, SIZE_DEFAULTS_VERSION, savedSizes } from './default-sizes';
 import { detectLanguage } from './language-detect';
+import { HIDE_FAILED_TOOLS_BY_DEFAULT } from './features';
 import { validWhileBusy, type WhileBusy } from './while-busy';
 import { validReplyWidth, type ReplyWidth } from './reply-width';
 import { repairSession } from './session-repair';
@@ -111,6 +112,8 @@ export interface AppState {
   approvalNotify: boolean;
   /** #5993: a message that quotes two or more passages numbers them and names who wrote each (off by default). */
   numberQuotes: boolean;
+  /** #7184: tool calls that failed are not drawn in the conversation (Settings > General > Hide failed steps). Starts at features.ts HIDE_FAILED_TOOLS_BY_DEFAULT. */
+  hideFailedTools: boolean;
   /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
   whileBusy: WhileBusy;
   /** What a new conversation starts with (Settings → General): mode, reasoning effort, thinking limit. */
@@ -199,6 +202,8 @@ export interface Prefs {
   doneSound: boolean;
   approvalNotify: boolean;
   numberQuotes: boolean;
+  /** #7184: only stored once the person has chosen; until then the default (features.ts) applies, so changing that default reaches everyone who never touched it. */
+  hideFailedTools?: boolean;
   /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
   whileBusy: WhileBusy;
   /** What a new conversation starts with: its mode, reasoning effort and thinking limit. */
@@ -323,6 +328,7 @@ function loadPrefs(): Prefs {
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
         numberQuotes: parsed.numberQuotes === true,
+        hideFailedTools: typeof parsed.hideFailedTools === 'boolean' ? parsed.hideFailedTools : undefined,
         whileBusy: validWhileBusy(parsed.whileBusy) ? parsed.whileBusy : 'wait',
         replyWidth: validReplyWidth(parsed.replyWidth),
         chatDefaults: validChatDefaults(parsed.chatDefaults),
@@ -337,6 +343,8 @@ function loadPrefs(): Prefs {
 }
 
 const prefs = loadPrefs();
+/** #7184: whether the person has chosen "Hide failed steps" (then it is saved); else the default applies and is not saved. */
+let hideFailedToolsChosen = typeof prefs.hideFailedTools === 'boolean';
 // Use the saved language for the very first render, before host bootstrap (main.tsx waits for its strings before it draws).
 void setTranslationLanguage(prefs.language);
 
@@ -366,6 +374,7 @@ let state: AppState = {
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
   numberQuotes: prefs.numberQuotes,
+  hideFailedTools: prefs.hideFailedTools ?? HIDE_FAILED_TOOLS_BY_DEFAULT,
   whileBusy: prefs.whileBusy,
   parked: {},
   quotes: {},
@@ -606,6 +615,7 @@ function savePrefs() {
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
     numberQuotes: state.numberQuotes,
+    hideFailedTools: hideFailedToolsChosen ? state.hideFailedTools : undefined,
     whileBusy: state.whileBusy,
     chatDefaults: state.chatDefaults,
     shareTelemetry: state.shareTelemetry,
@@ -857,6 +867,13 @@ export function setApprovalNotify(approvalNotify: boolean) {
 /** Settings > General > Number quotes (#5993). */
 export function setNumberQuotes(numberQuotes: boolean) {
   set({ numberQuotes: numberQuotes === true });
+  savePrefs();
+}
+
+/** Settings > General > Hide failed steps (#7184). Saved from the first choice on. */
+export function setHideFailedTools(hideFailedTools: boolean) {
+  hideFailedToolsChosen = true;
+  set({ hideFailedTools: hideFailedTools === true });
   savePrefs();
 }
 
