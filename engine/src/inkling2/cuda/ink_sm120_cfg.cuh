@@ -38,6 +38,8 @@ struct Sm120Cfg {
     bool any = false;      // at least one part is on
 
     // parts
+    bool spec_adapt = false;       // the draft window follows the measured step cost per row and acceptance (fast only)
+    bool tc_attn = false;          // tensor-core split-K decode attention of the global visits (fast only)
     bool pf_attn = false, fp8_cache = false, fp8_inplace = false, moe_opt = false, dense_opt = false, dspark_opt = false;
     bool c64_bspec = false, c64_k8v4 = false;
     bool compact_xcode = false, compact_kv = false;   // the two lossy halves of compact, each on only while compact is on
@@ -86,6 +88,8 @@ inline void fill(Sm120Cfg& c, const strata::core::Sm120Decision& d) {
     const uint32_t p = d.parts;
     const Sm120Row* r = d.row;
     c.pf_attn = (p & P_PF_ATTN) != 0;
+    c.tc_attn = (p & P_TC_ATTN) != 0;
+    c.spec_adapt = (p & P_SPEC_ADAPT) != 0;
     c.moe_opt = (p & P_MOE_OPT) != 0;
     c.dense_opt = (p & P_DENSE_OPT) != 0;
     c.dspark_opt = (p & P_DSPARK_OPT) != 0;

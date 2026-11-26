@@ -5,6 +5,9 @@
 #pragma once
 
 #include "ink_attn.cuh"
+#include "ink_attn_shared.cuh"   // opt-in STRATA_INK_VERIFY_SHARED_KV: one KV read per verify step
+#include "ink_attn_tc.cuh"       // fast-only STRATA_INK_SM120_TC_ATTN: tensor-core split-K decode attention of the global visits
+#include "ink_attn_probe.cuh"   // debug only (STRATA_INK_ATTN_PROBE), no effect unless that env var is set
 #include "ink_cuda.cuh"
 #include "ink_dflash2_path.cuh"
 #include "ink_hybrid.cuh"
@@ -2821,6 +2824,7 @@ struct InkCudaRunner {
         cur_moe_ws = &moe_ws;
 
         INK_CK(cudaSetDevice(m.primary_gpu));
+        (void)ink_verify_shared_cfg();   // STRATA_INK_VERIFY_SHARED_KV: read the switch and run its start-up check here, outside any graph capture
         {
             const char* hv = std::getenv("STRATA_INK_HASH");
             if (hv && hv[0] == '1') {
@@ -2874,7 +2878,8 @@ struct InkCudaRunner {
             const Sm120Cfg& s120_r = sm120_cfg(m.primary_gpu);   // the card's table row supplies the reserve numbers (5090: 768 and 1536 MiB)
             const size_t rtx_extra_res =
                 ((s120_r.fp8_cache && !m.ls_active) ? ((size_t)s120_r.ws_extra_fp8_mib << 20) : 0ull) +
-                ((s120_r.dspark_opt && !s120_r.exact && max_slots >= 2 && m.man.has_dspark) ? ((size_t)s120_r.ws_extra_dspark_mib << 20) : 0ull);
+                ((s120_r.dspark_opt && !s120_r.exact && max_slots >= 2 && m.man.has_dspark) ? ((size_t)s120_r.ws_extra_dspark_mib << 20) : 0ull) +
+                (s120_r.tc_attn ? (size_t)tree_cap * (size_t)std::max(0, tcattn::splits_dev(m.primary_gpu) + 1 - kInkAttnMaxSplits) * kInkHeads * (kInkHeadDim + 2) * 4 : 0ull);   // TC_ATTN: the larger split-K partial buffers (a 5090: 32 x 54 x 24 x 130 x 4 = 13 MiB; a 5060 Ti: none)
             // RTX 5060 Ti row ("compact"): the all-VRAM expert set sizes the workspaces after the K/V itself, so its own, smaller reserve is used.
             // Every other case, with every switch off included, keeps the shipped reserve (the 5060 Ti hand-over applied the smaller one to every
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
@@ -3076,7 +3081,8 @@ struct InkCudaRunner {
         INK_CK(cudaSetDevice(m.primary_gpu));
 
         const size_t MB = (size_t)max_batch;
-        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits);   // #6671: a tree uses the M == 1 split count
+        const size_t sp_cap = std::max<size_t>(std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits),   // #6671: a tree uses the M == 1 split count
+                                               sm120_cfg(m.primary_gpu).tc_attn ? (size_t)tree_cap * (size_t)(tcattn::splits_dev(m.primary_gpu) + 1) : (size_t)0);   // TC_ATTN: the card's slices + the verify tail per head (85 on a 5090, 18 on a 5060 Ti)
         const size_t x_bf16_elems = m.all_sf4_vram
             ? std::max<size_t>(MB * (size_t)(3 * kInkHidden), 256ull * kInkDsparkInter)
             : (MB * (size_t)std::max(kInkDsparkInter, std::max(kInkQDim, kInkHidden)));
@@ -4940,11 +4946,20 @@ struct InkCudaRunner {
                 opt5060::k_flash_gqa_pf_fp16acc<64><<<gfa, 128, 0, st>>>(
                     d_q, d_r, rp_T, d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out);
             } else if (mc_bspec) {
+                // fast only (TC_ATTN): batched drafting (C2..C16) at long context: one group per slot, the slot's K chain rows share every K/V tile; the chain's own K/V (d_k, d_v) is the tail
+                bool tc_done = false;
+                if (!is_swa && sm120_cfg(m.primary_gpu).tc_attn && tcattn::force_ref() != 0 && bspec_k_slot > 0 && M <= tree_cap) {
+                    tc_done = tcattn::launch(st, d_q, d_rel_table, d_sinks, kv_desc[visit], d_slots, 0, d_pos, d_k, d_v, nullptr, nullptr, 0,
+                                             d_attn_pm, d_attn_pl, d_attn_po, M, bspec_k_slot);
+                    if (tc_done) tcattn::merge(st, d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, nullptr, d_pos, true, kv_desc[visit].cap_pos, M, bspec_k_slot);
+                }
+                if (!tc_done) {
                 dim3 g3(kInkKVHeads, M);
                 rtx5090::k_ink_flash_gqa_bspec<<<g3, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks, d_gate_attn,
                     kv_desc[visit], d_slots, d_pos,
                     d_k, d_v, d_attn_out, bspec_k_slot, M);
+                }
             } else if (mode == 3) {
                 dim3 gmc(kInkKVHeads, mc_cur_B);
                 const __half2* rp_T = use_mc_fp8rel ? (fp8_sm.d_rel_proj_T + (size_t)ip * kInkRelExtent * 8u) : nullptr;
@@ -5033,13 +5048,26 @@ struct InkCudaRunner {
                 // warp walk and the merge are the same; only the count differed: 8 for M > 1 against 16 / 32 for M == 1)
                 const int n_sp = (M == 1 || mode == 2) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
-                if (mode == 2 && d_tree_anc32 != nullptr) {
+                // fast only (STRATA_INK_SM120_TC_ATTN): tensor-core split-K for the global visits; falls back to the old kernels for K8V8 / K8V4 KV, SWA visits and prefill chunks
+                bool tc_done = false;
+                if (!is_swa && sm120_cfg(m.primary_gpu).tc_attn && (mode == 2 || (mode == 0 && M <= 16) || mode == 1)) {
+                    const bool deep = (mode == 2 && d_tree_anc32 != nullptr);
+                    tc_done = tcattn::launch(st, d_q, d_rel_table, d_sinks, kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
+                                             (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr,
+                                             (mode == 2) ? (deep ? d_tree_anc32 : d_tree_anc) : nullptr, (mode == 2) ? d_tree_dep : nullptr,
+                                             deep ? (int)kInkMaxTree : (int)kInkMaxTreeDepth, d_attn_pm, d_attn_pl, d_attn_po, M);
+                }
+                if (tc_done) {
+                } else if (mode == 2 && d_tree_anc32 != nullptr) {
                     rtx5090::k_ink_flash_gqa_splitk_deep<<<gsp, 128, 0, st>>>(
                         d_q, d_rel_table, d_sinks,
                         kv_desc[visit], nullptr, slot0, d_pos,
                         d_k, d_v, d_tree_anc32, d_tree_dep,
                         p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
                 } else {
+                    // opt-in (STRATA_INK_VERIFY_SHARED_KV, off by default; LCTX, f-lctx 1cb531beb): a global-visit verify step reads each KV cell once for a group of rows; bit-identical partials
+                    if (!(mode == 2 && ink_launch_splitk_shared(st, d_q, d_rel_table, d_sinks, kv_desc[visit], slot0, d_pos, d_k, d_v,
+                                                                d_tree_anc, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp)))
                     k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                         d_q, d_rel_table, d_sinks,
                         kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
@@ -5047,7 +5075,11 @@ struct InkCudaRunner {
                         (mode == 2) ? d_tree_anc : nullptr, (mode == 2) ? d_tree_dep : nullptr,
                         p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
                 }
-                if (want_wo_h2) {
+                if (tc_done) {
+                    tcattn::merge(st, d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, want_wo_h2 ? reinterpret_cast<__half2*>(d_x_bf16) : nullptr,
+                                  d_pos, mode == 2, kv_desc[visit].cap_pos, M);
+                    if (want_wo_h2) wo_h2_ready = true;
+                } else if (want_wo_h2) {
                     rtx5090::k_ink_flash_gqa_merge_h2<<<gr, 128, 0, st>>>(
                         d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out,
                         reinterpret_cast<__half2*>(d_x_bf16), M, n_sp);
@@ -5184,6 +5216,10 @@ struct InkCudaRunner {
                     kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
                     d_attn_out, M);
             }
+        }
+        if (mode == 0 && M == 1 && !is_swa) {   // STRATA_INK_ATTN_PROBE (debug): read-only look at the softmax mass of this global visit; a no-op when the env var is unset
+            auto& probe = InkAttnProbe::get();
+            if (probe.on) probe.run(st, visit, kv_desc[visit], slot0, p0_val, d_q, d_rel_table, d_sinks, d_gate_attn, d_attn_out);
         }
         prof_mark_end(3); prof_mark_start();
 

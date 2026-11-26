@@ -212,6 +212,29 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
            : ((in.total_vram >= (20ull << 30)) ? (960ull << 20)
             : (in.total_vram <= (13ull << 30)) ? (512ull << 20)
                                                : (832ull << 20))) + p.dspark_pad);
+    // LCTX (PERF-LONGCTX), "K/V before experts" (STRATA_INK_KV_FIRST=1, off by default): on a card whose experts do not all fit, the K/V of the WHOLE chosen context, the
+    // DSpark state of every context token and a growth margin are set aside before the experts get the rest, so the global K/V stays in VRAM (no host tail: 64K 9.9 -> 28.5 tok/s,
+    // 128K 5.6 -> 23.0 on a 5060 Ti 16 GB, f-lctx RESULTS-LCTX.md section 3). The rule keeps at least 1.5 GiB for the experts; when the K/V does not fit with that, the shipped
+    // window rule stays (a partial window is never planned). kv_offload on keeps its host K/V; one slot only.
+    if (in.kv_offload_mode != 1 && in.max_slots == 1 && !p.c64_host_kv && in.total_vram <= (20ull << 30) && strata::ink::sm120_cfg_detail::env_get("STRATA_INK_KV_FIRST") &&
+        strata::ink::sm120_cfg_detail::env_get("STRATA_INK_KV_FIRST")[0] == '1') {
+        const size_t ctx = (size_t)std::max(256, opts.max_ctx);
+        const size_t glob_all = (size_t)8 * ctx * p.per_visit_pos;
+        const size_t glob_rest = (size_t)8 * (ctx > (size_t)p.init_glob ? ctx - (size_t)p.init_glob : 0) * p.per_visit_pos;
+        const size_t dspark_ctx = in.build_screen ? ctx * 4096ull : 0ull;
+        const size_t margin = glob_all / 8 + (256ull << 20);
+        const size_t kv_extra = glob_rest + dspark_ctx + margin;
+        // what the card keeps for everything else, from LCTX's measured rule: dense trunk 3.67 GB, driver 1.30, hybrid workspace 0.85 (decimal GB), experts floor 1.5 GiB
+        const size_t fixed = (size_t)((3.67 + 1.30 + 0.85) * 1e9);
+        const size_t floor_experts = 3ull << 29;
+        if (in.total_vram > fixed + p.min_kv_bytes + p.ws_pad + kv_extra + floor_experts) {
+            p.min_kv_bytes += kv_extra;
+            std::fprintf(stderr, "[InkCUDA] STRATA_INK_KV_FIRST: %.2f GiB reserved for the K/V of the whole %zu-token context (+ DSpark state and growth margin) before the experts\n",
+                         (double)kv_extra / 1073741824.0, ctx);
+        } else {
+            std::fprintf(stderr, "[InkCUDA] STRATA_INK_KV_FIRST: the %zu-token context does not fit next to at least 1.5 GiB of experts on this card; the shipped placement stays\n", ctx);
+        }
+    }
     p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
     // DFlash 2 on a card with hybrid experts (not the compact 16 GB mode): hold back what its weights, rings and graphs need, as --vram-reserve-mib 1850 does
     if (in.build_screen && !strata::ink::sm120_cfg(in.gpu_id).fast && strata::ink::InkDFlash2::requested()) p.min_reserve_bytes = std::max<size_t>(p.min_reserve_bytes, (size_t)(1850.0 + strata::ink::df2_big_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30))) - strata::ink::df2_big_mib(strata::ink::Df2Variant{2, 2})) << 20);
@@ -559,6 +582,7 @@ public:
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
             strata::ink::df2_model_path() = mf.path;   // where DFlash 2 looks for its sidecar weights (STRATA_INK_DRAFTER=dflash2)
             dspark_ = std::make_unique<strata::ink::InkDSpark>(*runner_);
+            dspark_->adapt.on = strata::ink::sm120_cfg(gpu_id_).spec_adapt && !strata::ink::rtx5090::exact_mode_on();   // fast only; the exact form keeps the static window model
             try {
                 dspark_->init(eff_max_ctx_, 512);
             } catch (const strata::ink::InkAllocFailure& ex) {
@@ -1802,6 +1826,7 @@ public:
             if (next_child >= 0) cur_node = next_child;
             else break;
         }
+        if (dspark_->adapt.on) dspark_->adapt.observe(real_M, sp_ms(st_t0, st_t3), n_emit, dspark_->last_pred_etok, dspark_->last_m);
         if (dspark_opt && n_emit > 1) {
             const size_t end_len = (size_t)(anchor_pos + n_emit);
             if (pld_hist_.size() < end_len) pld_hist_.resize(end_len, -1);
