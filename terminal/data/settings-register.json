@@ -45847,6 +45847,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_SPLIT_COMMIT_ASYNC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 6271,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "09aa0ab68d",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "09aa0ab68d",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "#3819, opt-in (off by default): a layer split commits without the host wait, as one GPU does; not with --batch; STRATA_COMMIT_SYNC=1 still makes every commit wait.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_SPLIT_COVER_B",
    "backends": [
     "cuda-hip",
