@@ -393,7 +393,7 @@ struct InkCudaModel {
             // the loader holds a 64 MiB staging buffer and the amax word next to the trunk while it converts, then the all-VRAM branch below asks for 768 MiB after the experts (ballast tests: with 713 MiB left the engine died at its first top-k, with 39-43 MiB left at the end it was on the edge: lazy module loads need free VRAM)
             {
                 const int plan_slots = sm120_plan_slots_ref().load();
-                if (plan_slots >= 2 && plan_slots < 16) {
+                if (plan_slots >= 2 && plan_slots < 16 && !opt5060_ld.compact_hybrid) {
                     std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: this run asks for %d slots and compact leaves room for one slot (or 16 and more); the old path (every RTX 50 part off) runs\n", plan_slots);
                     do_compact_vram = false;
                     sm120_compact_refuse(primary_gpu);
@@ -402,7 +402,12 @@ struct InkCudaModel {
             const size_t compact_margin = (768ull << 20) + (64ull << 20);
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
-            if (do_compact_vram && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
+            if (do_compact_vram && opt5060_ld.compact_hybrid && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
+                // COMPACT_HYBRID: the experts do not all fit (8 / 12 GB card): build the compact trunk anyway (it is 2.3 GiB smaller than the BF16 trunk) and let the normal hybrid
+                // placement (adaptive expert tier, hottest experts first, looped layers weighted by their visits) fill what is left of the card; the rest stay in RAM.
+                std::fprintf(stderr, "[Ink5060Ti] COMPACT_HYBRID: not all experts fit (free %zu MiB, all-VRAM needs about %zu MiB): compact trunk %zu MiB, the experts that fit go to the card, the rest stay in RAM\n",
+                             vfree_pre >> 20, (est_trunk + est_sec4 + compact_margin) >> 20, est_trunk >> 20);
+            } else if (do_compact_vram && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
                 std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: %s (free %zu MiB, needs about %zu MiB for the compact trunk %zu MiB + all experts in VRAM %zu MiB + %zu MiB headroom); the old path (every RTX 50 part off) runs\n",
                              all_sf4_or_mx8_pre ? "not enough free VRAM" : "the model has experts that are not SF4 / MX8",
                              vfree_pre >> 20, (est_trunk + est_sec4 + compact_margin) >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20);
@@ -6556,6 +6561,15 @@ struct InkCudaRunner {
         h.probing = false;
         const bool exact = t_card < 0.9 * t_cpu;
         h.set_lane(exact);
+        if (ink_rtx5060ti_cfg(m.primary_gpu).compact_hybrid && !exact && t_cpu > 0.0 && t_card > 0.0 && h.dec_share_user < 0.0) {
+            // COMPACT_HYBRID row: the split of the batched cold experts comes from this box's own two lane times (see auto_pcie_share)
+            // t_cpu / (t_cpu + t_card) would finish both lanes together if the copy lane had no overhead of its own; it has (the sync per visit, the activation copy, the bounce ring), so the
+            // optimum measured on two boxes sits lower: RTX 5060 box ratio 0.20, best share 0.05-0.15 (prose steps/s 10.0 at 0.20 against 15.2 at 0.15); RTX 5070 box ratio 0.26,
+            // flat from 0.15 to 0.30. 0.75 x ratio gives 0.15 and 0.20 there.
+            h.auto_pcie_share = std::max(0.0, std::min(0.65, 0.75 * t_cpu / (t_cpu + t_card)));
+            std::fprintf(stderr, "[InkHybrid] cold-expert split from the probe: CPU lane %.1f ms, copy lane %.1f ms -> %.2f of the verify steps' cold experts go over PCIe, the rest to the CPU\n",
+                         t_cpu, t_card, h.auto_pcie_share);
+        }
         drop_all_graphs();
         if (h.d_use_cnt) INK_CK(cudaMemsetAsync(h.d_use_cnt, 0, (size_t)h.n_layers * h.n_experts * sizeof(float), st));
         if (h.d_stat) INK_CK(cudaMemsetAsync(h.d_stat, 0, 2 * sizeof(unsigned long long), st));

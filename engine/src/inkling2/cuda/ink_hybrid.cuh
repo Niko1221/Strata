@@ -1469,6 +1469,10 @@ struct InkHybridEngine {
     float* d_v_y    = nullptr;   // device mirror for fast scatter
     int32_t* d_v_p  = nullptr;   // device pair indices
     double dec_pcie_share = -1.0; // -1 = auto, 0 = 100% CPU, 1 = 100% PCIe DMA (STRATA_INK_DEC_PCIE_SHARE)
+    // Share of the batched (verify) cold experts that go over PCIe, taken from the launch probe of THIS box: the CPU lane and the card's copy lane work in parallel, so
+    // the share that finishes both together is t_cpu / (t_cpu + t_copy) (a lane's rate is 1 / its time per token). Set only when the card's row asks for it
+    // (COMPACT_HYBRID: 8 / 12 GB cards); -1 everywhere else, and then the fixed 0.55 / 0.65 of the shipped path applies. Never read when no cold expert exists.
+    double auto_pcie_share = -1.0;
     // Cold-expert lane at decode. STRATA_INK_EXACT unset = auto: a short launch probe times both lanes on this machine and keeps the faster one
     // (fast, the CPU lane, unless the card's copy is clearly faster); =0 forces the CPU lane (fast, not bit-identical to the card), =1 forces
     // exact (the card copies every cold expert in and computes it itself: the same bits wherever an expert lives, PCIe bound).
@@ -2847,8 +2851,10 @@ inline void launch_ink_moe_hybrid(
             const bool stream_all_pcie = !hyb.rtx5060ti_opt && (hyb.dec_pcie_share < 0.0) && (host_list.size() <= 6) &&
                                          (hyb.d_pf_stage[0] != nullptr) && (hyb.pf_stage_bytes > 0);
             const double share = (hyb.dec_pcie_share >= 0.0) ? hyb.dec_pcie_share
-                               : (hyb.rtx5060ti_opt ? (double)hyb.rtx5060ti_pcie_share
-                                                    : (stream_all_pcie ? 1.0 : (hyb.sec4_is_pinned ? 0.65 : 0.55)));
+                               : (stream_all_pcie ? 1.0
+                                  : (hyb.auto_pcie_share >= 0.0 ? hyb.auto_pcie_share
+                                     : (hyb.rtx5060ti_opt ? (double)hyb.rtx5060ti_pcie_share
+                                                          : (hyb.sec4_is_pinned ? 0.65 : 0.55))));
             if (hyb.active && hyb.h_v_x && hyb.h_v_y && host_list.size() >= 2 && share < 0.999) {
                 std::sort(host_list.begin(), host_list.end(), [&](int a, int b) { return ecnt[a] > ecnt[b]; });
                 int w_tot = 0;

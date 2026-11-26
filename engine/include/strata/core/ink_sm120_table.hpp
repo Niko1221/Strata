@@ -56,8 +56,12 @@ enum Sm120Part : uint32_t {
     P_FP8_INPLACE   = 1u << 15,  // the 5060 Ti hand-over's in-place FP8 trunk (known bad: FASTQ failed); in no fast set, explicit request only
     P_SPEC_ADAPT    = 1u << 17,  // the draft window follows the measured step cost per row and the measured acceptance (fast only: it changes with timing; the exact form keeps the static model)
     P_TC_ATTN       = 1u << 16,  // tensor-core split-K decode attention of the global visits (FP16 tensor cores, FP32 accumulate; changes rounding: fast only, never in an exact set)
+    // COMPACT on a card that cannot hold all the experts (8 and 12 GB): the compact trunk (Q8_ROW attention and head, the embedding in mapped host memory: about 2.3 GiB less than
+    // the BF16 trunk) is still built and the VRAM it frees goes to the adaptive expert tier; the experts that do not fit stay in RAM (CPU lane). Without this part COMPACT refuses
+    // on such a card and the old path runs. Acts only while P_COMPACT is on.
+    P_COMPACT_HYBRID = 1u << 18,
 };
-constexpr uint32_t kSm120AllParts = (1u << 18) - 1u;
+constexpr uint32_t kSm120AllParts = (1u << 19) - 1u;
 constexpr uint32_t kSm120CompactSubParts = P_COMPACT_XCODE | P_COMPACT_KV;
 
 // ONE FP8 trunk for every card: Cache = the 5090 implementation (a +641 MiB FP8 copy next to the BF16 / Q8_ROW trunk; it simply does not start when the card
@@ -301,6 +305,7 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
         {P_FP8_INPLACE, "FP8_INPLACE", nullptr},
         {P_TC_ATTN, "TC_ATTN", nullptr},
         {P_SPEC_ADAPT, "SPEC_ADAPT", nullptr},
+        {P_COMPACT_HYBRID, "COMPACT_HYBRID", nullptr},
         {P_TC_SMALLM, "TC_SMALLM", "STRATA_INK_5060TI_TC_SMALLM"},
         {P_PLD, "PLD", "STRATA_INK_5060TI_PLD"},
         {P_PACK, "PACK", "STRATA_INK_5060TI_PACK"},
@@ -316,6 +321,9 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
 inline uint32_t ink_sm120_compact_subparts(uint32_t parts, uint32_t named) {
     if (parts & P_COMPACT) parts |= (kSm120CompactSubParts & ~named);
     else parts &= ~kSm120CompactSubParts;
+    // COMPACT_HYBRID (8 / 12 GB cards): the KV stays FP16 unless COMPACT_KV is named. Teacher-forced KL on the TAILSKIP screen (RTX 5060 8 GB, rows lane 11-26): the FP8 KV is the part that
+    // costs on long structured contexts (agent_8k_0: PPL 6.14 with the FP8 KV against 5.38 with FP16 KV, old path 5.18); the Q8_ROW trunk alone sits at the engine's chunk-noise floor.
+    if ((parts & P_COMPACT_HYBRID) && !(named & P_COMPACT_KV)) parts &= ~P_COMPACT_KV;
     return parts;
 }
 

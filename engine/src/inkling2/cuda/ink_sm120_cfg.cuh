@@ -43,6 +43,7 @@ struct Sm120Cfg {
     bool pf_attn = false, fp8_cache = false, fp8_inplace = false, moe_opt = false, dense_opt = false, dspark_opt = false;
     bool c64_bspec = false, c64_k8v4 = false;
     bool compact_xcode = false, compact_kv = false;   // the two lossy halves of compact, each on only while compact is on
+    bool compact_hybrid = false;   // compact trunk + the experts that fit (8 / 12 GB cards), instead of refusing compact
     bool compact = false, tc_smallm = false, pld = false, pack = false, prefill = false, core_graph = false, l2pf = false;
     bool sf4_trunk = false;        // experimental SF4 dense trunk (never on by default)
     bool deep_tree = false;        // the 32 x 32 ancestor table and the deep verify kernel: dspark_opt, pld or core_graph need it
@@ -101,6 +102,7 @@ inline void fill(Sm120Cfg& c, const strata::core::Sm120Decision& d) {
     c.compact = (p & P_COMPACT) != 0;
     c.compact_xcode = c.compact && (p & P_COMPACT_XCODE) != 0;
     c.compact_kv = c.compact && (p & P_COMPACT_KV) != 0;
+    c.compact_hybrid = c.compact && (p & P_COMPACT_HYBRID) != 0;
     c.tc_smallm = (p & P_TC_SMALLM) != 0;
     c.pld = (p & P_PLD) != 0;
     c.pack = (p & P_PACK) != 0;
@@ -245,6 +247,7 @@ struct InkRtx5060TiCfg {
     bool compact_vram    = false;
     bool compact_xcode   = false;  // compact: MX8 -> SF4 transcode of layers 20-23 (SQ-20 needs it to fit)
     bool compact_kv      = false;  // compact: FP8 KV cache on a one-slot run
+    bool compact_hybrid  = false;  // compact trunk with the experts that fit (the rest in RAM) when all of them do not fit
     bool fp8_trunk       = false;
     bool sf4_trunk       = false;
     bool sm120_tc_smallm = false;
@@ -278,6 +281,7 @@ inline const InkRtx5060TiCfg& ink_rtx5060ti_cfg(int dev = 0) noexcept {
     c.compact_vram = s.compact;
     c.compact_xcode = s.compact_xcode;
     c.compact_kv = s.compact_kv;
+    c.compact_hybrid = s.compact_hybrid;
     c.fp8_trunk = s.fp8_inplace;
     c.sf4_trunk = s.sf4_trunk;
     c.sm120_tc_smallm = s.tc_smallm;
