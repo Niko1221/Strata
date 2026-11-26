@@ -16,6 +16,7 @@
 #include "../ink_cold_store.hpp"
 #include "ink_vision.h"
 #include "ink_hip_ops.hip.h"
+#include "ink_hip_moe_pf.hip.h"
 #include "ink_hip_tree.hip.h"
 #include "ink_hip_blaslt.hpp"
 #include "ink_hip_hybrid.hpp"
@@ -761,6 +762,15 @@ public:
         if (const char* ev = std::getenv("STRATA_HIP_MOE_I8")) {
             use_i8_moe_wmma_ = (std::atoi(ev) != 0);
         }
+        // Grouped-MoE prefill kernels v2 for the SF4 int8 layers (ink_hip_moe_pf.hip.h), bit-identical to the _128 kernels:
+        // STRATA_INK_PF_MOE = 64 (default, BM 64) | 32 (BM 32) | 0 (off: the _128 kernels). RDNA4 only (pf_moe_on).
+        pf_moe_ = 64;
+        if (const char* ev = std::getenv("STRATA_INK_PF_MOE")) {
+            const int v = std::atoi(ev);
+            pf_moe_ = (v == 32 || v == 64) ? v : 0;
+        }
+        if (pf_moe_ != 0 && pf_moe_ok_shape())
+            std::fprintf(stderr, "[ink-hip] grouped-MoE prefill kernels v2 for SF4 int8 layers, BM %d (STRATA_INK_PF_MOE=0: the _128 kernels)\n", pf_moe_);
         if (blaslt_.ready() && blaslt_moe_min_b_ < 999999) {
             const size_t w13_b = static_cast<size_t>(2 * c_.inter) * c_.hidden * sizeof(half_t);
             const size_t w2_b  = static_cast<size_t>(c_.hidden) * c_.inter * sizeof(half_t);
@@ -4339,8 +4349,13 @@ private:
                         } else if (use_i8_moe_wmma_ && layer_gu_class_[ip] == 1) {
                             const int nb16 = B * (D >> 4);
                             k_quant_f32_to_q8_16<<<(nb16 + 63) / 64, 256, 0, stream_>>>(mlpin, xq, xd, nb16);
-                            k_moe_grouped_w13_situ_wmma_sf4_i8_128<<<g13, 256, 0, stream_>>>(
-                                d_exps, d_off, d_btk, xq, xd, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            if (pf_moe_on(B)) {   // same bits as the _128 kernel (ink_hip_moe_pf.hip.h)
+                                launch_moe_pf_sf4_i8(pf_moe_, B, c_.n_experts, D, c_.inter, c_.situ_beta, c_.situ_lb, d_exps, d_off, d_btk,
+                                                     xq, xd, d_act, true, nullptr, nullptr, nullptr, stream_);
+                            } else {
+                                k_moe_grouped_w13_situ_wmma_sf4_i8_128<<<g13, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_btk, xq, xd, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            }
                         } else {
                             k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                             if (layer_gu_class_[ip] == 0) {
@@ -4366,8 +4381,13 @@ private:
                         } else if (use_i8_moe_wmma_ && layer_dn_class_[ip] == 1) {
                             const int nb16 = tot_pairs * (c_.inter >> 4);
                             k_quant_f16_to_q8_16<<<(nb16 + 63) / 64, 256, 0, stream_>>>(d_act, aq, ad, nb16);
-                            k_moe_grouped_w2_wmma_sf4_i8_128<<<g2, 256, 0, stream_>>>(
-                                d_exps, d_off, aq, ad, d_by, D, c_.inter);
+                            if (pf_moe_on(B)) {
+                                launch_moe_pf_sf4_i8(pf_moe_, B, c_.n_experts, D, c_.inter, 0.f, 0.f, d_exps, d_off, nullptr,
+                                                     nullptr, nullptr, nullptr, false, aq, ad, d_by, stream_);
+                            } else {
+                                k_moe_grouped_w2_wmma_sf4_i8_128<<<g2, 256, 0, stream_>>>(
+                                    d_exps, d_off, aq, ad, d_by, D, c_.inter);
+                            }
                         } else {
                             if (layer_dn_class_[ip] == 0) {
                                 k_moe_grouped_w2_wmma_128_spec<0><<<g2, 256, 0, stream_>>>(
@@ -5859,6 +5879,12 @@ private:
     };
     int blaslt_moe_min_b_ = 999999;
     bool use_i8_moe_wmma_ = true;
+    // STRATA_INK_PF_MOE: v2 grouped-MoE prefill kernels for the SF4 int8 layers (BM 32 / 64, 0 = off), chunks of B >= 64 rows
+    int pf_moe_ = 64;
+    bool pf_moe_ok_shape() const {
+        return mem_info_.gen == AmdGen::Rdna4 && use_i8_moe_wmma_ && (c_.hidden % 64) == 0 && (c_.inter % 64) == 0;
+    }
+    bool pf_moe_on(int B) const { return pf_moe_ != 0 && B >= 64 && pf_moe_ok_shape(); }
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;
     int max_slots_ = 1;

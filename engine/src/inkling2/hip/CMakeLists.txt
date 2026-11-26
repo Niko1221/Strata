@@ -84,6 +84,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/../ink_gguf_transcode.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_common.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_codecs.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_moe_pf.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_ops.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_tree.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_blaslt.hpp"
