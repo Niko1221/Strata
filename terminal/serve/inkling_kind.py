@@ -312,7 +312,7 @@ def decode_path(text: str) -> str:
 # strata-inkling reads a picture with its GPU encoder where it has one (HIP, SYCL, Metal) and otherwise, CUDA included, with the CPU one, which has
 # no size limit below 4096 x 4096 pixels: a 4535 x 3004 photo is 27,900 patches with full attention in 23 layers on one CPU thread of control, no
 # progress line and no cancel, minutes in which the engine answers nothing (and the 300 s watchdog ends it).  The engine has no option for the size,
-# so serve scales a picture down before it writes the file the engine reads: where the reader is the CPU (backend cuda or cpu), to at most
+# so serve scales a picture down before it writes the file the engine reads: where the reader is the CPU (backend cuda or cpu, or --vision-device cpu), to at most
 # DEFAULT_MAX_PIXELS, 0.8 MP: where the measured CPU reader takes about a minute (a 1024 x 768 picture is not touched, a 1920 x 1080 screenshot is scaled to about 1190 x 670).  `inkling_image_max_mp` in the run config (or STRATA_INKLING_IMAGE_MAX_MP) sets
 # another size in megapixels, 0 turns the cap off; a value above 0 applies on every backend.
 DEFAULT_MAX_PIXELS = 800_000
@@ -327,7 +327,7 @@ def image_cap_pixels(cfg: dict | None, environ=None) -> int:
     if raw is None or raw == "":
         raw = (environ.get("STRATA_INKLING_IMAGE_MAX_MP") or "").strip() or None
     if raw is None:
-        return DEFAULT_MAX_PIXELS if cfg.get("backend") not in GPU_PICTURE_BACKENDS else 0
+        return DEFAULT_MAX_PIXELS if cpu_picture_reader(cfg) else 0
     try:
         mp = float(raw)
         if isinstance(raw, bool) or mp != mp or mp < 0 or mp > 1e6:
@@ -384,8 +384,13 @@ ALLOW_MAX_S = 3 * 3600.0
 
 
 def cpu_picture_reader(cfg: dict | None) -> bool:
-    """True where the engine reads pictures on the CPU (CUDA, cpu); HIP, SYCL and Metal have a GPU encoder."""
-    return (cfg or {}).get("backend") not in GPU_PICTURE_BACKENDS
+    """True where the engine reads pictures on the CPU (CUDA, cpu, and --vision-device cpu on any backend); HIP, SYCL and Metal have a GPU encoder."""
+    cfg = cfg or {}
+    args = [str(a) for a in cfg.get("args") or []]
+    i = args.index("--vision-device") + 1 if "--vision-device" in args else 0
+    if 0 < i < len(args) and args[i].strip().lower() == "cpu":
+        return True
+    return cfg.get("backend") not in GPU_PICTURE_BACKENDS
 
 
 def picture_pixels(data: bytes) -> int:

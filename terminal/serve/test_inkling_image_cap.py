@@ -138,6 +138,20 @@ class Allowance(unittest.TestCase):
         for backend in ("hip", "sycl", "metal"):
             self.assertFalse(K.cpu_picture_reader({"backend": backend}), backend)
 
+    def test_vision_device_cpu_is_the_cpu_reader_on_every_backend(self):
+        # --vision-device cpu: the engine never asks its GPU encoder, so the cap and the allowance apply on HIP, SYCL and Metal too
+        for backend in ("hip", "sycl", "metal", "cuda", "cpu"):
+            cfg = {"backend": backend, "args": ["--native", "m.strata", "--vision", "v.strata", "--vision-device", "cpu"]}
+            self.assertTrue(K.cpu_picture_reader(cfg), backend)
+            self.assertEqual(K.image_cap_pixels(cfg, {}), K.DEFAULT_MAX_PIXELS, backend)
+            self.assertEqual(K.image_cap_pixels({**cfg, "inkling_image_max_mp": 0}, {}), 0, backend)   # the person's setting still wins
+        for device in ("gpu", "auto"):                    # the backend decides, as without the flag
+            for backend, cpu in (("hip", False), ("metal", False), ("cuda", True)):
+                cfg = {"backend": backend, "args": ["--vision", "v.strata", "--vision-device", device]}
+                self.assertEqual(K.cpu_picture_reader(cfg), cpu, (backend, device))
+                self.assertEqual(K.image_cap_pixels(cfg, {}), K.DEFAULT_MAX_PIXELS if cpu else 0, (backend, device))
+        self.assertFalse(K.cpu_picture_reader({"backend": "hip", "args": ["--vision-device"]}))   # no value: the backend decides
+
     def test_the_allowance_follows_the_pixels(self):
         small, mid, big = (K.picture_allowance_s([px]) for px in (250_000, 1_000_000, 4_000_000))
         self.assertGreater(small, K.ALLOW_BASE_S)

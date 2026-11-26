@@ -274,7 +274,7 @@ def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
     want_off = s.vision in ("off", "no")
     if want_off != (images == "off"):
         return False
-    if s.family not in ("hy4-flash", "inkling-2-mini") and s.vision in ("gpu", "cpu") and images != s.vision:
+    if s.family != "hy4-flash" and s.vision in ("gpu", "cpu") and images != s.vision:   # strata-inkling: --vision-device
         return False
     return True
 
@@ -332,6 +332,8 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
                 eff_kv, _ = S.safe_inkling_kv(s.kv, cfg.get("backend"))
                 if eff_kv:
                     put("--kv", eff_kv)
+            if s.vision in ("gpu", "cpu") and "--vision" in args:
+                put("--vision-device", s.vision)
             if str(s.drafting or "").strip().lower() == "off":
                 put("--draft", "off")
         cfg["args"] = args
@@ -1326,6 +1328,8 @@ class Runner:
         self.resolved_vision()
         if s.vision in ("off", "no"):
             return "no"
+        if self.is_inkling() and s.vision in ("gpu", "cpu"):
+            return s.vision                                  # strata-inkling reads pictures where it is told (--vision-device)
         if self.is_native_strata_family():
             return "yes"
         return "yes" if s.vision == "on" else s.vision

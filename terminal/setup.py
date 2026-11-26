@@ -10940,7 +10940,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
     drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
         inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
+    vision_dev = str(a.vision or "").strip().lower()   # "gpu" / "cpu" by name; "yes"/"on" leave the engine's own choice
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)}, vision_device=vision_dev)
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
@@ -10952,6 +10953,12 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         args += ["--draft", "off"]
     if vision and vision_path is not None:
         args += ["--vision", str(vision_path)]
+        if vision_dev in ("gpu", "cpu"):
+            args += ["--vision-device", vision_dev]
+            if vision_dev == "gpu" and ink_backend == "cuda" and not unified:
+                # keep room for the GPU picture encoder after the experts and the KV have taken theirs (a --vram-reserve-mib
+                # of the person's own wins: carry_user_args merges it over this one)
+                args += ["--vram-reserve-mib", str(inkling_fit.VISION_GPU_RESERVE_MIB)]
     if dspark_path is not None and drafting_mode != "off":
         args += ["--dspark", str(dspark_path)]
     if mgpu_flags:

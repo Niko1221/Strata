@@ -39,6 +39,13 @@ FREE_RAM_MARGIN_GB = 1.50        # free RAM that stays free beside the experts h
 UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
 SSD_NEAR_RESIDENT_GB = 2.0
 VISION_GB = 0.637                # Inkling-2-Mini-Vision.strata (636,526,592 B, CPU / on-demand on <=12 GiB GPUs)
+#: --vision gpu on CUDA: room for the GPU picture encoder (cuda/ink_cuda_vision.cuh), its weights and per-picture scratch;
+#: setup passes this as --vram-reserve-mib so the experts and the KV leave it free. Measured on an RTX 4090 (2026-11-24)
+#: with BF16-resident weights: 686 MiB of weights, and a 5 MP picture (12,740 patches) peaks about 450 MiB above that, so
+#: 1536 MiB covers pictures up to about 9 MP. A picture that does not fit is encoded on the CPU, as before. Every MiB here
+#: is taken from the conversation memory (global KV) in VRAM.
+VISION_GPU_RESERVE_MIB = 1536
+VISION_GPU_GB = VISION_GPU_RESERVE_MIB / 1024 * GIB_TO_GB
 DSPARK_GGUF_GB = 0.636           # the drafter file of a GGUF build: mtp.safetensors (635,801,416 B, BF16, the default); Unsloth's Q8_0 copy is 0.402 GB (small cards, fallback)
 DEFAULT_CONTEXT = 32768          # docs/10-GUI-TUI.md default: 32K (up to 1M available)
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
@@ -203,7 +210,7 @@ def swa_sconv_gb(parallel: int = 1, fp8_kv: bool = False, backend: str | None = 
     return round(slots * fixed, 3)
 
 
-def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = False, *,
+def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = False, *, vision_gb: float = VISION_GB,
                   dspark: bool = True, fp8_kv: bool = False, hybrid: bool = False,
                   host_offload_global_kv: bool = False, backend: str | None = None) -> float:
     """Video memory kept free of expert bodies: driver/desktop + hybrid workspace + DSpark KV + KV/SWA/ShortConv (+ peak KV growth margin + Vision shard)."""
@@ -223,7 +230,7 @@ def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = Fals
         + (SLOT_WORKSPACE_EXTRA_GB if slots >= 8 else 0.0)
         + dspark_gb(kv_ctx, enabled=dspark, parallel=parallel, backend=backend)
         + kv_vram
-        + (VISION_GB if vision else 0.0),
+        + (vision_gb if vision else 0.0),
         3,
     )
 
@@ -290,7 +297,8 @@ def bodies_gb_for(build: str, backend: str | None = None) -> float:
 def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None, vision: bool = False,
             parallel: int = 1, dspark: bool = True, kv_offload: str = "auto", *,
             extra_vram_gib: float = 0.0, backend: str | None = None,
-            desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None) -> dict:
+            desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None,
+            vision_device: str | None = None) -> dict:
     """Placement of `build` on a discrete-GPU PC (vram_gib + optional extra_vram_gib + ram_gib): GB of experts in VRAM, in RAM, and on SSD.
 
     Implements the unified 4-tier adaptive contract (GPU -> RAM+CPU -> SSD) with Host KV Offloading (#552),
@@ -327,6 +335,12 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     dense_total = info["dense_gb"]
     # Vision stays in host RAM / CPU on <= 12.5 GiB GPUs so it never steals ~0.64 GB of hot 3x-looped expert VRAM!
     vision_in_vram = bool(vision and v_gib > 12.5)
+    vision_gb = VISION_GB
+    vdev = str(vision_device or "").strip().lower()
+    if vision and vdev == "cpu":
+        vision_in_vram = False                       # --vision cpu: the picture encoder takes no VRAM
+    elif vision and vdev == "gpu" and backend_low not in ("hip", "sycl", "metal"):
+        vision_in_vram, vision_gb = True, VISION_GPU_GB   # --vision gpu on CUDA: the encoder's weights + per-picture scratch
     # the K/V that goes to the host (CUDA only): every slot's whole context, not the on-device window the card keeps (#--parallel measured, see global_kv_total_gb)
     glob_kv = global_kv_total_gb(ctx, parallel, fp8_kv=fp8_kv) if supports_host_kv else global_kv_gb(ctx, parallel, fp8_kv=fp8_kv, backend=backend_low)
     ram_avail_for_model = max(0.0, ram_gb - OS_RESERVE_GB - (VISION_GB if vision else 0.0))
@@ -336,7 +350,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
 
     # 1. Try 100%-VRAM expert residency with VRAM-resident global KV first
     full_need = dense_total + info["bodies_gb"] + non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=False, backend=backend_low
+        ctx, parallel, vision=vision_in_vram, vision_gb=vision_gb, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=False, backend=backend_low
     )
     # CUDA: a K/V that fills the card to within a few hundred MB grows into whatever the desktop takes next; with that little to spare the K/V goes to host RAM
     # (the experts stay all in the card, the engine keeps the window of every slot there) when the RAM can hold it (#6905: a 16 GB card, 64K, vision, 0.4 GB to spare)
@@ -359,7 +373,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     # (measured: SQ-15 on an A4000 16 GB, RESULTS-0221-INKCUDA.md); an unnamed backend keeps the older rule (<= 13 GiB or asked)
     auto_offload_full = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0 or backend_low == "cuda")
     full_need_offload = dense_total + info["bodies_gb"] + non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=True, backend=backend_low
+        ctx, parallel, vision=vision_in_vram, vision_gb=vision_gb, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=True, backend=backend_low
     )
     if vram_gb > 0.0 and auto_offload_full and full_need_offload <= vram_gb:
         return {
@@ -376,7 +390,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     use_host_kv = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0 or glob_kv > 1.5)
     host_kv_used = glob_kv if use_host_kv else 0.0
     gpu_room = max(0.0, vram_gb - dense_total - non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=use_host_kv, backend=backend_low
+        ctx, parallel, vision=vision_in_vram, vision_gb=vision_gb, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=use_host_kv, backend=backend_low
     ))
     ram_room = max(0.0, ram_avail_for_model - host_kv_used)
     in_vram = min(info["bodies_gb"], gpu_room)
@@ -440,11 +454,13 @@ def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision:
 def place(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
           vision: bool = False, parallel: int = 1, dspark: bool = True, *,
           extra_vram_gib: float = 0.0, backend: str | None = None,
-          desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None) -> dict:
+          desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None,
+          vision_device: str | None = None) -> dict:
     if unified:
         return compute_unified(build, ram_gib, ctx, vision, parallel, dspark, backend=backend)
     return compute(build, vram_gib or 0.0, ram_gib, ctx, vision, parallel, dspark,
-                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, fp8_kv=fp8_kv, sm=sm)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, fp8_kv=fp8_kv, sm=sm,
+                   vision_device=vision_device)
 
 
 def mode(placed: dict | float) -> str:

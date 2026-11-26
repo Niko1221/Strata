@@ -645,7 +645,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             for (size_t k = 0; k < recs.size(); ++k) {
                 std::vector<float> emb;
                 std::string verr;
-                if (!backend.encode_image(recs[k], emb, verr)) {
+                // --vision-device cpu: never ask the backend (the GPU keeps its memory for the language model)
+                if (cfg.bopts.vision_device == "cpu" || !backend.encode_image(recs[k], emb, verr)) {
                     if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
                     if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
                 }

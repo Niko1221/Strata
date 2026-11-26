@@ -867,7 +867,8 @@ class Strata:
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
-                else ("on" if val("--vision") else "off"),
+                else (val("--vision-device") if val("--vision") and val("--vision-device") in ("gpu", "cpu")   # strata-inkling's own reader
+                      else ("on" if val("--vision") else "off")),
                 "port": cfg.get("port", self.default_port()), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
