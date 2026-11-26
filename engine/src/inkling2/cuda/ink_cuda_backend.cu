@@ -208,7 +208,7 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     // Note: unembed_screen (441 MiB) is allocated INSIDE load_from_model_file BEFORE expert packing.
     p.dspark_pad = in.build_screen ? (opt5060.pack ? (540ull << 20) : (224ull << 20)) : 0ull;
     // STRATA_INK_DRAFTER=dflash2: the DFlash 2 drafter's weights (Q8 + bf16) and scratch, ~480 MiB more than DSpark's buffers, are held back
-    if (in.build_screen && strata::ink::InkDFlash2::requested()) p.dspark_pad += (strata::ink::sm120_cfg(in.gpu_id).fast ? (strata::ink::df2_total_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30)), in.max_slots) - 200ull) : 42ull * (size_t)std::min(in.max_slots, 8)) << 20;   // the compact (pack) loader leaves DSpark's weights off the card
+    if (in.build_screen && strata::ink::InkDFlash2::requested()) p.dspark_pad += (strata::ink::sm120_cfg(in.gpu_id).fast ? (strata::ink::df2_total_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30)), in.max_slots) - 200ull) : (strata::ink::df2_f32_path() ? strata::ink::df2_total_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30)), in.max_slots) - 100ull : 42ull * (size_t)std::min(in.max_slots, 8))) << 20;   // NV-OLDER (below sm_80): the whole drafter (FP32 matrices, block weights, scratch, rings), as the RTX 50 fast branch counts it: with 4 slots the planned K/V + workspace side exceeds the 1850 MiB figure below, and the drafter then took the last MiB (2080 Ti, --parallel 4: out of memory at the first request)   // the compact (pack) loader leaves DSpark's weights off the card
     p.ws_pad = opt5060.pack
         ? ((in.max_slots >= 16 ? (700ull << 20) : (420ull << 20)) + p.dspark_pad)
         : (((in.max_slots >= 8) ? (1280ull << 20)
