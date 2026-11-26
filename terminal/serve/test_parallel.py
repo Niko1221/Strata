@@ -693,6 +693,13 @@ class BatchLegAccounting(FakeEngineCase):
                          [(10, 21.0), (10, 21.0)])
         self.assertEqual(metrics["totals"]["decode_ms"], 42.0)
 
+    def test_model_end_token_drains_slot_draft_counters(self):
+        self.start(2, more=("--drafts",))
+        self.engine._model_eos_ids = {257}
+        for reply in self.queued_chats().values():
+            timings = reply["timings"]
+            self.assertEqual((timings["draft_n"], timings["draft_n_accepted"]), (20, 10))
+
     def test_length_finish_also_adds_admission_time(self):
         self.start(2)
         for reply in self.queued_chats(max_tokens=8).values():
