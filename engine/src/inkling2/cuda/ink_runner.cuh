@@ -16,6 +16,8 @@
 #include "ink_rtx5090_kernels.cuh"
 #include "ink_rtx5090_fp8.cuh"
 #include "ink_rtx5090_bspec_kernels.cuh"
+#include "ink_pdl_kernels.cuh"   // PERF-STEP: programmatic dependent launch of the decode graphs
+#include "ink_head_screen.cuh"   // PERF-STEP: INT8-screened exact top-128 of the head (STRATA_INK_HEAD_SCREEN)
 
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_kv_grow.hpp"
@@ -6383,7 +6385,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 0, slot0, p0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6519,7 +6521,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 2, slot0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6565,7 +6567,7 @@ struct InkCudaRunner {
                         emit_visits_prefix_to(fhc, M, 2, slot0, 0, want_taps);
                         ge = cudaStreamEndCapture(st, &gr);
                         if (ge == cudaSuccess && gr) {
-                            ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                            ge = pdl::instantiate(&exec, gr, "decode");
                             cudaGraphDestroy(gr);
                         }
                     }
@@ -6623,7 +6625,7 @@ struct InkCudaRunner {
                     emit_48_visits(B, 1, 0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6686,7 +6688,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 3, 0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6921,6 +6923,31 @@ struct InkCudaRunner {
     }
 
     // Full exact softcapped logits [n_want, 200058] for selected hidden rows in d_h_src -> d_logits
+    // PERF-STEP: the exact top-128 keys of ONE row through the INT8 screening index (ink_head_screen.cuh); false = run the full head instead (no index, not BF16, or the guard fired)
+    HeadScreen hs;
+    bool head_screen_cands(const float* d_h, InkTopkScratch& tk) {
+        const auto& ui = m.tinfo("model.llm.unembed.weight");
+        if (ui.fmt != FMT_BF16 || !m.unembed_screen.ready || m.unembed_screen.borrowed || m.unembed_screen.eps == nullptr) return false;
+        const int V = m.man.c.vocab_unpadded;
+        if (!hs.ensure(V) || !tk.ensure(1)) return false;
+        const uint16_t* W = reinterpret_cast<const uint16_t*>(m.trunk_ptr("model.llm.unembed.weight"));
+        k_ink_row_l2norm<<<1, 256, 0, st>>>(d_h, hs.d_hn, hs.d_misc + 6, hs.d_misc + 7, 1);
+        k_ink_hs_pass1<<<(V + 7) / 8, 256, 0, st>>>(m.unembed_screen.q8, m.unembed_screen.sc, m.unembed_screen.eps, d_h, hs.d_hn, hs.d_dot, hs.d_hist, V);
+        k_ink_hs_threshold<<<1, 1024, 0, st>>>(hs.d_hist, hs.d_T, hs.d_misc + 0, hs.d_misc + 1, hs.d_misc + 2);
+        k_ink_hs_cand<<<(V + 255) / 256, 256, 0, st>>>(hs.d_dot, m.unembed_screen.eps, hs.d_hn, hs.d_T, hs.d_cand, hs.d_misc + 0, hs.d_misc + 2, V);
+        k_ink_hs_exact<<<64, 128, 0, st>>>(W, d_h, hs.d_cand, hs.d_misc + 0, hs.d_keys, m.man.c.logit_softcap);
+        k_ink_hs_sort<<<1, kTopkThreads, 0, st>>>(hs.d_keys, hs.d_misc + 0, hs.d_misc + 1, tk.d_out);
+        INK_CK(cudaMemcpyAsync(tk.h_out, tk.d_out, (size_t)kTopkCand * 8, cudaMemcpyDeviceToHost, st));
+        INK_CK(cudaMemcpyAsync(hs.h_misc, hs.d_misc, 3 * sizeof(int), cudaMemcpyDeviceToHost, st));
+        INK_CK(cudaStreamSynchronize(st));
+        ++hs.calls;
+        hs.cand_sum += hs.h_misc[0];
+        if (hs.h_misc[1] != 0) { ++hs.fallbacks; return false; }
+        tk.h_fin[0] = hs.h_misc[2];
+        if (hs.calls % 500 == 1) std::fprintf(stderr, "[InkHeadScreen] %ld steps, %ld fell back to the full head, mean %.0f candidates\n", hs.calls, hs.fallbacks, (double)hs.cand_sum / (double)hs.calls);
+        return true;
+    }
+
     void head_logits_from(const float* d_h_src, int n_want) {
         ensure_logits(n_want);
         const int V = m.man.c.vocab_unpadded;
@@ -6945,6 +6972,7 @@ struct InkCudaRunner {
     }
 
     void free_all() {
+        hs.free_all();
         fp8_sm.free_all();
         fp8_eng.free_all();
         elastic_kv.free_all();

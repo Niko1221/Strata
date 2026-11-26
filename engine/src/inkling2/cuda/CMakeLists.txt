@@ -54,6 +54,18 @@ target_compile_options(strata_inkling_cuda_sm120 PRIVATE
 )
 
 # 2. Portable InkCudaBackend plugin implementing ink2::InkBackend (make_cuda_backend)
+# PERF-STEP: the runner TU also gets the arch-specific sm_120a / sm_121a SASS next to the plain one (the plain sm_120 / PTX stay for every other card). On sm_120a
+# the FP4 -> half2 conversion of the M=1 expert kernels is the hardware cvt.rn.f16x2.e2m1x2; plain sm_120 expands it to hundreds of integer instructions
+# (measured on a 5090: gate+up 25.7 -> 17.9 us, down 15.8 -> 9.5 us per visit, identical results). The driver picks the a-variant on an exact match.
+set(_ink_main_archs ${STRATA_INK_CUDA_ARCHS})
+if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
+  foreach(_e IN LISTS STRATA_INK_CUDA_ARCHS)
+    if("${_e}" MATCHES "^(12[01])(-real)?$")
+      list(APPEND _ink_main_archs "${CMAKE_MATCH_1}a-real")
+    endif()
+  endforeach()
+endif()
+list(REMOVE_DUPLICATES _ink_main_archs)
 add_library(strata_inkling_cuda STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/ink_cuda_backend.cu"
 )
@@ -61,7 +73,7 @@ target_include_directories(strata_inkling_cuda PRIVATE ${_ink_cuda_inc})
 set_target_properties(strata_inkling_cuda PROPERTIES
   CUDA_STANDARD 20
   CUDA_STANDARD_REQUIRED ON
-  CUDA_ARCHITECTURES "${STRATA_INK_CUDA_ARCHS}"
+  CUDA_ARCHITECTURES "${_ink_main_archs}"
   CUDA_RUNTIME_LIBRARY Shared
   POSITION_INDEPENDENT_CODE ON
 )

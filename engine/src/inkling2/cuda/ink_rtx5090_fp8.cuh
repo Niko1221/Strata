@@ -596,7 +596,7 @@ __global__ void __launch_bounds__(256) k_ink_gemv_multi_fp8_m1_l1(
     const int lane  = tid & 31;    // 0..31 lanes/row (512B coalesced!)
     const int grow0 = blockIdx.x * 8;
     const int grow  = grow0 + warp;
-    if (grow >= mp.cumN[mp.count]) return;
+    if (grow >= mp.cumN[mp.count]) { INK_PDL_WAIT(); return; }   // PERF-STEP: the wait is on every path
 
     int pi = 0;
     while (pi + 1 < mp.count && grow0 >= mp.cumN[pi + 1]) ++pi;
@@ -606,6 +606,27 @@ __global__ void __launch_bounds__(256) k_ink_gemv_multi_fp8_m1_l1(
     const uint4* x4 = reinterpret_cast<const uint4*>(Xh);
     const float w_sc = *mp.sc[pi];
     const int k16_end = K >> 4;  // 144 (K=2304) or 192 (K=3072)
+
+    // PERF-STEP: the weight row is a constant, so its loads are issued BEFORE the wait for the kernel in front (programmatic dependent launch): they run while
+    // that kernel still finishes. Only the activations X (written by the kernel before) are read after INK_PDL_WAIT(). Same loads, same order of accumulation.
+    uint4 w0 = make_uint4(0u, 0u, 0u, 0u), w1 = w0, w2 = w0, w3 = w0, w4 = w0, w5 = w0;
+    bool has4 = false;
+    if (k16_end == 144) {
+        w0 = __ldg(wr + lane + 0);
+        w1 = __ldg(wr + lane + 32);
+        w2 = __ldg(wr + lane + 64);
+        w3 = __ldg(wr + lane + 96);
+        has4 = (lane < 16);
+        if (has4) w4 = __ldg(wr + lane + 128);
+    } else if (k16_end == 192) {
+        w0 = __ldg(wr + lane + 0);
+        w1 = __ldg(wr + lane + 32);
+        w2 = __ldg(wr + lane + 64);
+        w3 = __ldg(wr + lane + 96);
+        w4 = __ldg(wr + lane + 128);
+        w5 = __ldg(wr + lane + 160);
+    }
+    INK_PDL_WAIT();
 
     __half2 acc0 = __float2half2_rn(0.0f);
     __half2 acc1 = __float2half2_rn(0.0f);
@@ -623,28 +644,16 @@ __global__ void __launch_bounds__(256) k_ink_gemv_multi_fp8_m1_l1(
     };
 
     if (k16_end == 144) {
-        // K = 2304: 4 full 512B loads upfront + 16-lane tail!
-        const uint4 w0 = __ldg(wr + lane + 0);
-        const uint4 w1 = __ldg(wr + lane + 32);
-        const uint4 w2 = __ldg(wr + lane + 64);
-        const uint4 w3 = __ldg(wr + lane + 96);
-        const bool has4 = (lane < 16);
-        const uint4 w4 = has4 ? __ldg(wr + lane + 128) : make_uint4(0u, 0u, 0u, 0u);
+        // K = 2304: 4 full 512B loads upfront + 16-lane tail (staged above, before the wait)
         accum_u4(w0, lane + 0);
         accum_u4(w1, lane + 32);
         accum_u4(w2, lane + 64);
         accum_u4(w3, lane + 96);
         if (has4) accum_u4(w4, lane + 128);
     } else if (k16_end == 192) {
-        // K = 3072: 6 exact 512B loads in 2 pipelined waves of 3!
-        const uint4 w0 = __ldg(wr + lane + 0);
-        const uint4 w1 = __ldg(wr + lane + 32);
-        const uint4 w2 = __ldg(wr + lane + 64);
-        const uint4 w3 = __ldg(wr + lane + 96);
+        // K = 3072: 6 exact 512B loads (staged above, before the wait)
         accum_u4(w0, lane + 0);
-        const uint4 w4 = __ldg(wr + lane + 128);
         accum_u4(w1, lane + 32);
-        const uint4 w5 = __ldg(wr + lane + 160);
         accum_u4(w2, lane + 64);
         accum_u4(w3, lane + 96);
         accum_u4(w4, lane + 128);
@@ -671,6 +680,7 @@ __global__ void __launch_bounds__(256) k_ink_gemv_multi_fp8_smallM_l1(
     const __half2* __restrict__ Xh_k,  // [M, K/2] (nullable -> Xh_q)
     const __half2* __restrict__ Xh_v,  // [M, K/2] (nullable -> Xh_q)
     int M, int K) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int tid   = threadIdx.x;
     const int warp  = tid >> 5;
     const int lane  = tid & 31;
@@ -749,6 +759,7 @@ __global__ void __launch_bounds__(256) k_ink_f32_sink_sconv_fused(
     float* __restrict__ y_kd,          // [M, 32]
     float* __restrict__ y_vd,          // [M, 32]
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int row = blockIdx.x;
     const int m0  = blockIdx.y * TILE_M;
     const int tid = threadIdx.x;
@@ -970,6 +981,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_3x_down_fp8(
     const uint8_t* __restrict__ wd2, const float* __restrict__ sd2,
     float* __restrict__ gate3,          // [3, M, 64]
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int r = blockIdx.x;   // 0..63
     const int c = blockIdx.y;   // 0..2
     if (r >= kInkGateRank || c >= 3) return;
@@ -1041,6 +1053,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_3x_apply_fp8(
     const uint8_t* __restrict__ wgf2, const float* __restrict__ sgf2,
     float* __restrict__ out0, float* __restrict__ out1, float* __restrict__ out2,
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     constexpr int D = kInkHidden;
     const int c = blockIdx.y;  // 0..2
     if (c >= 3) return;
@@ -1093,6 +1106,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_1x_down_fp8(
     const uint8_t* __restrict__ wd, const float* __restrict__ sd,
     float* __restrict__ gate,           // [M, 64]
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int r = blockIdx.x;
     if (r >= kInkGateRank) return;
     constexpr int D2 = 2 * kInkHidden;
@@ -1157,6 +1171,7 @@ __global__ void __launch_bounds__(256) k_ink_rms_norm_3x_h2(
     const float* __restrict__ w0, const float* __restrict__ w1, const float* __restrict__ w2,
     __half2* __restrict__ h2_out,  // [3, M, D/2] contiguous!
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     const int c = blockIdx.y;
     if (m >= M || c >= 3) return;
@@ -1202,6 +1217,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_1x_apply_fp8(
     const uint8_t* __restrict__ wgf, const float* __restrict__ sgf,
     float* __restrict__ out,
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     constexpr int D = kInkHidden;
     __shared__ float s_gate[MAX_M][kInkGateRank];
     const int tid = threadIdx.x;

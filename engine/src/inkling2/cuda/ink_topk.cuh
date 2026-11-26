@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cuda_runtime.h>
+#include "ink_pdl_dev.cuh"
 
 namespace strata {
 namespace ink {
@@ -52,6 +53,7 @@ __device__ __forceinline__ void ink_topk_sort2048(uint64_t* a) {
 // pass 1: rows [nrows, V] row-major -> out[(row * kTopkSlices + slice) * 128 ..), fin[row] &= every 67th logit finite
 __global__ void __launch_bounds__(kTopkThreads) k_ink_topk_pass1(const float* __restrict__ logits, int V,
                                                                  uint64_t* __restrict__ out, int* __restrict__ fin) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     __shared__ uint64_t s_key[kTopkSortN];
     const int row = blockIdx.y, slice = blockIdx.x;
     const int S = (V + kTopkSlices - 1) / kTopkSlices;             // 1563 for V = 200058
@@ -78,6 +80,7 @@ __global__ void __launch_bounds__(kTopkThreads) k_ink_topk_pass1(const float* __
 // pass 2 / 3: `lists` sorted lists of 128 keys per row in `in`; groups of `m` lists (m * 128 <= 2048) -> one sorted list of 128
 __global__ void __launch_bounds__(kTopkThreads) k_ink_topk_merge(const uint64_t* __restrict__ in, int lists, int m,
                                                                  uint64_t* __restrict__ out, int groups) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     __shared__ uint64_t s_key[kTopkSortN];
     const int row = blockIdx.y, g = blockIdx.x;
     const uint64_t* src = in + ((size_t)row * lists + (size_t)g * m) * kTopkCand;

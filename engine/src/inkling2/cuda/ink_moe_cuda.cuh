@@ -181,6 +181,7 @@ __global__ void __launch_bounds__(256) k_ink_router_gemv_smallM(
     const float* __restrict__ gate_w,  // [128, 2304] F32
     float* __restrict__ r_logits,      // [M, 128]
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int e = blockIdx.x;  // 0..127 -> 128 CTAs across 170 SMs!
     if (e >= kInkExperts) return;
     const int tid = threadIdx.x;
@@ -218,6 +219,7 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
     float* __restrict__ topk_w,         // [M, 8]
     float route_scale,
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int tok = blockIdx.x;
     if (tok >= M) return;
     const int lane = threadIdx.x;
@@ -284,6 +286,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     int M,
     int tile_rows,
     InkMoeTables tb) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     __shared__ int s_cnt[128], s_off[128], s_act[128], s_fill[128], s_tcnt[128];
     const int t = threadIdx.x;
     const int P = M * kInkTopK;
@@ -1360,7 +1363,8 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_sf4_mx8(
     const InkExpertDev* __restrict__ experts,
     InkMoeTables tb,
     const float* __restrict__ x_f32,          // [M, 2304]
-    float* __restrict__ h_f32) {              // [P, 1152]
+    float* __restrict__ h_f32) { // [P, 1152]
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int ai = blockIdx.y;
     if (ai >= *tb.nact) return;
     const int e = tb.active[ai];
@@ -1543,7 +1547,8 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_sf4_mx8(
     InkMoeTables tb,
     const float* __restrict__ h_f32,          // [P, 1152]
     const float* __restrict__ topk_w,         // [P]
-    float* __restrict__ y_pair) {             // [P, 2304]
+    float* __restrict__ y_pair) { // [P, 2304]
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int ai = blockIdx.y;
     if (ai >= *tb.nact) return;
     const int e = tb.active[ai];
