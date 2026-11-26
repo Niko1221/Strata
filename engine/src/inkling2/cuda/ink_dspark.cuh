@@ -1045,9 +1045,51 @@ __global__ void __launch_bounds__(256) k_dspark_beam_expand(
 }
 
 // ============================================================================
+// SpecAdapt: the draft window follows what the card measures, not a constant per card (PERF-LONGCTX; fast mode only, STRATA_INK_SM120_SPEC_ADAPT).
+// The window-size model of draft_beam_tree picks the node count M that maximises  E[tokens](M) / cost(M)  with  cost(M) = 1 + R * (1 - (15/16)^M)  (R: the MoE share of a
+// step, a constant of the card's table row). Here R and the drafter's calibration are estimated online from the steps the engine runs:
+//   * R: a decayed least-squares fit of the measured step time  t = a + b * x,  x = 1 - (15/16)^M  (R = b / a): a card whose cold experts cost more per extra row (a hybrid
+//     card, a long context) measures a larger R and gets a smaller window; a drafter whose rows are cheap gets a larger one;
+//   * accept scale: the measured share of the predicted extra tokens (emitted - 1) / (E[tokens] - 1) that really came out, applied to the model's expectation;
+//   * the plain step is the M = 1 bucket of the same model, so drafting switches itself off (the caller's plain margin allows it) when no window pays.
+// The window changes with timing, so the exact form keeps the static model (the table's R).
+// ============================================================================
+struct SpecAdapt {
+    bool on = false;
+    double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;   // decayed sums of the fit
+    double accept = 1.0;                                // EMA of the measured / predicted extra tokens
+    long steps = 0;
+    static double xof(int M) { return 1.0 - std::pow(15.0 / 16.0, (double)M); }
+    void observe(int M, double ms, int n_emit, double pred_etok, int pred_m) {
+        if (!on || M < 1 || ms <= 0.0 || ms > 2000.0) return;
+        const double d = 0.985;
+        sw *= d; sx *= d; sy *= d; sxx *= d; sxy *= d;
+        const double x = xof(M);
+        sw += 1; sx += x; sy += ms; sxx += x * x; sxy += x * ms;
+        if (M == pred_m && M >= 3 && pred_etok > 1.05) {
+            const double q = std::min(1.5, std::max(0.0, ((double)n_emit - 1.0) / (pred_etok - 1.0)));
+            accept = 0.97 * accept + 0.03 * q;
+        }
+        ++steps;
+    }
+    // R for the window model; the prior (the table row's constant) until the fit has seen enough steps with different window sizes
+    double ratio(double prior) const {
+        if (!on || sw < 12.0) return prior;
+        const double den = sw * sxx - sx * sx;
+        if (den < 1e-3 * sw * sw) return prior;
+        const double b = (sw * sxy - sx * sy) / den;
+        const double a = (sy - b * sx) / sw;
+        if (!(a > 0.5) || !(b > 0.0)) return prior;
+        return std::min(60.0, std::max(0.5, b / a));
+    }
+    double accept_scale() const { return on ? std::min(1.2, std::max(0.25, accept)) : 1.0; }
+};
+
+// ============================================================================
 // InkDSpark: On-GPU 3-Layer Block-8 / Tree-16 Recurrent Markov Drafter
 // ============================================================================
 struct InkDSpark {
+    SpecAdapt adapt;   // the online window model (off unless the backend turns it on)
     InkCudaRunner& r;
     InkCudaModel& m;
     bool ready = false;
@@ -2324,8 +2366,10 @@ struct InkDSpark {
                 if (mb < 3 && plain_margin <= 0.0f) continue;  // the 1 and 2 node trees exist only when the caller lets the step fall back to plain decoding
                 const double e_tok = pref_p[mb - 1];
                 const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)mb);
-                const double cost = 1.0 + (double)adaptive_moe_ratio * exp_frac;
-                double rate = e_tok / cost;
+                const double R_eff = adapt.on ? adapt.ratio((double)adaptive_moe_ratio) : (double)adaptive_moe_ratio;
+                const double cost = 1.0 + R_eff * exp_frac;
+                const double e_adj = adapt.on ? 1.0 + adapt.accept_scale() * (e_tok - 1.0) : e_tok;
+                double rate = e_adj / cost;
                 if (mb < 3) rate *= (double)plain_margin;
                 if (rate > best_rate) { best_rate = rate; best_m = mb; }
             }

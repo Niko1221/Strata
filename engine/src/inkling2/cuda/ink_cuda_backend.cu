@@ -487,6 +487,7 @@ public:
 
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
             dspark_ = std::make_unique<strata::ink::InkDSpark>(*runner_);
+            dspark_->adapt.on = strata::ink::sm120_cfg(gpu_id_).spec_adapt && !strata::ink::rtx5090::exact_mode_on();   // fast only; the exact form keeps the static window model
             try {
                 dspark_->init(eff_max_ctx_, 512);
             } catch (const strata::ink::InkAllocFailure& ex) {
@@ -1660,6 +1661,7 @@ public:
             if (next_child >= 0) cur_node = next_child;
             else break;
         }
+        if (dspark_->adapt.on) dspark_->adapt.observe(real_M, sp_ms(st_t0, st_t3), n_emit, dspark_->last_pred_etok, dspark_->last_m);
         if (dspark_opt && n_emit > 1) {
             const size_t end_len = (size_t)(anchor_pos + n_emit);
             if (pld_hist_.size() < end_len) pld_hist_.resize(end_len, -1);
