@@ -8,6 +8,7 @@
 
 #include "ink_cuda.cuh"
 #include "ink_dspark.cuh"
+#include "ink_rtx5090_bspec.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
 #include "ink_topk.cuh"
@@ -156,6 +157,11 @@ public:
             err = std::string("cudaSetDevice failed: ") + cudaGetErrorString(ce);
             return false;
         }
+        if (strata::ink::rtx5090::dspark_opt_on()) {
+            if (!std::getenv("STRATA_INK_SPEC_BEAM") && opts.spec_beam <= 0) spec_cfg_.beam = 4;
+            if (!std::getenv("STRATA_INK_SPEC_COST") && opts.spec_cost <= 0.0) spec_cfg_.cost = 12.0f;
+            if (!std::getenv("STRATA_INK_SPEC_PLAIN") && opts.spec_plain < 0.0) spec_cfg_.plain = 1.02f;
+        }
         cudaDeviceProp prop{};
         ce = cudaGetDeviceProperties(&prop, gpu_id_);
         if (ce != cudaSuccess) {
@@ -296,6 +302,9 @@ public:
                 const double kv_grow_mib = (kv_offload_mode == 1) ? 0.0
                     : (double)8 * max_slots_ * std::max(0, std::max(256, opts.max_ctx) - init_glob) * (double)per_visit_pos / 1048576.0;
                 chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_grow_mib));
+                if (strata::ink::rtx5090::enabled() && !strata::ink::rtx5090::exact_mode_on() && max_slots_ == 1 && (led_loaded - kv_grow_mib) >= 4800.0) {
+                    chunk_try = std::max(chunk_try, 4096);
+                }
                 std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB of K/V still to grow, %d slot(s); --chunk N sets it)\n",
                              chunk_try, led_loaded, kv_grow_mib, max_slots_);
             }
@@ -350,6 +359,17 @@ public:
                 cudaGetLastError();
                 std::fprintf(stderr, "[InkCUDA] DSpark drafter turned off: not enough free GPU memory for it (%s)\n", ex.what());
             }
+            if (dspark_ && dspark_->ready && max_slots_ >= 2 && strata::ink::rtx5090::dspark_opt_on()) {
+                bspec_ = std::make_unique<strata::ink::rtx5090::Rtx5090BatchedSpec>();
+                try {
+                    if (!bspec_->init(*runner_, max_slots_)) bspec_.reset();
+                } catch (const strata::ink::InkAllocFailure& ex) {
+                    bspec_->free_all();
+                    bspec_.reset();
+                    cudaGetLastError();
+                    std::fprintf(stderr, "[InkRTX5090] Mode-3 Batched Spec disabled (%s)\n", ex.what());
+                }
+            }
         }
         strata::ink::ink_alloc_throws() = false;
         std::fprintf(stderr, "[InkCUDA] memory: %.0f MiB free after load, runner+KV took %.0f MiB (max_batch=%d), DSpark took %.0f MiB, %.0f MiB free now\n",
@@ -399,7 +419,8 @@ public:
         snap_active_[slot] = false;
         if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].valid = false;
         if (slot < (int)shared_ckpts_.size()) shared_ckpts_[slot].valid = false;
-        if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; }
+        if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; pld_hist_.clear(); }
+        if (bspec_) bspec_->reset_slot(slot);
     }
 
     // #6627: Save/restore slot's ShortConv (3.83 MB) + 40 SWA KV ring windows (<=160 MiB in host RAM) + DSpark SWA KV
@@ -641,6 +662,9 @@ public:
     }
 
     void rollback_slot(int slot, int keep_len) override {
+        if (slot == 0 && keep_len >= 0 && (size_t)keep_len < pld_hist_.size()) {
+            pld_hist_.resize((size_t)keep_len);
+        }
         if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return;
         if (snap_active_[slot]) {
             const int n_keep = std::max(0, std::min(snap_M_[slot], keep_len - snap_p0_[slot]));
@@ -903,7 +927,13 @@ public:
                     runner_->has_img_step = false;
                 }
 
-                const bool want_taps = (taps_out != nullptr) || (batch.capture_taps && dspark_ && dspark_->ready && slot == 0);
+                if (slot == 0 && !any_img && p0 >= 0) {
+                    const size_t need_len = (size_t)(p0 + M);
+                    if (pld_hist_.size() < need_len) pld_hist_.resize(need_len, -1);
+                    for (int k = 0; k < M; ++k) pld_hist_[(size_t)(p0 + k)] = toks[k];
+                }
+                const bool want_ms = (bspec_ && bspec_->ready && dspark_ && dspark_->ready && slot < bspec_->max_slots);
+                const bool want_taps = (taps_out != nullptr) || want_ms || (batch.capture_taps && dspark_ && dspark_->ready && slot == 0);
 
                 // If snapshot_slot(slot) is active for DSpark verify (M <= 16, no images):
                 // run forward_tree_verify (stages ShortConv + KV) & commit all M tokens so rollback_slot can replay exact n_keep!
@@ -934,6 +964,10 @@ public:
                 if (batch.capture_taps && dspark_ && dspark_->ready && slot == 0 && p0 + M <= dspark_->max_ctx) {
                     dspark_->ingest_taps(p0, M);
                     dspark_slot_ = 0;
+                }
+                if (want_ms) {
+                    bspec_->ingest_slot_seq(*dspark_, slot, p0, M);
+                    bspec_->record_slot_tokens(slot, p0, toks.data(), M);
                 }
                 if (taps_out) {
                     std::vector<int> slice(idxs.begin() + off, idxs.begin() + off + M);
@@ -987,7 +1021,8 @@ public:
 
         if (!dec_orig.empty()) {
             const int B = (int)dec_orig.size();
-            const bool want_taps = (taps_out != nullptr);
+            const bool want_ms = (bspec_ && bspec_->ready && dspark_ && dspark_->ready);
+            const bool want_taps = (taps_out != nullptr) || want_ms;
             runner_->has_img_step = false;
             {
                 static double p_step_ms = 0; static long p_n = 0, p_rows = 0;
@@ -1002,6 +1037,10 @@ public:
                         std::fprintf(stderr, "[InkCUDA PROF step] %ld batched steps, B avg %.1f, eager 48-visit step %.2f ms\n", p_n, (double)p_rows / p_n, p_step_ms / p_n);
                     }
                 }
+            }
+            if (want_ms) {
+                bspec_->ingest_taps_batched(*dspark_, dec_slots.data(), dec_pos.data(), nullptr, B, 1);
+                for (int k = 0; k < B; ++k) bspec_->record_slot_tokens(dec_slots[k], dec_pos[k], &dec_toks[k], 1);
             }
             if (taps_out) copy_host_taps(dec_orig);
             std::vector<int> loc_idx, dst_rows;
@@ -1063,25 +1102,223 @@ public:
         int* out_drafted,
         std::string& /*err*/) override {
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
+        const bool dspark_opt = strata::ink::rtx5090::dspark_opt_on() && (runner_->d_tree_anc32 != nullptr);
+        const int want_cap = (dspark_opt && anchor_pos + 24 < eff_max_ctx_ && anchor_pos + 24 < dspark_->max_ctx)
+                                 ? std::min(24, runner_->tree_cap)
+                                 : std::min(12, runner_->tree_cap);
         if (anchor_pos <= 0 || anchor_pos + 12 >= eff_max_ctx_ || anchor_pos + 12 >= dspark_->max_ctx || max_emit < 1 || !out_emitted) return 0;
-        if (!runner_->ensure_global_kv_cap(anchor_pos + 12) || !dspark_->ensure_ctx_cap(anchor_pos + 12)) return 0;
+        if (!runner_->ensure_global_kv_cap(anchor_pos + want_cap) || !dspark_->ensure_ctx_cap(anchor_pos + want_cap)) return 0;
+
+        // Track slot-0 token history for zero-cost PLD suffix lookup
+        if (dspark_opt) {
+            if (pld_hist_.size() <= (size_t)anchor_pos) pld_hist_.resize((size_t)anchor_pos + 1, -1);
+            pld_hist_[(size_t)anchor_pos] = anchor_tok;
+        }
 
         // 1. Snapshot slot-0 ShortConv pre-verify state (2.5 us) for exact mid-tree EOS rollback if needed!
         strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
             runner_->d_sconv_pool_arr, d_sconv_snap_, 0, runner_->max_slots, true);
 
-        // 2. True W=4 Multi-Branch Sparse-MoE Bayes-Optimal Adaptive Beam Tree (M* in {3,4,5,6,8,10,12})!
+        // 2. Root-PLD-First (zero-cost exact >=3-gram suffix spine) + W=3..4 Multi-Branch Bayes-Optimal Beam Tree!
         strata::ink::InkTreeSpec tr{};
-        const int max_nodes = std::min(12, runner_->tree_cap);
-        dspark_->draft_beam_tree(anchor_tok, anchor_pos, spec_cfg_.beam, max_nodes, tr, spec_cfg_.cost, spec_cfg_.plain);
+        const int max_nodes = want_cap;
+        const int base_max = dspark_opt ? std::min(12, max_nodes) : max_nodes;
+        static const bool pld_on = [] {
+            const char* e = std::getenv("STRATA_INK_SM120_PLD");
+            return !e || e[0] != '0';
+        }();
+        auto find_pld = [&](const int32_t* key, int klen, int max_cont, int32_t* out_cont, int* out_n = nullptr) -> int {
+            const int hi = anchor_pos - 1;
+            const int lo = std::max(0, hi - 16384);
+            const int32_t last_t = key[klen - 1];
+            for (int n = std::min(5, klen); n >= 3; --n) {
+                const int cap_c = std::min(max_cont, (n >= 4) ? 14 : 10);
+                for (int p = hi - 1; p >= lo + n - 1; --p) {
+                    if (pld_hist_[(size_t)p] != last_t) continue;
+                    bool eq = true;
+                    for (int j = 1; j < n; ++j) {
+                        if (pld_hist_[(size_t)(p - j)] != key[klen - 1 - j]) { eq = false; break; }
+                    }
+                    if (eq) {
+                        int cnt = 0;
+                        for (int k = 1; k <= cap_c && (p + k) < anchor_pos; ++k) {
+                            const int32_t ct = pld_hist_[(size_t)(p + k)];
+                            if (ct < 0) break;
+                            out_cont[cnt++] = ct;
+                        }
+                        if (cnt > 0) {
+                            if (out_n) *out_n = n;
+                            return cnt;
+                        }
+                    }
+                }
+            }
+            return 0;
+        };
+
+        bool root_pld_used = false;
+        if (dspark_opt && pld_on && anchor_pos >= 6 && (int)pld_hist_.size() > anchor_pos) {
+            int32_t rkey[5];
+            for (int j = 0; j < 5; ++j) rkey[j] = pld_hist_[(size_t)(anchor_pos - 4 + j)];
+            int32_t cont[16];
+            int match_n = 0;
+            const int n_c = find_pld(rkey, 5, std::min(14, max_nodes - 3), cont, &match_n);
+            if (match_n >= 4 && n_c >= 3) {
+                // Build a 10..14-token linear PLD spine FIRST, then attach lean 2-node CUDA-graphed DSpark fallback!
+                tr.M = 1;
+                tr.tok[0] = anchor_tok;
+                tr.parent[0] = -1;
+                tr.depth[0] = 0;
+                int par = 0;
+                for (int k = 0; k < n_c && tr.M < max_nodes && k < 22; ++k) {
+                    const int nid = tr.M++;
+                    tr.tok[nid]    = cont[k];
+                    tr.parent[nid] = (int8_t)par;
+                    tr.depth[nid]  = (uint8_t)(k + 1);
+                    par = nid;
+                }
+                int32_t ids7[8] = {};
+                float conf7[8] = {};
+                dspark_->draft_block8(anchor_tok, anchor_pos, ids7, conf7);
+                int cur = 0;
+                int k = 0;
+                while (k < 7 && k < n_c && ids7[k] == cont[k]) { cur = k + 1; ++k; }
+                // Graft up to 2 top-1 DSpark fallback nodes at the first divergence point (total M <= 16!)
+                const int fb_cap = std::min(16, max_nodes);
+                int fb_added = 0;
+                for (; k < 7 && fb_added < 2 && tr.M < fb_cap; ++k) {
+                    if (fb_added > 0 && conf7[k] < 0.30f) break;
+                    const int nid = tr.M++;
+                    tr.tok[nid]    = ids7[k];
+                    tr.parent[nid] = (int8_t)cur;
+                    tr.depth[nid]  = (uint8_t)(tr.depth[cur] + 1);
+                    cur = nid;
+                    ++fb_added;
+                }
+                tr.build();
+                root_pld_used = true;
+            }
+        }
+
+        if (!root_pld_used) {
+            dspark_->draft_beam_tree(anchor_tok, anchor_pos, spec_cfg_.beam, base_max, tr, spec_cfg_.cost, spec_cfg_.plain);
+        }
+
+        int real_M = tr.M;
+        if (dspark_opt && !root_pld_used && tr.M < max_nodes) {
+            bool tree_mod = false;
+            const int leaf_id = dspark_->last_deepest_node;
+            bool leaf_extended = false;
+
+            // 2b. Leaf Suffix Lookup (PLD) Graft (< 5 us CPU, 0 VRAM!)
+            if (pld_on && anchor_pos >= 6 && (int)pld_hist_.size() > anchor_pos) {
+                // Extend deepest highest-prob DSpark leaf via suffix match!
+                if (leaf_id > 0 && leaf_id < tr.M && tr.depth[leaf_id] < 23 && tr.M < max_nodes) {
+                    int32_t key[16];
+                    int klen = 0;
+                    const int d_leaf = (int)tr.depth[leaf_id];
+                    if (d_leaf < 5) {
+                        const int need_h = std::min(5 - d_leaf, anchor_pos);
+                        for (int i = anchor_pos - need_h; i < anchor_pos; ++i) key[klen++] = pld_hist_[(size_t)i];
+                    }
+                    for (int d = std::max(0, d_leaf - 4); d <= d_leaf && klen < 16; ++d) {
+                        key[klen++] = tr.tok[tr.anc32[leaf_id][d]];
+                    }
+                    int32_t cont[16];
+                    const int room = std::min(max_nodes - tr.M, std::min(12, 23 - d_leaf));
+                    const int n_c = (room > 0) ? find_pld(key, klen, room, cont) : 0;
+                    if (n_c > 0) {
+                        int par = leaf_id;
+                        int dep = d_leaf;
+                        for (int k = 0; k < n_c && tr.M < max_nodes && dep < 23; ++k) {
+                            const int nid = tr.M++;
+                            tr.tok[nid]    = cont[k];
+                            tr.parent[nid] = (int8_t)par;
+                            tr.depth[nid]  = (uint8_t)(dep + 1);
+                            par = nid;
+                            ++dep;
+                        }
+                        tree_mod = true;
+                        leaf_extended = true;
+                    }
+                }
+                // Graft 3-gram root suffix matches onto the beam tree without displacing beam siblings!
+                if (tr.M < max_nodes && anchor_pos >= 5) {
+                    int32_t rkey[5];
+                    for (int j = 0; j < 5; ++j) rkey[j] = pld_hist_[(size_t)(anchor_pos - 4 + j)];
+                    int32_t cont[16];
+                    const int n_c = find_pld(rkey, 5, std::min(12, max_nodes - 1), cont);
+                    if (n_c > 0) {
+                        int cur = 0;
+                        int dep = 0;
+                        for (int k = 0; k < n_c && dep < 23; ++k) {
+                            int found = -1;
+                            for (int j = cur + 1; j < tr.M; ++j) {
+                                if (tr.parent[j] == cur && tr.tok[j] == cont[k]) { found = j; break; }
+                            }
+                            if (found >= 0) {
+                                cur = found;
+                                dep = (int)tr.depth[cur];
+                            } else {
+                                if (tr.M >= max_nodes) break;
+                                const int nid = tr.M++;
+                                tr.tok[nid]    = cont[k];
+                                tr.parent[nid] = (int8_t)cur;
+                                tr.depth[nid]  = (uint8_t)(dep + 1);
+                                cur = nid;
+                                ++dep;
+                                tree_mod = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2c. Optional 2-Block Chained DSpark (depth 8..14) when Block-1 spine is high-confidence!
+            static const bool chain2_on = [] {
+                const char* e = std::getenv("STRATA_INK_SM120_CHAIN2");
+                return !e || e[0] != '0';
+            }();
+            static const float chain2_thr = [] {
+                const char* e = std::getenv("STRATA_INK_SM120_CHAIN2_THR");
+                return (e && *e) ? (float)std::atof(e) : 0.55f;
+            }();
+            if (chain2_on && !leaf_extended && leaf_id > 0 && leaf_id < tr.M &&
+                tr.depth[leaf_id] == 7 && tr.M + 2 <= max_nodes &&
+                dspark_->last_deepest_logp > -10.0f && std::exp((double)dspark_->last_deepest_logp) >= (double)chain2_thr) {
+                int32_t ids2[8] = {};
+                float conf2[8] = {};
+                dspark_->draft_block8_at(tr.tok[leaf_id], anchor_pos, anchor_pos + 7, ids2, conf2);
+                int par = leaf_id;
+                int dep = 7;
+                double cum2 = 1.0;
+                for (int k = 0; k < 7 && tr.M < max_nodes && dep < 23; ++k) {
+                    if (conf2[k] < 0.45f) break;
+                    cum2 *= std::max(0.0, std::min(1.0, (double)conf2[k]));
+                    if (cum2 < 0.30) break;
+                    const int nid = tr.M++;
+                    tr.tok[nid]    = ids2[k];
+                    tr.parent[nid] = (int8_t)par;
+                    tr.depth[nid]  = (uint8_t)(dep + 1);
+                    par = nid;
+                    ++dep;
+                    tree_mod = true;
+                }
+            }
+
+            real_M = tr.M;
+            if (tree_mod) {
+                tr.build();
+            }
+        }
 
         // 3. Single CUDA-Graph 48-visit tree verify + exact GPU screened argmax (ZERO 6.4 MB logits D2H!)
         runner_->forward_tree_verify(tr, anchor_pos, 0, true);
         int32_t target_next[strata::ink::kInkMaxTree] = {};
         runner_->head_argmax_exact(tr.M, target_next);
 
-        // 4. Exact greedy tree walk (clamped to min(max_emit, 8))
-        const int emit_cap = std::min(max_emit, 8);
+        // 4. Exact greedy tree walk (clamped to min(max_emit, 24 when dspark_opt else 8); never walks dummy padding nodes >= real_M!)
+        const int emit_cap = std::min(max_emit, dspark_opt ? std::min(24, max_nodes) : 8);
         int32_t path[strata::ink::kInkMaxTree] = {};
         int n_emit = 0;
         int cur_node = 0;
@@ -1090,7 +1327,7 @@ public:
             const int32_t tok_next = target_next[cur_node];
             out_emitted[n_emit++] = tok_next;
             int next_child = -1;
-            for (int j = cur_node + 1; j < tr.M; ++j) {
+            for (int j = cur_node + 1; j < real_M; ++j) {
                 if (tr.parent[j] == cur_node && tr.tok[j] == tok_next) {
                     next_child = j;
                     break;
@@ -1098,6 +1335,11 @@ public:
             }
             if (next_child >= 0) cur_node = next_child;
             else break;
+        }
+        if (dspark_opt && n_emit > 1) {
+            const size_t end_len = (size_t)(anchor_pos + n_emit);
+            if (pld_hist_.size() < end_len) pld_hist_.resize(end_len, -1);
+            for (int i = 0; i < n_emit - 1; ++i) pld_hist_[(size_t)(anchor_pos + 1 + i)] = out_emitted[i];
         }
 
         // 5. Commit ONLY the accepted tree path across all 48 visits (2 launches) + compact & ingest DSpark taps!
@@ -1138,6 +1380,134 @@ public:
         return n_emit;
     }
 
+    int dspark_spec_step_batched_greedy(
+        int B,
+        const int* slots,
+        const int32_t* anchor_toks,
+        const int* anchor_pos,
+        const int* max_emits,
+        int max_stride,
+        int32_t* out_emitted,
+        int* out_n_emit,
+        int* out_drafted,
+        std::string& /*err*/) override {
+        if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || !bspec_ || !bspec_->ready) return 0;
+        if (B < 2 || B > bspec_->max_slots || max_stride < 4 || !slots || !anchor_toks || !anchor_pos || !max_emits || !out_emitted || !out_n_emit) return 0;
+        if (bspec_->gov_plain_steps > 0) { --bspec_->gov_plain_steps; return 0; }
+
+        static const int k_draft_cfg = [] {
+            const char* e = std::getenv("STRATA_INK_SM120_BSPEC_KD");
+            int v = (e && *e) ? std::atoi(e) : 3;
+            return std::max(1, std::min(3, v));
+        }();
+        int K_draft = k_draft_cfg;
+        while (K_draft > 1 && B * (K_draft + 1) > bspec_->m_cap) --K_draft;
+        const int K_slot = K_draft + 1;
+        const int M = B * K_slot;
+
+        int max_need_pos = 0;
+        for (int b = 0; b < B; ++b) {
+            const int sl = slots[b];
+            const int ap = anchor_pos[b];
+            if (sl < 0 || sl >= bspec_->max_slots || ap <= 0 || ap + K_slot + 2 >= eff_max_ctx_) return 0;
+            if (bspec_->slot_synced_pos[sl] != ap) return 0;
+            if (ap + K_slot > max_need_pos) max_need_pos = ap + K_slot;
+        }
+        if (!runner_->ensure_global_kv_cap(max_need_pos)) return 0;
+
+        // 1. Batched 64-slot DSpark draft (exact Block-8 backbone + INT8 TC base logits + Markov RNN!)
+        const double t_b0 = spec_cfg_.log ? strata::ink::now_s() : 0.0;
+        int32_t draft_buf[strata::ink::rtx5090::kBspecMaxM] = {};
+        bspec_->draft_batched(*dspark_, B, K_draft, slots, anchor_toks, anchor_pos, draft_buf);
+        const double t_b1 = spec_cfg_.log ? strata::ink::now_s() : 0.0;
+
+        // 2. Per-slot >=2/3-gram PLD override (zero VRAM, boosts JSON/code/chat batches!)
+        for (int b = 0; b < B; ++b) {
+            const int sl = slots[b];
+            const int ap = anchor_pos[b];
+            bspec_->record_slot_tokens(sl, ap, &anchor_toks[b], 1);
+            int32_t pld_c[4] = {};
+            const int nc = bspec_->find_slot_pld(sl, ap, K_draft, pld_c);
+            for (int k = 0; k < nc && k < K_draft; ++k) draft_buf[b * K_draft + k] = pld_c[k];
+        }
+
+        // 3. Build flat [B * K_slot] verify batch -> ONE CUDA-Graphed Mode-3 48-visit pass!
+        int32_t toks[strata::ink::rtx5090::kBspecMaxM];
+        int32_t sl_arr[strata::ink::rtx5090::kBspecMaxM];
+        int32_t pos_arr[strata::ink::rtx5090::kBspecMaxM];
+        for (int b = 0; b < B; ++b) {
+            const int base = b * K_slot;
+            toks[base]    = anchor_toks[b];
+            sl_arr[base]  = slots[b];
+            pos_arr[base] = anchor_pos[b];
+            for (int k = 0; k < K_draft; ++k) {
+                toks[base + 1 + k]    = draft_buf[b * K_draft + k];
+                sl_arr[base + 1 + k]  = slots[b];
+                pos_arr[base + 1 + k] = anchor_pos[b] + 1 + k;
+            }
+        }
+        runner_->forward_batched_spec(toks, sl_arr, pos_arr, B, K_slot, true);
+        if (spec_cfg_.log) INK_CK(cudaStreamSynchronize(runner_->st));
+        const double t_b2 = spec_cfg_.log ? strata::ink::now_s() : 0.0;
+
+        // 4. Fast exact target argmax (0.28 ms via INT8 TC Top-32 screen + exact Q8ROW/S6_K eval!)
+        int32_t argmax_buf[strata::ink::rtx5090::kBspecMaxM] = {};
+        bspec_->head_argmax_fast(*runner_, M, argmax_buf);
+        const double t_b3 = spec_cfg_.log ? strata::ink::now_s() : 0.0;
+
+        // 5. Exact lossless greedy verification per slot!
+        int n_acc_b[strata::ink::rtx5090::kBspecMaxSlots] = {};
+        int total_emit = 0;
+        for (int b = 0; b < B; ++b) {
+            const int base = b * K_slot;
+            const int cap  = std::min(max_emits[b], K_slot);
+            int32_t* dst   = out_emitted + (size_t)b * max_stride;
+            int na = 0;
+            for (int k = 0; k < cap; ++k) {
+                const int32_t t_next = argmax_buf[base + k];
+                dst[na++] = t_next;
+                if (k < K_draft && t_next == draft_buf[b * K_draft + k]) continue;
+                break;
+            }
+            n_acc_b[b] = na;
+            out_n_emit[b] = na;
+            if (out_drafted) out_drafted[b] = K_draft;
+            total_emit += na;
+            if (na > 1) bspec_->record_slot_tokens(slots[b], anchor_pos[b] + 1, dst, na - 1);
+        }
+
+        // 6. Commit accepted KV + ShortConv across all 48 visits (2 launches!) + ingest accepted DSpark taps!
+        runner_->commit_bspec(slots, anchor_pos, n_acc_b, B, K_slot);
+        bspec_->ingest_taps_batched(*dspark_, slots, anchor_pos, n_acc_b, B, K_slot);
+        INK_CK(cudaStreamSynchronize(runner_->st));
+        const double t_b4 = spec_cfg_.log ? strata::ink::now_s() : 0.0;
+
+        // 7. 2-step adaptive governor (falls back cleanly if synthetic random acceptance < 1.25 tok/slot!)
+        const double mean_emit = (double)total_emit / (double)B;
+        if (spec_cfg_.log) {
+            static int bs_n = 0; static double s_d = 0, s_v = 0, s_a = 0, s_c = 0, s_e = 0;
+            ++bs_n;
+            s_d += (t_b1 - t_b0) * 1000.0; s_v += (t_b2 - t_b1) * 1000.0;
+            s_a += (t_b3 - t_b2) * 1000.0; s_c += (t_b4 - t_b3) * 1000.0;
+            s_e += mean_emit;
+            if (bs_n % 10 == 0) {
+                const double tot_ms = (s_d + s_v + s_a + s_c) / bs_n;
+                std::fprintf(stderr, "[BSPEC-STATS] n=%d B=%d KD=%d mean_emit=%.2f | draft=%.2f verify=%.2f argmax=%.2f commit=%.2f total=%.2f ms (%.0f tok/s)\n",
+                             bs_n, B, K_draft, s_e / bs_n, s_d / bs_n, s_v / bs_n, s_a / bs_n, s_c / bs_n, tot_ms,
+                             (s_e / bs_n) * B * 1000.0 / std::max(0.01, tot_ms));
+            }
+        }
+        if (mean_emit < 1.25) {
+            if (++bspec_->gov_low_streak >= 2) {
+                bspec_->gov_plain_steps = 20;
+                bspec_->gov_low_streak = 0;
+            }
+        } else {
+            bspec_->gov_low_streak = 0;
+        }
+        return total_emit;
+    }
+
     bool selfcheck(std::string& err) override {
         cudaDeviceProp prop{};
         cudaError_t ce = cudaGetDeviceProperties(&prop, gpu_id_);
@@ -1172,6 +1542,7 @@ private:
     }
 
     void cleanup() {
+        if (bspec_)  { bspec_->free_all(); bspec_.reset(); }
         if (dspark_) { dspark_->free_all(); dspark_.reset(); }
         if (runner_) { runner_->free_all(); runner_.reset(); }
         if (d_sconv_snap_) { cudaFree(d_sconv_snap_); d_sconv_snap_ = nullptr; }
@@ -1213,6 +1584,7 @@ private:
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
+    std::unique_ptr<strata::ink::rtx5090::Rtx5090BatchedSpec> bspec_;
     float* d_sconv_snap_ = nullptr;
     void* d_test_steal_ = nullptr;   // STRATA_INK_TEST_STEAL_MIB test hook
     float* d_h_sel_ = nullptr;
@@ -1230,6 +1602,7 @@ private:
     int tree_snap_p0_ = 0;
     int tree_snap_M_ = 0;
     int32_t tree_snap_path_[strata::ink::kInkMaxTree] = {};
+    std::vector<int32_t> pld_hist_;  // Slot-0 token history for zero-cost PLD suffix lookup (opt-in STRATA_INK_RTX5090=1)
 };
 
 std::unique_ptr<InkBackend> make_cuda_backend() {

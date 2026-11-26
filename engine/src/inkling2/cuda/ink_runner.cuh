@@ -10,6 +10,9 @@
 #include "ink_kernels.cuh"
 #include "ink_manifest.hpp"
 #include "ink_moe_cuda.cuh"
+#include "ink_rtx5090_kernels.cuh"
+#include "ink_rtx5090_fp8.cuh"
+#include "ink_rtx5090_bspec_kernels.cuh"
 
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_kv_grow.hpp"
@@ -37,13 +40,18 @@ struct InkTreeSpec {
     int8_t  parent[kInkMaxTree] = {};
     uint8_t depth[kInkMaxTree] = {};
     uint8_t anc[kInkMaxTree][kInkMaxTreeDepth] = {};
+    uint8_t anc32[kInkMaxTree][kInkMaxTree] = {};
+    uint8_t max_depth = 0;
     int8_t  sconv_lag[kInkMaxTree * 3] = {};  // for each node m: lag-1, lag-2, lag-3 indices (>=0 node, -1/-2/-3 history[2/1/0])
 
     void build() {
+        max_depth = 0;
         for (int i = 0; i < M; ++i) {
+            if (depth[i] > max_depth) max_depth = depth[i];
             int cur = i;
             for (int d = (int)depth[i]; d >= 0; --d) {
-                anc[i][d] = (uint8_t)cur;
+                if (d < kInkMaxTreeDepth) anc[i][d] = (uint8_t)cur;
+                if (d < kInkMaxTree)      anc32[i][d] = (uint8_t)cur;
                 cur = (cur > 0) ? (int)parent[cur] : -1;
             }
             // ShortConv 3 lags: t-1, t-2, t-3
@@ -1950,17 +1958,26 @@ struct InkCudaRunner {
     int32_t* d_acc_path = nullptr;
     __nv_bfloat16 *d_x_bf16 = nullptr;
     __nv_bfloat16 *d_w_scratch = nullptr;  // [max_N, max_K] BF16 scratch for Q8_ROW / S_K cuBLAS prefill
+    // Opt-in RTX 5090 (STRATA_INK_RTX5090=1) pre-packed fused BF16 QKV+R+Gate & BF16 Loop Controller pools
+    __nv_bfloat16 *d_rtx_qkv_pool = nullptr;
+    __nv_bfloat16 *d_rtx_qkv[24] = {};
+    float *d_rtx_ctrl_pool = nullptr;
+    float *d_rtx_ctrl_gf[12][4] = {};          // [core_layer][0=attn,1=k,2=v,3=mlp]: [4608, 64] F32 (gain;forget) for exact TF32 GEMM!
+    __half2 *d_rtx_rel_proj_pool = nullptr;    // [24, 1024, 8] __half2 transposed rel_proj (768 KB total!)
+    __half2 *d_rtx_rel_proj_T[24] = {};
+    rtx5090::Rtx5090Fp8Engine fp8_eng;         // Opt-in RTX 5090 runtime FP8_E4M3 trunk & controller engine (672 MB)!
     int8_t* d_xq8 = nullptr;               // activations of a Q8_0 dense GEMM, quantized into the mma B-fragment order (k_ink_quant_x_q8f)
     float*  d_xs8 = nullptr;               // and their scales, one per (token, 32-wide block)
 
     // Logits & screened argmax buffers
     float   *d_logits = nullptr;      // [logits_cap, 200058] (allocated lazily if full logits needed)
     int      logits_cap = 0;
-    float   *d_dot_hat = nullptr;     // [16, 200058] for screened argmax
-    float   *d_h_norm2 = nullptr;     // [16]
-    int     *d_max_lb = nullptr;      // [16]
-    int32_t *d_cand_ids = nullptr;    // [16, 4096]
-    int32_t *d_cand_cnt = nullptr;    // [16]
+    int      screen_cap = 8;          // 8 baseline, 24 when STRATA_INK_RTX5090=1 (single-pass M<=24!)
+    float   *d_dot_hat = nullptr;     // [screen_cap, 200058] for screened argmax
+    float   *d_h_norm2 = nullptr;     // [screen_cap]
+    int     *d_max_lb = nullptr;      // [screen_cap]
+    int32_t *d_cand_ids = nullptr;    // [screen_cap, 4096]
+    int32_t *d_cand_cnt = nullptr;    // [screen_cap]
     int32_t *d_argmax = nullptr;      // [64]
 
     // Step metadata in device memory (CUDA-Graph capturable!) + 64-slot pinned host ring (zero async H2D overwrite!)
@@ -1970,9 +1987,10 @@ struct InkCudaRunner {
     uint8_t *d_is_img = nullptr;      // [max_batch] optional vision mask
     float   *d_img_emb = nullptr;     // [max_batch, 2304] optional vision embeddings
     bool     has_img_step = false;
-    int8_t  *d_sconv_lag = nullptr;   // [16 * 3]
-    uint8_t *d_tree_anc = nullptr;    // [16 * 16]
-    uint8_t *d_tree_dep = nullptr;    // [16]
+    int8_t  *d_sconv_lag = nullptr;   // [32 * 3]
+    uint8_t *d_tree_anc = nullptr;    // [32 * 8]
+    uint8_t *d_tree_anc32 = nullptr;  // [32 * 32] opt-in deep tree (depth <= 31)
+    uint8_t *d_tree_dep = nullptr;    // [32]
     int32_t *h_meta_pin = nullptr;    // 64-slot ring buffer
     size_t   meta_ring_stride = 0;
     size_t   meta_ring_idx = 0;
@@ -2032,6 +2050,12 @@ struct InkCudaRunner {
     };
     std::vector<GraphEntry> graph_cache;
     bool use_cuda_graph = true;
+    // Mode-3 batched multi-slot speculative staging pointers (owned by Rtx5090BatchedSpec when active)
+    __half* d_bspec_k = nullptr;
+    __half* d_bspec_v = nullptr;
+    float*  d_bspec_sconv = nullptr;
+    int     bspec_m_cap = 0;
+    int     bspec_k_slot = 0;
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
@@ -2263,8 +2287,11 @@ struct InkCudaRunner {
             const size_t sconv_bytes  = (size_t)(n_swa_g0 + n_glob_g0) * max_slots * 3 * kInkSconvCh * 4;
             const size_t wddm_fl = InkCudaModel::wddm_safety_floor(vtot);
             // the workspaces the runner still allocates after the K/V (strata/core/ink_kv_reserve.hpp: v0.2.20's values)
+            const size_t rtx_extra_res =
+                ((rtx5090::fp8_trunk_on() && !m.ls_active) ? (768ull << 20) : 0ull) +
+                ((rtx5090::dspark_opt_on() && !rtx5090::exact_mode_on() && max_slots >= 2 && m.man.has_dspark) ? (1536ull << 20) : 0ull);
             const size_t ws_reserve = strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark)
-                                    + (wddm_fl / 2);
+                                    + (wddm_fl / 2) + rtx_extra_res;
             const size_t avail_glob = (vfree > swa_kv_bytes + sconv_bytes + ws_reserve)
                 ? (vfree - swa_kv_bytes - sconv_bytes - ws_reserve) : 0u;
             const size_t per_pos_glob = (size_t)std::max(1, n_glob_g0) * max_slots * per_visit_pos
@@ -2456,11 +2483,12 @@ struct InkCudaRunner {
             INK_CK(cudaStreamSynchronize(st));
         }
 
-        d_dot_hat   = dalloc<float>(8ull * kInkVocabUnpad);
-        d_h_norm2   = dalloc<float>(8);
-        d_max_lb    = dalloc<int>(8);
-        d_cand_ids  = dalloc<int32_t>(8ull * 4096);
-        d_cand_cnt  = dalloc<int32_t>(8);
+        screen_cap  = (rtx5090::dspark_opt_on() && max_slots <= 4) ? 24 : 8;
+        d_dot_hat   = dalloc<float>((size_t)screen_cap * kInkVocabUnpad);
+        d_h_norm2   = dalloc<float>(screen_cap);
+        d_max_lb    = dalloc<int>(screen_cap);
+        d_cand_ids  = dalloc<int32_t>((size_t)screen_cap * 4096);
+        d_cand_cnt  = dalloc<int32_t>(screen_cap);
         d_argmax    = dalloc<int32_t>(std::max(64, max_batch));
 
         d_tok_ids   = dalloc<int32_t>(MB);
@@ -2470,14 +2498,87 @@ struct InkCudaRunner {
         d_img_emb   = dalloc<float>(MB * kInkHidden);
         d_sconv_lag = dalloc<int8_t>(kInkMaxTree * 3);
         d_tree_anc  = dalloc<uint8_t>(kInkMaxTree * kInkMaxTreeDepth);
+        if (rtx5090::dspark_opt_on()) d_tree_anc32 = dalloc<uint8_t>(kInkMaxTree * kInkMaxTree);
         d_tree_dep  = dalloc<uint8_t>(kInkMaxTree);
-        meta_ring_stride = std::max<size_t>(MB * 3 + 256, 512);
+        meta_ring_stride = std::max<size_t>(MB * 3 + 256, d_tree_anc32 ? 1024 : 512);
         meta_ring_idx = 0;
         h_meta_pin  = halloc_pinned<int32_t>(64ull * meta_ring_stride);
 
         moe_ws.alloc(max_batch);
+        // Opt-in RTX 5090 pre-packed fused BF16 QKV+R+Gate & BF16 Loop Controllers (OFF by default!)
+        if (rtx5090::pf_attn_on() && !m.ls_active) {
+            constexpr size_t kRelElems = (size_t)kInkRelExtent * (kInkDRel / 2); // 1024 * 8 half2
+            d_rtx_rel_proj_pool = dalloc<__half2>((size_t)m.man.c.n_phys * kRelElems);
+            for (int ip = 0; ip < m.man.c.n_phys; ++ip) {
+                d_rtx_rel_proj_T[ip] = d_rtx_rel_proj_pool + (size_t)ip * kRelElems;
+                const std::string rn = "model.llm.layers." + std::to_string(ip) + ".attn.rel_logits_proj.proj";
+                rtx5090::k_ink_transpose_rel_proj_h2<<<(kInkRelExtent + 255) / 256, 256, 0, st>>>(
+                    (const float*)m.trunk_ptr(rn), d_rtx_rel_proj_T[ip]);
+            }
+            INK_CK(cudaStreamSynchronize(st));
+        }
+        if (rtx5090::fp8_trunk_on() && !m.ls_active) {
+            fp8_eng.init(m, max_batch, st);
+        }
+        if (rtx5090::moe_opt_on() && !rtx5090::exact_mode_on() && !m.ls_active && !m.ep2_active && !m.hybrid.active) {
+            rtx5090::transcode_mx8_to_sf4_inplace(m, st);
+        }
+        if (rtx5090::dense_opt_on() && !fp8_eng.cache_ready && !m.ls_active) {
+            size_t vf = 0, vt = 0;
+            INK_CK(ink_cuda_mem_info(&vf, &vt, m.primary_gpu));
+            constexpr size_t kRDim = (size_t)(kInkHeads * kInkDRel);
+            constexpr size_t kQkvCols = (size_t)(kInkQDim + kRDim + kInkQDim + 2 * kInkKVDim);  // 8576
+            const size_t qkv_elems = (size_t)m.man.c.n_phys * kQkvCols * kInkHidden;
+            bool all_bf16 = true;
+            for (int ip = 0; ip < m.man.c.n_phys && all_bf16; ++ip) {
+                const std::string p = "model.llm.layers." + std::to_string(ip);
+                if (m.tinfo(p + ".attn.wq_du.weight").fmt != FMT_BF16 ||
+                    m.tinfo(p + ".attn.wr_du.weight").fmt != FMT_BF16 ||
+                    m.tinfo(p + ".attn.gate_attn.weight").fmt != FMT_BF16 ||
+                    m.tinfo(p + ".attn.wk_dv.weight").fmt != FMT_BF16 ||
+                    m.tinfo(p + ".attn.wv_dv.weight").fmt != FMT_BF16) all_bf16 = false;
+            }
+            if (all_bf16 && vf > qkv_elems * 2 + (1536ull << 20)) {
+                d_rtx_qkv_pool = dalloc<__nv_bfloat16>(qkv_elems);
+                for (int ip = 0; ip < m.man.c.n_phys; ++ip) {
+                    const std::string p = "model.llm.layers." + std::to_string(ip);
+                    __nv_bfloat16* dst = d_rtx_qkv_pool + (size_t)ip * kQkvCols * kInkHidden;
+                    d_rtx_qkv[ip] = dst;
+                    size_t off = 0;
+                    auto cp = [&](const std::string& tn, size_t rows) {
+                        INK_CK(cudaMemcpyAsync(dst + off, m.trunk_ptr(tn), rows * kInkHidden * 2, cudaMemcpyDeviceToDevice, st));
+                        off += rows * kInkHidden;
+                    };
+                    cp(p + ".attn.wq_du.weight",     kInkQDim);
+                    cp(p + ".attn.wr_du.weight",     kRDim);
+                    cp(p + ".attn.gate_attn.weight", kInkQDim);
+                    cp(p + ".attn.wk_dv.weight",     kInkKVDim);
+                    cp(p + ".attn.wv_dv.weight",     kInkKVDim);
+                }
+                vf -= qkv_elems * 2;
+            }
+            const int n_core = m.man.c.core_end - m.man.c.core_start;
+            constexpr size_t kGfEl = (size_t)(2 * kInkHidden) * kInkGateRank;
+            const size_t ctrl_elems = (size_t)n_core * 4 * kGfEl;
+            if (n_core > 0 && n_core <= 12 && vf > ctrl_elems * 4 + (768ull << 20)) {
+                d_rtx_ctrl_pool = dalloc<float>(ctrl_elems);
+                static const char* kCN[4] = {"attn", "k", "v", "mlp"};
+                size_t cur_c = 0;
+                for (int ci = 0; ci < n_core; ++ci) {
+                    const std::string p = "model.llm.layers." + std::to_string(m.man.c.core_start + ci);
+                    for (int k = 0; k < 4; ++k) {
+                        const std::string cp = p + ".controllers." + kCN[k];
+                        d_rtx_ctrl_gf[ci][k] = d_rtx_ctrl_pool + cur_c; cur_c += kGfEl;
+                        const size_t hgf = kGfEl / 2;
+                        INK_CK(cudaMemcpyAsync(d_rtx_ctrl_gf[ci][k],       m.trunk_ptr(cp + ".gain_weight"),   hgf * 4, cudaMemcpyDeviceToDevice, st));
+                        INK_CK(cudaMemcpyAsync(d_rtx_ctrl_gf[ci][k] + hgf, m.trunk_ptr(cp + ".forget_weight"), hgf * 4, cudaMemcpyDeviceToDevice, st));
+                    }
+                }
+            }
+            INK_CK(cudaStreamSynchronize(st));
+        }
         // Pre-allocate O(1)-VRAM Tensor Core prefill attention workspace (~114 MiB fixed forever!)
-        if (m.sm_cc >= 60 && max_slots <= 4 && max_batch >= 128) {
+        if (!rtx5090::pf_attn_on() && m.sm_cc >= 60 && max_slots <= 4 && max_batch >= 128) {
             size_t vf = 0, vt = 0;
             INK_CK(ink_cuda_mem_info(&vf, &vt, m.primary_gpu));
             if (vf > (320ull << 20)) ensure_pf_attn(kInkPfKvTile);
@@ -2787,11 +2888,45 @@ struct InkCudaRunner {
         const float* cur, const float* msg,
         const float* w_down, const float* w_gain, const float* w_forget,
         const float* norm_w, float* out, int M,
-        bool cat_ready = false, bool exact_fp32 = false) {
+        bool cat_ready = false, bool exact_fp32 = false,
+        const float* w_gf_f32 = nullptr,
+        int fp8_ci = -1, int fp8_ck = -1,
+        bool bf16_cur_msg = false) {
         constexpr int D = kInkHidden;
         constexpr int D2 = 2 * D;
+        const bool use_fp8 = (fp8_ci >= 0 && fp8_ci < 12 && fp8_ck >= 0 && fp8_ck < 4 &&
+                              fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_ctrl_dn[fp8_ci][fp8_ck] != nullptr);
+        if (M > 16 && use_fp8 && fp8_eng.lt_ok) {
+            if (fp8_eng.run_ctrl_fp8(fp8_ci, fp8_ck, cur, msg, norm_w, out, d_ctrl_gate, d_ctrl_cat, M, cat_ready, st, nullptr, nullptr, bf16_cur_msg)) {
+                return;
+            }
+            if (!cat_ready) k_ink_ctrl_cat_rms<<<M, 256, 0, st>>>(cur, msg, d_ctrl_cat, M, D);
+            goto fallback_f32_ctrl;
+        }
         if (!cat_ready) k_ink_ctrl_cat_rms<<<M, 256, 0, st>>>(cur, msg, d_ctrl_cat, M, D);
-        if (M <= 16) {
+        if (M <= 16 && use_fp8) {
+            const uint8_t* wd8 = fp8_eng.w_ctrl_dn[fp8_ci][fp8_ck];
+            const float*   sd8 = fp8_eng.sc_ctrl_dn[fp8_ci][fp8_ck];
+            const uint8_t* wgf8 = fp8_eng.w_ctrl_gf[fp8_ci][fp8_ck];
+            const float*   sgf8 = fp8_eng.sc_ctrl_gf[fp8_ci][fp8_ck];
+            if (M == 1) {
+                rtx5090::k_ink_ctrl_1x_down_fp8<1><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, wd8, sd8, d_ctrl_gate, M);
+                rtx5090::k_ink_ctrl_1x_apply_fp8<1><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, wgf8, sgf8, out, M);
+            } else if (M <= 4) {
+                rtx5090::k_ink_ctrl_1x_down_fp8<4><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, wd8, sd8, d_ctrl_gate, M);
+                rtx5090::k_ink_ctrl_1x_apply_fp8<4><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, wgf8, sgf8, out, M);
+            } else if (M <= 8) {
+                rtx5090::k_ink_ctrl_1x_down_fp8<8><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, wd8, sd8, d_ctrl_gate, M);
+                rtx5090::k_ink_ctrl_1x_apply_fp8<8><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, wgf8, sgf8, out, M);
+            } else if (M <= 16) {
+                rtx5090::k_ink_ctrl_1x_down_fp8<16><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, wd8, sd8, d_ctrl_gate, M);
+                rtx5090::k_ink_ctrl_1x_apply_fp8<16><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, wgf8, sgf8, out, M);
+            } else {
+                rtx5090::k_ink_ctrl_1x_down_fp8<24><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, wd8, sd8, d_ctrl_gate, M);
+                rtx5090::k_ink_ctrl_1x_apply_fp8<24><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, wgf8, sgf8, out, M);
+            }
+            if (norm_w) k_ink_rms_norm<<<M, 256, 0, st>>>(out, norm_w, out, nullptr, M, D);
+        } else if (M <= 16) {
             if (M == 1) {
                 k_ink_ctrl_down_smallM<1><<<kInkGateRank, 256, 0, st>>>(d_ctrl_cat, w_down, d_ctrl_gate, M, D2);
                 k_ink_ctrl_apply_smallM<1><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, w_gain, w_forget, out, M, D);
@@ -2806,7 +2941,22 @@ struct InkCudaRunner {
                 k_ink_ctrl_apply_smallM<16><<<D / 16, 256, 0, st>>>(cur, msg, d_ctrl_gate, w_gain, w_forget, out, M, D);
             }
             if (norm_w) k_ink_rms_norm<<<M, 256, 0, st>>>(out, norm_w, out, nullptr, M, D);
+        } else if (rtx5090::dense_opt_on() && w_gf_f32) {
+            // Opt-in RTX 5090: Same exact TF32 precision as baseline, fused gain+forget in 1 GEMM!
+            const float alpha = 1.0f, beta = 0.0f;
+            const cublasComputeType_t ctype = (!exact_fp32) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+            INK_CUBLAS_CK(cublasGemmEx(
+                cublas, CUBLAS_OP_T, CUBLAS_OP_N, kInkGateRank, M, D2, &alpha,
+                w_down, CUDA_R_32F, D2, d_ctrl_cat, CUDA_R_32F, D2, &beta,
+                d_ctrl_gate, CUDA_R_32F, kInkGateRank, ctype, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            float* gf_out = d_ctrl_cat + (size_t)M * D2;
+            INK_CUBLAS_CK(cublasGemmEx(
+                cublas, CUBLAS_OP_T, CUBLAS_OP_N, D2, M, kInkGateRank, &alpha,
+                w_gf_f32, CUDA_R_32F, kInkGateRank, d_ctrl_gate, CUDA_R_32F, kInkGateRank, &beta,
+                gf_out, CUDA_R_32F, D2, ctype, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            rtx5090::k_ink_ctrl_blend_norm_fused_gf<<<M, 256, 0, st>>>(cur, msg, gf_out, norm_w, out, M, D);
         } else {
+        fallback_f32_ctrl:
             const float alpha = 1.0f, beta = 0.0f;
             const int ctl_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;   // the stage that runs this, not the first card (#6796)
             if (!exact_fp32 && ctl_cc >= 70 && ctl_cc < 80) {
@@ -3036,6 +3186,9 @@ struct InkCudaRunner {
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else             k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                } else if (M > 16 && rtx5090::dense_opt_on()) {
+                    const int g4 = (mp.cumN[count] + 3) / 4;
+                    rtx5090::k_ink_gemv_multi_bf16_v2<24><<<g4, 64, 0, st>>>(mp, X, M, K);
                 } else {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else if (M <= 4) k_ink_gemv_multi_bf16<4, false><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -3088,6 +3241,9 @@ struct InkCudaRunner {
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else             k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                } else if (M > 16 && rtx5090::dense_opt_on()) {
+                    const int g4 = (N + 3) / 4;
+                    rtx5090::k_ink_gemv_multi_bf16_v2<24><<<g4, 64, 0, st>>>(mp, X, M, K);
                 } else {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else if (M <= 4) k_ink_gemv_multi_bf16<4, false><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -3118,6 +3274,8 @@ struct InkCudaRunner {
                 else if (M <= 4) k_ink_gemv_f32<4><<<grid, 256, 0, st>>>((const float*)W, X, Y, M, N, K);
                 else if (M <= 8) k_ink_gemv_f32<8><<<grid, 256, 0, st>>>((const float*)W, X, Y, M, N, K);
                 else             k_ink_gemv_f32<16><<<grid, 256, 0, st>>>((const float*)W, X, Y, M, N, K);
+            } else if (rtx5090::dense_opt_on() && M <= 64 && N <= 64 && K == kInkHidden) {
+                k_ink_gemm_f32_smallN<<<dim3(N, (M + 15) / 16), 256, 0, st>>>((const float*)W, X, Y, M, N, K);
             } else {
                 const float alpha = 1.0f, beta = 0.0f;
                 INK_CUBLAS_CK(cublasGemmEx(
@@ -3243,7 +3401,7 @@ struct InkCudaRunner {
     // ---- Execute 1 virtual visit (visit in 0..47, phys layer ip in 0..23) ----
     // mode: 0 = single-slot sequential (prefill or M=1 decode), 1 = batched multi-slot (B=1..64, 1 tok/slot), 2 = Tree-32 verify
     void run_visit(int visit, int ip, const DepthStatePtrs* bank_stp, int M, int mode, int slot0, int p0_val,
-                   int& n_blocks, const float* (&block_ptrs)[8]) {
+                   int& n_blocks, const float* (&block_ptrs)[8], bool pf_bf16_res = false) {
         const std::string p = "model.llm.layers." + std::to_string(ip);
         const bool is_swa = m.man.c.is_swa[ip] != 0;
         const bool has_msg = (bank_stp != nullptr);
@@ -3259,6 +3417,8 @@ struct InkCudaRunner {
         const float* in_q = d_inp0;
         const float* in_k = d_inp0;
         const float* in_v = d_inp0;
+        bool has_pre_amax = false;
+        bool qkv_h2_ready = false;
         if (ip > 0) {
             DepthStatePtrs stp{};
             for (int b = 0; b < n_blocks; ++b) stp.p[b] = block_ptrs[b];
@@ -3267,17 +3427,51 @@ struct InkCudaRunner {
             const float* q_res = (const float*)m.trunk_ptr_stage(cur_stage, "model.llm.attn_res.attn_queries." + std::to_string(ip - 1));
             const int nq = is_swa ? 1 : 3;
             if (!has_msg) {
-                k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, q_res, d_mixed, nq, M, kInkHidden, nw_q, is_swa ? nullptr : nw_k, is_swa ? nullptr : nw_v);
+                if (pf_bf16_res || (M > 24 && fp8_eng.cache_ready && !m.ls_active && stp.count <= 6)) {
+                    INK_CK(cudaMemsetAsync(fp8_eng.d_inp_amax, 0, 3 * sizeof(float), st));
+                    if (pf_bf16_res) {
+                        rtx5090::k_ink_attn_res_mix_1pass<true><<<M, 256, 0, st>>>(
+                            stp, q_res, d_mixed, nq, M, kInkHidden, nw_q, is_swa ? nullptr : nw_k, is_swa ? nullptr : nw_v, fp8_eng.d_inp_amax);
+                    } else {
+                        rtx5090::k_ink_attn_res_mix_1pass<false><<<M, 256, 0, st>>>(
+                            stp, q_res, d_mixed, nq, M, kInkHidden, nw_q, is_swa ? nullptr : nw_k, is_swa ? nullptr : nw_v, fp8_eng.d_inp_amax);
+                    }
+                    has_pre_amax = true;
+                } else {
+                    k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, q_res, d_mixed, nq, M, kInkHidden, nw_q, is_swa ? nullptr : nw_k, is_swa ? nullptr : nw_v);
+                }
                 in_q = d_mixed;
                 in_k = is_swa ? d_mixed : (d_mixed + 1 * n_hid);
                 in_v = is_swa ? d_mixed : (d_mixed + 2 * n_hid);
             } else {
-                k_ink_attn_res_3x_cat_rms<<<dim3(M, 4), 256, 0, st>>>(
-                    stp, q_res, is_swa, *bank_stp, m.d_msg_queries[ip - m.man.c.core_start],
-                    d_mixed, d_msgs, (M <= 16) ? d_ctrl_cat : nullptr, M, kInkHidden);
+                const int ci = ip - m.man.c.core_start;
+                const bool use_fp8_c = (!m.ls_active && ci >= 0 && ci < 12 && fp8_eng.cache_ready && fp8_eng.w_ctrl_dn[ci][0] != nullptr);
+                const int M_pad = (M <= 32) ? 32 : ((M + 31) & ~31);
+                const bool fuse_cat3_fp8 = (M > 16 && use_fp8_c && fp8_eng.lt_ok && fp8_eng.d_cat3_fp8 != nullptr && M_pad <= max_batch && M_pad <= fp8_eng.max_m);
+                const bool need_cat3 = (M <= 16) && !fuse_cat3_fp8;
+                if (fuse_cat3_fp8) {
+                    if (pf_bf16_res) {
+                        rtx5090::k_ink_attn_res_3x_fused_1cta<true><<<M_pad, 256, 0, st>>>(
+                            stp, q_res, is_swa, *bank_stp, m.d_msg_queries[ci],
+                            d_mixed, d_msgs, nullptr, M, kInkHidden, fp8_eng.d_cat3_fp8, M_pad);
+                    } else {
+                        rtx5090::k_ink_attn_res_3x_fused_1cta<false><<<M_pad, 256, 0, st>>>(
+                            stp, q_res, is_swa, *bank_stp, m.d_msg_queries[ci],
+                            d_mixed, d_msgs, nullptr, M, kInkHidden, fp8_eng.d_cat3_fp8, M_pad);
+                    }
+                } else if (rtx5090::dense_opt_on() && M > 4) {
+                    rtx5090::k_ink_attn_res_3x_fused_1cta<false><<<M, 256, 0, st>>>(
+                        stp, q_res, is_swa, *bank_stp, m.d_msg_queries[ci],
+                        d_mixed, d_msgs, need_cat3 ? d_ctrl_cat : nullptr, M, kInkHidden);
+                } else {
+                    k_ink_attn_res_3x_cat_rms<<<dim3(M, 4), 256, 0, st>>>(
+                        stp, q_res, is_swa, *bank_stp, m.d_msg_queries[ci],
+                        d_mixed, d_msgs, need_cat3 ? d_ctrl_cat : nullptr, M, kInkHidden);
+                }
+                const size_t msg_stride = pf_bf16_res ? (n_hid / 2) : n_hid;
                 const float* src0 = d_mixed;
-                const float* src1 = d_mixed + 1 * n_hid;
-                const float* src2 = d_mixed + 2 * n_hid;
+                const float* src1 = (is_swa && fuse_cat3_fp8) ? d_mixed : (d_mixed + 1 * msg_stride);
+                const float* src2 = (is_swa && fuse_cat3_fp8) ? d_mixed : (d_mixed + 2 * msg_stride);
                 const float* wd0 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.attn.down_weight");
                 const float* wg0 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.attn.gain_weight");
                 const float* wf0 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.attn.forget_weight");
@@ -3287,7 +3481,45 @@ struct InkCudaRunner {
                 const float* wd2 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.v.down_weight");
                 const float* wg2 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.v.gain_weight");
                 const float* wf2 = (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.v.forget_weight");
-                if (M <= 16) {
+                if (fuse_cat3_fp8) {
+                    const size_t cstride = (size_t)M_pad * (2 * kInkHidden);
+                    INK_CK(cudaMemsetAsync(fp8_eng.d_inp_amax, 0, 3 * sizeof(float), st));
+                    const bool ok0 = fp8_eng.run_ctrl_fp8(ci, 0, src0, d_msgs + 0 * msg_stride, nw_q, d_inp0, d_ctrl_gate, d_ctrl_cat, M, true, st, fp8_eng.d_cat3_fp8 + 0 * cstride, fp8_eng.d_inp_amax + 0, pf_bf16_res);
+                    const bool ok1 = fp8_eng.run_ctrl_fp8(ci, 1, src1, d_msgs + 1 * msg_stride, nw_k, d_inp1, d_ctrl_gate, d_ctrl_cat, M, true, st, fp8_eng.d_cat3_fp8 + 1 * cstride, fp8_eng.d_inp_amax + 1, pf_bf16_res);
+                    const bool ok2 = fp8_eng.run_ctrl_fp8(ci, 2, src2, d_msgs + 2 * msg_stride, nw_v, d_inp2, d_ctrl_gate, d_ctrl_cat, M, true, st, fp8_eng.d_cat3_fp8 + 2 * cstride, fp8_eng.d_inp_amax + 2, pf_bf16_res);
+                    if (ok0 && ok1 && ok2) {
+                        has_pre_amax = true;
+                    } else {
+                        run_loop_control_norm(src0, d_msgs + 0 * n_hid, wd0, wg0, wf0, nw_q, d_inp0, M, false, exact_x, nullptr, ci, 0);
+                        run_loop_control_norm(src1, d_msgs + 1 * n_hid, wd1, wg1, wf1, nw_k, d_inp1, M, false, exact_x, nullptr, ci, 1);
+                        run_loop_control_norm(src2, d_msgs + 2 * n_hid, wd2, wg2, wf2, nw_v, d_inp2, M, false, exact_x, nullptr, ci, 2);
+                    }
+                } else if (M <= 16 && use_fp8_c) {
+                    constexpr int D = kInkHidden;
+                    if (M == 1) {
+                        rtx5090::k_ink_ctrl_3x_down_fp8<1><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, fp8_eng.w_ctrl_dn[ci][0], fp8_eng.sc_ctrl_dn[ci][0], fp8_eng.w_ctrl_dn[ci][1], fp8_eng.sc_ctrl_dn[ci][1], fp8_eng.w_ctrl_dn[ci][2], fp8_eng.sc_ctrl_dn[ci][2], d_ctrl_gate, M);
+                        rtx5090::k_ink_ctrl_3x_apply_fp8<1><<<dim3(D / 16, 3), 256, 0, st>>>(src0, src1, src2, d_msgs, d_ctrl_gate, fp8_eng.w_ctrl_gf[ci][0], fp8_eng.sc_ctrl_gf[ci][0], fp8_eng.w_ctrl_gf[ci][1], fp8_eng.sc_ctrl_gf[ci][1], fp8_eng.w_ctrl_gf[ci][2], fp8_eng.sc_ctrl_gf[ci][2], d_inp0, d_inp1, d_inp2, M);
+                    } else if (M <= 4) {
+                        rtx5090::k_ink_ctrl_3x_down_fp8<4><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, fp8_eng.w_ctrl_dn[ci][0], fp8_eng.sc_ctrl_dn[ci][0], fp8_eng.w_ctrl_dn[ci][1], fp8_eng.sc_ctrl_dn[ci][1], fp8_eng.w_ctrl_dn[ci][2], fp8_eng.sc_ctrl_dn[ci][2], d_ctrl_gate, M);
+                        rtx5090::k_ink_ctrl_3x_apply_fp8<4><<<dim3(D / 16, 3), 256, 0, st>>>(src0, src1, src2, d_msgs, d_ctrl_gate, fp8_eng.w_ctrl_gf[ci][0], fp8_eng.sc_ctrl_gf[ci][0], fp8_eng.w_ctrl_gf[ci][1], fp8_eng.sc_ctrl_gf[ci][1], fp8_eng.w_ctrl_gf[ci][2], fp8_eng.sc_ctrl_gf[ci][2], d_inp0, d_inp1, d_inp2, M);
+                    } else if (M <= 8) {
+                        rtx5090::k_ink_ctrl_3x_down_fp8<8><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, fp8_eng.w_ctrl_dn[ci][0], fp8_eng.sc_ctrl_dn[ci][0], fp8_eng.w_ctrl_dn[ci][1], fp8_eng.sc_ctrl_dn[ci][1], fp8_eng.w_ctrl_dn[ci][2], fp8_eng.sc_ctrl_dn[ci][2], d_ctrl_gate, M);
+                        rtx5090::k_ink_ctrl_3x_apply_fp8<8><<<dim3(D / 16, 3), 256, 0, st>>>(src0, src1, src2, d_msgs, d_ctrl_gate, fp8_eng.w_ctrl_gf[ci][0], fp8_eng.sc_ctrl_gf[ci][0], fp8_eng.w_ctrl_gf[ci][1], fp8_eng.sc_ctrl_gf[ci][1], fp8_eng.w_ctrl_gf[ci][2], fp8_eng.sc_ctrl_gf[ci][2], d_inp0, d_inp1, d_inp2, M);
+                    } else if (M <= 16) {
+                        rtx5090::k_ink_ctrl_3x_down_fp8<16><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, fp8_eng.w_ctrl_dn[ci][0], fp8_eng.sc_ctrl_dn[ci][0], fp8_eng.w_ctrl_dn[ci][1], fp8_eng.sc_ctrl_dn[ci][1], fp8_eng.w_ctrl_dn[ci][2], fp8_eng.sc_ctrl_dn[ci][2], d_ctrl_gate, M);
+                        rtx5090::k_ink_ctrl_3x_apply_fp8<16><<<dim3(D / 16, 3), 256, 0, st>>>(src0, src1, src2, d_msgs, d_ctrl_gate, fp8_eng.w_ctrl_gf[ci][0], fp8_eng.sc_ctrl_gf[ci][0], fp8_eng.w_ctrl_gf[ci][1], fp8_eng.sc_ctrl_gf[ci][1], fp8_eng.w_ctrl_gf[ci][2], fp8_eng.sc_ctrl_gf[ci][2], d_inp0, d_inp1, d_inp2, M);
+                    } else {
+                        rtx5090::k_ink_ctrl_3x_down_fp8<24><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, fp8_eng.w_ctrl_dn[ci][0], fp8_eng.sc_ctrl_dn[ci][0], fp8_eng.w_ctrl_dn[ci][1], fp8_eng.sc_ctrl_dn[ci][1], fp8_eng.w_ctrl_dn[ci][2], fp8_eng.sc_ctrl_dn[ci][2], d_ctrl_gate, M);
+                        rtx5090::k_ink_ctrl_3x_apply_fp8<24><<<dim3(D / 16, 3), 256, 0, st>>>(src0, src1, src2, d_msgs, d_ctrl_gate, fp8_eng.w_ctrl_gf[ci][0], fp8_eng.sc_ctrl_gf[ci][0], fp8_eng.w_ctrl_gf[ci][1], fp8_eng.sc_ctrl_gf[ci][1], fp8_eng.w_ctrl_gf[ci][2], fp8_eng.sc_ctrl_gf[ci][2], d_inp0, d_inp1, d_inp2, M);
+                    }
+                    if (M <= 8) {
+                        rtx5090::k_ink_rms_norm_3x_h2<<<dim3(M, 3), 256, 0, st>>>(
+                            d_inp0, d_inp1, d_inp2, nw_q, nw_k, nw_v, reinterpret_cast<__half2*>(d_x_bf16), M, D);
+                        qkv_h2_ready = true;
+                    } else {
+                        k_ink_rms_norm_3x<<<dim3(M, 3), 256, 0, st>>>(d_inp0, d_inp1, d_inp2, nw_q, nw_k, nw_v, M, D);
+                    }
+                } else if (M <= 16) {
                     constexpr int D = kInkHidden, D2 = 2 * kInkHidden;
                     if (M == 1) {
                         k_ink_ctrl_3x_down_smallM<1><<<dim3(kInkGateRank, 3), 256, 0, st>>>(d_ctrl_cat, wd0, wd1, wd2, d_ctrl_gate, M, D2);
@@ -3304,9 +3536,13 @@ struct InkCudaRunner {
                     }
                     k_ink_rms_norm_3x<<<dim3(M, 3), 256, 0, st>>>(d_inp0, d_inp1, d_inp2, nw_q, nw_k, nw_v, M, D);
                 } else {
-                    run_loop_control_norm(src0, d_msgs + 0 * n_hid, wd0, wg0, wf0, nw_q, d_inp0, M, false, exact_x);
-                    run_loop_control_norm(src1, d_msgs + 1 * n_hid, wd1, wg1, wf1, nw_k, d_inp1, M, false, exact_x);
-                    run_loop_control_norm(src2, d_msgs + 2 * n_hid, wd2, wg2, wf2, nw_v, d_inp2, M, false, exact_x);
+                    const bool has_bc = (!m.ls_active && ci >= 0 && ci < 12 && d_rtx_ctrl_gf[ci][0] != nullptr);
+                    run_loop_control_norm(src0, d_msgs + 0 * n_hid, wd0, wg0, wf0, nw_q, d_inp0, M, false, exact_x,
+                                          has_bc ? d_rtx_ctrl_gf[ci][0] : nullptr, ci, 0);
+                    run_loop_control_norm(src1, d_msgs + 1 * n_hid, wd1, wg1, wf1, nw_k, d_inp1, M, false, exact_x,
+                                          has_bc ? d_rtx_ctrl_gf[ci][1] : nullptr, ci, 1);
+                    run_loop_control_norm(src2, d_msgs + 2 * n_hid, wd2, wg2, wf2, nw_v, d_inp2, M, false, exact_x,
+                                          has_bc ? d_rtx_ctrl_gf[ci][2] : nullptr, ci, 2);
                 }
                 in_q = d_inp0; in_k = d_inp1; in_v = d_inp2;
             }
@@ -3320,7 +3556,141 @@ struct InkCudaRunner {
         const bool share_qkv = (in_q == in_k && in_q == in_v);
         // Q8_0 dense matrices: one fused launch (one activation quantization) at any batch size, prefill chunks included
         const bool q8f_dense = (m.tinfo(p + ".attn.wq_du.weight").fmt == FMT_Q8_0F);
-        if ((M <= 16 || q8f_dense) && share_qkv) {
+        bool qkv_fp8_done = false;
+        bool qkv_bf16_io  = false;
+        const int M_pad32 = (M <= 32) ? 32 : ((M + 31) & ~31);
+        const bool try_pf_bf16_io = (mode == 0 && M >= 128 && rtx5090::pf_attn_on() &&
+                                     fp8_eng.cache_ready && fp8_eng.lt_ok && !m.ls_active && !q8f_dense &&
+                                     fp8_eng.w_attn[ip][0] != nullptr && d_rtx_rel_proj_T[ip] != nullptr &&
+                                     kv_desc[visit].kv_fmt == 0 && kv_desc[visit].host_cap == 0 &&
+                                     M_pad32 <= max_batch && M_pad32 <= fp8_eng.max_m && !dbg_hash_on);
+        bool sink_sconv_done = false;
+        auto run_sink_sconv_fused = [&]() {
+            if (!rtx5090::dense_opt_on() || M > 64 || m.ls_active) return;
+            const auto& ti_s = m.tinfo(p + ".attn.attn_sink_proj.weight");
+            if (ti_s.fmt != FMT_F32) return;
+            const float* w_s = (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.attn_sink_proj.weight");
+            const float* w_kd = nullptr;
+            const float* w_vd = nullptr;
+            if (!is_swa) {
+                if (m.tinfo(p + ".attn.k_sconv.weight_proj").fmt != FMT_F32 ||
+                    m.tinfo(p + ".attn.v_sconv.weight_proj").fmt != FMT_F32) return;
+                w_kd = (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.k_sconv.weight_proj");
+                w_vd = (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.v_sconv.weight_proj");
+            }
+            const int n_rows = is_swa ? kInkHeads : (kInkHeads + 2 * kInkKVHeads * 4);
+            if (M == 1) {
+                rtx5090::k_ink_f32_sink_sconv_fused<1><<<dim3(n_rows, 1), 256, 0, st>>>(
+                    w_s, w_kd, w_vd, in_q, in_k, in_v, d_sinks, d_k_dyn, d_v_dyn, M);
+            } else if (M <= 4) {
+                rtx5090::k_ink_f32_sink_sconv_fused<4><<<dim3(n_rows, 1), 256, 0, st>>>(
+                    w_s, w_kd, w_vd, in_q, in_k, in_v, d_sinks, d_k_dyn, d_v_dyn, M);
+            } else {
+                rtx5090::k_ink_f32_sink_sconv_fused<16><<<dim3(n_rows, (M + 15) / 16), 256, 0, st>>>(
+                    w_s, w_kd, w_vd, in_q, in_k, in_v, d_sinks, d_k_dyn, d_v_dyn, M);
+            }
+            sink_sconv_done = true;
+        };
+        if (fp8_eng.cache_ready && !m.ls_active && !q8f_dense && fp8_eng.w_attn[ip][0] != nullptr) {
+            constexpr int kRDim = kInkHeads * kInkDRel;
+            if (M <= 8 || !fp8_eng.lt_ok || M_pad32 > max_batch) {
+                rtx5090::InkMultiProjFp8 mp{};
+                const int ns[5] = {kInkQDim, kRDim, kInkQDim, kInkKVDim, kInkKVDim};
+                const float* xs[5] = {in_q, in_q, in_q, in_k, in_v};
+                float* ys[5] = {d_q, d_r, d_gate_attn, d_k_raw, d_v_raw};
+                mp.count = 5; mp.cumN[0] = 0;
+                for (int i = 0; i < 5; ++i) {
+                    mp.W[i] = fp8_eng.w_attn[ip][i]; mp.sc[i] = fp8_eng.sc_attn[ip][i];
+                    mp.X[i] = xs[i]; mp.Y[i] = ys[i]; mp.N[i] = ns[i]; mp.cumN[i + 1] = mp.cumN[i] + ns[i];
+                }
+                if (M == 1) {
+                    __half2* xh0 = reinterpret_cast<__half2*>(d_x_bf16);
+                    __half2* xhk = share_qkv ? xh0 : (xh0 + kInkHidden / 2);
+                    __half2* xhv = share_qkv ? xh0 : (xh0 + kInkHidden);
+                    if (!qkv_h2_ready) {
+                        rtx5090::k_ink_f32_to_h2<<<(kInkHidden / 2 + 255) / 256, 256, 0, st>>>(in_q, xh0, kInkHidden / 2);
+                        if (!share_qkv) {
+                            rtx5090::k_ink_f32_to_h2<<<(kInkHidden / 2 + 255) / 256, 256, 0, st>>>(in_k, xhk, kInkHidden / 2);
+                            rtx5090::k_ink_f32_to_h2<<<(kInkHidden / 2 + 255) / 256, 256, 0, st>>>(in_v, xhv, kInkHidden / 2);
+                        }
+                    }
+                    rtx5090::k_ink_gemv_multi_fp8_m1_l1<<<(mp.cumN[5] + 7) / 8, 256, 0, st>>>(mp, xh0, xhk, xhv, kInkHidden);
+                } else if (M <= 8) {
+                    const size_t n2 = (size_t)M * (kInkHidden / 2);
+                    __half2* xh0 = reinterpret_cast<__half2*>(d_x_bf16);
+                    __half2* xhk = share_qkv ? xh0 : (xh0 + n2);
+                    __half2* xhv = share_qkv ? xh0 : (xh0 + 2 * n2);
+                    if (!qkv_h2_ready) {
+                        rtx5090::k_ink_f32_to_h2<<<(n2 + 255) / 256, 256, 0, st>>>(in_q, xh0, n2);
+                        if (!share_qkv) {
+                            rtx5090::k_ink_f32_to_h2<<<(n2 + 255) / 256, 256, 0, st>>>(in_k, xhk, n2);
+                            rtx5090::k_ink_f32_to_h2<<<(n2 + 255) / 256, 256, 0, st>>>(in_v, xhv, n2);
+                        }
+                    }
+                    if (M <= 4) rtx5090::k_ink_gemv_multi_fp8_smallM_l1<4><<<(mp.cumN[5] + 7) / 8, 256, 0, st>>>(mp, xh0, xhk, xhv, M, kInkHidden);
+                    else        rtx5090::k_ink_gemv_multi_fp8_smallM_l1<8><<<(mp.cumN[5] + 7) / 8, 256, 0, st>>>(mp, xh0, xhk, xhv, M, kInkHidden);
+                } else {
+                    rtx5090::k_ink_gemv_multi_fp8<8><<<(mp.cumN[5] + 3) / 4, 64, 0, st>>>(mp, in_q, M, kInkHidden);
+                }
+                run_sink_sconv_fused();
+                if (!sink_sconv_done) linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
+                qkv_fp8_done = true;
+            } else if (fp8_eng.lt_ok) {
+                const float* am0 = has_pre_amax ? (fp8_eng.d_inp_amax + 0) : nullptr;
+                const float* am1 = has_pre_amax ? (fp8_eng.d_inp_amax + (share_qkv ? 0 : 1)) : nullptr;
+                const float* am2 = has_pre_amax ? (fp8_eng.d_inp_amax + (share_qkv ? 0 : 2)) : nullptr;
+                if (try_pf_bf16_io) {
+                    bool ok = fp8_eng.gemm_fp8_packed_qkv_bf16(
+                        ip, share_qkv, in_q, reinterpret_cast<__nv_bfloat16*>(d_ctrl_cat),
+                        reinterpret_cast<__nv_bfloat16*>(d_q), reinterpret_cast<__nv_bfloat16*>(d_r),
+                        reinterpret_cast<__nv_bfloat16*>(d_gate_attn), reinterpret_cast<__nv_bfloat16*>(d_k_raw),
+                        reinterpret_cast<__nv_bfloat16*>(d_v_raw), M, st, am0);
+                    if (ok && !share_qkv) {
+                        ok = fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][3], fp8_eng.sc_attn[ip][3], in_k, reinterpret_cast<__nv_bfloat16*>(d_k_raw), M, kInkKVDim, kInkHidden, false, st, am1)
+                          && fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][4], fp8_eng.sc_attn[ip][4], in_v, reinterpret_cast<__nv_bfloat16*>(d_v_raw), M, kInkKVDim, kInkHidden, false, st, am2);
+                    }
+                    if (!ok) {
+                        ok = fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][0], fp8_eng.sc_attn[ip][0], in_q, reinterpret_cast<__nv_bfloat16*>(d_q), M, kInkQDim, kInkHidden, false, st, am0)
+                          && fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][1], fp8_eng.sc_attn[ip][1], in_q, reinterpret_cast<__nv_bfloat16*>(d_r), M, kRDim, kInkHidden, true, st)
+                          && fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][2], fp8_eng.sc_attn[ip][2], in_q, reinterpret_cast<__nv_bfloat16*>(d_gate_attn), M, kInkQDim, kInkHidden, true, st)
+                          && fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][3], fp8_eng.sc_attn[ip][3], in_k, reinterpret_cast<__nv_bfloat16*>(d_k_raw), M, kInkKVDim, kInkHidden, share_qkv, st, am1)
+                          && fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][4], fp8_eng.sc_attn[ip][4], in_v, reinterpret_cast<__nv_bfloat16*>(d_v_raw), M, kInkKVDim, kInkHidden, share_qkv, st, am2);
+                    }
+                    if (ok) {
+                        linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M);
+                        qkv_fp8_done = true;
+                        qkv_bf16_io  = true;
+                    }
+                }
+                if (!qkv_fp8_done && M <= 256) {
+                    bool ok = fp8_eng.gemm_fp8_packed_qkv(ip, share_qkv, in_q, d_ctrl_cat, d_q, d_r, d_gate_attn, d_k_raw, d_v_raw, M, st, am0);
+                    if (ok && !share_qkv) {
+                        ok = fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][3], fp8_eng.sc_attn[ip][3], in_k, d_k_raw, M, kInkKVDim, kInkHidden, false, st, am1)
+                          && fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][4], fp8_eng.sc_attn[ip][4], in_v, d_v_raw, M, kInkKVDim, kInkHidden, false, st, am2);
+                    }
+                    if (ok) {
+                        run_sink_sconv_fused();
+                        if (!sink_sconv_done) linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M);
+                        qkv_fp8_done = true;
+                    }
+                }
+                if (!qkv_fp8_done) {
+                    bool ok = fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][0], fp8_eng.sc_attn[ip][0], in_q, d_q, M, kInkQDim, kInkHidden, false, st, am0)
+                           && fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][1], fp8_eng.sc_attn[ip][1], in_q, d_r, M, kRDim, kInkHidden, true, st)
+                           && fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][2], fp8_eng.sc_attn[ip][2], in_q, d_gate_attn, M, kInkQDim, kInkHidden, true, st)
+                           && fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][3], fp8_eng.sc_attn[ip][3], in_k, d_k_raw, M, kInkKVDim, kInkHidden, share_qkv, st, am1)
+                           && fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][4], fp8_eng.sc_attn[ip][4], in_v, d_v_raw, M, kInkKVDim, kInkHidden, share_qkv, st, am2);
+                    if (ok) {
+                        run_sink_sconv_fused();
+                        if (!sink_sconv_done) linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M);
+                        qkv_fp8_done = true;
+                    }
+                }
+            }
+        }
+        if (qkv_fp8_done) {
+            // handled via RTX 5090 FP8 engine
+        } else if ((M <= 16 || q8f_dense) && share_qkv) {
             const std::string names[5] = {
                 p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight",
                 p + ".attn.wk_dv.weight", p + ".attn.wv_dv.weight"
@@ -3337,6 +3707,20 @@ struct InkCudaRunner {
             linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
             linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, false, exact_x);
             linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, false, exact_x);
+        } else if (rtx5090::dense_opt_on() && M <= 256 && !m.ls_active && d_rtx_qkv[ip] != nullptr) {
+            // Opt-in RTX 5090: Single fused BF16 cuBLAS GEMM for Q+R+Gate(+K+V) into d_ctrl_cat + 1 split launch!
+            const int kRDim = kInkHeads * kInkDRel;
+            const int n_fused = share_qkv ? (kInkQDim + kRDim + kInkQDim + 2 * kInkKVDim)
+                                          : (kInkQDim + kRDim + kInkQDim);
+            gemm_bf16_compat(d_rtx_qkv[ip], in_q, d_ctrl_cat, M, n_fused, kInkHidden, n_fused, false, false);
+            rtx5090::k_ink_split_qkv_5<<<dim3((n_fused + 255) / 256, M), 256, 0, st>>>(
+                d_ctrl_cat, d_q, d_r, d_gate_attn, d_k_raw, d_v_raw, M, share_qkv);
+            linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M);
+            if (!share_qkv) {
+                XCacheFmt x_k = XC_NONE, x_v = XC_NONE;
+                linear_cached(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, x_k);
+                linear_cached(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, x_v);
+            }
         } else {
             XCacheFmt x_q = XC_NONE;
             linear_cached(p + ".attn.wq_du.weight", in_q, d_q, M, x_q);
@@ -3353,8 +3737,10 @@ struct InkCudaRunner {
         float* k_dyn_ptr = nullptr;
         float* v_dyn_ptr = nullptr;
         if (!is_swa) {
-            linear(p + ".attn.k_sconv.weight_proj", in_k, d_k_dyn, M);
-            linear(p + ".attn.v_sconv.weight_proj", in_v, d_v_dyn, M);
+            if (!sink_sconv_done) {
+                linear(p + ".attn.k_sconv.weight_proj", in_k, d_k_dyn, M);
+                linear(p + ".attn.v_sconv.weight_proj", in_v, d_v_dyn, M);
+            }
             k_dyn_ptr = d_k_dyn;
             v_dyn_ptr = d_v_dyn;
         }
@@ -3373,6 +3759,12 @@ struct InkCudaRunner {
             } else if (mode == 1) {
                 dim3 g((C + 255) / 256, M);
                 k_ink_sconv4_batched<<<g, 256, 0, st>>>(src, sw, dyn, hbase, d_slots, dst, M, C, nh, add_to_out);
+            } else if (mode == 3) {
+                dim3 g((C + 255) / 256, M);
+                rtx5090::k_ink_sconv4_bspec<<<g, 256, 0, st>>>(
+                    src, sw, hbase, d_slots, dst,
+                    d_bspec_sconv + (size_t)visit * bspec_m_cap * kInkSconvCh,
+                    ch_off, M, C, bspec_k_slot, add_to_out);
             } else {
                 dim3 g((C + 255) / 256, M);
                 k_ink_sconv4_tree<<<g, 256, 0, st>>>(
@@ -3388,7 +3780,20 @@ struct InkCudaRunner {
         const float* p_rc = (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_l2_clip.scale");
         const int qc_elems = (int)(ti_qc.bytes / 4);
         const int rc_elems = (int)(ti_rc.bytes / 4);
-        if ((mode == 0 && M == 1) || mode == 1 || mode == 2) {
+        if (mode == 3 && d_bspec_k && d_bspec_v && d_bspec_sconv) {
+            float* hk_pool = d_sconv_pool[visit];
+            float* hv_pool = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots;
+            rtx5090::k_ink_post_qkv_fused_bspec<<<dim3(64, M), 128, 0, st>>>(
+                d_q, p_qc, qc_elems,
+                d_k_raw, d_v_raw, m.d_sconv_k[ip], m.d_sconv_v[ip],
+                k_dyn_ptr, v_dyn_ptr, hk_pool, hv_pool,
+                d_k, d_v, d_r, p_rc, rc_elems,
+                d_slots, d_pos,
+                d_bspec_k + (size_t)visit * bspec_m_cap * kInkKVDim,
+                d_bspec_v + (size_t)visit * bspec_m_cap * kInkKVDim,
+                d_bspec_sconv + (size_t)visit * bspec_m_cap * kInkSconvCh,
+                !is_swa, bspec_k_slot, M);
+        } else if ((mode == 0 && M == 1) || mode == 1 || mode == 2) {
             float* hk_pool = d_sconv_pool[visit];
             float* hv_pool = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots;
             k_ink_post_qkv_fused<<<dim3(64, M), 128, 0, st>>>(
@@ -3402,6 +3807,29 @@ struct InkCudaRunner {
                 (mode == 2) ? (d_stage_v + (size_t)visit * tree_cap * kInkKVDim) : nullptr,
                 (mode == 2) ? (d_stage_sconv + (size_t)visit * tree_cap * kInkSconvCh) : nullptr,
                 kv_desc[visit], !is_swa, mode, M);
+        } else if (qkv_bf16_io) {
+            float* hk_slot = d_sconv_pool[visit] + (size_t)slot0 * 3 * kInkKVDim;
+            float* hv_slot = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots + (size_t)slot0 * 3 * kInkKVDim;
+            rtx5090::k_ink_post_qkv_prefill_sm120_bf16<<<M, 256, 0, st>>>(
+                reinterpret_cast<__nv_bfloat16*>(d_q), p_qc, qc_elems,
+                reinterpret_cast<const __nv_bfloat16*>(d_k_raw), reinterpret_cast<const __nv_bfloat16*>(d_v_raw),
+                m.d_sconv_k[ip], m.d_sconv_v[ip],
+                k_dyn_ptr, v_dyn_ptr, hk_slot, hv_slot,
+                reinterpret_cast<__nv_bfloat16*>(d_r), p_rc, rc_elems,
+                p0_val, slot0, kv_desc[visit], !is_swa, M);
+            rtx5090::k_ink_save_kv_hist_2x_bf16<<<1, 256, 0, st>>>(
+                reinterpret_cast<const __nv_bfloat16*>(d_k_raw), reinterpret_cast<const __nv_bfloat16*>(d_v_raw),
+                hk_slot, hv_slot, M);
+        } else if (mode == 0 && M > 16 && rtx5090::dense_opt_on() && kv_desc[visit].kv_fmt == 0 && kv_desc[visit].host_cap == 0) {
+            float* hk_slot = d_sconv_pool[visit] + (size_t)slot0 * 3 * kInkKVDim;
+            float* hv_slot = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots + (size_t)slot0 * 3 * kInkKVDim;
+            rtx5090::k_ink_post_qkv_prefill_sm120<<<M, 256, 0, st>>>(
+                d_q, p_qc, qc_elems,
+                d_k_raw, d_v_raw, m.d_sconv_k[ip], m.d_sconv_v[ip],
+                k_dyn_ptr, v_dyn_ptr, hk_slot, hv_slot,
+                d_r, p_rc, rc_elems,
+                p0_val, slot0, kv_desc[visit], !is_swa, M);
+            rtx5090::k_ink_save_kv_hist_2x<<<1, 256, 0, st>>>(d_k_raw, d_v_raw, hk_slot, hv_slot, M);
         } else {
             run_sconv_uniform(d_k_raw, m.d_sconv_k[ip], k_dyn_ptr, d_k, kInkKVDim, 0, kInkKVHeads);
             run_sconv_uniform(d_v_raw, m.d_sconv_v[ip], v_dyn_ptr, d_v, kInkKVDim, kInkKVDim, kInkKVHeads);
@@ -3414,22 +3842,64 @@ struct InkCudaRunner {
 
         // 7. RelPos Table + Fused Sink Flash-GQA (Adaptive Split-K 16/32 for M==1 (#6591), O(1)-VRAM KV-Tiled TC for prefill M>=128 (#6609/#6605)!)
         prof_mark_end(2); prof_mark_start();
+        bool has_attn_amax = false;
+        bool wo_h2_ready = false;
         {
             const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
             dim3 gr(kInkHeads, M);
-            k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
-            if (M <= 16 || mode == 2) {
+            const bool use_rtx_pf_attn = (mode == 0 && M >= 128 && rtx5090::pf_attn_on() && d_rtx_rel_proj_T[ip] != nullptr);
+            const bool want_wo_h2 = (M <= 8 && fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_attn[ip][5] != nullptr);
+            if (!use_rtx_pf_attn) {
+                k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
+            }
+            if (mode == 3) {
+                dim3 g3(kInkKVHeads, M);
+                rtx5090::k_ink_flash_gqa_bspec<<<g3, 128, 0, st>>>(
+                    d_q, d_rel_table, d_sinks, d_gate_attn,
+                    kv_desc[visit], d_slots, d_pos,
+                    d_k, d_v, d_attn_out, bspec_k_slot, M);
+            } else if (M <= 16 || mode == 2) {
                 // #6671: a verify tree uses the one-token step's split count, so row m is the value the step at that position gives (the key split, the
                 // warp walk and the merge are the same; only the count differed: 8 for M > 1 against 16 / 32 for M == 1)
                 const int n_sp = (M == 1 || mode == 2) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
-                k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
-                    d_q, d_rel_table, d_sinks,
-                    kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
-                    (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr,
-                    (mode == 2) ? d_tree_anc : nullptr, (mode == 2) ? d_tree_dep : nullptr,
-                    p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
-                k_ink_flash_gqa_merge<<<gr, 128, 0, st>>>(d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, M, n_sp);
+                if (mode == 2 && rtx5090::dspark_opt_on() && d_tree_anc32 != nullptr) {
+                    rtx5090::k_ink_flash_gqa_splitk_deep<<<gsp, 128, 0, st>>>(
+                        d_q, d_rel_table, d_sinks,
+                        kv_desc[visit], nullptr, slot0, d_pos,
+                        d_k, d_v, d_tree_anc32, d_tree_dep,
+                        p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
+                } else {
+                    k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
+                        d_q, d_rel_table, d_sinks,
+                        kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
+                        (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr,
+                        (mode == 2) ? d_tree_anc : nullptr, (mode == 2) ? d_tree_dep : nullptr,
+                        p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
+                }
+                if (want_wo_h2) {
+                    rtx5090::k_ink_flash_gqa_merge_h2<<<gr, 128, 0, st>>>(
+                        d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out,
+                        reinterpret_cast<__half2*>(d_x_bf16), M, n_sp);
+                    wo_h2_ready = true;
+                } else {
+                    k_ink_flash_gqa_merge<<<gr, 128, 0, st>>>(d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, M, n_sp);
+                }
+            } else if (use_rtx_pf_attn) {
+                // Opt-in RTX 5090: Pipelined cp.async + ldmatrix.x4.trans FP16-TC FlashAttention-2 (BN=32 SWA / BN=64 Global, BF16-IO + fused amax!)
+                float* am_ptr = (fp8_eng.cache_ready && fp8_eng.d_inp_amax != nullptr) ? (fp8_eng.d_inp_amax + 3) : nullptr;
+                if (am_ptr) {
+                    INK_CK(cudaMemsetAsync(am_ptr, 0, sizeof(float), st));
+                    has_attn_amax = true;
+                }
+                const dim3 gpf(kInkHeads, (M + 63) / 64);
+                if (qkv_bf16_io) {
+                    if (is_swa) rtx5090::k_ink_flash_gqa_pf_sm120<32, true><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
+                    else        rtx5090::k_ink_flash_gqa_pf_sm120<64, true><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
+                } else {
+                    if (is_swa) rtx5090::k_ink_flash_gqa_pf_sm120<32, false><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
+                    else        rtx5090::k_ink_flash_gqa_pf_sm120<64, false><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
+                }
             } else if (mode == 0 && M >= 128 && (cur_cc >= 70 || cur_cc == 60) && ensure_pf_attn(kInkPfKvTile)) {
                 // O(1)-VRAM KV-Tiled Online-Softmax Tensor Core Prefill Attention (fixed <= ~114 MiB even at 256K+ ctx!)
                 const bool use_fp16_pf = (cur_cc < 80);
@@ -3526,23 +3996,71 @@ struct InkCudaRunner {
         prof_mark_end(3); prof_mark_start();
 
         // 8. Output projection wo + FUSED post-attn ShortConv + residual add / block boundary!
-        linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, (mode == 2));
+        bool wo_fp8_done = false;
+        bool wo_bf16_io  = false;
+        if (fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_attn[ip][5] != nullptr) {
+            if (M <= 8 || !fp8_eng.lt_ok || M_pad32 > max_batch) {
+                rtx5090::InkMultiProjFp8 mp{};
+                mp.count = 1; mp.cumN[0] = 0; mp.cumN[1] = kInkHidden; mp.N[0] = kInkHidden;
+                mp.W[0] = fp8_eng.w_attn[ip][5]; mp.sc[0] = fp8_eng.sc_attn[ip][5]; mp.X[0] = d_attn_out; mp.Y[0] = d_wo_raw;
+                if (M == 1) {
+                    __half2* xh0 = reinterpret_cast<__half2*>(d_x_bf16);
+                    if (!wo_h2_ready) rtx5090::k_ink_f32_to_h2<<<(kInkQDim / 2 + 255) / 256, 256, 0, st>>>(d_attn_out, xh0, kInkQDim / 2);
+                    rtx5090::k_ink_gemv_multi_fp8_m1_l1<<<(kInkHidden + 7) / 8, 256, 0, st>>>(mp, xh0, nullptr, nullptr, kInkQDim);
+                } else if (M <= 8) {
+                    const size_t n2 = (size_t)M * (kInkQDim / 2);
+                    __half2* xh0 = reinterpret_cast<__half2*>(d_x_bf16);
+                    if (!wo_h2_ready) rtx5090::k_ink_f32_to_h2<<<(n2 + 255) / 256, 256, 0, st>>>(d_attn_out, xh0, n2);
+                    if (M <= 4) rtx5090::k_ink_gemv_multi_fp8_smallM_l1<4><<<(kInkHidden + 7) / 8, 256, 0, st>>>(mp, xh0, nullptr, nullptr, M, kInkQDim);
+                    else        rtx5090::k_ink_gemv_multi_fp8_smallM_l1<8><<<(kInkHidden + 7) / 8, 256, 0, st>>>(mp, xh0, nullptr, nullptr, M, kInkQDim);
+                } else {
+                    rtx5090::k_ink_gemv_multi_fp8<8><<<(kInkHidden + 3) / 4, 64, 0, st>>>(mp, d_attn_out, M, kInkQDim);
+                }
+                wo_fp8_done = true;
+            } else if (fp8_eng.lt_ok) {
+                const float* wo_am = has_attn_amax ? (fp8_eng.d_inp_amax + 3) : nullptr;
+                if (mode == 0 && M > 16 && M_pad32 <= max_batch && !dbg_hash_on) {
+                    wo_bf16_io = fp8_eng.gemm_fp8_tn_bf16(fp8_eng.w_attn[ip][5], fp8_eng.sc_attn[ip][5],
+                                                          d_attn_out, reinterpret_cast<__nv_bfloat16*>(d_wo_raw),
+                                                          M, kInkHidden, kInkQDim, false, st, wo_am);
+                    wo_fp8_done = wo_bf16_io;
+                }
+                if (!wo_fp8_done) {
+                    wo_fp8_done = fp8_eng.gemm_fp8_tn(fp8_eng.w_attn[ip][5], fp8_eng.sc_attn[ip][5],
+                                                      d_attn_out, d_wo_raw, M, kInkHidden, kInkQDim, false, st, wo_am);
+                }
+            }
+        }
+        if (!wo_fp8_done) linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, (mode == 2));
         prof_mark_end(4); prof_mark_start();
         if (visit == dbg_tap_visit) dbg_hash(209, d_wo_raw, M, kInkHidden);
         if (visit == dbg_tap_visit) { dbg_hash(210, d_sconv_pool[visit] + (size_t)(2 * kInkKVDim) * 3 * max_slots + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(211, d_cur, M, kInkHidden); }
-        if (ip % m.man.c.block_size == 0) {
-            INK_CK(cudaMemcpyAsync(d_blocks[n_blocks], d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+        const bool is_blk_bnd = (ip % m.man.c.block_size == 0);
+        if (is_blk_bnd) {
+            if (pf_bf16_res) {
+                k_ink_f32_to_bf16<<<((n_hid + 3) / 4 + 255) / 256, 256, 0, st>>>(d_cur, reinterpret_cast<__nv_bfloat16*>(d_blocks[n_blocks]), n_hid);
+            } else {
+                INK_CK(cudaMemcpyAsync(d_blocks[n_blocks], d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+            }
             block_ptrs[n_blocks] = d_blocks[n_blocks];
             ++n_blocks;
-            run_sconv_uniform(d_wo_raw, m.d_sconv_attn[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim, 0, false);
+        }
+        if (wo_bf16_io) {
+            float* hslot = d_sconv_pool[visit] + (size_t)(2 * kInkKVDim) * 3 * max_slots + (size_t)slot0 * 3 * kInkHidden;
+            dim3 gp((kInkHidden + 255) / 256, (M + 15) / 16);
+            rtx5090::k_ink_sconv4_seq_par_bf16_in<<<gp, 256, 0, st>>>(
+                reinterpret_cast<const __nv_bfloat16*>(d_wo_raw), m.d_sconv_attn[ip], hslot, d_cur, M, kInkHidden, !is_blk_bnd);
+            rtx5090::k_ink_sconv4_save_hist_bf16_in<<<(kInkHidden + 255) / 256, 256, 0, st>>>(
+                reinterpret_cast<const __nv_bfloat16*>(d_wo_raw), hslot, M, kInkHidden);
         } else {
-            run_sconv_uniform(d_wo_raw, m.d_sconv_attn[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim, 0, true);
+            run_sconv_uniform(d_wo_raw, m.d_sconv_attn[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim, 0, !is_blk_bnd);
         }
 
         dbg_hash(visit * 4 + 0, d_cur, M, kInkHidden);
         if (visit == dbg_tap_visit) { dbg_hash(193, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(194, d_k, M, kInkKVDim); dbg_hash(195, d_v, M, kInkKVDim); dbg_hash(196, d_attn_out, M, kInkHeads * kInkHeadDim); dbg_hash(198, d_sinks, M, kInkHeads); }
         // 9. MoE Sublayer: Fused Pre-MLP Mix+CatRMS -> SITU MoE -> Fused Reduce8 + Post-MLP ShortConv4 + Add!
         const float* mlp_nw = (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp_norm.weight");
+        float* moe_in_ptr = d_moe_in;
         {
             DepthStatePtrs stp{};
             for (int b = 0; b < n_blocks; ++b) stp.p[b] = block_ptrs[b];
@@ -3550,19 +4068,43 @@ struct InkCudaRunner {
             stp.count = n_blocks + 1;
             const float* q_mlp = (const float*)m.trunk_ptr_stage(cur_stage, "model.llm.attn_res.mlp_queries." + std::to_string(ip));
             if (has_msg) {
-                k_ink_mlp_res_cat_rms<<<M, 256, 0, st>>>(stp, q_mlp, d_msgs + 3 * n_hid, d_moe_in, d_ctrl_cat, M, kInkHidden);
+                const int ci = ip - m.man.c.core_start;
+                const bool has_bc = (!m.ls_active && ci >= 0 && ci < 12 && d_rtx_ctrl_gf[ci][3] != nullptr);
+                const int M_pad_m = (M <= 32) ? 32 : ((M + 31) & ~31);
+                const bool use_fp8_m = (M > 16 && !m.ls_active && ci >= 0 && ci < 12 &&
+                                        fp8_eng.cache_ready && fp8_eng.lt_ok && fp8_eng.w_ctrl_dn[ci][3] != nullptr &&
+                                        M_pad_m <= max_batch && M_pad_m <= fp8_eng.max_m);
+                const size_t msg_stride = (pf_bf16_res && use_fp8_m) ? (n_hid / 2) : n_hid;
+                if (use_fp8_m) {
+                    if (pf_bf16_res) {
+                        rtx5090::k_ink_mlp_res_to_fp8<true><<<M_pad_m, 256, 0, st>>>(
+                            stp, q_mlp, d_msgs + 3 * msg_stride, d_moe_in, fp8_eng.d_x_fp8, M, M_pad_m, kInkHidden);
+                        moe_in_ptr = d_inp0;
+                    } else {
+                        rtx5090::k_ink_mlp_res_to_fp8<false><<<M_pad_m, 256, 0, st>>>(
+                            stp, q_mlp, d_msgs + 3 * msg_stride, d_moe_in, fp8_eng.d_x_fp8, M, M_pad_m, kInkHidden);
+                    }
+                } else {
+                    k_ink_mlp_res_cat_rms<<<M, 256, 0, st>>>(stp, q_mlp, d_msgs + 3 * n_hid, d_moe_in, d_ctrl_cat, M, kInkHidden);
+                }
                 run_loop_control_norm(
-                    d_moe_in, d_msgs + 3 * n_hid,
+                    d_moe_in, d_msgs + 3 * msg_stride,
                     (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.mlp.down_weight"),
                     (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.mlp.gain_weight"),
                     (const float*)m.trunk_ptr_stage(cur_stage, p + ".controllers.mlp.forget_weight"),
-                    mlp_nw, d_moe_in, M, /*cat_ready=*/true, exact_x);
+                    mlp_nw, moe_in_ptr, M, /*cat_ready=*/true, exact_x,
+                    has_bc ? d_rtx_ctrl_gf[ci][3] : nullptr, ci, 3, pf_bf16_res && use_fp8_m);
             } else {
-                k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, q_mlp, d_moe_in, 1, M, kInkHidden, mlp_nw);
+                if (pf_bf16_res || (M > 24 && fp8_eng.cache_ready && !m.ls_active && stp.count <= 6)) {
+                    if (pf_bf16_res) rtx5090::k_ink_attn_res_mix_1pass<true><<<M, 256, 0, st>>>(stp, q_mlp, d_moe_in, 1, M, kInkHidden, mlp_nw);
+                    else             rtx5090::k_ink_attn_res_mix_1pass<false><<<M, 256, 0, st>>>(stp, q_mlp, d_moe_in, 1, M, kInkHidden, mlp_nw);
+                } else {
+                    k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, q_mlp, d_moe_in, 1, M, kInkHidden, mlp_nw);
+                }
             }
         }
         prof_mark_end(0); prof_mark_start();
-        dbg_hash(visit * 4 + 1, d_moe_in, M, kInkHidden);
+        dbg_hash(visit * 4 + 1, moe_in_ptr, M, kInkHidden);
 
         if (m.ep2_active && m.layer_has_peer[ip]) {
             launch_ink_moe_router(
@@ -3626,19 +4168,40 @@ struct InkCudaRunner {
             prof_mark_end(5); prof_mark_start();
             run_sconv_uniform(d_moe_raw, m.d_sconv_mlp[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim + kInkHidden, 0, true);
         } else {
-            const bool fuse_moe_sconv = ((mode == 0 && M == 1) || mode == 1 || mode == 2);
-            launch_ink_moe(
-                st, cublas, m.sec4_stage(cur_stage), m.d_experts[ip], m.moe_info[ip],
-                (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
-                (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
-                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
+            const bool rtx_moe = rtx5090::moe_opt_on() && !m.ls_active;
+            const bool atomic_pf_moe = rtx_moe && (mode == 0 && M >= 1024 && !rtx5090::exact_mode_on() && !m.moe_info[ip].has_sk && !m.moe_info[ip].has_gguf);
+            const bool fuse_pf_reduce = rtx_moe && (mode == 0 && M > 16) && !atomic_pf_moe;
+            const bool fuse_moe_sconv = ((mode == 0 && M == 1) || mode == 1 || mode == 2 || fuse_pf_reduce);
+            if (rtx_moe) {
+                rtx5090::launch_ink_moe_rtx5090(
+                    st, cublas, m.sec4_stage(cur_stage), m.d_experts[ip], m.moe_info[ip],
+                    (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
+                    (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
+                    moe_in_ptr, d_moe_raw, M, *cur_moe_ws,
+                    d_ctrl_gain, reinterpret_cast<__half2*>(d_x_bf16),
+                    m.man.c.route_scale, (mode == 2), !fuse_moe_sconv && !atomic_pf_moe, atomic_pf_moe,
+                    fp8_eng.cache_ready ? fp8_eng.w_router_h2[ip] : nullptr);
+            } else {
+                launch_ink_moe(
+                    st, cublas, m.sec4_stage(cur_stage), m.d_experts[ip], m.moe_info[ip],
+                    (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
+                    (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
+                    moe_in_ptr, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
+            }
             prof_mark_end(5); prof_mark_start();
             if (visit == dbg_tap_visit) { dbg_hash(204, cur_moe_ws->y_pair, M, kInkTopK * kInkHidden); dbg_hash(205, cur_moe_ws->topk_w, M, kInkTopK); dbg_hash(206, reinterpret_cast<const float*>(cur_moe_ws->topk_idx), M, kInkTopK); }
             if (fuse_moe_sconv) {
                 constexpr int mlp_ch_off = 2 * kInkKVDim + kInkHidden;
                 float* hbase = d_sconv_pool[visit] + (size_t)mlp_ch_off * 3 * max_slots;
                 if (visit == dbg_tap_visit) { dbg_hash(207, hbase + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(208, d_cur, M, kInkHidden); }
-                if (mode == 0 && M == 1) {
+                if (fuse_pf_reduce) {
+                    float* hslot = hbase + (size_t)slot0 * 3 * kInkHidden;
+                    dim3 gp((kInkHidden + 255) / 256, (M + 15) / 16);
+                    rtx5090::k_ink_moe_reduce8_sconv_seq_par<<<gp, 256, 0, st>>>(
+                        cur_moe_ws->y_pair, m.d_sconv_mlp[ip], hslot, d_cur, M);
+                    rtx5090::k_ink_moe_reduce8_save_hist<<<(kInkHidden + 255) / 256, 256, 0, st>>>(
+                        cur_moe_ws->y_pair, hslot, M);
+                } else if (mode == 0 && M == 1) {
                     k_ink_moe_reduce8_sconv_m1<<<(kInkHidden + 255) / 256, 256, 0, st>>>(
                         cur_moe_ws->y_pair, m.d_sconv_mlp[ip], hbase + (size_t)slot0 * 3 * kInkHidden, d_cur);
                 } else if (mode == 1) {
@@ -3688,13 +4251,18 @@ struct InkCudaRunner {
             }
         };
 
+        const bool pf_bf16_res = (mode == 0 && M >= 1024 && fp8_eng.cache_ready && fp8_eng.lt_ok &&
+                                  !m.ls_active && !rtx5090::exact_mode_on() && !dbg_hash_on &&
+                                  (((M + 31) & ~31) <= max_batch) && (((M + 31) & ~31) <= fp8_eng.max_m));
+        const size_t blk_bytes = pf_bf16_res ? (n_hid * 2) : (n_hid * 4);
+
         // 1. Prelude: physical layers 0..5 (visits 0..5)
         for (int ip = 0; ip < m.man.c.core_start; ++ip) {
             if (m.ls_active && m.layer_owner[ip] != cur_stage) {
                 switch_stage_handoff(m.layer_owner[ip], M, mode, n_blocks, block_ptrs, nullptr, 0);
             }
             maybe_tap(visit, d_cur);
-            run_visit(visit, ip, nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs);
+            run_visit(visit, ip, nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs, pf_bf16_res);
             ++visit;
         }
 
@@ -3705,7 +4273,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_prelude, d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
         const int n_pre_blk = n_blocks;
         for (int b = 0; b < n_pre_blk; ++b) {
-            INK_CK(cudaMemcpyAsync(d_prelude_blocks[b], block_ptrs[b], n_hid * 4, cudaMemcpyDeviceToDevice, st));
+            INK_CK(cudaMemcpyAsync(d_prelude_blocks[b], block_ptrs[b], blk_bytes, cudaMemcpyDeviceToDevice, st));
         }
 
         // 2. Looped Core: physical layers 6..17 x 3 passes (visits 6..41)
@@ -3720,13 +4288,17 @@ struct InkCudaRunner {
                 }
                 n_bank = n_blocks - (n_pre_blk + 1);
                 for (int b = 0; b < n_bank; ++b) {
-                    INK_CK(cudaMemcpyAsync(d_bank[b], block_ptrs[n_pre_blk + 1 + b], n_hid * 4, cudaMemcpyDeviceToDevice, st));
+                    INK_CK(cudaMemcpyAsync(d_bank[b], block_ptrs[n_pre_blk + 1 + b], blk_bytes, cudaMemcpyDeviceToDevice, st));
                 }
-                INK_CK(cudaMemcpyAsync(d_bank_out, d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+                if (pf_bf16_res) {
+                    k_ink_f32_to_bf16<<<((n_hid + 3) / 4 + 255) / 256, 256, 0, st>>>(d_cur, reinterpret_cast<__nv_bfloat16*>(d_bank_out), n_hid);
+                } else {
+                    INK_CK(cudaMemcpyAsync(d_bank_out, d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+                }
                 INK_CK(cudaMemcpyAsync(d_cur, d_prelude, n_hid * 4, cudaMemcpyDeviceToDevice, st));
                 n_blocks = n_pre_blk;
                 for (int b = 0; b < n_pre_blk; ++b) {
-                    INK_CK(cudaMemcpyAsync(d_blocks[b], d_prelude_blocks[b], n_hid * 4, cudaMemcpyDeviceToDevice, st));
+                    INK_CK(cudaMemcpyAsync(d_blocks[b], d_prelude_blocks[b], blk_bytes, cudaMemcpyDeviceToDevice, st));
                     block_ptrs[b] = d_blocks[b];
                 }
             }
@@ -3741,7 +4313,7 @@ struct InkCudaRunner {
                     switch_stage_handoff(m.layer_owner[ip], M, mode, n_blocks, block_ptrs, (pass > 0) ? &bst : nullptr, n_bank);
                 }
                 maybe_tap(visit, d_cur);
-                run_visit(visit, ip, (pass > 0) ? &bst : nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs);
+                run_visit(visit, ip, (pass > 0) ? &bst : nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs, pf_bf16_res);
                 ++visit;
             }
         }
@@ -3753,7 +4325,7 @@ struct InkCudaRunner {
                 switch_stage_handoff(m.layer_owner[ip], M, mode, n_blocks, block_ptrs, nullptr, 0);
             }
             maybe_tap(visit, d_cur);
-            run_visit(visit, ip, nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs);
+            run_visit(visit, ip, nullptr, M, mode, slot0, tree_p0, n_blocks, block_ptrs, pf_bf16_res);
             ++visit;
         }
 
@@ -3766,7 +4338,12 @@ struct InkCudaRunner {
             for (int b = 0; b < n_blocks; ++b) stp.p[b] = block_ptrs[b];
             stp.p[n_blocks] = d_cur;
             stp.count = n_blocks + 1;
-            k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, (const float*)m.trunk_ptr("model.llm.attn_res.output_query"), d_moe_in, 1, M, kInkHidden);
+            if (pf_bf16_res) {
+                rtx5090::k_ink_attn_res_mix_1pass<true><<<M, 256, 0, st>>>(
+                    stp, (const float*)m.trunk_ptr("model.llm.attn_res.output_query"), d_moe_in, 1, M, kInkHidden);
+            } else {
+                k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, (const float*)m.trunk_ptr("model.llm.attn_res.output_query"), d_moe_in, 1, M, kInkHidden);
+            }
             k_ink_rms_norm<<<M, 256, 0, st>>>(d_moe_in, (const float*)m.trunk_ptr("model.llm.norm.weight"), d_h_norm, nullptr, M, kInkHidden);
             if (want_taps) INK_CK(cudaMemcpyAsync(d_taps[3], d_h_norm, n_hid * 4, cudaMemcpyDeviceToDevice, st));
             dbg_hash(192, d_h_norm, M, kInkHidden);
@@ -3896,12 +4473,18 @@ struct InkCudaRunner {
         std::memcpy(h_bytes,       tree.sconv_lag, kInkMaxTree * 3);
         std::memcpy(h_bytes + 128, tree.anc,       kInkMaxTree * kInkMaxTreeDepth);
         std::memcpy(h_bytes + 384, tree.depth,     kInkMaxTree);
+        if (d_tree_anc32) {
+            std::memcpy(h_bytes + 512, tree.anc32, kInkMaxTree * kInkMaxTree);
+        }
 
         INK_CK(cudaMemcpyAsync(d_tok_ids,   h_tok,         (size_t)M * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos,       h_pos,         (size_t)M * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_sconv_lag, h_bytes,       kInkMaxTree * 3, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_tree_anc,  h_bytes + 128, kInkMaxTree * kInkMaxTreeDepth, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_tree_dep,  h_bytes + 384, kInkMaxTree, cudaMemcpyHostToDevice, st));
+        if (d_tree_anc32) {
+            INK_CK(cudaMemcpyAsync(d_tree_anc32, h_bytes + 512, kInkMaxTree * kInkMaxTree, cudaMemcpyHostToDevice, st));
+        }
 
         if (use_cuda_graph && !m.ls_active && max_passes_override == 0 && slot0 == 0 && M <= tree_cap && m.n_host_experts == 0) {
             GraphKey key{M, 2, want_taps ? 1 : 0, (int)kv_dtype};
@@ -3997,16 +4580,103 @@ struct InkCudaRunner {
         }
     }
 
+    // Mode-3 Batched Multi-Slot Linear Speculative Verify (B slots x K_slot tokens = M <= 256, CUDA-Graph captured!)
+    void forward_batched_spec(const int32_t* tok_ids, const int32_t* slot_ids, const int32_t* pos_arr, int B, int K_slot, bool want_taps = true) {
+        if (m.ls_active && cur_stage != 0) bind_stage(0);
+        const int M = B * K_slot;
+        bspec_k_slot = K_slot;
+        int32_t* slot_buf = h_meta_pin + (meta_ring_idx++ & 63ull) * meta_ring_stride;
+        std::memcpy(slot_buf, tok_ids, (size_t)M * 4);
+        std::memcpy(slot_buf + M, slot_ids, (size_t)M * 4);
+        std::memcpy(slot_buf + 2 * M, pos_arr, (size_t)M * 4);
+        INK_CK(cudaMemcpyAsync(d_tok_ids, slot_buf, (size_t)M * 4, cudaMemcpyHostToDevice, st));
+        INK_CK(cudaMemcpyAsync(d_slots, slot_buf + M, (size_t)M * 4, cudaMemcpyHostToDevice, st));
+        INK_CK(cudaMemcpyAsync(d_pos, slot_buf + 2 * M, (size_t)M * 4, cudaMemcpyHostToDevice, st));
+
+        if (use_cuda_graph && !m.ls_active && M <= bspec_m_cap && m.n_host_experts == 0) {
+            GraphKey key{B * 8 + K_slot, 30, want_taps ? 1 : 0, (int)kv_dtype};
+            cudaGraphExec_t exec = nullptr;
+            for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
+            if (!exec) {
+                cudaGraph_t gr = nullptr;
+                cudaError_t ge = cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal);
+                if (ge == cudaSuccess) {
+                    emit_48_visits(M, 3, 0, 0, want_taps);
+                    ge = cudaStreamEndCapture(st, &gr);
+                    if (ge == cudaSuccess && gr) {
+                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        cudaGraphDestroy(gr);
+                    }
+                }
+                if (ge != cudaSuccess || !exec) {
+                    cudaGetLastError();
+                    if (gr) cudaGraphDestroy(gr);
+                    use_cuda_graph = false;
+                    std::fprintf(stderr, "[InkCUDA] Mode-3 Batched Spec Graph unavailable (err=%d): falling back to eager\n", (int)ge);
+                    emit_48_visits(M, 3, 0, 0, want_taps);
+                    return;
+                }
+                graph_cache.push_back({key, exec});
+            }
+            INK_CK(cudaGraphLaunch(exec, st));
+            return;
+        }
+        emit_48_visits(M, 3, 0, 0, want_taps);
+    }
+
+    void commit_bspec(const int32_t* slots_b, const int32_t* p0_b, const int32_t* n_acc_b, int B, int K_slot) {
+        int32_t* slot_buf = h_meta_pin + (meta_ring_idx++ & 63ull) * meta_ring_stride;
+        std::memcpy(slot_buf,         slots_b, (size_t)B * 4);
+        std::memcpy(slot_buf + B,     p0_b,    (size_t)B * 4);
+        std::memcpy(slot_buf + 2 * B, n_acc_b, (size_t)B * 4);
+        INK_CK(cudaMemcpyAsync(d_slots,   slot_buf,         (size_t)B * 4, cudaMemcpyHostToDevice, st));
+        INK_CK(cudaMemcpyAsync(d_pos,     slot_buf + B,     (size_t)B * 4, cudaMemcpyHostToDevice, st));
+        INK_CK(cudaMemcpyAsync(d_tok_ids, slot_buf + 2 * B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
+        rtx5090::k_ink_commit_sconv_bspec<<<dim3(kInkVisits, B), 256, 0, st>>>(
+            d_sconv_pool_arr, d_bspec_sconv, d_slots, d_tok_ids, B, K_slot, max_slots, bspec_m_cap);
+        rtx5090::k_ink_commit_kv_bspec<<<dim3(kInkVisits * kInkKVHeads, B), 128, 0, st>>>(
+            d_kv_desc_arr, d_bspec_k, d_bspec_v, d_slots, d_pos, d_tok_ids, B, K_slot, bspec_m_cap);
+    }
+
     // ---- Unembed + Softcap(30.0) + Argmax ----
     // Fast exact 2-stage screened argmax (0.14 ms on RTX 5090, 100.000% mathematically bit-exact up to M <= 32!)
     void head_argmax_exact(int M, int32_t* h_out_ids) {
         prof_mark_start();
         const auto& ui = m.tinfo("model.llm.unembed.weight");
+        // Opt-in RTX 5090 fast exact FMT_Q8ROW argmax (SQ-20 unembed is in-place Q8_ROW -> 0 extra VRAM, 0.28 ms!)
+        if (ui.fmt == FMT_Q8ROW && rtx5090::dspark_opt_on() && !rtx5090::exact_mode_on() &&
+            M <= screen_cap && !m.ls_active) {
+            constexpr int kEvalK = 32;
+            const float*  w_sc = reinterpret_cast<const float*>(m.d_trunk + ui.off);
+            const int8_t* w_i8 = reinterpret_cast<const int8_t*>(m.d_trunk + ui.off + (size_t)ui.rows() * sizeof(float));
+            int8_t*  h_q8 = reinterpret_cast<int8_t*>(d_x_bf16);
+            float*   h_sc = d_h_norm2;
+            int32_t* d_i32 = reinterpret_cast<int32_t*>(d_dot_hat);
+            int32_t* tmp_i = reinterpret_cast<int32_t*>(d_ctrl_cat);
+            float*   tmp_v = d_ctrl_cat + (size_t)M * 512;
+            rtx5090::k_ms_quant_h_q8<<<M, 256, 0, st>>>(d_h_norm, h_q8, h_sc, M);
+            const int32_t alpha_i = 1, beta_i = 0;
+            INK_CUBLAS_CK(cublasGemmEx(
+                cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                rtx5090::kBspecV8, M, kInkHidden, &alpha_i,
+                w_i8, CUDA_R_8I, kInkHidden,
+                h_q8, CUDA_R_8I, kInkHidden,
+                &beta_i, d_i32, CUDA_R_32I, rtx5090::kBspecV8,
+                CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            rtx5090::k_ms_top_i32_s1<<<dim3(64, M), 256, 0, st>>>(d_i32, w_sc, h_sc, rtx5090::kBspecV8, tmp_i, tmp_v, M);
+            rtx5090::k_ms_top_i32_s2<<<M, 256, 0, st>>>(tmp_i, tmp_v, kEvalK, d_cand_ids, d_cand_cnt, m.man.c.vocab_unpadded, rtx5090::kBspecV8, M);
+            rtx5090::k_ink_screen_eval_q8row<<<M, 256, 0, st>>>(
+                m.d_trunk + ui.off, (int)ui.rows(), d_h_norm, d_cand_ids, d_cand_cnt, kEvalK, d_argmax, M);
+            prof_mark_end(7);
+            INK_CK(cudaMemcpyAsync(h_out_ids, d_argmax, (size_t)M * 4, cudaMemcpyDeviceToHost, st));
+            INK_CK(cudaStreamSynchronize(st));
+            return;
+        }
         if (m.unembed_screen.ready && (ui.fmt == FMT_BF16 || ui.fmt == FMT_S6_K) && M <= kInkMaxTree) {
             const int V = m.man.c.vocab_unpadded;
             const int g1 = (V + 7) / 8;
-            for (int m0 = 0; m0 < M; m0 += 8) {
-                const int mc = std::min(8, M - m0);
+            for (int m0 = 0; m0 < M; m0 += screen_cap) {
+                const int mc = std::min(screen_cap, M - m0);
                 const float* hm = d_h_norm + (size_t)m0 * kInkHidden;
                 k_ink_row_l2norm<<<mc, 256, 0, st>>>(hm, d_h_norm2, d_max_lb, d_cand_cnt, mc);
                 if (mc == 1) {
@@ -4017,8 +4687,16 @@ struct InkCudaRunner {
                     k_ink_screen_pass1_multiM<4><<<g1, 256, 0, st>>>(
                         m.unembed_screen.q8, m.unembed_screen.sc, m.unembed_screen.eps,
                         hm, d_h_norm2, d_dot_hat, d_max_lb, mc, V);
-                } else {
+                } else if (mc <= 8) {
                     k_ink_screen_pass1_multiM<8><<<g1, 256, 0, st>>>(
+                        m.unembed_screen.q8, m.unembed_screen.sc, m.unembed_screen.eps,
+                        hm, d_h_norm2, d_dot_hat, d_max_lb, mc, V);
+                } else if (mc <= 16) {
+                    rtx5090::k_ink_screen_pass1_multiM_rtx<16><<<g1, 256, 0, st>>>(
+                        m.unembed_screen.q8, m.unembed_screen.sc, m.unembed_screen.eps,
+                        hm, d_h_norm2, d_dot_hat, d_max_lb, mc, V);
+                } else {
+                    rtx5090::k_ink_screen_pass1_multiM_rtx<24><<<g1, 256, 0, st>>>(
                         m.unembed_screen.q8, m.unembed_screen.sc, m.unembed_screen.eps,
                         hm, d_h_norm2, d_dot_hat, d_max_lb, mc, V);
                 }
@@ -4137,9 +4815,10 @@ struct InkCudaRunner {
         fr(d_pf_q); fr(d_pf_k); fr(d_pf_v); fr(d_pf_p); fr(d_pf_s); fr(d_pf_o); fr(d_pf_ot); fr(d_pf_m); fr(d_pf_l);
         fr(d_stage_k); fr(d_stage_v); fr(d_stage_sconv);
         fr(d_kv_desc_arr); fr(d_sconv_pool_arr); fr(d_acc_path);
-        fr(d_x_bf16); fr(d_w_scratch); fr(d_logits); fr(d_xq8); fr(d_xs8);
+        fp8_eng.free_all();
+        fr(d_x_bf16); fr(d_w_scratch); fr(d_rtx_qkv_pool); fr(d_rtx_ctrl_pool); fr(d_rtx_rel_proj_pool); fr(d_logits); fr(d_xq8); fr(d_xs8);
         fr(d_dot_hat); fr(d_h_norm2); fr(d_max_lb); fr(d_cand_ids); fr(d_cand_cnt); fr(d_argmax);
-        fr(d_tok_ids); fr(d_slots); fr(d_pos); fr(d_is_img); fr(d_img_emb); fr(d_sconv_lag); fr(d_tree_anc); fr(d_tree_dep);
+        fr(d_tok_ids); fr(d_slots); fr(d_pos); fr(d_is_img); fr(d_img_emb); fr(d_sconv_lag); fr(d_tree_anc); fr(d_tree_anc32); fr(d_tree_dep);
         if (h_meta_pin) { cudaFreeHost(h_meta_pin); h_meta_pin = nullptr; }
         if (ev_p0) { cudaEventDestroy(ev_p0); ev_p0 = nullptr; }
         if (ev_p1) { cudaEventDestroy(ev_p1); ev_p1 = nullptr; }

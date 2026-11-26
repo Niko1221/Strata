@@ -1054,6 +1054,8 @@ struct InkDSpark {
     int max_ctx = 4096;
     double last_pred_etok = 0.0;  // the last tree step: expected tokens (1 + sum of the kept paths' probabilities) and its node count
     int last_m = 0;
+    int last_deepest_node = 0;
+    float last_deepest_logp = -1e30f;
     int K_cand = 256;  // reduced-vocab L2-cached candidate pool for Markov RNN
 
     // Context KV cache for 3 DSpark layers (layers 0 & 2 = compact SWA-1025 rings; layer 1 = elastic global!) + compact f_rnn ring!
@@ -1129,7 +1131,8 @@ struct InkDSpark {
         max_ctx = ctx;
         K_cand = k_cand;
         const int swa_cap = std::min(max_ctx, m.man.c.dspark_swa_win + std::max(r.max_batch, 64));
-        const int glob_init = (init_glob_ctx > 0) ? std::min(max_ctx, std::max(256, init_glob_ctx)) : std::min(max_ctx, 8192);
+        const int def_glob = rtx5090::dspark_opt_on() ? 32768 : 8192;
+        const int glob_init = (init_glob_ctx > 0) ? std::min(max_ctx, std::max(256, init_glob_ctx)) : std::min(max_ctx, def_glob);
         frnn_cap = std::max(64, r.max_batch + 32);
 
         // Pre-check free VRAM so DSpark NEVER crashes with CUDA error 2 (exit 3) on tight 4-16 GB GPUs!
@@ -1648,12 +1651,12 @@ struct InkDSpark {
         }
     }
 
-    // Draft 7 tokens (Block-8) + Top-2 candidates per slot on GPU (CUDA Graph captured!)
-    void draft_block8(int32_t anchor_tok, int apos, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+    // Draft 7 tokens (Block-8) at custom RoPE position pos0 while attending committed ctx [0..ctx_apos-1]!
+    void draft_block8_at(int32_t anchor_tok, int ctx_apos, int pos0, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
         const int B = kInkDsparkBlock;  // 8
         h_meta_pin[0] = anchor_tok;
-        h_meta_pin[1] = apos;
-        for (int i = 0; i < B; ++i) h_meta_pin[2 + i] = apos + i;
+        h_meta_pin[1] = ctx_apos;
+        for (int i = 0; i < B; ++i) h_meta_pin[2 + i] = pos0 + i;
         INK_CK(cudaMemcpyAsync(d_anchor_id, h_meta_pin + 0, 4, cudaMemcpyHostToDevice, r.st));
         INK_CK(cudaMemcpyAsync(d_apos,      h_meta_pin + 1, 4, cudaMemcpyHostToDevice, r.st));
         INK_CK(cudaMemcpyAsync(d_pos,       h_meta_pin + 2, B * 4, cudaMemcpyHostToDevice, r.st));
@@ -1691,6 +1694,11 @@ struct InkDSpark {
             out_ids_7[s] = h_top2_ids[2 * s];
             if (out_conf_7) out_conf_7[s] = h_top2_probs[2 * s];
         }
+    }
+
+    // Draft 7 tokens (Block-8) + Top-2 candidates per slot on GPU (CUDA Graph captured!)
+    void draft_block8(int32_t anchor_tok, int apos, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+        draft_block8_at(anchor_tok, apos, apos, out_ids_7, out_conf_7);
     }
 
     // Draft True W=2..4 Multi-Branch Bayes-Optimal Connected Tree (M <= 16..32 nodes, CUDA Graph captured!)
@@ -1753,8 +1761,11 @@ struct InkDSpark {
 
         int want = std::min(max_nodes, cnt);
         if (adaptive_moe_ratio > 0.0f) {
-            // Exact Sparse-MoE Bayes-Optimal Dynamic Tree Sizing across cached CUDA Graph buckets {3, 4, 5, 6, 8, 10, 12}!
-            static constexpr int kBuckets[] = {1, 2, 3, 4, 5, 6, 8, 10, 12, 16};
+            // Exact Sparse-MoE Bayes-Optimal Dynamic Tree Sizing across cached CUDA Graph buckets!
+            static constexpr int kBucketsBase[] = {1, 2, 3, 4, 5, 6, 8, 10, 12, 16};
+            static constexpr int kBucketsRtx[]  = {1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24};
+            const int* buckets = rtx5090::dspark_opt_on() ? kBucketsRtx : kBucketsBase;
+            const int n_bkt = rtx5090::dspark_opt_on() ? 11 : 10;
             double pref_p[kInkBeamPoolCap + 1];
             pref_p[0] = 1.0;  // root always emits 1 token
             for (int i = 0; i < n_cand; ++i) {
@@ -1762,8 +1773,9 @@ struct InkDSpark {
                 pref_p[i + 1] = pref_p[i] + ((lp > -20.0f) ? std::exp((double)lp) : 0.0);
             }
             double best_rate = -1.0;
-            int best_m = std::min(3, cnt);
-            for (int mb : kBuckets) {
+            int best_m = std::min(rtx5090::dspark_opt_on() ? 4 : 3, cnt);
+            for (int bi = 0; bi < n_bkt; ++bi) {
+                const int mb = buckets[bi];
                 if (mb > max_nodes || mb > cnt) continue;
                 if (mb < 3 && plain_margin <= 0.0f) continue;  // the 1 and 2 node trees exist only when the caller lets the step fall back to plain decoding
                 const double e_tok = pref_p[mb - 1];
@@ -1796,6 +1808,9 @@ struct InkDSpark {
         out_tree = InkTreeSpec{};
         int8_t remap[kInkBeamPoolCap];
         std::memset(remap, -1, sizeof(remap));
+        last_deepest_node = 0;
+        last_deepest_logp = -1e30f;
+        int best_dep = 0;
         for (int p = 0; p < cnt; ++p) {
             if (!keep[p]) continue;
             const int nid = out_tree.M++;
@@ -1803,6 +1818,12 @@ struct InkDSpark {
             out_tree.tok[nid] = h_pool_tok[p];
             out_tree.parent[nid] = (p == 0) ? -1 : remap[(int)h_pool_parent[p]];
             out_tree.depth[nid] = h_pool_depth[p];
+            if ((int)h_pool_depth[p] > best_dep ||
+                ((int)h_pool_depth[p] == best_dep && h_pool_logp[p] > last_deepest_logp)) {
+                best_dep = (int)h_pool_depth[p];
+                last_deepest_node = nid;
+                last_deepest_logp = h_pool_logp[p];
+            }
         }
         out_tree.build();
     }

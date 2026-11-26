@@ -200,7 +200,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
         while (total_gen < gen_len && cur_pos < eff_ctx) {
             const int rem = std::min(gen_len - total_gen, eff_ctx - cur_pos);
             if (rem >= 2 && cur_pos + 12 < eff_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 const int n_emit = backend->dspark_spec_step_greedy(
                     0, next_tok[0], cur_pos, rem, emitted, &drafted, err);
@@ -225,20 +225,83 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
             ++total_gen;
         }
     } else {
-        for (int step = 0; step < gen_len; ++step) {
+        const bool rtx5090_on = [] {
+            const char* e = std::getenv("STRATA_INK_RTX5090");
+            return e && e[0] != '\0' && e[0] != '0';
+        }();
+        const bool rtx5090_cand = rtx5090_on && backend->supports_candidates();
+        CandRows cand;
+        std::vector<int> cur_pos(P, prompt_len);
+        std::vector<int> slot_gen(P, 0);
+        std::vector<int> act_slots; act_slots.reserve(P);
+        std::vector<int32_t> act_anc; act_anc.reserve(P);
+        std::vector<int> act_pos, act_rem, act_n_emit;
+        act_pos.reserve(P); act_rem.reserve(P); act_n_emit.resize(P, 0);
+        std::vector<int32_t> act_emitted(static_cast<size_t>(P) * 8, 0);
+
+        while (true) {
+            act_slots.clear(); act_anc.clear(); act_pos.clear(); act_rem.clear();
+            for (int s = 0; s < P; ++s) {
+                const int rem = std::min(gen_len - slot_gen[s], eff_ctx - cur_pos[s]);
+                if (rem > 0) {
+                    act_slots.push_back(s);
+                    act_anc.push_back(next_tok[s]);
+                    act_pos.push_back(cur_pos[s]);
+                    act_rem.push_back(rem);
+                }
+            }
+            if (act_slots.empty()) break;
+            const int B = static_cast<int>(act_slots.size());
+            if (rtx5090_on && use_dspark && B >= 2) {
+                const int tot = backend->dspark_spec_step_batched_greedy(
+                    B, act_slots.data(), act_anc.data(), act_pos.data(), act_rem.data(),
+                    8, act_emitted.data(), act_n_emit.data(), nullptr, err);
+                if (tot < 0) { fprintf(stderr, "bench batched spec err: %s\n", err.c_str()); return 1; }
+                if (tot > 0) {
+                    for (int b = 0; b < B; ++b) {
+                        const int s = act_slots[b];
+                        const int ne = act_n_emit[b];
+                        next_tok[s] = act_emitted[static_cast<size_t>(b) * 8 + (ne - 1)];
+                        cur_pos[s] += ne;
+                        slot_gen[s] += ne;
+                        total_gen += ne;
+                    }
+                    continue;
+                }
+            }
             batch.clear();
             batch.capture_taps = use_dspark;
-            for (int s = 0; s < P; ++s) batch.push(s, prompt_len + step, next_tok[s], true);
-            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
-                fprintf(stderr, "bench decode err: %s\n", err.c_str());
-                return 1;
+            for (int b = 0; b < B; ++b) {
+                const int s = act_slots[b];
+                batch.push(s, cur_pos[s], next_tok[s], true);
             }
-            for (int s = 0; s < P; ++s) {
-                const float* lg = logits.data() + static_cast<size_t>(s) * V;
-                int32_t best = 0;
-                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
-                next_tok[s] = best;
-                ++total_gen;
+            if (rtx5090_cand) {
+                if (!backend->forward_batch_cand(batch, cand, err)) {
+                    fprintf(stderr, "bench decode err: %s\n", err.c_str());
+                    return 1;
+                }
+                for (int b = 0; b < B; ++b) {
+                    const int s = act_slots[b];
+                    next_tok[s] = cand.idx[static_cast<size_t>(b) * InkBackend::kInkCandidates];
+                    ++cur_pos[s];
+                    ++slot_gen[s];
+                    ++total_gen;
+                }
+            } else {
+                if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
+                    fprintf(stderr, "bench decode err: %s\n", err.c_str());
+                    return 1;
+                }
+                for (int b = 0; b < B; ++b) {
+                    const int s = act_slots[b];
+                    const float* lg = logits.data() + static_cast<size_t>(b) * V;
+                    int32_t best = 0;
+                    for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                    next_tok[s] = best;
+                    ++cur_pos[s];
+                    ++slot_gen[s];
+                    ++total_gen;
+                }
             }
         }
     }
@@ -681,7 +744,7 @@ static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopt
             ++steps;
             const int rem = n_gen - static_cast<int>(b.size());
             if (rem >= 2 && pos + 12 < eff_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 const int n_emit = backend->dspark_spec_step_greedy(0, next, pos, rem, emitted, &drafted, err);
                 if (n_emit < 0) { fprintf(stderr, "spec: %s\n", err.c_str()); return 1; }

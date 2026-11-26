@@ -44,6 +44,9 @@ constexpr int kActFp4SlotBytes = 48;
 
 void quantize_act_fp4(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream);
 
+/// Per-row global scale FP4 activation quantizer (opt-in RTX 5090 direct-accumulate NVFP4 TC, eliminates inner-loop fmaf!).
+void quantize_act_fp4_row(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream);
+
 /// Quantize FP32 [rows, cols] (cols % 32 == 0) -> packed MX8 activation slots (32B E4M3 + 1B UE8M0, stored as separate planes).
 void quantize_act_mx8(const float* x, int rows, int cols, uint8_t* xq, uint8_t* xsc, cudaStream_t stream);
 
@@ -65,6 +68,34 @@ void moe_mx8_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoe
 void moe_mx8_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
                    int max_tiles, int tile_rows, cudaStream_t stream);
+
+/// Opt-in RTX 5090 (STRATA_INK_RTX5090=1) BK=128/BK=64 pipelined Blackwell sm_120a MoE kernels.
+void moe_sf4_gu_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                      const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream);
+void moe_sf4_dn_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                      const uint8_t* ha, const float* topk_w, float* y_pair, int max_tiles, int tile_rows, cudaStream_t stream);
+void moe_mx8_gu_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                      const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
+                      int max_tiles, int tile_rows, cudaStream_t stream);
+void moe_mx8_dn_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                      const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
+                      int max_tiles, int tile_rows, cudaStream_t stream);
+
+/// Opt-in RTX 5090 Expert-Looped L2-Resident Prefill MoE kernels (reads every expert from GDDR7 ONCE!).
+void moe_sf4_gu_tc_eloop(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                         const uint8_t* xa, uint8_t* ha, cudaStream_t stream);
+void moe_sf4_dn_tc_eloop(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                         const uint8_t* ha, const float* topk_w, float* y_pair, cudaStream_t stream);
+void moe_mx8_gu_tc_eloop(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                         const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc, cudaStream_t stream);
+void moe_mx8_dn_tc_eloop(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                         const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair, cudaStream_t stream);
+
+/// Opt-in RTX 5090 Prefill Direct-L2 Atomic Down Projection (TR=128, BK=128; writes directly to d_moe_raw, ZERO 302 MB y_pair!).
+void moe_sf4_dn_tc_atomic(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                          const uint8_t* ha, const float* topk_w, float* y_out_atomic, int max_tiles, cudaStream_t stream);
+void moe_mx8_dn_tc_atomic(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                          const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_out_atomic, int max_tiles, cudaStream_t stream);
 
 /// Standalone single-expert GEMM test entry points (used by ink_kernel_test for FP64 parity & TFLOPS benchmarking).
 void test_sf4_gemm_tc(const uint8_t* w_u8, const uint8_t* w_sc, float w_outer,

@@ -881,7 +881,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             auto& rq = reqs[sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
             if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 std::string serr;
                 const int max_emit = rq.max_new - rq.generated;
@@ -997,6 +997,75 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     finish_req(rq, fin);
                 }
                 continue;
+            }
+        }
+
+        // 2b. Opt-in Batched Multi-Slot Greedy Speculative Step (B >= 2 concurrent decoding slots in ONE pass!)
+        if (use_dspark && spec_tree && n_active >= 2) {
+            bool all_bspec_ok = true;
+            std::vector<int> bs_slots; bs_slots.reserve(n_active);
+            std::vector<int32_t> bs_anc; bs_anc.reserve(n_active);
+            std::vector<int> bs_pos; bs_pos.reserve(n_active);
+            std::vector<int> bs_rem; bs_rem.reserve(n_active);
+            for (int s = 0; s < P; ++s) {
+                auto& rq = reqs[s];
+                if (!rq.active) continue;
+                if (rq.prefill_pos < rq.prompt_len || !rq.s.greedy() || rq.s.penalties() ||
+                    rq.s.hold_budget > 0 || rq.generated + 2 > rq.max_new || rq.cur_pos + 8 >= eff_max_ctx) {
+                    all_bspec_ok = false;
+                    break;
+                }
+                bs_slots.push_back(s);
+                bs_anc.push_back(rq.next_tok);
+                bs_pos.push_back(rq.cur_pos);
+                bs_rem.push_back(rq.max_new - rq.generated);
+            }
+            if (all_bspec_ok && bs_slots.size() >= 2) {
+                const int B = static_cast<int>(bs_slots.size());
+                std::vector<int32_t> bs_emit(static_cast<size_t>(B) * 8, 0);
+                std::vector<int> bs_ne(B, 0), bs_dr(B, 0);
+                std::string berr;
+                const int tot = backend.dspark_spec_step_batched_greedy(
+                    B, bs_slots.data(), bs_anc.data(), bs_pos.data(), bs_rem.data(),
+                    8, bs_emit.data(), bs_ne.data(), bs_dr.data(), berr);
+                if (tot < 0) {
+                    proto("ERR fatal GPU error: %s", berr.c_str());
+                    return 1;
+                }
+                if (tot > 0) {
+                    for (int b = 0; b < B; ++b) {
+                        auto& rq = reqs[bs_slots[b]];
+                        const int ne = bs_ne[b];
+                        rq.drafts_offered += bs_dr[b];
+                        int kept = 0;
+                        bool done = false;
+                        const char* fin = nullptr;
+                        for (int i = 0; i < ne; ++i) {
+                            const int32_t tok = bs_emit[static_cast<size_t>(b) * 8 + i];
+                            rq.hist.push_back(tok);
+                            rq.gen_ids.push_back(tok);
+                            rq.cached_prefix.push_back(i == 0 ? rq.next_tok : bs_emit[static_cast<size_t>(b) * 8 + i - 1]);
+                            ++rq.generated;
+                            ++kept;
+                            if (i + 1 < ne) ++rq.drafts_accepted;
+                            if (rq.is_solo) proto("T %d", tok);
+                            else if (rq.is_ext_gen) proto("T %s %d", rq.req_id.c_str(), tok);
+                            else proto("BT %d %d", rq.slot, tok);
+
+                            if (is_stop_tok(tok)) { fin = "stop"; done = true; break; }
+                            if (rq.generated >= rq.max_new || rq.cur_pos + kept + 1 >= eff_max_ctx) { fin = "length"; done = true; break; }
+                            if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; break; }
+                        }
+                        if (!done) {
+                            rq.next_tok = bs_emit[static_cast<size_t>(b) * 8 + (ne - 1)];
+                            rq.cur_pos += ne;
+                        } else {
+                            rq.cur_pos += kept;
+                            if (fin) finish_req(rq, fin);
+                        }
+                    }
+                    continue;
+                }
             }
         }
 

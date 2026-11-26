@@ -164,6 +164,24 @@ public:
         return 0;
     }
 
+    // Optional opt-in batched multi-slot greedy speculative step (B >= 2 concurrent slots verified in one pass).
+    // Returns total emitted tokens across all B slots (> 0) on success, 0 to fall back to plain forward_batch, or -1 on error.
+    virtual int dspark_spec_step_batched_greedy(
+        int B,
+        const int* slots,
+        const int32_t* anchor_toks,
+        const int* anchor_pos,
+        const int* max_emits,
+        int max_stride,
+        int32_t* out_emitted,
+        int* out_n_emit,
+        int* out_drafted,
+        std::string& err) {
+        (void)B; (void)slots; (void)anchor_toks; (void)anchor_pos; (void)max_emits;
+        (void)max_stride; (void)out_emitted; (void)out_n_emit; (void)out_drafted; (void)err;
+        return 0;
+    }
+
     // Optional GPU Vision ViT encoder: returns true if encoded on device, false to fall back to CPU ViT.
     virtual bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) {
         (void)img; (void)out_embeds; (void)err;
