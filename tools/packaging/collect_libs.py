@@ -124,6 +124,13 @@ def copy_vendor_notices(copied: dict[str, str], out: Path) -> list[str]:
     intel = {name: path for name, path in copied.items() if oneapi_root(path) is not None}
     if not intel:
         return []
+    return write_intel_notice(intel, sorted({str(oneapi_root(p)) for p in intel.values()}), out)
+
+
+def write_intel_notice(intel: dict[str, str], roots: list[str], out: Path) -> list[str]:
+    """licenses/intel-oneapi.txt for the libraries in `intel` ({name: where it came from}), and the license and third-party files of the first oneAPI
+    installation in `roots` that has them.  copy_vendor_notices calls it for a build; tools/packaging/add_notices.py for a folder of libraries
+    that were collected earlier."""
     source = NOTICES / "intel-oneapi.txt"
     if not source.is_file():
         print("WARNING: oneAPI libraries are bundled but packaging/notices/intel-oneapi.txt does not exist", file=sys.stderr)
@@ -132,7 +139,6 @@ def copy_vendor_notices(copied: dict[str, str], out: Path) -> list[str]:
     folder.mkdir(parents=True, exist_ok=True)
     text = source.read_text(encoding="utf-8") + "\n" + "".join(f"  {name} <- {path}\n" for name, path in sorted(intel.items()))
     (folder / source.name).write_text(text, encoding="utf-8")
-    roots = sorted({str(oneapi_root(p)) for p in intel.values()})
     wanted = (("intel-oneapi-license.txt", ("license.txt", "license")), ("intel-oneapi-third-party-programs.txt", ("third-party-programs.txt", "third-party-programs")))
     found = set()
     for root in roots:

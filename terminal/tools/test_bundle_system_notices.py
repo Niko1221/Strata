@@ -120,6 +120,31 @@ class VendorNotices(unittest.TestCase):
             self.assertEqual((out / "licenses" / "intel-oneapi-license.txt").read_text(encoding="utf-8"), "INTEL LICENSE TEXT\n")
             self.assertEqual((out / "licenses" / "intel-oneapi-third-party-programs.txt").read_text(encoding="utf-8"), "THIRD PARTY TEXT\n")
 
+    def test_add_notices_writes_licenses_for_a_staging_folder(self):
+        import tempfile
+        import add_notices
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "stage"
+            stage.mkdir()
+            for n in ("strata-hy4", "libiomp5.so", "libsycl.so.8", "libz.so.1", "VCOMP140.DLL"):
+                (stage / n).write_bytes(b"x")
+            root = Path(tmp) / "oneapi"
+            (root / "licensing" / "2026.1").mkdir(parents=True)
+            (root / "licensing" / "2026.1" / "license.txt").write_text("L\n", encoding="utf-8")
+            wrote = add_notices.add(stage, [str(root)])
+            self.assertIn("licenses/intel-oneapi.txt", wrote)
+            self.assertIn("licenses/intel-oneapi-license.txt", wrote)
+            self.assertIn("licenses/microsoft-vc-runtime.txt", wrote)
+            text = (stage / "licenses" / "intel-oneapi.txt").read_text(encoding="utf-8")
+            self.assertIn("libiomp5.so", text)
+            self.assertIn("libsycl.so.8", text)
+            self.assertNotIn("libz.so.1", text)
+            plain = Path(tmp) / "plain"
+            plain.mkdir()
+            (plain / "strata").write_bytes(b"x")
+            self.assertEqual(add_notices.add(plain, []), [])
+            self.assertFalse((plain / "licenses").exists())
+
     def test_no_oneapi_library_no_intel_notice(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
