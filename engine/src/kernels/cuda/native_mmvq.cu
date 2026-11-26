@@ -44,6 +44,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -2348,6 +2349,7 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
 }
 
 int g_il_pf = -1;   // native_mmvq_il_pf (tests, benchmarks): the variant for every launch; -1: STRATA_MMVQ_IL_PF
+int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp for every shape (0: the table)
 int il_pf_env() {
     static const int env = [] { const char* v = std::getenv("STRATA_MMVQ_IL_PF"); return v ? std::atoi(v) : 0; }();
     return env;
@@ -2429,6 +2431,627 @@ void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int 
     case 4: launch_il<I, 4>(weights, x_il, y, n_in, n_out, ncols, s, pf); break;
     default: launch_il<I, 2>(weights, x_il, y, n_in, n_out, ncols, s, pf); break;
     }
+}
+
+// ============================ STRATA_NEON_MMVQ=1: sm_75 (Turing) interleaved MMVQ ============================
+// Bitwise identical (0 ULP) to native_mmvq / native_mmvq_il for ncols = 1..8 across IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K:
+//   1. Inverted virtual-warp loop (v=0..3 outer, m=v..nm step 4 inner) cuts accumulator registers 2x (2*R*NC vs 4*R*NC)
+//      while preserving the exact (((acc0 + acc1) + acc2) + acc3) + warp_sum addition order.
+//   2. Activation loads (and Q4_K / Q5_K's weight-independent dot2 dp4a sums) are hoisted once outside the R-row loop
+//      (R x fewer L1/LSU accesses on Turing's 16 LSUs/SM, and -25% / -37.5% dp4a ops on Q4_K / Q5_K at R = 2 / 4).
+//   3. All R rows' weight loads issue back-to-back via ld.global.nc before dot compute; weight unpacking runs once per
+//      row outside the NC column loop; quarter-rate I2F conversions use exact FP32-pipe i2f_small.
+//   4. Enables 5-8 column (and 1-column Q5_K/Q6_K/Q4_K/IQ4_XS) sm_75 coverage with zero-spill launch bounds.
+bool neon_mmvq_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_NEON_MMVQ");
+        const bool yes = v != nullptr && v[0] != '\0' && v[0] != '0';
+        if (yes) std::fprintf(stderr, "strata mmvq: sm_75 Turing interleaved kernel enabled (STRATA_NEON_MMVQ=1)\n");
+        return yes;
+    }();
+    return on;
+}
+
+struct NeonIQ4XS {
+    using F = IQ4XSTraits;
+    static constexpr bool PM = true;
+    struct WR { int q[4]; int sl; uint32_t d_sh; };
+    template <int NC, int R> struct XCache { int u0[4][NC], u1[4][NC]; float d8[NC]; };
+
+    __device__ __forceinline__ static WR load_w(const F::Block* __restrict__ w, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(w);
+        const auto* qs = reinterpret_cast<const int*>(b + 8 + 4 * iqs);
+        WR r;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) r.q[j] = ldg_nc_s32(qs + j);
+        r.sl = ldg_nc_u8(b + 4 + iqs / 8);
+        r.d_sh = (uint32_t) ldg_nc_u16(b) | ((uint32_t) ldg_nc_u16(b + 2) << 16);
+        return r;
+    }
+    template <int NC, int R, class X>
+    __device__ __forceinline__ static void load_x(const X& x, int kby, int iqs, XCache<NC, R>& xc) {
+        const int b = kby + iqs / 4;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            x.u(b, j, xc.u0[j]);
+            x.u(b, j + 4, xc.u1[j]);
+        }
+        x.scales(b, xc.d8);
+    }
+    template <int NC, int R>
+    __device__ __forceinline__ static void dot_row(const WR& rr, const XCache<NC, R>& xc, int iqs, float (&out)[NC]) {
+        int2 v[4];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) v[j] = iq4_table_lookup(rr.q[j]);
+        const int sh = int(rr.d_sh >> 16);
+        const int ls = ((rr.sl >> (iqs & 0x04)) & 0x0f) | (((sh >> (iqs / 2)) & 0x03) << 4);
+        const float fls = float(ls - 32);
+        const float dw = __half2float(__ushort_as_half((unsigned short) (rr.d_sh & 0xffffu)));
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            int sumi = 0;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                sumi = STRATA_DP4A(v[j].x, xc.u0[j][c], sumi);
+                sumi = STRATA_DP4A(v[j].y, xc.u1[j][c], sumi);
+            }
+            const float fsumi = i2f_small(sumi + kI2fMagic) * fls;
+            const float d = dw * xc.d8[c];
+            out[c] = d * fsumi;
+        }
+    }
+};
+
+struct NeonQ4K {
+    using F = Q4KTraits;
+    static constexpr bool PM = false;
+    struct WR { int v[2]; uint32_t aux32; int dm; };
+    template <int NC, int R> struct XCache {
+        int u[4][NC];
+        float d8[2][NC];
+        int dot2[2][R > 1 ? NC : 1];
+    };
+
+    __device__ __forceinline__ static WR load_w(const F::Block* __restrict__ w, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(w);
+        const int bq8_offset = 2 * ((iqs / 2) / 4);
+        const int p = (iqs / 2) % 4;
+        const int j = bq8_offset / 2;
+        const int jm = j & 1;
+        const auto* ql = reinterpret_cast<const int*>(b + 16 + 16 * bq8_offset + 4 * p);
+        const auto* sc = b + 4 + 2 * jm;
+        WR r;
+        r.v[0] = ldg_nc_s32(ql);
+        r.v[1] = ldg_nc_s32(ql + 4);
+        const uint32_t s0 = ldg_nc_u16(sc), s2 = ldg_nc_u16(sc + 4), s4 = ldg_nc_u16(sc + 8);
+        r.dm = ldg_nc_s32(b);
+        const uint32_t hi = uint32_t(-int32_t(j >= 2));
+        const uint32_t a0 = (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi)) & 0xffffu;
+        const uint32_t a1 = (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi)) & 0xffffu;
+        r.aux32 = a0 | (a1 << 16);
+        return r;
+    }
+    template <int NC, int R, class X>
+    __device__ __forceinline__ static void load_x(const X& x, int kby, int iqs, XCache<NC, R>& xc) {
+        const int bq8_offset = 2 * ((iqs / 2) / 4);
+        const int p = (iqs / 2) % 4;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int b = kby + bq8_offset + i;
+            x.u(b, p, xc.u[2 * i]);
+            x.u(b, p + 4, xc.u[2 * i + 1]);
+            x.scales(b, xc.d8[i]);
+            if constexpr (R > 1) {
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    xc.dot2[i][c] = STRATA_DP4A(0x01010101, xc.u[2 * i + 1][c], STRATA_DP4A(0x01010101, xc.u[2 * i][c], 0));
+            }
+        }
+    }
+    template <int NC, int R>
+    __device__ __forceinline__ static void dot_row(const WR& r, const XCache<NC, R>& xc, int, float (&out)[NC]) {
+        const int v00 = r.v[0] & 0x0f0f0f0f;
+        const int v10 = r.v[1] & 0x0f0f0f0f;
+        const int v01 = (r.v[0] >> 4) & 0x0f0f0f0f;
+        const int v11 = (r.v[1] >> 4) & 0x0f0f0f0f;
+        const int sc0 = int(r.aux32 & 0xffu);
+        const int sc1 = int((r.aux32 >> 8) & 0xffu);
+        const int m0 = int((r.aux32 >> 16) & 0xffu);
+        const int m1 = int((r.aux32 >> 24) & 0xffu);
+        half2 h;
+        std::memcpy(&h, &r.dm, 4);
+        const float2 dm4f = __half22float2(h);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int dot1_0 = STRATA_DP4A(v10, xc.u[1][c], STRATA_DP4A(v00, xc.u[0][c], 0));
+            const int dot1_1 = STRATA_DP4A(v11, xc.u[3][c], STRATA_DP4A(v01, xc.u[2][c], 0));
+            int dot2_0, dot2_1;
+            if constexpr (R > 1) {
+                dot2_0 = xc.dot2[0][c];
+                dot2_1 = xc.dot2[1][c];
+            } else {
+                dot2_0 = STRATA_DP4A(0x01010101, xc.u[1][c], STRATA_DP4A(0x01010101, xc.u[0][c], 0));
+                dot2_1 = STRATA_DP4A(0x01010101, xc.u[3][c], STRATA_DP4A(0x01010101, xc.u[2][c], 0));
+            }
+            float sumf_d = 0.0f;
+            float sumf_m = 0.0f;
+            sumf_d += xc.d8[0][c] * i2f_small(dot1_0 * sc0 + kI2fMagic);
+            sumf_m += xc.d8[0][c] * i2f_small(dot2_0 * m0 + kI2fMagic);
+            sumf_d += xc.d8[1][c] * i2f_small(dot1_1 * sc1 + kI2fMagic);
+            sumf_m += xc.d8[1][c] * i2f_small(dot2_1 * m1 + kI2fMagic);
+            out[c] = dm4f.x * sumf_d - dm4f.y * sumf_m;
+        }
+    }
+};
+
+struct NeonQ5K {
+    using F = Q5KTraits;
+    static constexpr bool PM = false;
+    struct WR { int vl[2], vh[2]; uint32_t aux32; int dm; };
+    template <int NC, int R> struct XCache {
+        int u[4][NC];
+        float d8[2][NC];
+        int dot2[2][R > 1 ? NC : 1];
+    };
+
+    __device__ __forceinline__ static WR load_w(const F::Block* __restrict__ w, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(w);
+        const int bq8_offset = 2 * ((iqs / 2) / 4);
+        const int p = (iqs / 2) % 4;
+        const int j = bq8_offset / 2;
+        const int jm = j & 1;
+        const auto* ql = reinterpret_cast<const int*>(b + 48 + 16 * bq8_offset + 4 * p);
+        const auto* qh = reinterpret_cast<const int*>(b + 16 + 4 * p);
+        const auto* sc = b + 4 + 2 * jm;
+        WR r;
+        r.vl[0] = ldg_nc_s32(ql);
+        r.vl[1] = ldg_nc_s32(ql + 4);
+        r.vh[0] = ldg_nc_s32(qh) >> bq8_offset;
+        r.vh[1] = ldg_nc_s32(qh + 4) >> bq8_offset;
+        const uint32_t s0 = ldg_nc_u16(sc), s2 = ldg_nc_u16(sc + 4), s4 = ldg_nc_u16(sc + 8);
+        r.dm = ldg_nc_s32(b);
+        const uint32_t hi = uint32_t(-int32_t(j >= 2));
+        const uint32_t a0 = (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi)) & 0xffffu;
+        const uint32_t a1 = (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi)) & 0xffffu;
+        r.aux32 = a0 | (a1 << 16);
+        return r;
+    }
+    template <int NC, int R, class X>
+    __device__ __forceinline__ static void load_x(const X& x, int kby, int iqs, XCache<NC, R>& xc) {
+        const int bq8_offset = 2 * ((iqs / 2) / 4);
+        const int p = (iqs / 2) % 4;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int b = kby + bq8_offset + i;
+            x.u(b, p, xc.u[2 * i]);
+            x.u(b, p + 4, xc.u[2 * i + 1]);
+            x.scales(b, xc.d8[i]);
+            if constexpr (R > 1) {
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    xc.dot2[i][c] = STRATA_DP4A(0x01010101, xc.u[2 * i][c], STRATA_DP4A(0x01010101, xc.u[2 * i + 1][c], 0));
+            }
+        }
+    }
+    template <int NC, int R>
+    __device__ __forceinline__ static void dot_row(const WR& r, const XCache<NC, R>& xc, int, float (&out)[NC]) {
+        const int v00 = (r.vl[0] & 0x0f0f0f0f) | ((r.vh[0] << 4) & 0x10101010);
+        const int v10 = (r.vl[1] & 0x0f0f0f0f) | ((r.vh[1] << 4) & 0x10101010);
+        const int v01 = ((r.vl[0] >> 4) & 0x0f0f0f0f) | (((r.vh[0] >> 1) << 4) & 0x10101010);
+        const int v11 = ((r.vl[1] >> 4) & 0x0f0f0f0f) | (((r.vh[1] >> 1) << 4) & 0x10101010);
+        const int sc0 = int(r.aux32 & 0xffu);
+        const int sc1 = int((r.aux32 >> 8) & 0xffu);
+        const int m0 = int((r.aux32 >> 16) & 0xffu);
+        const int m1 = int((r.aux32 >> 24) & 0xffu);
+        half2 h;
+        std::memcpy(&h, &r.dm, 4);
+        const float2 dm5f = __half22float2(h);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int dot1_0 = STRATA_DP4A(v00, xc.u[0][c], STRATA_DP4A(v10, xc.u[1][c], 0));
+            const int dot1_1 = STRATA_DP4A(v01, xc.u[2][c], STRATA_DP4A(v11, xc.u[3][c], 0));
+            int dot2_0, dot2_1;
+            if constexpr (R > 1) {
+                dot2_0 = xc.dot2[0][c];
+                dot2_1 = xc.dot2[1][c];
+            } else {
+                dot2_0 = STRATA_DP4A(0x01010101, xc.u[0][c], STRATA_DP4A(0x01010101, xc.u[1][c], 0));
+                dot2_1 = STRATA_DP4A(0x01010101, xc.u[2][c], STRATA_DP4A(0x01010101, xc.u[3][c], 0));
+            }
+            float sumf_d = 0.0f;
+            float sumf_m = 0.0f;
+            sumf_d += xc.d8[0][c] * i2f_small(dot1_0 * sc0 + kI2fMagic);
+            sumf_m += xc.d8[0][c] * i2f_small(dot2_0 * m0 + kI2fMagic);
+            sumf_d += xc.d8[1][c] * i2f_small(dot1_1 * sc1 + kI2fMagic);
+            sumf_m += xc.d8[1][c] * i2f_small(dot2_1 * m1 + kI2fMagic);
+            out[c] = dm5f.x * sumf_d - dm5f.y * sumf_m;
+        }
+    }
+};
+
+struct NeonQ6K {
+    using F = Q6KTraits;
+    static constexpr bool PM = false;
+    struct WR { int vl, vh; uint32_t scd; };
+    template <int NC, int R> struct XCache { int u[2][NC]; float d8[2][NC]; };
+
+    __device__ __forceinline__ static WR load_w(const F::Block* __restrict__ w, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(w);
+        const int scale_offset = 8 * (iqs / 16) + (iqs % 16) / 4;
+        const int vh_shift = 2 * ((iqs % 16) / 8);
+        WR r;
+        r.vl = ldg_nc_b2(b, iqs);
+        r.vh = ldg_nc_b2(b + 128, 8 * (iqs / 16) + (iqs % 8)) >> vh_shift;
+        const uint32_t sc0 = (uint32_t) (uint8_t) ldg_nc_s8(b + 192 + scale_offset);
+        const uint32_t sc1 = (uint32_t) (uint8_t) ldg_nc_s8(b + 192 + scale_offset + 4);
+        const uint32_t d = (uint32_t) ldg_nc_u16(b + 208);
+        r.scd = sc0 | (sc1 << 8) | (d << 16);
+        return r;
+    }
+    template <int NC, int R, class X>
+    __device__ __forceinline__ static void load_x(const X& x, int kby, int iqs, XCache<NC, R>& xc) {
+        const int bq8_offset = 4 * (iqs / 16) + (iqs % 16) / 8;
+        const int p = iqs % 8;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            x.u(kby + bq8_offset + 2 * i, p, xc.u[i]);
+            x.scales(kby + bq8_offset + 2 * i, xc.d8[i]);
+        }
+    }
+    template <int NC, int R>
+    __device__ __forceinline__ static void dot_row(const WR& r, const XCache<NC, R>& xc, int, float (&out)[NC]) {
+        const int vi0 = sub32_bytes((r.vl & 0x0f0f0f0f) | ((r.vh << 4) & 0x30303030));
+        const int vi1 = sub32_bytes(((r.vl >> 4) & 0x0f0f0f0f) | (((r.vh >> 4) << 4) & 0x30303030));
+        const int sc0 = int(int8_t(r.scd & 0xffu));
+        const int sc1 = int(int8_t((r.scd >> 8) & 0xffu));
+        const float d = __half2float(__ushort_as_half((unsigned short) (r.scd >> 16)));
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sumf = 0.0f;
+            sumf += xc.d8[0][c] * i2f_small(STRATA_DP4A(vi0, xc.u[0][c], 0) * sc0 + kI2fMagic);
+            sumf += xc.d8[1][c] * i2f_small(STRATA_DP4A(vi1, xc.u[1][c], 0) * sc1 + kI2fMagic);
+            out[c] = d * sumf;
+        }
+    }
+};
+
+struct NeonQ3K {
+    using F = Q3KTraits;
+    static constexpr bool PM = false;
+    struct WR { int vl, vh; uint32_t sc_packed; uint16_t d; };
+    template <int NC, int R> struct XCache { int u[4][NC]; float d8[4][NC]; };
+
+    __device__ __forceinline__ static WR load_w(const F::Block* __restrict__ w, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(w);
+        const int bq8_offset = 4 * (iqs / 8);
+        const int scale_offset = iqs - iqs % 8 + (iqs % 8) / 4;
+        WR r;
+        r.vl = ldg_nc_b2(b + 32, iqs);
+        r.vh = ~ldg_nc_b2(b, iqs % 8) >> bq8_offset;
+        uint32_t scp = 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int isc = scale_offset + 2 * i;
+            const int sc_low = (ldg_nc_u8(b + 96 + (isc & 7)) >> (4 * (isc >> 3))) & 0xf;
+            const int sc_high = ((ldg_nc_u8(b + 96 + 8 + (isc & 3)) >> (2 * (isc >> 2))) & 3) << 4;
+            scp |= (uint32_t) (uint8_t) (int8_t) ((sc_low | sc_high) - 32) << (8 * i);
+        }
+        r.sc_packed = scp;
+        r.d = (uint16_t) ldg_nc_u16(b + 108);
+        return r;
+    }
+    template <int NC, int R, class X>
+    __device__ __forceinline__ static void load_x(const X& x, int kby, int iqs, XCache<NC, R>& xc) {
+        const int bq8_offset = 4 * (iqs / 8);
+        const int p = iqs % 8;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int b = kby + bq8_offset + i;
+            x.u(b, p, xc.u[i]);
+            x.scales(b, xc.d8[i]);
+        }
+    }
+    template <int NC, int R>
+    __device__ __forceinline__ static void dot_row(const WR& r, const XCache<NC, R>& xc, int, float (&out)[NC]) {
+        int vi[4], sc[4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            sc[i] = int(int8_t((r.sc_packed >> (8 * i)) & 0xffu));
+            vi[i] = ((r.vl >> (2 * i)) & 0x03030303) | (((r.vh >> i) & 0x01010101) * 252);
+        }
+        const float d = __half2float(__ushort_as_half(r.d));
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sumf = 0.0f;
+#pragma unroll
+            for (int i = 0; i < 4; ++i) sumf += xc.d8[i][c] * i2f_small(STRATA_DP4A(vi[i], xc.u[i][c], 0) * sc[i] + kI2fMagic);
+            out[c] = d * sumf;
+        }
+    }
+};
+
+constexpr int neon_il_minb_base(int TYPE, int NC, int R) {
+    if (NC <= 2) return R <= 2 ? 8 : 6;
+    if (NC == 3) return R == 1 ? 8 : (R == 2 ? 6 : 5);
+    if (NC == 4) return R == 1 ? 8 : (R == 2 ? 6 : 4);
+    if (NC == 5) return R == 1 ? 6 : 4;
+    if (NC == 6) return R == 1 ? 5 : 4;
+    // NC = 7..8: keep Q6_K at 4 blocks/SM (~84 regs), give wider XCache formats 160-reg ceiling (3 blocks/SM) for 0 spills
+    return R == 1 ? 5 : (TYPE == 14 ? 4 : 3);
+}
+// One block fewer per SM where the base bound spilled on sm_75 (cuda_spill_guard, CUDA 13.5): Q3_K and IQ4_XS at 4
+// columns, 4 rows, or 7-8 columns with 1 row; Q5_K at 3 columns and 4 rows.
+constexpr int neon_il_minb(int TYPE, int NC, int R) {
+    const bool wide = (TYPE == 11 || TYPE == 23) && (NC == 4 || R == 4 || (NC >= 7 && R == 1));
+    const bool q5k = TYPE == 13 && NC == 3 && R == 4;
+    return neon_il_minb_base(TYPE, NC, R) - ((wide || q5k) ? 1 : 0);
+}
+
+template <typename N, int NC, int R, int MINB>
+__launch_bounds__(4 * WARP, MINB)
+__global__ void neon_mmvq_il_kernel(const typename N::F::Block* __restrict__ w,
+                                    const int* __restrict__ xq,
+                                    const float* __restrict__ xd,
+                                    float* __restrict__ y,
+                                    int n_in, int n_out) {
+    using F = typename N::F;
+    constexpr int SUB = WARP / F::T;
+    const int lane = int(threadIdx.x) & (WARP - 1);
+    const int sub = lane / F::T;
+    const auto x = q8_1_cols<NC, N::PM>(xq, xd, n_in / Q8K);
+    const int bpr = n_in / F::DIV;
+    const int kqs = F::kqs(lane);
+    const int nm = (bpr + SUB - 1) / SUB;
+
+    for (int grp = int(blockIdx.x) * 4 + (int(threadIdx.x) >> 5); grp * R < n_out; grp += int(gridDim.x) * 4) {
+        const int row0 = grp * R;
+        const int rem_rows = n_out - 1 - row0;
+        const typename F::Block* const w0 = w + std::size_t(row0) * bpr;
+        float total[R][NC];
+#pragma unroll 1
+        for (int v = 0; v < 4; ++v) {
+            float av[R][NC];
+#pragma unroll
+            for (int i = 0; i < R; ++i)
+#pragma unroll
+                for (int c = 0; c < NC; ++c) av[i][c] = 0.0f;
+            for (int m = v; m < nm; m += 4) {
+                const int kbx = SUB * m + sub;
+                if (kbx < bpr) {
+                    typename N::WR wv[R];
+#pragma unroll
+                    for (int i = 0; i < R; ++i) {
+                        const int dr = i < rem_rows ? i : rem_rows;
+                        wv[i] = N::load_w(w0 + std::size_t(dr) * bpr + kbx, kqs);
+                    }
+                    typename N::template XCache<NC, R> xc;
+                    N::template load_x<NC, R>(x, kbx * F::KBY, kqs, xc);
+#pragma unroll
+                    for (int i = 0; i < R; ++i) {
+                        float o[NC];
+                        N::template dot_row<NC, R>(wv[i], xc, kqs, o);
+#pragma unroll
+                        for (int c = 0; c < NC; ++c) av[i][c] += o[c];
+                    }
+                }
+            }
+#pragma unroll
+            for (int i = 0; i < R; ++i)
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    total[i][c] = (v == 0) ? av[i][c] : (total[i][c] + av[i][c]);
+        }
+#pragma unroll
+        for (int i = 0; i < R; ++i)
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                const float s = warp_sum(total[i][c]);
+                if (lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
+            }
+    }
+}
+
+template <typename N, int NC, int R>
+void neon_launch_il_one(unsigned blocks, const typename N::F::Block* w, const int* xq, const float* xd, float* y,
+                        int n_in, int n_out, cudaStream_t s) {
+    constexpr int MINB = neon_il_minb(N::F::TYPE, NC, R);
+    neon_mmvq_il_kernel<N, NC, R, MINB><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+}
+
+template <typename N, int R>
+void neon_launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+    const auto* w = static_cast<const typename N::F::Block*>(weights);
+    const unsigned blocks = unsigned(((n_out + R - 1) / R + 3) / 4);
+    if (ncols == 1) {
+        neon_launch_il_one<N, 1, R>(blocks, w, static_cast<const int*>(x_il), nullptr, y, n_in, n_out, s);
+        return;
+    }
+    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
+    const int* xq = N::PM ? parts.pm : parts.bm;
+    const float* xd = parts.d;
+    switch (ncols) {
+    case 2: neon_launch_il_one<N, 2, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 3: neon_launch_il_one<N, 3, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 4: neon_launch_il_one<N, 4, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 5: if constexpr (R <= 2) neon_launch_il_one<N, 5, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 6: if constexpr (R <= 2) neon_launch_il_one<N, 6, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 7: if constexpr (R <= 2) neon_launch_il_one<N, 7, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    case 8: if constexpr (R <= 2) neon_launch_il_one<N, 8, R>(blocks, w, xq, xd, y, n_in, n_out, s); break;
+    default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 8");
+    }
+}
+
+template <typename N>
+void neon_launch_il_rows(int r, const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+    if (ncols > 4 && r == 4) r = 2;
+    switch (r) {
+    case 1: neon_launch_il<N, 1>(weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 4: neon_launch_il<N, 4>(weights, x_il, y, n_in, n_out, ncols, s); break;
+    default: neon_launch_il<N, 2>(weights, x_il, y, n_in, n_out, ncols, s); break;
+    }
+}
+
+// ---------------------------------------------------------------- sm_75 Turing Q8_0 warp-rows kernel (STRATA_NEON_MMVQ=1)
+//
+// Each warp owns RPW output rows (no __syncthreads(), no shared memory, no weight repacking).  The outer v = 0..3 loop
+// matches the exact four-warp reduction order of native_small_mmvq_kernel<Q80Block, 8> and
+// native_mmvq_multi_kernel<SmallTraits<Q80Block, 8>, NCOLS, 4, ROWS, false, PAIR>, so every output bit is identical
+// (including IEEE 754 -0.0f handling via (v == 0) ? tmp : (acc + tmp)).
+//
+// For each full 8-block tile (8 * 34 B = 272 B = 68 u32):
+//   - All 32 lanes issue one coalesced LDG.64 (256 B = p32[0..63]), and lanes {4, 12, 21, 29} issue one coalesced
+//     16 B LDG.32 (p32[64..67]) into unused shuffle slots (zero collisions with scale words d_src).
+//   - Four __shfl_sync + __funnelshift_r unpack each lane's exact (d0, qs[8*sub..8*sub+7]) without any 2-byte scalar
+//     weight loads (cuts per-tile global loads from 9x LDG.16 to 1x LDG.64 + 0.125x LDG.32).
+//   - Activations x are streamed one column at a time across RPW rows (3 activation regs regardless of NCOLS), keeping
+//     register pressure <= ~57 regs at NCOLS=8, RPW=2 (zero stack frame / zero spills on sm_75).
+
+__device__ __forceinline__ uint2 neon_ld64_q8(const uint8_t* __restrict__ p, bool aligned8, bool aligned4, int lane) {
+    if (aligned8) return __ldg(reinterpret_cast<const uint2*>(p) + lane);
+    if (aligned4) {
+        const uint32_t* p32 = reinterpret_cast<const uint32_t*>(p) + 2 * lane;
+        return make_uint2(__ldg(p32), __ldg(p32 + 1));
+    }
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(p) + 4 * lane;
+    const uint32_t a = (uint32_t) __ldg(p16 + 0) | ((uint32_t) __ldg(p16 + 1) << 16);
+    const uint32_t b = (uint32_t) __ldg(p16 + 2) | ((uint32_t) __ldg(p16 + 3) << 16);
+    return make_uint2(a, b);
+}
+
+__device__ __forceinline__ uint32_t neon_ld32_q8(const uint8_t* __restrict__ p, bool aligned4, int idx32) {
+    if (aligned4) return __ldg(reinterpret_cast<const uint32_t*>(p) + idx32);
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(p) + 2 * idx32;
+    return (uint32_t) __ldg(p16) | ((uint32_t) __ldg(p16 + 1) << 16);
+}
+
+constexpr int neon_q8_minb(int ncols, int rpw) {
+    if (rpw == 1) return ncols <= 4 ? 8 : 6;
+    if (rpw == 2) return ncols <= 2 ? 8 : (ncols <= 4 ? 6 : 4);
+    return ncols == 1 ? 8 : (ncols == 2 ? 6 : 4);
+}
+
+template <int NCOLS, int RPW, int MINB>
+__launch_bounds__(WARPS * WARP, MINB)
+__global__ void neon_q8_0_mmvq_kernel(const Q80Block* __restrict__ w, const Q81Block* __restrict__ x,
+                                      float* __restrict__ y, int n_in, int n_out,
+                                      const Q80Block* __restrict__ w2, float* __restrict__ y2,
+                                      unsigned half_blocks) {
+    using F = SmallTraits<Q80Block, 8>;
+    static_assert(sizeof(Q80Block) == 34 && offsetof(Q80Block, qs) == 2, "neon_q8_0_mmvq_kernel assumes 34B Q80Block");
+
+    unsigned bx = blockIdx.x;
+    if (w2 != nullptr && bx >= half_blocks) {
+        bx -= half_blocks;
+        w = w2;
+        y = y2;
+    }
+
+    const int lane = int(threadIdx.x);
+    const int warp = int(threadIdx.y);
+    const int row0 = (int(bx) * WARPS + warp) * RPW;
+    if (row0 >= n_out) return;   // warp-uniform exit: all 32 lanes stay active for shuffles below
+
+    const int bpr = n_in / Q8K;
+    const int x_stride = bpr;
+    const int blk = lane >> 2;
+    const int sub = lane & 3;
+    const int kqs = 2 * sub;
+    const bool odd_blk = (blk & 1) != 0;
+
+    // Loop-invariant shuffle indices for 8 contiguous Q80Blocks (272 B = 68 u32).
+    // Lanes {4, 12, 21, 29} load p32[64..67] in one coalesced 16 B LDG.32 without overwriting d_src.
+    const int tail_idx = (lane == 4) ? 64 : (lane == 12) ? 65 : (lane == 21) ? 66 : (lane == 29) ? 67 : -1;
+    const int id_w = (17 * blk) >> 2;
+    const int base_u32 = ((17 * blk + (odd_blk ? 1 : 0)) >> 1) + 2 * sub;
+    const bool swap_eo = (base_u32 & 1) != 0;
+    const int ie = (base_u32 < 64) ? ((base_u32 + (swap_eo ? 1 : 0)) >> 1) : (base_u32 == 64 ? 4 : 21);
+    const int io = (base_u32 < 64) ? (base_u32 >> 1)                       : (base_u32 == 64 ? 12 : 29);
+    const int i2 = (base_u32 + 2) >> 1;
+
+    float acc[NCOLS][RPW];
+#pragma unroll
+    for (int v = 0; v < WARPS; ++v) {
+        float tmp[NCOLS][RPW];
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) tmp[j][i] = 0.0f;
+
+        for (int kbx_base = 8 * v; kbx_base < bpr; kbx_base += 8 * WARPS) {
+            const int kbx = kbx_base + blk;
+            if (kbx_base + 8 <= bpr) {
+                uint2 raw_u0[RPW];
+                uint32_t raw_tail[RPW];
+#pragma unroll
+                for (int i = 0; i < RPW; ++i) {
+                    if (row0 + i < n_out) {
+                        const uint8_t* p = reinterpret_cast<const uint8_t*>(w + std::size_t(row0 + i) * bpr + kbx_base);
+                        const bool a8 = ((reinterpret_cast<uintptr_t>(p) & 7u) == 0u);
+                        const bool a4 = ((reinterpret_cast<uintptr_t>(p) & 3u) == 0u);
+                        raw_u0[i] = neon_ld64_q8(p, a8, a4, lane);
+                        raw_tail[i] = (tail_idx >= 0) ? neon_ld32_q8(p, a4, tail_idx) : 0u;
+                    } else {
+                        raw_u0[i] = make_uint2(0u, 0u);
+                        raw_tail[i] = 0u;
+                    }
+                }
+                int wv0[RPW], wv1[RPW];
+                float wd0[RPW];
+#pragma unroll
+                for (int i = 0; i < RPW; ++i) {
+                    const uint32_t d_src = (lane & 8) ? raw_u0[i].y : raw_u0[i].x;
+                    const uint32_t ux_w = (lane == 4 || lane == 21) ? raw_tail[i] : raw_u0[i].x;
+                    const uint32_t uy_w = (lane == 12 || lane == 29) ? raw_tail[i] : raw_u0[i].y;
+                    const uint32_t dw = __shfl_sync(0xffffffffu, d_src, id_w);
+                    const uint32_t we = __shfl_sync(0xffffffffu, ux_w, ie);
+                    const uint32_t wo = __shfl_sync(0xffffffffu, uy_w, io);
+                    const uint32_t w2_val = __shfl_sync(0xffffffffu, d_src, i2);
+                    const uint32_t w0 = swap_eo ? wo : we;
+                    const uint32_t w1 = swap_eo ? we : wo;
+                    const uint16_t d_bits = uint16_t(odd_blk ? (dw >> 16) : (dw & 0xFFFFu));
+                    wd0[i] = __half2float(__ushort_as_half(d_bits));
+                    wv0[i] = int(odd_blk ? w0 : __funnelshift_r(w0, w1, 16));
+                    wv1[i] = int(odd_blk ? w1 : __funnelshift_r(w1, w2_val, 16));
+                }
+#pragma unroll
+                for (int j = 0; j < NCOLS; ++j) {
+                    const Q81Block* xb = x + std::size_t(j) * x_stride + kbx;
+                    const int* q8 = reinterpret_cast<const int*>(xb->qs);
+                    const int u0 = q8[kqs];
+                    const int u1 = q8[kqs + 1];
+                    const float d1 = __low2float(xb->ds);
+#pragma unroll
+                    for (int i = 0; i < RPW; ++i) {
+                        int sumi = STRATA_DP4A(wv0[i], u0, 0);
+                        sumi = STRATA_DP4A(wv1[i], u1, sumi);
+                        tmp[j][i] += wd0[i] * d1 * float(sumi);
+                    }
+                }
+            } else if (kbx < bpr) {
+#pragma unroll
+                for (int i = 0; i < RPW; ++i) {
+                    if (row0 + i < n_out) {
+                        const F::W wv = F::load(w + std::size_t(row0 + i) * bpr + kbx, kqs);
+#pragma unroll
+                        for (int j = 0; j < NCOLS; ++j)
+                            tmp[j][i] += F::apply(wv, x + std::size_t(j) * x_stride + kbx, kqs);
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int i = 0; i < RPW; ++i)
+                acc[j][i] = (v == 0) ? tmp[j][i] : (acc[j][i] + tmp[j][i]);
+    }
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            const float sum = warp_sum(acc[j][i]);
+            if (lane == i && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = sum;
+        }
 }
 
 // The interleaved copy (native_mmvq.hpp) of columns already quantized into plain q8_1 blocks, whoever wrote them (the
@@ -3659,6 +4282,87 @@ void native_q5_0_f32(const void* weights, const float* x, void* scratch_q8_1,
     small_f32<Q50Block, 4>(weights, x, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+#if !defined(__HIPCC__)
+bool neon_q8_is_sm75() {
+    static int cc[16] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
+    if (cc[dev] == 0) {
+        int maj = 0, min = 0;
+        cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&min, cudaDevAttrComputeCapabilityMinor, dev);
+        cc[dev] = maj * 10 + min;
+    }
+    return cc[dev] == 75;
+}
+
+void neon_q8_log_once() {
+    static std::atomic<int> logged[16];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return;
+    if (logged[dev].load(std::memory_order_relaxed)) return;
+    if (logged[dev].exchange(1, std::memory_order_acq_rel) == 0) {
+        std::fprintf(stderr, "strata mmvq: sm_75 Turing Q8_0 warp-rows kernel active on device %d (STRATA_NEON_MMVQ=1)\n", dev);
+    }
+}
+
+template <int NCOLS, int RPW>
+void neon_q8_launch_one(const Q80Block* w1, const Q80Block* w2, const Q81Block* x, float* y1, float* y2,
+                        int n_in, int n_out, cudaStream_t s) {
+    constexpr int MINB = neon_q8_minb(NCOLS, RPW);
+    const unsigned half_blocks = unsigned(((n_out + RPW - 1) / RPW + WARPS - 1) / WARPS);
+    const unsigned blocks = w2 ? (2u * half_blocks) : half_blocks;
+    neon_q8_0_mmvq_kernel<NCOLS, RPW, MINB><<<blocks, dim3(WARP, WARPS), 0, s>>>(w1, x, y1, n_in, n_out, w2, y2, half_blocks);
+}
+
+template <int RPW>
+void neon_q8_launch(const Q80Block* w1, const Q80Block* w2, const Q81Block* x, float* y1, float* y2,
+                    int n_in, int n_out, int ncols, cudaStream_t s) {
+    switch (ncols) {
+    case 1: neon_q8_launch_one<1, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 2: neon_q8_launch_one<2, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 3: neon_q8_launch_one<3, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 4: neon_q8_launch_one<4, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 5: if constexpr (RPW <= 2) neon_q8_launch_one<5, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 6: if constexpr (RPW <= 2) neon_q8_launch_one<6, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 7: if constexpr (RPW <= 2) neon_q8_launch_one<7, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    case 8: if constexpr (RPW <= 2) neon_q8_launch_one<8, RPW>(w1, w2, x, y1, y2, n_in, n_out, s); break;
+    default: break;
+    }
+}
+
+bool neon_q8_0_mmvq_try(const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
+                        int n_in, int n_out, int ncols, void* stream) {
+    if (g_il_pf == 0 || ncols < 1 || ncols > 8 || n_out <= 0 || n_in <= 0 || (n_in % Q8K) != 0) return false;
+    if (ncols > 1 && (!g_multi_exact || s26_tsum_on())) return false;
+    if (!w1 || !x_q8_1 || !y1 || !stream) return false;
+    if (w2 && !y2) return false;
+    if (!neon_q8_is_sm75() || !neon_mmvq_on()) return false;
+    // STRATA_NEON_Q8=0 turns this Q8_0 path off alone, keeping the interleaved kernel of STRATA_NEON_MMVQ=1
+    static const bool q8_on = [] { const char* v = std::getenv("STRATA_NEON_Q8"); return v == nullptr || v[0] != '0'; }();
+    if (!q8_on) return false;
+    // default: only where mmvq_il_parity --bench measured it faster on an RTX 2080 Ti (cold weights): 2+ columns on
+    // 2048+ output rows, 2 rows per warp. One column (every shape, the 248320-row head too) and fewer output rows
+    // (2560x640, 2560x512, 10240x320) are faster on the baseline kernels.
+    const bool tuned = g_tune_rows == 1 || g_tune_rows == 2 || g_tune_rows == 4;
+    if (!tuned && (ncols < 2 || n_out < 2048)) return false;
+    neon_q8_log_once();
+
+    int r = tuned ? g_tune_rows : 2;
+    if (ncols > 4 && r == 4) r = 2;
+
+    const auto* a = static_cast<const Q80Block*>(w1);
+    const auto* b = static_cast<const Q80Block*>(w2);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const auto s = static_cast<cudaStream_t>(stream);
+    if (r == 1) neon_q8_launch<1>(a, b, x, y1, y2, n_in, n_out, ncols, s);
+    else if (r == 4) neon_q8_launch<4>(a, b, x, y1, y2, n_in, n_out, ncols, s);
+    else neon_q8_launch<2>(a, b, x, y1, y2, n_in, n_out, ncols, s);
+    launch_check();
+    return true;
+}
+#endif
+
 template<int NCOLS>
 void q8_0_pair_launch(const Q80Block* w1, const Q80Block* w2, const Q81Block* x, float* y1, float* y2, int n_in, int n_out,
                       cudaStream_t s) {
@@ -3679,6 +4383,9 @@ bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void*
         return false;
     const auto& reg = q8_packed_registry();
     if (reg.count(w1) || reg.count(w2)) return false;
+#if !defined(__HIPCC__)
+    if (neon_q8_0_mmvq_try(w1, w2, x_q8_1, y1, y2, n_in, n_out, ncols, stream)) return true;
+#endif
     const auto* a = static_cast<const Q80Block*>(w1);
     const auto* b = static_cast<const Q80Block*>(w2);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
@@ -3700,6 +4407,9 @@ void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream) {
     if (q8_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q8_PACKED=1 tensors
     if (ncols >= 8 && rdna_q80_wmma_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
+#if !defined(__HIPCC__)
+    if (neon_q8_0_mmvq_try(weights, nullptr, x_q8_1, y, nullptr, n_in, n_out, ncols, stream)) return;
+#endif
     small_mmvq<Q80Block, 8>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 
@@ -3980,11 +4690,27 @@ constexpr IlRows kIlRows_75[] = {
     {14, {{0, 0, 1, 2, 1}, {0, 2, 2, 4, 4}, {0, 4, 4, 4, 4}}},   // Q6_K
     {11, {{1, 2, 4, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 2, 2, 2}}},   // Q3_K
 };
+// STRATA_NEON_MMVQ=1 (sm_75): 2-4 column table for neon_mmvq_il_kernel (0 ULP bitwise exact); the 2-4, 5-8 and one-column
+// tables were measured on an RTX 2080 Ti by mmvq_il_parity --bench --emit-table with STRATA_NEON_MMVQ=1.
+constexpr IlRows kNeonIlRows_75[] = {
+    {23, {{1, 1, 1, 2, 1}, {1, 1, 2, 2, 2}, {1, 4, 4, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 4, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 4, 4, 4}}},   // Q4_K
+    {13, {{0, 2, 2, 2, 4}, {1, 2, 2, 2, 2}, {1, 2, 4, 2, 4}}},   // Q5_K
+    {14, {{0, 2, 1, 2, 2}, {0, 2, 2, 4, 2}, {1, 2, 4, 2, 2}}},   // Q6_K
+    {11, {{1, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {1, 2, 2, 4, 2}}},   // Q3_K
+};
 // 147-verify: 5-8 columns (a verify window of 5+ rows) by n_out class, per architecture; 0 = native_mmvq's kernels.  Every
 // choice is bitwise native_mmvq's output (mmvq_il_parity, T 1-8), so a table is only speed.  Measured on an RTX PRO 5000
 // Blackwell (sm_120) with mmvq_il_parity --bench --emit-table; other cards have no table yet and keep native_mmvq's
 // kernels at 5+ columns.  STRATA_MMVQ_IL_WIDE=0 turns the 5-8 column path off.
 struct IlRows58 { int type; uint8_t r[4][5]; };
+constexpr IlRows58 kNeonIlRows58_75[] = {
+    {23, {{4, 4, 2, 2, 2}, {4, 2, 4, 2, 2}, {2, 4, 2, 2, 2}, {4, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{2, 4, 4, 2, 2}, {1, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{1, 4, 2, 2, 2}, {1, 2, 2, 2, 2}, {4, 2, 2, 2, 4}, {4, 2, 2, 2, 4}}},   // Q5_K
+    {14, {{0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{4, 4, 2, 2, 2}, {2, 2, 2, 2, 2}, {4, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q3_K
+};
 constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_rows)
     {23, {{0, 4, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 4, 2, 4, 2}, {0, 4, 2, 2, 2}}},   // IQ4_XS
     {12, {{0, 2, 4, 4, 4}, {0, 4, 4, 4, 4}, {0, 2, 2, 2, 2}, {0, 4, 2, 4, 4}}},   // Q4_K
@@ -4015,6 +4741,13 @@ constexpr Il58Arch kIl58Arch[] = {
 };
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
+constexpr Il1Rows kNeonIl1Rows_75[] = {
+    {23, {0, 0, 2, 2, 2}},   // IQ4_XS
+    {12, {0, 0, 2, 2, 2}},   // Q4_K
+    {13, {0, 0, 1, 1, 4}},   // Q5_K
+    {14, {0, 0, 1, 1, 1}},   // Q6_K
+    {11, {0, 2, 2, 2, 2}},   // Q3_K
+};
 constexpr Il1Rows kIl1Rows_86[] = {
     {11, {0, 1, 1, 1, 1}},   // Q3_K: 2560x10240 60 -> 43 us, 6144x2560 30 -> 26 us on the A4000
 };
@@ -4116,6 +4849,11 @@ int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
         static const bool wide = il_env_on("STRATA_MMVQ_IL_WIDE");
         if (!wide) return 0;
         if (type == 11 && !il_q3k_on()) return 0;
+        if (cc == 75 && neon_mmvq_on()) {
+            for (const IlRows58& r : kNeonIlRows58_75)
+                if (r.type == type) return r.r[ncols - 5][cls];
+            return 0;
+        }
         for (const Il58Arch& a : kIl58Arch)
             if (a.cc == cc)
                 for (size_t i = 0; i < a.n; ++i)
@@ -4126,6 +4864,12 @@ int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
         if (e.type == type && e.ncols == ncols) return e.r[cls];
     if (ncols == 1) {   // 143-dense: one column (the plain q8_1 blocks, no interleaved copy); STRATA_MMVQ_IL_T1=0 turns it off
         if (!il_t1_on()) return 0;
+        if (cc == 75 && neon_mmvq_on()) {
+            if (type == 11 && !il_q3k_on()) return 0;
+            for (const Il1Rows& r : kNeonIl1Rows_75)
+                if (r.type == type) return r.r[cls];
+            return 0;
+        }
         for (const Il1Arch& a : kIl1Arch)
             if (a.cc == cc && (cc != 89 || il_89_opt_in()))
                 for (size_t i = 0; i < a.n; ++i)
@@ -4133,6 +4877,11 @@ int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
         return 0;
     }
     if (type == 11 && !il_q3k_on()) return 0;   // STRATA_MMVQ_IL_Q3K=0: Q3_K keeps native_mmvq's kernels
+    if (cc == 75 && neon_mmvq_on()) {
+        for (const IlRows& r : kNeonIlRows_75)
+            if (r.type == type) return r.r[ncols - 2][cls];
+        return 0;
+    }
     const IlRows* t = kIlRowsShared;
     size_t n = sizeof(kIlRowsShared) / sizeof(IlRows);
     static const bool own120 = il_env_on("STRATA_MMVQ_IL_120");   // 147-verify: =0 gives a big 12.0 card the shared table again
@@ -4181,7 +4930,6 @@ int il_pf_table(int type, int ncols, int n_out) {
     }
     return 0;
 }
-int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp for every shape (0: the table)
 }  // namespace
 void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
 void native_mmvq_il_pf(int pf) { g_il_pf = pf; }
@@ -4208,7 +4956,8 @@ bool il_arch_ok() {
         int minor = 0;
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 7 && minor == 5 && sm75_il_on(major, minor)) ||
+                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) ||
+                    (major == 7 && minor == 5 && (sm75_il_on(major, minor) || neon_mmvq_on())) ||
                     (major == 6 && minor == 0 && sm60_table_on()) || (major == 6 && minor == 1 && sm61_table_on()))) ? 1 : -1;
     }
     return ok[dev] > 0;
@@ -4242,6 +4991,17 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     validate_pointer(y);
     validate_stream(stream);
     const auto s = static_cast<cudaStream_t>(stream);
+    if (il_cc() == 75 && neon_mmvq_on() && g_il_pf < 0) {
+        switch (ggml_type) {
+        case 23: neon_launch_il_rows<NeonIQ4XS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+        case 12: neon_launch_il_rows<NeonQ4K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+        case 13: neon_launch_il_rows<NeonQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+        case 14: neon_launch_il_rows<NeonQ6K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+        case 11: neon_launch_il_rows<NeonQ3K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+        }
+        launch_check();
+        return;
+    }
     switch (ggml_type) {
     case 23: launch_il_rows<IlIQ4XS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 12: launch_il_rows<IlQ4K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;

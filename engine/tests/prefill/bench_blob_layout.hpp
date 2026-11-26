@@ -58,6 +58,9 @@ inline bool layout_of(int t, BlockLayout& L) {
         case 29: L.bytes = 56; L.values = 256; L.scale = {{48, 56}}; break;           // IQ1_M: qs[32], qh[16], scales[8] (the fp16 scale in their top nibbles)
         case 40: L.bytes = 36; L.values = 64; L.scale = {{0, 4}}; break;              // NVFP4: d[4] (E4M3), qs[32]
         case 42: L.bytes = 18; L.values = 64; L.scale = {{0, 2}}; break;              // Q2_0: d, qs[16]
+        case 144: L.bytes = 34; L.values = 128; L.scale = {{0, 2}}; break;            // TQ2_T (Gyro-M): d, qs[32]
+        case 145: L.bytes = 26; L.values = 128; L.scale = {{0, 2}}; break;            // TQK6 (Gyro-S gate/up): d, qs[24]
+        case 146: L.bytes = 30; L.values = 128; L.scale = {{0, 2}}; break;            // TQK7 (Gyro-S down): d, qs[28]
         default: return false;
     }
     return true;

@@ -216,6 +216,10 @@ macro(strata_cuda_prompt_tests)
       # 77 on any card that is not a compute capability 7.5 one and does not emulate it (STRATA_EMULATE_CC=75 on a bigger card, with a build whose device code has PTX for sm_75)
       add_test(NAME prefill_fused_iq_test_sm75 COMMAND prefill_fused_iq_test --turing --edge --no-timing)
       set_tests_properties(prefill_fused_iq_test_sm75 PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_SM75=1" SKIP_RETURN_CODE 77 TIMEOUT 900)
+      # the opt-in STRATA_PF_FUSED_SM75_TQ=1 on the Turing set: the Gyro trellis pairs (TQK6 / TQK7, TQ2_T / TQ2_T) against the trellis reference,
+      # at the 64-row and the 128-row tile and Hadamard-folded (the test sets STRATA_PF_FUSED_TQ=1 as the engine build does); 77 as above
+      add_test(NAME prefill_fused_iq_test_sm75_tq COMMAND prefill_fused_iq_test --turing --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_sm75_tq PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_SM75=1;STRATA_PF_FUSED_SM75_TQ=1" SKIP_RETURN_CODE 77 TIMEOUT 900)
       # the opt-in STRATA_PF_FUSED_NT=256 kernels (256 threads, two blocks a multiprocessor, two-pass weight loads) against the
       # same references; the batches of the test reach them through the Batch overload of experts_native (77 below sm_80)
       add_test(NAME prefill_fused_iq_test_nt256 COMMAND prefill_fused_iq_test)

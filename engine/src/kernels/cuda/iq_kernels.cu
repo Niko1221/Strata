@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <utility>
 #include <cstdlib>
@@ -4493,6 +4494,1209 @@ bool expdec_down(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cu
     return true;
 }
 
+// ---------------------------------------------------------------- STRATA_NEON_EXPERT: shared helpers of the sm_75 trellis
+// expert kernels below (opt-in, default off; bitwise equal to native_gu_kernel / native_down_kernel).  Targets Gyro's trellis
+// expert shapes (n_embd = 2560, n_ff % 32 == 0 for gate/up TG in {144, 145}; n_ff = 640, n_embd % 64 == 0 for down TD in {144, 146}).
+// STRATA_NEON_EXPERT=2 and =3 are the two rounds below; any other value is off.
+int neon_expert_mode() {
+    static const int mode = [] {
+        const char* v = std::getenv("STRATA_NEON_EXPERT");
+        if (v == nullptr || *v == '\0') return 0;
+        const int n = std::atoi(v);
+        return (n == 2 || n == 3) ? n : 0;
+    }();
+    return mode;
+}
+
+template<int KIND, int TY, typename KernelFn>
+void neon_set_max_smem(KernelFn fn) {
+#if !defined(__HIPCC__)
+    static std::mutex mu;
+    static std::atomic<int> done[64];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return; }
+    if (done[dev].load(std::memory_order_acquire) != 0) return;
+    std::lock_guard<std::mutex> lk(mu);
+    if (done[dev].load(std::memory_order_relaxed) != 0) return;
+    cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+    const bool swapped = (cudaThreadExchangeStreamCaptureMode(&mode) == cudaSuccess);
+    if (!swapped) cudaGetLastError();
+    if (cudaFuncSetAttribute((const void*) fn, cudaFuncAttributePreferredSharedMemoryCarveout,
+                             (int) cudaSharedmemCarveoutMaxShared) != cudaSuccess) {
+        cudaGetLastError();
+    }
+    if (swapped) {
+        if (cudaThreadExchangeStreamCaptureMode(&mode) != cudaSuccess) cudaGetLastError();
+    }
+    fprintf(stderr, "strata: STRATA_NEON_EXPERT %s kernel for type %d active on device %d (round %d)\n",
+            (KIND & 1) ? "down" : "gate/up", TY, dev, KIND >= 4 ? 3 : 2);
+    done[dev].store(1, std::memory_order_release);
+#else
+    (void) fn;
+#endif
+}
+
+__device__ __forceinline__ float neon_tq_apply(const TqLane& r, const int4 u, const float d8_scaled) {
+    int sumi = ggml_cuda_dp4a(r.q[0], u.x, 0);
+    sumi = ggml_cuda_dp4a(r.q[1], u.y, sumi);
+    sumi = ggml_cuda_dp4a(r.q[2], u.z, sumi);
+    sumi = ggml_cuda_dp4a(r.q[3], u.w, sumi);
+    return r.d * d8_scaled * (float) sumi;
+}
+
+// ---------------------------------------------------------------- STRATA_NEON_EXPERT=2: LSU-lean Gyro-S kernels
+// (TQK6 gate/up + TQK7 down, sm_75; bitwise identical to the baseline).
+//
+// A first design that staged the weights in shared memory (removed) stayed at 89-127 GB/s because Turing sm_75 has only 16 LSUs/SM (64 B/cycle
+// unified L1/SMEM throughput, half of Volta's 32): staging weights into s_w4 added STS.128 + 4x LDS.U16 + 6
+// barriers onto the same 16 LSUs already busy with 8x random s_lut LDS.U16, and each row re-read s_q (LDS.128 =
+// 8 LSU cycles) + s_d (LDS.32 = 2 LSU cycles) per entry.
+//
+// Round 2 removes both non-LUT LSU costs:
+//   1) No s_w4 weight staging and only 1 __syncthreads() per chunk: TQK6 loads 4 contiguous blocks (104 B = 26 u32)
+//      with 1 coalesced LDG.32 per warp + 3 __shfl_sync; TQK7 loads 1 block (30 B) with 2 LDG.U16 per 8-lane subwarp
+//      + 3 __shfl_sync.  SMEM drops to 15.25 KB (GU: 4 blocks/SM = 100% occupancy) and 6.8 KB (Down: 8 blocks/SM).
+//   2) Outer-j / outer-kbx multi-row loop (R=4 rows/warp for n=1..2, R=2 for n=3..4) loads s_q/s_d ONCE into
+//      registers and reuses them across R rows (4x / 2x less activation LSU traffic), while issuing all R rows'
+//      weight loads back-to-back to hide GDDR6 latency.
+//   3) Down uses 128 threads (64 rows/block, 40*ng blocks) instead of 256 threads (128 rows/block, 20*ng blocks)
+//      to cut Wave-2 tail idle time at ng=16..24 while keeping 100% occupancy (8 blocks/SM at <= 64 regs).
+
+__device__ __forceinline__ uint32_t neon2_ld32_tqk6(const uint8_t* __restrict__ p, bool aligned4, int lane) {
+    if (lane >= 26) return 0u;
+    if (aligned4) return __ldg(reinterpret_cast<const uint32_t*>(p) + lane);
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(p);
+    return (uint32_t) __ldg(p16 + 2 * lane) | ((uint32_t) __ldg(p16 + 2 * lane + 1) << 16);
+}
+
+__device__ __forceinline__ TqLane neon2_tqk6_decode(uint32_t w32, int idx_d, int i0, int i1, int shift,
+                                                    bool wrap_even, bool odd_blk, const uint16_t* __restrict__ s_lut) {
+    static_assert(TQ_STATE_MASK == 0x7FFFu, "neon2_tqk6_decode assumes 15-bit trellis states");
+    const uint32_t wd = __shfl_sync(0xffffffffu, w32, idx_d);
+    const uint32_t w0 = __shfl_sync(0xffffffffu, w32, i0);
+    const uint32_t w1 = __shfl_sync(0xffffffffu, w32, i1);
+    const uint32_t lo = wrap_even ? __funnelshift_r(w0, w1, 16) : w0;
+    const uint32_t hi = wrap_even ? (wd >> 16) : w1;
+    const uint32_t v0 = __funnelshift_r(lo, hi, shift);
+    const uint32_t hi_s = hi >> shift;
+    const uint32_t s0 = __funnelshift_r(v0, hi_s, 18) & TQ_STATE_MASK;
+    const uint32_t s1 = (v0 >> 12) & TQ_STATE_MASK;
+    const uint32_t s2 = (v0 >> 6) & TQ_STATE_MASK;
+    const uint32_t s3 = v0 & TQ_STATE_MASK;
+    const uint32_t x0 = s0 * 0x9e3779b1u;
+    const uint32_t x1 = s1 * 0x9e3779b1u;
+    const uint32_t x2 = s2 * 0x9e3779b1u;
+    const uint32_t x3 = s3 * 0x9e3779b1u;
+    TqLane res;
+    res.q[0] = (int) ((uint32_t) s_lut[x0 >> 21] | ((uint32_t) s_lut[(x0 >> 10) & 2047u] << 16));
+    res.q[1] = (int) ((uint32_t) s_lut[x1 >> 21] | ((uint32_t) s_lut[(x1 >> 10) & 2047u] << 16));
+    res.q[2] = (int) ((uint32_t) s_lut[x2 >> 21] | ((uint32_t) s_lut[(x2 >> 10) & 2047u] << 16));
+    res.q[3] = (int) ((uint32_t) s_lut[x3 >> 21] | ((uint32_t) s_lut[(x3 >> 10) & 2047u] << 16));
+    res.d = tq_h2f(odd_blk ? (wd >> 16) : (wd & 0xFFFFu));
+    return res;
+}
+
+template<int NC, int R>
+__device__ __forceinline__ void neon2_tqk6_gu_rows(const uint8_t* __restrict__ w_row0, bool aligned4,
+                                                   const int4* __restrict__ s_q, const float* __restrict__ s_d,
+                                                   const uint16_t* __restrict__ s_lut, int lane, int idx_d, int i0,
+                                                   int i1, int shift, bool wrap_even, bool odd_blk, float sc, int e,
+                                                   int64_t n_ff, int r0, float* __restrict__ dst) {
+    constexpr int ROW_BYTES = 20 * 26;
+    const int blk0 = lane >> 3;
+    const int sub = lane & 7;
+    const int d_off = sub >> 1;
+    float s[R][NC];
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[p][c] = 0.0f;
+    }
+#pragma unroll 1
+    for (int j = 0; j < 5; ++j) {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p)
+            rw[p] = neon2_ld32_tqk6(w_row0 + (size_t) p * ROW_BYTES + (size_t) j * 104, aligned4, lane);
+
+        const int kbx = blk0 + 4 * j;
+        const int q_idx = kbx * 8 + sub;
+        const int d_idx = kbx * 4 + d_off;
+        int4 u[NC];
+        float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            u[c] = s_q[c * 160 + q_idx];
+            d8[c] = s_d[c * 80 + d_idx];
+        }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk6_decode(rw[p], idx_d, i0, i1, shift, wrap_even, odd_blk, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float sum = warp_sum(s[p][c]);
+            if (lane == c) dst[(size_t) (e + c) * (size_t) n_ff + (size_t) (r0 + p)] = sum * sc;
+        }
+    }
+}
+
+__launch_bounds__(256, 4)
+__global__ void neon2_tqk6_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                     const int32_t* __restrict__ grp_start,
+                                     const int32_t* __restrict__ n_groups,
+                                     const int32_t* __restrict__ ent_tok,
+                                     const block_q8_1* __restrict__ xq,
+                                     NativeExpertLayout L,
+                                     float* __restrict__ gate,
+                                     float* __restrict__ up) {
+    static_assert(sizeof(block_tqk6) == 26, "block_tqk6 must be 26 bytes");
+    static_assert(offsetof(block_tqk6, d) == 0 && offsetof(block_tqk6, qs) == 2, "block_tqk6 layout {d, qs}");
+    static_assert(sizeof(block_q8_1) == 36, "block_q8_1 must be 9 words");
+    constexpr int XB = 80;
+    constexpr int ROW_BYTES = 20 * 26;
+
+    const int ng = *n_groups;
+    if ((int) blockIdx.y >= ng) return;
+
+    __shared__ uint32_t s_lut_u32[1024];
+    __shared__ int4     s_q[GRP_NC * 2 * XB];
+    __shared__ float    s_d[GRP_NC * XB];
+
+    const int tid = (int) threadIdx.x;
+    const uint32_t* lut_src = reinterpret_cast<const uint32_t*>(tq_lut_i8);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) s_lut_u32[i * 256 + tid] = __ldg(lut_src + i * 256 + tid);
+    const uint16_t* const s_lut = reinterpret_cast<const uint16_t*>(s_lut_u32);
+
+    const int n_ff_blocks = (int) (L.n_ff / 32);
+    const int bx = (int) blockIdx.x;
+    const bool is_up = bx >= n_ff_blocks;
+    const int r_block = (is_up ? bx - n_ff_blocks : bx) * 32;
+    const int warp = tid >> 5, lane = tid & 31;
+    const int r0 = r_block + warp * 4;
+    const size_t warp_w_off = (is_up ? L.up_off : (size_t) 0) + (size_t) r0 * (size_t) ROW_BYTES;
+    float* const dst = is_up ? up : gate;
+
+    // Loop-invariant shuffle indices for TQK6 (4 blocks = 104 B = 26 u32 across 32 lanes).
+    const int blk0 = lane >> 3;
+    const int sub = lane & 7;
+    const int B = 13 * blk0;
+    const int idx_d = B >> 1;
+    const int off3 = (28 - 4 * sub) * 6;
+    const int wb = off3 >> 4;
+    const int rem = off3 & 15;
+    const int a = B + 1 + wb;
+    const int i0 = a >> 1;
+    const int i1 = (sub == 0 && (blk0 & 1)) ? ((B + 1) >> 1) : (i0 + 1);
+    const int shift = (sub == 0) ? 8 : (rem + ((a & 1) << 4));
+    const bool wrap_even = (sub == 0) && ((blk0 & 1) == 0);
+    const bool odd_blk = (blk0 & 1) != 0;
+
+    bool dirty_smem = false;
+    for (int g = (int) blockIdx.y; g < ng; g += (int) gridDim.y) {
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const unsigned long long gp_addr = grp_ptr[g];
+        const uint8_t* const gp = reinterpret_cast<const uint8_t*>(gp_addr);
+        const bool aligned4 = ((gp_addr + (unsigned long long) warp_w_off) & 3ull) == 0ull;
+        const uint8_t* const w_warp = gp + warp_w_off;
+        const float sc = L.tail_off ? reinterpret_cast<const float*>(gp + L.tail_off)[is_up ? 1 : 0] : 1.0f;
+
+        for (int e = e0; e < e1; e += GRP_NC) {
+            const int n = e1 - e < GRP_NC ? e1 - e : GRP_NC;
+            if (dirty_smem) iq_sync_lds();
+            for (int c = 0; c < n; ++c) {
+                const int* w32 = reinterpret_cast<const int*>(xq + (size_t) ent_tok[e + c] * XB);
+                if (tid < 160) {
+                    const int k = tid >> 1, h = tid & 1;
+                    const int* p = w32 + k * 9 + 1 + 4 * h;
+                    s_q[c * 160 + tid] = make_int4(p[0], p[1], p[2], p[3]);
+                } else if (tid < 240) {
+                    const int k = tid - 160;
+                    const int v = w32[k * 9];
+                    const half2 h2 = *reinterpret_cast<const half2*>(&v);
+                    s_d[c * 80 + k] = __low2float(h2) * TQ_LUT_I8_SCALE;
+                }
+            }
+            iq_sync_lds();
+            dirty_smem = true;
+
+            if (n == 1) {
+                neon2_tqk6_gu_rows<1, 4>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift, wrap_even,
+                                         odd_blk, sc, e, L.n_ff, r0, dst);
+            } else if (n == 2) {
+                neon2_tqk6_gu_rows<2, 4>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift, wrap_even,
+                                         odd_blk, sc, e, L.n_ff, r0, dst);
+            } else if (n == 3) {
+                neon2_tqk6_gu_rows<3, 2>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift, wrap_even,
+                                         odd_blk, sc, e, L.n_ff, r0, dst);
+                neon2_tqk6_gu_rows<3, 2>(w_warp + 2 * ROW_BYTES, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift,
+                                         wrap_even, odd_blk, sc, e, L.n_ff, r0 + 2, dst);
+            } else {
+                neon2_tqk6_gu_rows<4, 2>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift, wrap_even,
+                                         odd_blk, sc, e, L.n_ff, r0, dst);
+                neon2_tqk6_gu_rows<4, 2>(w_warp + 2 * ROW_BYTES, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, shift,
+                                         wrap_even, odd_blk, sc, e, L.n_ff, r0 + 2, dst);
+            }
+        }
+    }
+}
+
+__device__ __forceinline__ uint32_t neon2_ld32_tqk7(const uint8_t* __restrict__ p_blk, int t) {
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(p_blk);
+    const uint32_t a0 = (uint32_t) __ldg(p16 + 2 * t);
+    const uint32_t a1 = (t < 7) ? (uint32_t) __ldg(p16 + 2 * t + 1) : 0u;
+    return a0 | (a1 << 16);
+}
+
+__device__ __forceinline__ TqLane neon2_tqk7_decode(uint32_t w32, int i0, int i1, int shift, bool wrap,
+                                                    const uint16_t* __restrict__ s_lut) {
+    static_assert(TQ_STATE_MASK == 0x7FFFu, "neon2_tqk7_decode assumes 15-bit trellis states");
+    const uint32_t wd = __shfl_sync(0xffffffffu, w32, 0, 8);
+    const uint32_t w0 = __shfl_sync(0xffffffffu, w32, i0, 8);
+    const uint32_t w1 = __shfl_sync(0xffffffffu, w32, i1, 8);
+    const uint32_t lo = wrap ? __funnelshift_r(w0, w1, 16) : w0;
+    const uint32_t hi = wrap ? (wd >> 16) : w1;
+    const uint32_t v0 = __funnelshift_r(lo, hi, shift);
+    const uint32_t hi_s = hi >> shift;
+    const uint32_t s0 = __funnelshift_r(v0, hi_s, 21) & TQ_STATE_MASK;
+    const uint32_t s1 = (v0 >> 14) & TQ_STATE_MASK;
+    const uint32_t s2 = (v0 >> 7) & TQ_STATE_MASK;
+    const uint32_t s3 = v0 & TQ_STATE_MASK;
+    const uint32_t x0 = s0 * 0x9e3779b1u;
+    const uint32_t x1 = s1 * 0x9e3779b1u;
+    const uint32_t x2 = s2 * 0x9e3779b1u;
+    const uint32_t x3 = s3 * 0x9e3779b1u;
+    TqLane res;
+    res.q[0] = (int) ((uint32_t) s_lut[x0 >> 21] | ((uint32_t) s_lut[(x0 >> 10) & 2047u] << 16));
+    res.q[1] = (int) ((uint32_t) s_lut[x1 >> 21] | ((uint32_t) s_lut[(x1 >> 10) & 2047u] << 16));
+    res.q[2] = (int) ((uint32_t) s_lut[x2 >> 21] | ((uint32_t) s_lut[(x2 >> 10) & 2047u] << 16));
+    res.q[3] = (int) ((uint32_t) s_lut[x3 >> 21] | ((uint32_t) s_lut[(x3 >> 10) & 2047u] << 16));
+    res.d = tq_h2f(wd & 0xFFFFu);
+    return res;
+}
+
+template<int NC, int R>
+__device__ __forceinline__ void neon2_tqk7_down_rows(const uint8_t* __restrict__ w_row0, size_t row_stride,
+                                                     const int4* __restrict__ s_q, const float* __restrict__ s_d,
+                                                     const uint16_t* __restrict__ s_lut, const int* __restrict__ s_dst,
+                                                     int t, int i0, int i1, int shift, bool wrap, float sd,
+                                                     int64_t n_embd, int r0, int r_step, float* __restrict__ out) {
+    // Bitwise identical addition tree to row_dot_40_sub8 (kbx order: 0, 4, 2, 1, 3; then 8-lane xor butterfly).
+    const int d_off = t >> 1;
+    float s[R][NC];
+    float s8[R][NC];
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[p][c] = 0.0f;
+    }
+    // kbx = 0
+    {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) rw[p] = neon2_ld32_tqk7(w_row0 + (size_t) p * row_stride + 0 * 30, t);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + t]; d8[c] = s_d[c * 20 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk7_decode(rw[p], i0, i1, shift, wrap, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+    // kbx = 4
+    {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) rw[p] = neon2_ld32_tqk7(w_row0 + (size_t) p * row_stride + 4 * 30, t);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 32 + t]; d8[c] = s_d[c * 20 + 16 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk7_decode(rw[p], i0, i1, shift, wrap, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+    // kbx = 2
+    {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) rw[p] = neon2_ld32_tqk7(w_row0 + (size_t) p * row_stride + 2 * 30, t);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 16 + t]; d8[c] = s_d[c * 20 + 8 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk7_decode(rw[p], i0, i1, shift, wrap, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float s16 = 0.0f;
+                s16 += neon_tq_apply(w, u[c], d8[c]);
+                s[p][c] = __fadd_rn(s[p][c], s16);
+            }
+        }
+    }
+    // kbx = 1
+    {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) rw[p] = neon2_ld32_tqk7(w_row0 + (size_t) p * row_stride + 1 * 30, t);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 8 + t]; d8[c] = s_d[c * 20 + 4 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk7_decode(rw[p], i0, i1, shift, wrap, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                s8[p][c] = 0.0f;
+                s8[p][c] += neon_tq_apply(w, u[c], d8[c]);
+            }
+        }
+    }
+    // kbx = 3
+    {
+        uint32_t rw[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) rw[p] = neon2_ld32_tqk7(w_row0 + (size_t) p * row_stride + 3 * 30, t);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 24 + t]; d8[c] = s_d[c * 20 + 12 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon2_tqk7_decode(rw[p], i0, i1, shift, wrap, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float s24 = 0.0f;
+                s24 += neon_tq_apply(w, u[c], d8[c]);
+                s[p][c] = __fadd_rn(s[p][c], __fadd_rn(s8[p][c], s24));
+            }
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sum = s[p][c];
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            if (t == c) out[(size_t) s_dst[c] * (size_t) n_embd + (size_t) (r0 + p * r_step)] = sum * sd;
+        }
+    }
+}
+
+// Low-register R=2 path for NC=3..4: streams c one entry at a time (5 activation regs instead of 5*NC)
+// after decoding both rows' TqLane weights so neon2_tqk7_down_kernel stays <= 64 regs with 0 stack frame.
+template<int NC>
+__device__ __forceinline__ void neon2_tqk7_down_rows_lo(const uint8_t* __restrict__ w_row0,
+                                                        size_t row_stride,
+                                                        const int4* __restrict__ s_q,
+                                                        const float* __restrict__ s_d,
+                                                        const uint16_t* __restrict__ s_lut,
+                                                        const int* __restrict__ s_dst,
+                                                        int t, int i0, int i1, int shift, bool wrap,
+                                                        float sd, int n_embd, int r0, int r_step,
+                                                        float* __restrict__ out) {
+    float s[2][NC];
+    float s8[2][NC];
+    const int d_off = t >> 1;
+    // kbx = 0
+    {
+        const uint32_t rw0 = neon2_ld32_tqk7(w_row0, t);
+        const uint32_t rw1 = neon2_ld32_tqk7(w_row0 + row_stride, t);
+        const TqLane w0 = neon2_tqk7_decode(rw0, i0, i1, shift, wrap, s_lut);
+        const TqLane w1 = neon2_tqk7_decode(rw1, i0, i1, shift, wrap, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + t];
+            const float d8 = s_d[c * 20 + d_off];
+            s[0][c] = 0.0f; s[0][c] += neon_tq_apply(w0, u, d8);
+            s[1][c] = 0.0f; s[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 4
+    {
+        const uint32_t rw0 = neon2_ld32_tqk7(w_row0 + 4 * 30, t);
+        const uint32_t rw1 = neon2_ld32_tqk7(w_row0 + row_stride + 4 * 30, t);
+        const TqLane w0 = neon2_tqk7_decode(rw0, i0, i1, shift, wrap, s_lut);
+        const TqLane w1 = neon2_tqk7_decode(rw1, i0, i1, shift, wrap, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 32 + t];
+            const float d8 = s_d[c * 20 + 16 + d_off];
+            s[0][c] += neon_tq_apply(w0, u, d8);
+            s[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 2
+    {
+        const uint32_t rw0 = neon2_ld32_tqk7(w_row0 + 2 * 30, t);
+        const uint32_t rw1 = neon2_ld32_tqk7(w_row0 + row_stride + 2 * 30, t);
+        const TqLane w0 = neon2_tqk7_decode(rw0, i0, i1, shift, wrap, s_lut);
+        const TqLane w1 = neon2_tqk7_decode(rw1, i0, i1, shift, wrap, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 16 + t];
+            const float d8 = s_d[c * 20 + 8 + d_off];
+            float a0 = 0.0f; a0 += neon_tq_apply(w0, u, d8);
+            float a1 = 0.0f; a1 += neon_tq_apply(w1, u, d8);
+            s[0][c] = __fadd_rn(s[0][c], a0);
+            s[1][c] = __fadd_rn(s[1][c], a1);
+        }
+    }
+    // kbx = 1
+    {
+        const uint32_t rw0 = neon2_ld32_tqk7(w_row0 + 1 * 30, t);
+        const uint32_t rw1 = neon2_ld32_tqk7(w_row0 + row_stride + 1 * 30, t);
+        const TqLane w0 = neon2_tqk7_decode(rw0, i0, i1, shift, wrap, s_lut);
+        const TqLane w1 = neon2_tqk7_decode(rw1, i0, i1, shift, wrap, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 8 + t];
+            const float d8 = s_d[c * 20 + 4 + d_off];
+            s8[0][c] = 0.0f; s8[0][c] += neon_tq_apply(w0, u, d8);
+            s8[1][c] = 0.0f; s8[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 3
+    {
+        const uint32_t rw0 = neon2_ld32_tqk7(w_row0 + 3 * 30, t);
+        const uint32_t rw1 = neon2_ld32_tqk7(w_row0 + row_stride + 3 * 30, t);
+        const TqLane w0 = neon2_tqk7_decode(rw0, i0, i1, shift, wrap, s_lut);
+        const TqLane w1 = neon2_tqk7_decode(rw1, i0, i1, shift, wrap, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 24 + t];
+            const float d8 = s_d[c * 20 + 12 + d_off];
+            float a0 = 0.0f; a0 += neon_tq_apply(w0, u, d8);
+            float a1 = 0.0f; a1 += neon_tq_apply(w1, u, d8);
+            s[0][c] = __fadd_rn(s[0][c], __fadd_rn(s8[0][c], a0));
+            s[1][c] = __fadd_rn(s[1][c], __fadd_rn(s8[1][c], a1));
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < 2; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sum = s[p][c];
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            if (t == c) out[(size_t) s_dst[c] * (size_t) n_embd + (size_t) (r0 + p * r_step)] = sum * sd;
+        }
+    }
+}
+
+__launch_bounds__(128, 8)
+__global__ void neon2_tqk7_down_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                       const int32_t* __restrict__ grp_start,
+                                       const int32_t* __restrict__ n_groups,
+                                       const int32_t* __restrict__ ent_dst,
+                                       const block_q8_1* __restrict__ hq,
+                                       NativeExpertLayout L,
+                                       float* __restrict__ out) {
+    static_assert(sizeof(block_tqk7) == 30, "block_tqk7 must be 30 bytes");
+    static_assert(offsetof(block_tqk7, d) == 0 && offsetof(block_tqk7, qs) == 2, "block_tqk7 layout {d, qs}");
+    static_assert(sizeof(block_q8_1) == 36, "block_q8_1 must be 9 words");
+    constexpr int HB = 20;
+    constexpr int ROW_BYTES = 5 * 30;
+    constexpr int SUBWARPS = 16;
+
+    const int ng = *n_groups;
+    if ((int) blockIdx.y >= ng) return;
+
+    __shared__ uint32_t s_lut_u32[1024];
+    __shared__ int4     s_q[GRP_NC * 2 * HB];
+    __shared__ float    s_d[GRP_NC * HB];
+    __shared__ int      s_dst[GRP_NC];
+
+    const int tid = (int) threadIdx.x;
+    const uint32_t* lut_src = reinterpret_cast<const uint32_t*>(tq_lut_i8);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) s_lut_u32[i * 128 + tid] = __ldg(lut_src + i * 128 + tid);
+    const uint16_t* const s_lut = reinterpret_cast<const uint16_t*>(s_lut_u32);
+
+    const int r_block = (int) blockIdx.x * 64;
+    const int sw = tid >> 3, t = tid & 7;
+    const int r0 = r_block + sw;
+    const size_t sw_w_off = L.down_off + (size_t) r0 * (size_t) ROW_BYTES;
+    constexpr size_t ROW_STRIDE = (size_t) SUBWARPS * (size_t) ROW_BYTES;
+
+    // Loop-invariant shuffle indices for TQK7 (1 block = 30 B = 15 u16 across 8 lanes).
+    const int off3 = (28 - 4 * t) * 7;
+    const int wb = off3 >> 4;
+    const int rem = off3 & 15;
+    const int a = 1 + wb;
+    const int i0 = a >> 1;
+    const int i1 = i0 + 1;
+    const int shift = (t == 0) ? 4 : (rem + ((a & 1) << 4));
+    const bool wrap = (t == 0);
+
+    bool dirty_smem = false;
+    for (int g = (int) blockIdx.y; g < ng; g += (int) gridDim.y) {
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const unsigned long long gp_addr = grp_ptr[g];
+        const uint8_t* const gp = reinterpret_cast<const uint8_t*>(gp_addr);
+        const uint8_t* const w_sw = gp + sw_w_off;
+        const float sd = L.tail_off ? reinterpret_cast<const float*>(gp + L.tail_off)[2] : 1.0f;
+
+        for (int e = e0; e < e1; e += GRP_NC) {
+            const int n = e1 - e < GRP_NC ? e1 - e : GRP_NC;
+            if (dirty_smem) iq_sync_lds();
+            if (tid < n) s_dst[tid] = ent_dst[e + tid];
+            const int* w32 = reinterpret_cast<const int*>(hq + (size_t) e * HB);
+            for (int i = tid; i < n * 40; i += 128) {
+                const int k = i >> 1, h = i & 1;
+                const int* p = w32 + k * 9 + 1 + 4 * h;
+                s_q[i] = make_int4(p[0], p[1], p[2], p[3]);
+            }
+            if (tid < n * 20) {
+                const int v = w32[tid * 9];
+                const half2 h2 = *reinterpret_cast<const half2*>(&v);
+                s_d[tid] = __low2float(h2) * TQ_LUT_I8_SCALE;
+            }
+            iq_sync_lds();
+            dirty_smem = true;
+
+            if (n == 1) {
+                neon2_tqk7_down_rows<1, 4>(w_sw, ROW_STRIDE, s_q, s_d, s_lut, s_dst, t, i0, i1, shift, wrap, sd,
+                                           L.n_embd, r0, SUBWARPS, out);
+            } else if (n == 2) {
+                neon2_tqk7_down_rows<2, 4>(w_sw, ROW_STRIDE, s_q, s_d, s_lut, s_dst, t, i0, i1, shift, wrap, sd,
+                                           L.n_embd, r0, SUBWARPS, out);
+            } else if (n == 3) {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon2_tqk7_down_rows_lo<3>(w_sw + (size_t) (2 * half) * ROW_STRIDE, ROW_STRIDE, s_q, s_d, s_lut,
+                                               s_dst, t, i0, i1, shift, wrap, sd, L.n_embd, r0 + 2 * half * SUBWARPS,
+                                               SUBWARPS, out);
+                }
+            } else {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon2_tqk7_down_rows_lo<4>(w_sw + (size_t) (2 * half) * ROW_STRIDE, ROW_STRIDE, s_q, s_d, s_lut,
+                                               s_dst, t, i0, i1, shift, wrap, sd, L.n_embd, r0 + 2 * half * SUBWARPS,
+                                               SUBWARPS, out);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- STRATA_NEON_EXPERT=3: LSU-lean Gyro-M kernels
+// (TQ2_T type 144 gate/up + down, sm_75; bitwise identical to native_gu_kernel / native_down_kernel).
+//
+// Same Round 2 principles applied to block_tq2_t (34 B = half d + uint8_t qs[32]):
+//   1) No s_w4 weight staging (which was 5.44 KB on TQ2_T gate/up and saturated Turing's 16 LSUs/SM, causing the
+//      +45% m=1->m=2 cliff of the removed shared-memory design) and only 1 __syncthreads() per entry chunk.
+//   2) Gate/up loads 4 contiguous blocks (136 B = 34 u32) per warp with 1 coalesced LDG.32 (lanes 0..31) + 1
+//      predicated LDG.32 on lanes 8 and 25 (packed into u_w0 without collisions), then 4 __shfl_sync + __byte_perm
+//      state extraction.  SMEM = 15.25 KB -> 4 blocks/SM (100% occupancy).  R=4 rows/warp for n=1..2, low-reg R=2
+//      for n=3..4 keeps peak registers well below 64 with 0 stack frame.
+//   3) Down (128 threads = 16 8-lane subwarps, 64 rows/block, 6.8 KB SMEM -> 8 blocks/SM = 100% occupancy) groups
+//      even rows into warps 0,2 and odd rows into warps 1,3 so every warp's (p_blk & 3) alignment is warp-uniform:
+//      1 coalesced LDG.32 + 1 predicated LDG.U16 on t==0 per 34 B block, exact row_dot_40_sub8 addition order
+//      (kbx 0, 4, 2, 1, 3), R=4 for n=1..2 and low-reg R=2 for n=3..4.
+
+__device__ __forceinline__ uint32_t neon3_ld32_u(const uint8_t* __restrict__ p, bool aligned4, int idx) {
+    if (aligned4) return __ldg(reinterpret_cast<const uint32_t*>(p) + idx);
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(p);
+    return (uint32_t) __ldg(p16 + 2 * idx) | ((uint32_t) __ldg(p16 + 2 * idx + 1) << 16);
+}
+
+__device__ __forceinline__ TqLane neon3_tq2t_gu_decode(uint32_t u0, uint32_t u_w0, int idx_d, int i0, int i1,
+                                                       int prev_lane, bool odd_blk,
+                                                       const uint16_t* __restrict__ s_lut) {
+    static_assert(TQ_STATE_MASK == 0x7FFFu, "neon3_tq2t_gu_decode assumes 15-bit trellis states");
+    const uint32_t wd = __shfl_sync(0xffffffffu, u0, idx_d);
+    const uint32_t w0 = __shfl_sync(0xffffffffu, u_w0, i0);
+    const uint32_t w1 = __shfl_sync(0xffffffffu, u0, i1);
+    const uint32_t q4 = odd_blk ? w0 : __funnelshift_r(w0, w1, 16);
+    const uint32_t q4_prev = __shfl_sync(0xffffffffu, q4, prev_lane);
+    const uint32_t s0 = __byte_perm(q4, q4_prev, 0x0070u) & TQ_STATE_MASK;
+    const uint32_t s1 = __byte_perm(q4, 0u,      0x4401u) & TQ_STATE_MASK;
+    const uint32_t s2 = __byte_perm(q4, 0u,      0x4412u) & TQ_STATE_MASK;
+    const uint32_t s3 = __byte_perm(q4, 0u,      0x4423u) & TQ_STATE_MASK;
+    const uint32_t x0 = s0 * 0x9e3779b1u;
+    const uint32_t x1 = s1 * 0x9e3779b1u;
+    const uint32_t x2 = s2 * 0x9e3779b1u;
+    const uint32_t x3 = s3 * 0x9e3779b1u;
+    TqLane res;
+    res.q[0] = (int) ((uint32_t) s_lut[x0 >> 21] | ((uint32_t) s_lut[(x0 >> 10) & 2047u] << 16));
+    res.q[1] = (int) ((uint32_t) s_lut[x1 >> 21] | ((uint32_t) s_lut[(x1 >> 10) & 2047u] << 16));
+    res.q[2] = (int) ((uint32_t) s_lut[x2 >> 21] | ((uint32_t) s_lut[(x2 >> 10) & 2047u] << 16));
+    res.q[3] = (int) ((uint32_t) s_lut[x3 >> 21] | ((uint32_t) s_lut[(x3 >> 10) & 2047u] << 16));
+    res.d = tq_h2f(odd_blk ? (wd >> 16) : (wd & 0xFFFFu));
+    return res;
+}
+
+template<int NC, int R>
+__device__ __forceinline__ void neon3_tq2t_gu_rows(const uint8_t* __restrict__ w_row0, bool aligned4,
+                                                   const int4* __restrict__ s_q, const float* __restrict__ s_d,
+                                                   const uint16_t* __restrict__ s_lut, int lane, int idx_d, int i0,
+                                                   int i1, int prev_lane, bool odd_blk, float sc, int e, int64_t n_ff,
+                                                   int r0, float* __restrict__ dst) {
+    constexpr int ROW_BYTES = 20 * 34;
+    const int blk0 = lane >> 3;
+    const int sub = lane & 7;
+    const int d_off = sub >> 1;
+    const int tail_idx = (lane == 8) ? 32 : (lane == 25) ? 33 : -1;
+    float s[R][NC];
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[p][c] = 0.0f;
+    }
+#pragma unroll 1
+    for (int j = 0; j < 5; ++j) {
+        uint32_t rw0[R], rw1[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const uint8_t* ptr = w_row0 + (size_t) p * ROW_BYTES + (size_t) j * 136;
+            const uint32_t u0 = neon3_ld32_u(ptr, aligned4, lane);
+            rw0[p] = u0;
+            rw1[p] = (tail_idx >= 0) ? neon3_ld32_u(ptr, aligned4, tail_idx) : u0;
+        }
+        const int kbx = blk0 + 4 * j;
+        const int q_idx = kbx * 8 + sub;
+        const int d_idx = kbx * 4 + d_off;
+        int4 u[NC];
+        float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            u[c] = s_q[c * 160 + q_idx];
+            d8[c] = s_d[c * 80 + d_idx];
+        }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_gu_decode(rw0[p], rw1[p], idx_d, i0, i1, prev_lane, odd_blk, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float sum = warp_sum(s[p][c]);
+            if (lane == c) dst[(size_t) (e + c) * (size_t) n_ff + (size_t) (r0 + p)] = sum * sc;
+        }
+    }
+}
+
+// Low-register R=2 path for NC=3..4: streams c one entry at a time (5 activation regs instead of 5*NC)
+// after decoding both rows' weights so neon3_tq2t_gu_kernel stays well under 64 regs with 0 stack frame.
+template<int NC>
+__device__ __forceinline__ void neon3_tq2t_gu_rows_lo(const uint8_t* __restrict__ w_row0, bool aligned4,
+                                                      const int4* __restrict__ s_q, const float* __restrict__ s_d,
+                                                      const uint16_t* __restrict__ s_lut, int lane, int idx_d, int i0,
+                                                      int i1, int prev_lane, bool odd_blk, float sc, int e,
+                                                      int64_t n_ff, int r0, float* __restrict__ dst) {
+    constexpr int ROW_BYTES = 20 * 34;
+    const int blk0 = lane >> 3;
+    const int sub = lane & 7;
+    const int d_off = sub >> 1;
+    const int tail_idx = (lane == 8) ? 32 : (lane == 25) ? 33 : -1;
+    float s[2][NC];
+#pragma unroll
+    for (int p = 0; p < 2; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[p][c] = 0.0f;
+    }
+#pragma unroll 1
+    for (int j = 0; j < 5; ++j) {
+        const uint8_t* ptr0 = w_row0 + (size_t) j * 136;
+        const uint8_t* ptr1 = ptr0 + ROW_BYTES;
+        const uint32_t u0_0 = neon3_ld32_u(ptr0, aligned4, lane);
+        const uint32_t uw_0 = (tail_idx >= 0) ? neon3_ld32_u(ptr0, aligned4, tail_idx) : u0_0;
+        const uint32_t u0_1 = neon3_ld32_u(ptr1, aligned4, lane);
+        const uint32_t uw_1 = (tail_idx >= 0) ? neon3_ld32_u(ptr1, aligned4, tail_idx) : u0_1;
+        const TqLane w0 = neon3_tq2t_gu_decode(u0_0, uw_0, idx_d, i0, i1, prev_lane, odd_blk, s_lut);
+        const TqLane w1 = neon3_tq2t_gu_decode(u0_1, uw_1, idx_d, i0, i1, prev_lane, odd_blk, s_lut);
+        const int kbx = blk0 + 4 * j;
+        const int q_idx = kbx * 8 + sub;
+        const int d_idx = kbx * 4 + d_off;
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 160 + q_idx];
+            const float d8 = s_d[c * 80 + d_idx];
+            s[0][c] += neon_tq_apply(w0, u, d8);
+            s[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < 2; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float sum = warp_sum(s[p][c]);
+            if (lane == c) dst[(size_t) (e + c) * (size_t) n_ff + (size_t) (r0 + p)] = sum * sc;
+        }
+    }
+}
+
+__launch_bounds__(256, 4)
+__global__ void neon3_tq2t_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                     const int32_t* __restrict__ grp_start,
+                                     const int32_t* __restrict__ n_groups,
+                                     const int32_t* __restrict__ ent_tok,
+                                     const block_q8_1* __restrict__ xq,
+                                     NativeExpertLayout L,
+                                     float* __restrict__ gate,
+                                     float* __restrict__ up) {
+    static_assert(sizeof(block_tq2_t) == 34, "block_tq2_t must be 34 bytes");
+    static_assert(offsetof(block_tq2_t, d) == 0 && offsetof(block_tq2_t, qs) == 2, "block_tq2_t layout {d, qs}");
+    static_assert(sizeof(block_q8_1) == 36, "block_q8_1 must be 9 words");
+    constexpr int XB = 80;
+    constexpr int ROW_BYTES = 20 * 34;
+
+    const int ng = *n_groups;
+    if ((int) blockIdx.y >= ng) return;
+
+    __shared__ uint32_t s_lut_u32[1024];
+    __shared__ int4     s_q[GRP_NC * 2 * XB];
+    __shared__ float    s_d[GRP_NC * XB];
+
+    const int tid = (int) threadIdx.x;
+    const uint32_t* lut_src = reinterpret_cast<const uint32_t*>(tq_lut_i8);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) s_lut_u32[i * 256 + tid] = __ldg(lut_src + i * 256 + tid);
+    const uint16_t* const s_lut = reinterpret_cast<const uint16_t*>(s_lut_u32);
+
+    const int n_ff_blocks = (int) (L.n_ff / 32);
+    const int bx = (int) blockIdx.x;
+    const bool is_up = bx >= n_ff_blocks;
+    const int r_block = (is_up ? bx - n_ff_blocks : bx) * 32;
+    const int warp = tid >> 5, lane = tid & 31;
+    const int r0 = r_block + warp * 4;
+    const size_t warp_w_off = (is_up ? L.up_off : (size_t) 0) + (size_t) r0 * (size_t) ROW_BYTES;
+    float* const dst = is_up ? up : gate;
+
+    // Loop-invariant shuffle indices for TQ2_T (4 blocks = 136 B = 34 u32 across 32 lanes).
+    // Lanes 8 and 25 hold p32[32] and p32[33] inside u_w0; u0 retains p32[0..31] unmodified.
+    const int blk0 = lane >> 3;
+    const int sub = lane & 7;
+    const bool odd_blk = (blk0 & 1) != 0;
+    const int idx_d = (blk0 == 0) ? 0 : (blk0 == 1) ? 8 : (blk0 == 2) ? 17 : 25;
+    const int i0 = (blk0 == 0) ? sub
+                 : (blk0 == 1) ? (9 + sub)
+                 : (blk0 == 2) ? (17 + sub)
+                 : (sub < 6 ? (26 + sub) : (sub == 6 ? 8 : 25));
+    const int i1 = (blk0 == 0) ? (1 + sub) : (blk0 == 2) ? (18 + sub) : 0;
+    const int prev_lane = (lane & ~7) | ((sub + 7) & 7);
+
+    bool dirty_smem = false;
+    for (int g = (int) blockIdx.y; g < ng; g += (int) gridDim.y) {
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const unsigned long long gp_addr = grp_ptr[g];
+        const uint8_t* const gp = reinterpret_cast<const uint8_t*>(gp_addr);
+        const bool aligned4 = ((gp_addr + (unsigned long long) warp_w_off) & 3ull) == 0ull;
+        const uint8_t* const w_warp = gp + warp_w_off;
+        const float sc = L.tail_off ? reinterpret_cast<const float*>(gp + L.tail_off)[is_up ? 1 : 0] : 1.0f;
+
+        for (int e = e0; e < e1; e += GRP_NC) {
+            const int n = e1 - e < GRP_NC ? e1 - e : GRP_NC;
+            if (dirty_smem) iq_sync_lds();
+            for (int c = 0; c < n; ++c) {
+                const int* w32 = reinterpret_cast<const int*>(xq + (size_t) ent_tok[e + c] * XB);
+                if (tid < 160) {
+                    const int k = tid >> 1, h = tid & 1;
+                    const int* p = w32 + k * 9 + 1 + 4 * h;
+                    s_q[c * 160 + tid] = make_int4(p[0], p[1], p[2], p[3]);
+                } else if (tid < 240) {
+                    const int k = tid - 160;
+                    const int v = w32[k * 9];
+                    const half2 h2 = *reinterpret_cast<const half2*>(&v);
+                    s_d[c * 80 + k] = __low2float(h2) * TQ_LUT_I8_SCALE;
+                }
+            }
+            iq_sync_lds();
+            dirty_smem = true;
+
+            if (n == 1) {
+                neon3_tq2t_gu_rows<1, 4>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, prev_lane, odd_blk,
+                                         sc, e, L.n_ff, r0, dst);
+            } else if (n == 2) {
+                neon3_tq2t_gu_rows<2, 4>(w_warp, aligned4, s_q, s_d, s_lut, lane, idx_d, i0, i1, prev_lane, odd_blk,
+                                         sc, e, L.n_ff, r0, dst);
+            } else if (n == 3) {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon3_tq2t_gu_rows_lo<3>(w_warp + (size_t) (2 * half) * ROW_BYTES, aligned4, s_q, s_d, s_lut, lane,
+                                             idx_d, i0, i1, prev_lane, odd_blk, sc, e, L.n_ff, r0 + 2 * half, dst);
+                }
+            } else {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon3_tq2t_gu_rows_lo<4>(w_warp + (size_t) (2 * half) * ROW_BYTES, aligned4, s_q, s_d, s_lut, lane,
+                                             idx_d, i0, i1, prev_lane, odd_blk, sc, e, L.n_ff, r0 + 2 * half, dst);
+                }
+            }
+        }
+    }
+}
+
+__device__ __forceinline__ void neon3_ld_tq2t_blk(const uint8_t* __restrict__ p_blk, bool blk_even4, int t,
+                                                  uint32_t& w0, uint32_t& extra) {
+    if (blk_even4) {
+        w0 = __ldg(reinterpret_cast<const uint32_t*>(p_blk) + t);
+        extra = (t == 0) ? (uint32_t) __ldg(reinterpret_cast<const uint16_t*>(p_blk + 32)) : 0u;
+    } else {
+        w0 = __ldg(reinterpret_cast<const uint32_t*>(p_blk + 2) + t);
+        extra = (t == 0) ? (uint32_t) __ldg(reinterpret_cast<const uint16_t*>(p_blk)) : 0u;
+    }
+}
+
+__device__ __forceinline__ TqLane neon3_tq2t_down_decode(uint32_t w0, uint32_t extra, bool blk_even4, int t,
+                                                         const uint16_t* __restrict__ s_lut) {
+    static_assert(TQ_STATE_MASK == 0x7FFFu, "neon3_tq2t_down_decode assumes 15-bit trellis states");
+    uint32_t q4, d_bits;
+    if (blk_even4) {
+        const uint32_t w_next = __shfl_sync(0xffffffffu, w0, (t + 1) & 7, 8);
+        const uint32_t w_tail = __shfl_sync(0xffffffffu, extra, 0, 8);
+        const uint32_t w_hi = (t < 7) ? w_next : w_tail;
+        q4 = __funnelshift_r(w0, w_hi, 16);
+        d_bits = __shfl_sync(0xffffffffu, w0, 0, 8) & 0xFFFFu;
+    } else {
+        q4 = w0;
+        d_bits = __shfl_sync(0xffffffffu, extra, 0, 8);
+    }
+    const uint32_t q4_prev = __shfl_sync(0xffffffffu, q4, (t + 7) & 7, 8);
+    const uint32_t s0 = __byte_perm(q4, q4_prev, 0x0070u) & TQ_STATE_MASK;
+    const uint32_t s1 = __byte_perm(q4, 0u,      0x4401u) & TQ_STATE_MASK;
+    const uint32_t s2 = __byte_perm(q4, 0u,      0x4412u) & TQ_STATE_MASK;
+    const uint32_t s3 = __byte_perm(q4, 0u,      0x4423u) & TQ_STATE_MASK;
+    const uint32_t x0 = s0 * 0x9e3779b1u;
+    const uint32_t x1 = s1 * 0x9e3779b1u;
+    const uint32_t x2 = s2 * 0x9e3779b1u;
+    const uint32_t x3 = s3 * 0x9e3779b1u;
+    TqLane res;
+    res.q[0] = (int) ((uint32_t) s_lut[x0 >> 21] | ((uint32_t) s_lut[(x0 >> 10) & 2047u] << 16));
+    res.q[1] = (int) ((uint32_t) s_lut[x1 >> 21] | ((uint32_t) s_lut[(x1 >> 10) & 2047u] << 16));
+    res.q[2] = (int) ((uint32_t) s_lut[x2 >> 21] | ((uint32_t) s_lut[(x2 >> 10) & 2047u] << 16));
+    res.q[3] = (int) ((uint32_t) s_lut[x3 >> 21] | ((uint32_t) s_lut[(x3 >> 10) & 2047u] << 16));
+    res.d = tq_h2f(d_bits);
+    return res;
+}
+
+template<int NC, int R>
+__device__ __forceinline__ void neon3_tq2t_down_rows(const uint8_t* __restrict__ w_row0, size_t row_stride,
+                                                     bool row_even4, const int4* __restrict__ s_q,
+                                                     const float* __restrict__ s_d,
+                                                     const uint16_t* __restrict__ s_lut,
+                                                     const int* __restrict__ s_dst, int t, float sd, int64_t n_embd,
+                                                     int r0, int r_step, float* __restrict__ out) {
+    // Bitwise identical addition tree to row_dot_40_sub8 (kbx order: 0, 4, 2, 1, 3; then 8-lane xor butterfly).
+    // row_stride = 16 * 170 = 2720 (divisible by 4), so row_even4 holds for all R rows at kbx 0,2,4 and !row_even4
+    // holds for all R rows at kbx 1,3 (warp-uniform across all 4 subwarps in a warp).
+    const int d_off = t >> 1;
+    float s[R][NC];
+    float s8[R][NC];
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[p][c] = 0.0f;
+    }
+    // kbx = 0
+    {
+        uint32_t rw0[R], rx[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) neon3_ld_tq2t_blk(w_row0 + (size_t) p * row_stride + 0 * 34, row_even4, t, rw0[p], rx[p]);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + t]; d8[c] = s_d[c * 20 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_down_decode(rw0[p], rx[p], row_even4, t, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+    // kbx = 4
+    {
+        uint32_t rw0[R], rx[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) neon3_ld_tq2t_blk(w_row0 + (size_t) p * row_stride + 4 * 34, row_even4, t, rw0[p], rx[p]);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 32 + t]; d8[c] = s_d[c * 20 + 16 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_down_decode(rw0[p], rx[p], row_even4, t, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) s[p][c] += neon_tq_apply(w, u[c], d8[c]);
+        }
+    }
+    // kbx = 2
+    {
+        uint32_t rw0[R], rx[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) neon3_ld_tq2t_blk(w_row0 + (size_t) p * row_stride + 2 * 34, row_even4, t, rw0[p], rx[p]);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 16 + t]; d8[c] = s_d[c * 20 + 8 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_down_decode(rw0[p], rx[p], row_even4, t, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float s16 = 0.0f;
+                s16 += neon_tq_apply(w, u[c], d8[c]);
+                s[p][c] = __fadd_rn(s[p][c], s16);
+            }
+        }
+    }
+    // kbx = 1
+    {
+        uint32_t rw0[R], rx[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) neon3_ld_tq2t_blk(w_row0 + (size_t) p * row_stride + 1 * 34, !row_even4, t, rw0[p], rx[p]);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 8 + t]; d8[c] = s_d[c * 20 + 4 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_down_decode(rw0[p], rx[p], !row_even4, t, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                s8[p][c] = 0.0f;
+                s8[p][c] += neon_tq_apply(w, u[c], d8[c]);
+            }
+        }
+    }
+    // kbx = 3
+    {
+        uint32_t rw0[R], rx[R];
+#pragma unroll
+        for (int p = 0; p < R; ++p) neon3_ld_tq2t_blk(w_row0 + (size_t) p * row_stride + 3 * 34, !row_even4, t, rw0[p], rx[p]);
+        int4 u[NC]; float d8[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) { u[c] = s_q[c * 40 + 24 + t]; d8[c] = s_d[c * 20 + 12 + d_off]; }
+#pragma unroll
+        for (int p = 0; p < R; ++p) {
+            const TqLane w = neon3_tq2t_down_decode(rw0[p], rx[p], !row_even4, t, s_lut);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float s24 = 0.0f;
+                s24 += neon_tq_apply(w, u[c], d8[c]);
+                s[p][c] = __fadd_rn(s[p][c], __fadd_rn(s8[p][c], s24));
+            }
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < R; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sum = s[p][c];
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            if (t == c) out[(size_t) s_dst[c] * (size_t) n_embd + (size_t) (r0 + p * r_step)] = sum * sd;
+        }
+    }
+}
+
+template<int NC>
+__device__ __forceinline__ void neon3_tq2t_down_rows_lo(const uint8_t* __restrict__ w_row0, size_t row_stride,
+                                                        bool row_even4, const int4* __restrict__ s_q,
+                                                        const float* __restrict__ s_d,
+                                                        const uint16_t* __restrict__ s_lut,
+                                                        const int* __restrict__ s_dst, int t, float sd, int n_embd,
+                                                        int r0, int r_step, float* __restrict__ out) {
+    float s[2][NC];
+    float s8[2][NC];
+    const int d_off = t >> 1;
+    // kbx = 0
+    {
+        uint32_t rw0, rx0, rw1, rx1;
+        neon3_ld_tq2t_blk(w_row0, row_even4, t, rw0, rx0);
+        neon3_ld_tq2t_blk(w_row0 + row_stride, row_even4, t, rw1, rx1);
+        const TqLane w0 = neon3_tq2t_down_decode(rw0, rx0, row_even4, t, s_lut);
+        const TqLane w1 = neon3_tq2t_down_decode(rw1, rx1, row_even4, t, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + t];
+            const float d8 = s_d[c * 20 + d_off];
+            s[0][c] = 0.0f; s[0][c] += neon_tq_apply(w0, u, d8);
+            s[1][c] = 0.0f; s[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 4
+    {
+        uint32_t rw0, rx0, rw1, rx1;
+        neon3_ld_tq2t_blk(w_row0 + 4 * 34, row_even4, t, rw0, rx0);
+        neon3_ld_tq2t_blk(w_row0 + row_stride + 4 * 34, row_even4, t, rw1, rx1);
+        const TqLane w0 = neon3_tq2t_down_decode(rw0, rx0, row_even4, t, s_lut);
+        const TqLane w1 = neon3_tq2t_down_decode(rw1, rx1, row_even4, t, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 32 + t];
+            const float d8 = s_d[c * 20 + 16 + d_off];
+            s[0][c] += neon_tq_apply(w0, u, d8);
+            s[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 2
+    {
+        uint32_t rw0, rx0, rw1, rx1;
+        neon3_ld_tq2t_blk(w_row0 + 2 * 34, row_even4, t, rw0, rx0);
+        neon3_ld_tq2t_blk(w_row0 + row_stride + 2 * 34, row_even4, t, rw1, rx1);
+        const TqLane w0 = neon3_tq2t_down_decode(rw0, rx0, row_even4, t, s_lut);
+        const TqLane w1 = neon3_tq2t_down_decode(rw1, rx1, row_even4, t, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 16 + t];
+            const float d8 = s_d[c * 20 + 8 + d_off];
+            float a0 = 0.0f; a0 += neon_tq_apply(w0, u, d8);
+            float a1 = 0.0f; a1 += neon_tq_apply(w1, u, d8);
+            s[0][c] = __fadd_rn(s[0][c], a0);
+            s[1][c] = __fadd_rn(s[1][c], a1);
+        }
+    }
+    // kbx = 1
+    {
+        uint32_t rw0, rx0, rw1, rx1;
+        neon3_ld_tq2t_blk(w_row0 + 1 * 34, !row_even4, t, rw0, rx0);
+        neon3_ld_tq2t_blk(w_row0 + row_stride + 1 * 34, !row_even4, t, rw1, rx1);
+        const TqLane w0 = neon3_tq2t_down_decode(rw0, rx0, !row_even4, t, s_lut);
+        const TqLane w1 = neon3_tq2t_down_decode(rw1, rx1, !row_even4, t, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 8 + t];
+            const float d8 = s_d[c * 20 + 4 + d_off];
+            s8[0][c] = 0.0f; s8[0][c] += neon_tq_apply(w0, u, d8);
+            s8[1][c] = 0.0f; s8[1][c] += neon_tq_apply(w1, u, d8);
+        }
+    }
+    // kbx = 3
+    {
+        uint32_t rw0, rx0, rw1, rx1;
+        neon3_ld_tq2t_blk(w_row0 + 3 * 34, !row_even4, t, rw0, rx0);
+        neon3_ld_tq2t_blk(w_row0 + row_stride + 3 * 34, !row_even4, t, rw1, rx1);
+        const TqLane w0 = neon3_tq2t_down_decode(rw0, rx0, !row_even4, t, s_lut);
+        const TqLane w1 = neon3_tq2t_down_decode(rw1, rx1, !row_even4, t, s_lut);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int4 u = s_q[c * 40 + 24 + t];
+            const float d8 = s_d[c * 20 + 12 + d_off];
+            float a0 = 0.0f; a0 += neon_tq_apply(w0, u, d8);
+            float a1 = 0.0f; a1 += neon_tq_apply(w1, u, d8);
+            s[0][c] = __fadd_rn(s[0][c], __fadd_rn(s8[0][c], a0));
+            s[1][c] = __fadd_rn(s[1][c], __fadd_rn(s8[1][c], a1));
+        }
+    }
+#pragma unroll
+    for (int p = 0; p < 2; ++p) {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            float sum = s[p][c];
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            if (t == c) out[(size_t) s_dst[c] * (size_t) n_embd + (size_t) (r0 + p * r_step)] = sum * sd;
+        }
+    }
+}
+
+__launch_bounds__(128, 8)
+__global__ void neon3_tq2t_down_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                       const int32_t* __restrict__ grp_start,
+                                       const int32_t* __restrict__ n_groups,
+                                       const int32_t* __restrict__ ent_dst,
+                                       const block_q8_1* __restrict__ hq,
+                                       NativeExpertLayout L,
+                                       float* __restrict__ out) {
+    static_assert(sizeof(block_tq2_t) == 34, "block_tq2_t must be 34 bytes");
+    static_assert(offsetof(block_tq2_t, d) == 0 && offsetof(block_tq2_t, qs) == 2, "block_tq2_t layout {d, qs}");
+    static_assert(sizeof(block_q8_1) == 36, "block_q8_1 must be 9 words");
+    constexpr int HB = 20;
+    constexpr int ROW_BYTES = 5 * 34;
+    constexpr int SUBWARPS = 16;
+
+    const int ng = *n_groups;
+    if ((int) blockIdx.y >= ng) return;
+
+    __shared__ uint32_t s_lut_u32[1024];
+    __shared__ int4     s_q[GRP_NC * 2 * HB];
+    __shared__ float    s_d[GRP_NC * HB];
+    __shared__ int      s_dst[GRP_NC];
+
+    const int tid = (int) threadIdx.x;
+    const uint32_t* lut_src = reinterpret_cast<const uint32_t*>(tq_lut_i8);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) s_lut_u32[i * 128 + tid] = __ldg(lut_src + i * 128 + tid);
+    const uint16_t* const s_lut = reinterpret_cast<const uint16_t*>(s_lut_u32);
+
+    // Group even rows into warps 0,2 and odd rows into warps 1,3 (step 16 across R=4) so all 4 subwarps in a warp
+    // are an even multiple of 170 B apart (340 B % 4 == 0) and share the same 4-byte alignment parity.
+    const int r_block = (int) blockIdx.x * 64;
+    const int sw = tid >> 3, t = tid & 7;
+    const int warp = sw >> 2, sub_w = sw & 3;
+    const int r0 = r_block + ((warp >> 1) * 8) + (warp & 1) + 2 * sub_w;
+    const size_t sw_w_off = L.down_off + (size_t) r0 * (size_t) ROW_BYTES;
+    constexpr size_t ROW_STRIDE = (size_t) SUBWARPS * (size_t) ROW_BYTES;
+
+    bool dirty_smem = false;
+    for (int g = (int) blockIdx.y; g < ng; g += (int) gridDim.y) {
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const unsigned long long gp_addr = grp_ptr[g];
+        const uint8_t* const gp = reinterpret_cast<const uint8_t*>(gp_addr);
+        const uint8_t* const w_sw = gp + sw_w_off;
+        const bool row_even4 = ((gp_addr + (unsigned long long) sw_w_off) & 3ull) == 0ull;
+        const float sd = L.tail_off ? reinterpret_cast<const float*>(gp + L.tail_off)[2] : 1.0f;
+
+        for (int e = e0; e < e1; e += GRP_NC) {
+            const int n = e1 - e < GRP_NC ? e1 - e : GRP_NC;
+            if (dirty_smem) iq_sync_lds();
+            if (tid < n) s_dst[tid] = ent_dst[e + tid];
+            const int* w32 = reinterpret_cast<const int*>(hq + (size_t) e * HB);
+            for (int i = tid; i < n * 40; i += 128) {
+                const int k = i >> 1, h = i & 1;
+                const int* p = w32 + k * 9 + 1 + 4 * h;
+                s_q[i] = make_int4(p[0], p[1], p[2], p[3]);
+            }
+            if (tid < n * 20) {
+                const int v = w32[tid * 9];
+                const half2 h2 = *reinterpret_cast<const half2*>(&v);
+                s_d[tid] = __low2float(h2) * TQ_LUT_I8_SCALE;
+            }
+            iq_sync_lds();
+            dirty_smem = true;
+
+            if (n == 1) {
+                neon3_tq2t_down_rows<1, 4>(w_sw, ROW_STRIDE, row_even4, s_q, s_d, s_lut, s_dst, t, sd, L.n_embd, r0,
+                                           SUBWARPS, out);
+            } else if (n == 2) {
+                neon3_tq2t_down_rows<2, 4>(w_sw, ROW_STRIDE, row_even4, s_q, s_d, s_lut, s_dst, t, sd, L.n_embd, r0,
+                                           SUBWARPS, out);
+            } else if (n == 3) {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon3_tq2t_down_rows_lo<3>(w_sw + (size_t) (2 * half) * ROW_STRIDE, ROW_STRIDE, row_even4, s_q,
+                                               s_d, s_lut, s_dst, t, sd, (int) L.n_embd, r0 + 2 * half * SUBWARPS,
+                                               SUBWARPS, out);
+                }
+            } else {
+#pragma unroll 1
+                for (int half = 0; half < 2; ++half) {
+                    neon3_tq2t_down_rows_lo<4>(w_sw + (size_t) (2 * half) * ROW_STRIDE, ROW_STRIDE, row_even4, s_q,
+                                               s_d, s_lut, s_dst, t, sd, (int) L.n_embd, r0 + 2 * half * SUBWARPS,
+                                               SUBWARPS, out);
+                }
+            }
+        }
+    }
+}
+
 // STRATA_SM86_DOWN_WS (opt-in, default 0 = off): bit-exact sm_86 down kernels for n_ff=640:
 //   =1 or =6: IQ4_NL (20) -> sm86_down_iq4nl_clean_kernel (rb=32, 0 stack spill); Q2_0 (42) -> expdec_down_kernel<42,2> (rb=64)
 //   =5:       Q2_0-only (expdec_down_kernel<42,2>, rb=64), leaving IQ4_NL on default
@@ -4549,6 +5753,24 @@ void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, con
     else if (g_old_kernels || split_off<TG>()) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if constexpr (kStageIqGrid<TG>) {
         if constexpr (TG == 144 || TG == 145) {   // tq_sub8_on: the 8-lane trellis rows, 32 rows a block
+            if constexpr (TG == 144) {
+                if (neon_expert_mode() >= 3 && !::strata::kernels::g_no_sub16_gu && L.n_embd == 2560 && L.n_ff > 0 && L.n_ff % 32 == 0) {
+                    neon_set_max_smem<4, TG>(neon3_tq2t_gu_kernel);
+                    dim3 gn = grid;
+                    gn.x = (unsigned) (2 * L.n_ff / 32);
+                    neon3_tq2t_gu_kernel<<<gn, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+                    return;
+                }
+            }
+            if constexpr (TG == 145) {
+                if (neon_expert_mode() >= 2 && !::strata::kernels::g_no_sub16_gu && L.n_embd == 2560 && L.n_ff > 0 && L.n_ff % 32 == 0) {
+                    neon_set_max_smem<2, TG>(neon2_tqk6_gu_kernel);
+                    dim3 gn = grid;
+                    gn.x = (unsigned) (2 * L.n_ff / 32);
+                    neon2_tqk6_gu_kernel<<<gn, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+                    return;
+                }
+            }
             if (tq_sub8_on() && (L.n_embd / Fmt<TG>::qk) * Fmt<TG>::ipb == 160) {
                 dim3 g8 = grid;
                 g8.x = (unsigned) ((2 * L.n_ff + 31) / 32);
@@ -4626,6 +5848,26 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
     if constexpr (!kSplit<TD>) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else if (g_old_kernels || split_off<TD>()) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else if constexpr (kTqType<TD>) {   // the trellis down types: the codebook staged where tq_stage_on() or tq_sub8_on()
+        if constexpr (TD == 144 || TD == 146) {
+            if constexpr (TD == 144) {
+                if (neon_expert_mode() >= 3 && !g_no_sub16_gu && L.n_ff == 640 && L.n_embd > 0 && L.n_embd % 64 == 0) {
+                    neon_set_max_smem<5, TD>(neon3_tq2t_down_kernel);
+                    dim3 gn = grid;
+                    gn.x = (unsigned) (L.n_embd / 64);
+                    neon3_tq2t_down_kernel<<<gn, 128, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+                    return;
+                }
+            }
+            if constexpr (TD == 146) {
+                if (neon_expert_mode() >= 2 && !g_no_sub16_gu && L.n_ff == 640 && L.n_embd > 0 && L.n_embd % 64 == 0) {
+                    neon_set_max_smem<3, TD>(neon2_tqk7_down_kernel);
+                    dim3 gn = grid;
+                    gn.x = (unsigned) (L.n_embd / 64);
+                    neon2_tqk7_down_kernel<<<gn, 128, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+                    return;
+                }
+            }
+        }
         if (tq_stage_on() || tq_sub8_on()) {
             if (g_no_sub16_gu) native_down_multi_kernel<TD, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
             else native_down_multi_kernel<TD, true, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);

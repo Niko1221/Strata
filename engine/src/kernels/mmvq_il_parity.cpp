@@ -466,6 +466,167 @@ int check_tables() {
     }
     return bad;
 }
+
+// Gyro-M Q8_0 dense shapes + edge cases (tail nb=20, 2-byte-aligned odd nb=3, odd n_out, output head).
+const Case Q8_CASES[] = {
+    {"Q8_0 2560x10240", 8, 2560, 10240, 32, 34, {0, -1}},
+    {"Q8_0 2560x6144", 8, 2560, 6144, 32, 34, {0, -1}},
+    {"Q8_0 6144x2560", 8, 6144, 2560, 32, 34, {0, -1}},
+    {"Q8_0 2560x12288", 8, 2560, 12288, 32, 34, {0, -1}},
+    {"Q8_0 2560x2560", 8, 2560, 2560, 32, 34, {0, -1}},
+    {"Q8_0 2560x640", 8, 2560, 640, 32, 34, {0, -1}},
+    {"Q8_0 640x2560", 8, 640, 2560, 32, 34, {0, -1}},
+    {"Q8_0 2560x512", 8, 2560, 512, 32, 34, {0, -1}},
+    {"Q8_0 10240x320", 8, 10240, 320, 32, 34, {0, -1}},
+    {"Q8_0 odd rows 2560x2051", 8, 2560, 2051, 32, 34, {0, -1}},
+    {"Q8_0 align2 tail 288x259", 8, 288, 259, 32, 34, {0, -1}},
+    {"Q8_0 hc up 320x10240", 8, 320, 10240, 32, 34, {0, -1}},
+    {"Q8_0 head 2560x248320", 8, 2560, 248320, 32, 34, {0, -1}},
+};
+
+int run_q8_case(const Case& c, bool bench, cudaStream_t s) {
+    const std::size_t wbytes = std::size_t(c.n_out) * (c.n_in / c.block_elems) * c.block_bytes;
+    const int copies = (!bench || g_hot) ? 1 : std::max(2, int((192ull << 20) / std::max<std::size_t>(1, wbytes) + 1));
+    std::mt19937 rng(0x5180u ^ (uint32_t) c.n_out ^ ((uint32_t) c.n_in << 12));
+    std::vector<uint8_t> hw(wbytes);
+    for (std::size_t i = 0; i < wbytes; ++i) hw[i] = (uint8_t) (rng() & 0xffu);
+    const std::size_t nblk = wbytes / c.block_bytes;
+    for (std::size_t b = 0; b < nblk; ++b) {
+        const uint16_t h = sane_half(rng);
+        std::memcpy(hw.data() + b * c.block_bytes, &h, 2);
+    }
+    const bool test_pair = (c.n_out <= 2051 && c.n_in >= 256);
+    std::vector<uint8_t> hw2;
+    if (test_pair) {
+        hw2.resize(wbytes);
+        for (std::size_t i = 0; i < wbytes; ++i) hw2[i] = (uint8_t) (rng() & 0xffu);
+        for (std::size_t b = 0; b < nblk; ++b) {
+            const uint16_t h = sane_half(rng);
+            std::memcpy(hw2.data() + b * c.block_bytes, &h, 2);
+        }
+    }
+
+    const int max_t = 8;
+    std::vector<float> hx(std::size_t(max_t) * c.n_in);
+    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+    for (float& v : hx) v = dist(rng);
+
+    std::vector<void*> dw(copies, nullptr);
+    void *dw2 = nullptr, *xq = nullptr;
+    float *dx = nullptr, *yref = nullptr, *ycan = nullptr, *yref2 = nullptr, *ycan2 = nullptr;
+    for (int i = 0; i < copies; ++i)
+        if (!ck(cudaMalloc(&dw[i], wbytes), "q8 malloc w")) return 1;
+    if (test_pair && !ck(cudaMalloc(&dw2, wbytes), "q8 malloc w2")) return 1;
+    if (!ck(cudaMalloc((void**) &dx, hx.size() * sizeof(float)), "q8 malloc x") ||
+        !ck(cudaMalloc(&xq, native_q8_1_bytes(c.n_in, max_t)), "q8 malloc xq") ||
+        !ck(cudaMalloc((void**) &yref, std::size_t(max_t) * c.n_out * sizeof(float)), "q8 malloc yref") ||
+        !ck(cudaMalloc((void**) &ycan, std::size_t(max_t) * c.n_out * sizeof(float)), "q8 malloc ycan") ||
+        (test_pair && !ck(cudaMalloc((void**) &yref2, std::size_t(max_t) * c.n_out * sizeof(float)), "q8 malloc yref2")) ||
+        (test_pair && !ck(cudaMalloc((void**) &ycan2, std::size_t(max_t) * c.n_out * sizeof(float)), "q8 malloc ycan2")))
+        return 1;
+    for (int i = 0; i < copies; ++i) cudaMemcpy(dw[i], hw.data(), wbytes, cudaMemcpyHostToDevice);
+    if (test_pair) cudaMemcpy(dw2, hw2.data(), wbytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(dx, hx.data(), hx.size() * sizeof(float), cudaMemcpyHostToDevice);
+
+    const auto env_t = [](const char* k, int d) {
+        const char* v = std::getenv(k);
+        return v && v[0] ? std::clamp(std::atoi(v), 1, 8) : d;
+    };
+    const int tmin = env_t("MMVQ_IL_TMIN", 1), tmax = env_t("MMVQ_IL_TMAX", 8);
+    int bad = 0;
+    for (int T = tmin; T <= tmax; ++T) {
+        native_quantize_q8_1(dx, xq, c.n_in, T, s);
+        const std::size_t ny = std::size_t(T) * c.n_out;
+        std::vector<float> href(ny), hcan(ny), href2(test_pair ? ny : 0), hcan2(test_pair ? ny : 0);
+
+        // Reference: baseline native_small_mmvq_kernel (T=1) or native_mmvq_multi_kernel (T=2..8)
+        native_mmvq_il_pf(0);
+        native_mmvq_il_tune(0);
+        native_mmvq(8, dw[0], xq, yref, c.n_in, c.n_out, T, s);
+        // native_mmvq_pair declines shapes it does not run (the caller then makes two single calls): compare only
+        // where it ran, or the never-written outputs are compared against each other
+        const bool pair_ran = test_pair && T >= 2 && native_mmvq_pair(8, dw[0], dw2, xq, yref, yref2, c.n_in, c.n_out, T, s);
+        if (!ck(cudaStreamSynchronize(s), "q8 sync ref")) return 1;
+        cudaMemcpy(href.data(), yref, ny * sizeof(float), cudaMemcpyDeviceToHost);
+        if (pair_ran) cudaMemcpy(href2.data(), yref2, ny * sizeof(float), cudaMemcpyDeviceToHost);
+
+        int nonfin = 0;
+        for (float v : href) nonfin += !std::isfinite(v);
+        if (nonfin) {
+            ++bad;
+            std::printf("FAIL %s T=%d: %d non-finite in reference\n", c.name, T, nonfin);
+        }
+
+        // Check default table (r=0) and each explicit r in {1, 2, 4}
+        double t_ref = 0.0;
+        double t_r[5] = {};
+        if (bench) {
+            const int reps = std::max(10, std::min(120, int((1500ull << 20) / std::max<std::size_t>(1, wbytes))));
+            const auto nogap = [] {};
+            native_mmvq_il_pf(0);
+            native_mmvq_il_tune(0);
+            t_ref = time_us([&](int i) { native_mmvq(8, dw[i % copies], xq, yref, c.n_in, c.n_out, T, s); }, reps, s, nogap);
+        }
+        const int rows_list[] = {0, 1, 2, 4};
+        for (int r : rows_list) {
+            if (T > 4 && r == 4) continue;
+            native_mmvq_il_pf(-1);
+            native_mmvq_il_tune(r);
+            cudaMemsetAsync(ycan, 0, ny * sizeof(float), s);
+            native_mmvq(8, dw[0], xq, ycan, c.n_in, c.n_out, T, s);
+            if (!ck(cudaStreamSynchronize(s), "q8 sync can")) return 1;
+            cudaMemcpy(hcan.data(), ycan, ny * sizeof(float), cudaMemcpyDeviceToHost);
+            const auto* a = reinterpret_cast<const uint32_t*>(href.data());
+            const auto* b = reinterpret_cast<const uint32_t*>(hcan.data());
+            std::size_t diff = 0;
+            for (std::size_t i = 0; i < ny; ++i) diff += (a[i] != b[i]);
+            if (diff) {
+                ++bad;
+                std::printf("FAIL %s T=%d r=%d: %zu / %zu outputs differ in bits\n", c.name, T, r, diff, ny);
+            }
+            if (pair_ran) {
+                cudaMemsetAsync(ycan, 0, ny * sizeof(float), s);
+                cudaMemsetAsync(ycan2, 0, ny * sizeof(float), s);
+                native_mmvq_pair(8, dw[0], dw2, xq, ycan, ycan2, c.n_in, c.n_out, T, s);
+                if (!ck(cudaStreamSynchronize(s), "q8 sync pair")) return 1;
+                cudaMemcpy(hcan.data(), ycan, ny * sizeof(float), cudaMemcpyDeviceToHost);
+                cudaMemcpy(hcan2.data(), ycan2, ny * sizeof(float), cudaMemcpyDeviceToHost);
+                std::size_t dp1 = 0, dp2 = 0;
+                const auto* a2 = reinterpret_cast<const uint32_t*>(href2.data());
+                const auto* b2 = reinterpret_cast<const uint32_t*>(hcan2.data());
+                for (std::size_t i = 0; i < ny; ++i) { dp1 += (a[i] != b[i]); dp2 += (a2[i] != b2[i]); }
+                if (dp1 || dp2) {
+                    ++bad;
+                    std::printf("FAIL %s pair T=%d r=%d: %zu / %zu (y1), %zu / %zu (y2) differ\n",
+                                c.name, T, r, dp1, ny, dp2, ny);
+                }
+            }
+            if (bench && r > 0) {
+                const int reps = std::max(10, std::min(120, int((1500ull << 20) / std::max<std::size_t>(1, wbytes))));
+                const auto nogap = [] {};
+                t_r[r] = time_us([&](int i) { native_mmvq(8, dw[i % copies], xq, ycan, c.n_in, c.n_out, T, s); }, reps, s, nogap);
+            }
+        }
+        if (bench) {
+            const double gb = (double(wbytes) + double(native_q8_1_bytes(c.n_in, T))) * 1e-3;  // bytes -> GB/s when / us
+            if (T <= 4) {
+                std::printf("%-26s T=%d  ref %6.1f us (%5.0f GB/s)  r1 %6.1f (%5.0f)  r2 %6.1f (%5.0f)  r4 %6.1f (%5.0f)\n",
+                            c.name, T, t_ref, gb / t_ref, t_r[1], gb / t_r[1], t_r[2], gb / t_r[2], t_r[4], gb / t_r[4]);
+            } else {
+                std::printf("%-26s T=%d  ref %6.1f us (%5.0f GB/s)  r1 %6.1f (%5.0f)  r2 %6.1f (%5.0f)\n",
+                            c.name, T, t_ref, gb / t_ref, t_r[1], gb / t_r[1], t_r[2], gb / t_r[2]);
+            }
+        }
+    }
+    native_mmvq_il_pf(-1);
+    native_mmvq_il_tune(0);
+    for (void* p : dw) cudaFree(p);
+    if (dw2) cudaFree(dw2);
+    cudaFree(dx); cudaFree(xq); cudaFree(yref); cudaFree(ycan);
+    if (yref2) cudaFree(yref2);
+    if (ycan2) cudaFree(ycan2);
+    return bad;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -521,6 +682,8 @@ int main(int argc, char** argv) {
     const char* only = std::getenv("MMVQ_IL_ONLY");   // 143-dense: only the cases whose name contains this
     for (const Case& c : CASES)
         if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s);
+    for (const Case& c : Q8_CASES)
+        if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_q8_case(c, bench, s);
     if (emit) emit_table();
     std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 1-8, rows 1/2/4 and the table, bitwise)");
     return bad ? 1 : 0;

@@ -159,8 +159,18 @@ int main(int argc, char** argv) {
         cudaMalloc((void**) &dqu, qu.size()); cudaMemcpy(dqu, qu.data(), qu.size(), cudaMemcpyHostToDevice);
         cudaMalloc((void**) &dqm, (size_t) TM * (N / 32) * 36); cudaMalloc((void**) &dcnt, (N / 32) * 4);
         cudaMemset(dcnt, 0, (N / 32) * 4);
+        // FUSED_GR_BENCH_Q8_INJECT=1: the Q8_0 read also gets a Q8_0 inject copy (as the Gyro-M engine has), and the
+        // hash also covers rs
+        const char* qie = std::getenv("FUSED_GR_BENCH_Q8_INJECT");
+        uint8_t* dqi = nullptr;
+        if (qie != nullptr && std::atoi(qie) != 0) {
+            const std::vector<uint8_t> qi = q8_0_of_bf16(wi, D);
+            cudaMalloc((void**) &dqi, qi.size()); cudaMemcpy(dqi, qi.data(), qi.size(), cudaMemcpyHostToDevice);
+            std::printf("Q8 section: with a Q8_0 inject copy; hash includes rs\n");
+        }
         for (int T = t_lo; T <= t_hi; ++T) for (int apply = 0; apply < 2; ++apply) {
             K::FusedGrArgs a[TM];
+            std::vector<float> rsq;
             for (int t = 0; t < T; ++t) {
                 a[t].R = dR + (size_t) t * D; a[t].R_out = dR + (size_t) t * D; a[t].apply = apply;
                 a[t].bo_prev = dbo + (size_t) t * N; a[t].inj_prev = dinj + (size_t) t * HC;
@@ -172,7 +182,7 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> img;
             for (int q = 0; q < 2; ++q) {
                 for (int t = 0; t < T; ++t) {
-                    a[t].q8_down = q ? dqd : nullptr; a[t].q8_up = q ? dqu : nullptr;
+                    a[t].q8_down = q ? dqd : nullptr; a[t].q8_up = q ? dqu : nullptr; a[t].q8_inject = q ? dqi : nullptr;
                     a[t].q8_mixed = (uint8_t*) dqm + (size_t) t * (N / 32) * 36; a[t].q8_cnt = dcnt;
                 }
                 cudaMemcpy(dR, R.data(), R.size() * 4, cudaMemcpyHostToDevice);
@@ -195,10 +205,12 @@ int main(int argc, char** argv) {
                 cudaMemcpy(p, dR, (size_t) T * D * 4, cudaMemcpyDeviceToHost); p += (size_t) T * D;
                 cudaMemcpy(p, dio, (size_t) T * HC * 4, cudaMemcpyDeviceToHost);
                 if (q) { img.resize((size_t) T * (N / 32) * 36); cudaMemcpy(img.data(), dqm, img.size(), cudaMemcpyDeviceToHost); }
+                if (q && dqi != nullptr) { rsq.resize((size_t) T * HC); cudaMemcpy(rsq.data(), drs, rsq.size() * 4, cudaMemcpyDeviceToHost); }
             }
             unsigned long long hq = 1469598103934665603ull;   // FNV-1a of the Q8 read's outputs and q8_1 image
             for (size_t b = 0; b < o[1].size() * 4; ++b) hq = (hq ^ ((const unsigned char*) o[1].data())[b]) * 1099511628211ull;
             for (size_t b = 0; b < img.size(); ++b) hq = (hq ^ img[b]) * 1099511628211ull;
+            for (size_t b = 0; b < rsq.size() * 4; ++b) hq = (hq ^ ((const unsigned char*) rsq.data())[b]) * 1099511628211ull;
             double num = 0, den = 0, nm = 0, dm = 0;
             for (size_t i = 0; i < (size_t) T * LR; ++i) { num += std::pow(o[1][i] - o[0][i], 2); den += std::pow(o[0][i], 2); }
             for (size_t i = (size_t) T * LR; i < (size_t) T * (LR + N); ++i) { nm += std::pow(o[1][i] - o[0][i], 2); dm += std::pow(o[0][i], 2); }

@@ -1047,7 +1047,10 @@ int main(int argc, char** argv) {
         // --no-kq: STRATA_PF_FUSED_KQ left as it is (HIP: the ctest entry for STRATA_PF_FUSED_Q8D=1 on gfx12, which must cover the i-quant / Q8_0
         // pairs without the K-quant switch that also covers them there)
         // --turing: the Turing set only (STRATA_PF_FUSED_SM75=1; the ctest entry prefill_fused_iq_test_sm75): skipped (77) unless the card is a compute capability 7.5 one or emulates it (STRATA_EMULATE_CC=75)
+        // With STRATA_PF_FUSED_SM75_TQ=1 also runs Gyro-S (TQK6 + TQK7) and Gyro-M (TQ2_T + TQ2_T) against the trellis reference (and with it unset checks that neither trellis pair is taken on 7.5).
         bool unset_pf = false, no_kq = false, turing_only = false;
+        const char* sm75_tq_env = std::getenv("STRATA_PF_FUSED_SM75_TQ");
+        const bool sm75_tq_on = sm75_tq_env != nullptr && sm75_tq_env[0] == '1';
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--unset-pf-fused") == 0) unset_pf = true;
             if (std::strcmp(argv[i], "--no-kq") == 0) no_kq = true;
@@ -1062,11 +1065,15 @@ int main(int argc, char** argv) {
         }
 #ifdef _WIN32
         if (unset_pf) _putenv_s("STRATA_PF_FUSED", ""); else _putenv_s("STRATA_PF_FUSED", "1");   // (an empty value removes it)
+        // --turing: STRATA_PF_FUSED_TQ=1 as the engine build sets it (own_only_switches.hpp), so STRATA_PF_FUSED_SM75_TQ is the only gate checked below
+        if (turing_only && std::getenv("STRATA_PF_FUSED_TQ") == nullptr) _putenv_s("STRATA_PF_FUSED_TQ", "1");
         (void) no_kq;   // (Windows: the K-quant switch is not set here)
 #else
         if (unset_pf) unsetenv("STRATA_PF_FUSED"); else setenv("STRATA_PF_FUSED", "1", 1);
         if (!no_kq) setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
         setenv("STRATA_PF_FUSED_Q50", "1", 1);  // (gfx12's Q5_0 down pairs)
+        // --turing: STRATA_PF_FUSED_TQ=1 as the engine build sets it (own_only_switches.hpp), so STRATA_PF_FUSED_SM75_TQ is the only gate checked below
+        if (turing_only) setenv("STRATA_PF_FUSED_TQ", "1", 0);   // (a value the caller set is kept)
 #endif
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
@@ -1074,6 +1081,11 @@ int main(int argc, char** argv) {
         if (!fused::available() && !fused::native_supported(GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL)) {
             std::printf("the fused kernels need sm_80 or newer (or gfx11 / gfx12 matrix cores): skipped\n");
             return 77;
+        }
+        if (turing_only && !sm75_tq_on) {
+            if (fused::native_supported(145, 146) || fused::native_supported(144, 144))
+                throw std::runtime_error("--turing: trellis pairs must not be taken on 7.5 when STRATA_PF_FUSED_SM75_TQ is unset");
+            std::printf("--turing: STRATA_PF_FUSED_SM75_TQ unset -> TQK6 + TQK7 and TQ2_T + TQ2_T not taken (checked)\n");
         }
         // --no-kq (the STRATA_PF_FUSED_Q8D entry): a device or build where the i-quant / Q8_0 pairs are not covered without the K-quant switch
         // (gfx11, or the switch unset) skips instead of failing
@@ -1194,21 +1206,30 @@ int main(int argc, char** argv) {
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
             // the i-quant / Q8_0 and Q8_0 / Q8_0 pairs run only when --only names them (ctest prefill_fused_iq_test_q8d / _q8gu), so every
-            // other entry runs what it ran
-            if (!only && ((p.d == GGML_TYPE_Q8_0 && !kq_gu(p)) || tq_type(p.gu) || nvfp4_pair(p))) continue;   // (and the trellis pairs: _tq; the NVFP4 pair: _nvfp4)
+            // other entry runs what it ran; on --turing with STRATA_PF_FUSED_SM75_TQ=1 the two Gyro trellis pairs run as well
+            const bool turing_tq = turing_only && sm75_tq_on && tq_type(p.gu);
+            if (!only && ((p.d == GGML_TYPE_Q8_0 && !kq_gu(p)) || (tq_type(p.gu) && !turing_tq) || nvfp4_pair(p))) continue;   // (and the trellis pairs: _tq; the NVFP4 pair: _nvfp4)
             if (!fused::native_supported((int) p.gu, (int) p.d)) {
                 // the Q2_0 / Q2_0 pair is the Turing opt-in's (STRATA_PF_FUSED_SM75=1; the only pair set up there) or, on sm_80+,
-                // STRATA_PF_FUSED_Q2N=1's: skip what this device does not take (--only=NAME still insists)
+                // STRATA_PF_FUSED_Q2N=1's: skip what this device does not take (--only=NAME still insists, and --turing with STRATA_PF_FUSED_SM75_TQ=1 insists on the trellis pairs)
                 const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
                 const bool q50_pair = p.d == GGML_TYPE_Q5_0;   // (STRATA_PF_FUSED_Q50=1 only: off by default on CUDA and gfx12)
                 int major = 0;
                 (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
                 major = strata::cc_major_of(major);   // (STRATA_EMULATE_CC=75 on a bigger card: the pairs Turing has no kernels for are skipped as on the real card)
-                if ((major < 8 || turing_pair || q50_pair) && (!only || turing_only)) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
+                if (!turing_tq && (major < 8 || turing_pair || q50_pair) && (!only || turing_only)) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
             }
             ++pairs_run;
             if (ref) reference_part(p, s);
+            if (ref && turing_tq) {
+                reference_part(p, s, 256, 32, 3);   // avg 80 > 56: exercises Turing WW 2 (128-row) alongside default 256/64 (WW 4, 64-row)
+                if (!g_folded) {   // also check Hadamard-folded Gyro path (set_down_rotation) on Turing
+                    g_folded = true;
+                    try { reference_part(p, s); } catch (...) { g_folded = false; throw; }
+                    g_folded = false;
+                }
+            }
             // Q5_0 down (round 0217): tails and boundaries - a handful of tokens, one token, a tile's edge (63, 65 rows an expert is not controlled, the counts follow the routing)
             if (ref && (p.d == GGML_TYPE_Q5_0 || edge)) {
                 reference_part(p, s, 33, 16, 5);

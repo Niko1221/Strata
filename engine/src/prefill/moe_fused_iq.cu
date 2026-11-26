@@ -2681,7 +2681,8 @@ struct DevInfo {
     int occ_q8gu = 1;   // the Q8_0 gate/up kernels' blocks per multiprocessor (the down keeps occ_kq8)
     bool q6k = false;   // sm_80+ with STRATA_PF_FUSED_Q6K=1: the Q6_K gate/up kernels, and the Q8_0 down ones behind them (opt-in, phase 4)
     int occ_q6k = 1;    // the Q6_K gate/up kernels' blocks per multiprocessor (the down keeps occ_kq8)
-    bool tq = false;    // the trellis kernels (TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down) are set up: by default on sm_86 with 80+ SMs, STRATA_PF_FUSED_TQ=1 on any sm_80+ (fused_tq_default.hpp)
+    bool tq = false;    // the trellis kernels (TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down) are set up: by default on sm_86 with 80+ SMs, STRATA_PF_FUSED_TQ=1 on any sm_80+ (fused_tq_default.hpp), or Turing with STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_TQ=1 STRATA_PF_FUSED_SM75_TQ=1
+    bool t75_tq_w4 = false;   // Turing: all four 64-row (WW 4) trellis instances fit 64 KB and set up too (else t75_ww falls back to WW 2)
     int occ_tq_gu = 1, occ_tq_d = 1;   // their blocks per multiprocessor (their own)
     bool nvfp4 = false; // the NVFP4 kernels (gate/up and down) are set up on this sm_80+ card (whether a layer takes them: native_supported)
     int occ_nvfp4_gu = 1, occ_nvfp4_d = 1;   // their blocks per multiprocessor (their own)
@@ -2743,6 +2744,14 @@ bool q6k_cuda_requested() {
 int tq_env() {
     static const int v = strata::prefill::fused_tq::env_value();
     return v;
+}
+// STRATA_PF_FUSED_SM75_TQ on CUDA (opt-in, off by default; NOT in own_only_default_switches): "1" (first character '1') lets a
+// Turing (sm_75) card with STRATA_PF_FUSED_SM75=1 and STRATA_PF_FUSED_TQ=1 set up and take Gyro-S's TQK6 / TQK7 and Gyro-M's
+// TQ2_T / TQ2_T layers on native_kernel (m8n8k16 int8 MMAs, ASTAGES_DEV 2: WW 2 uses 49,664 B and WW 4 uses 63,744 B, both within
+// Turing's 64 KB).  Anything else (unset, "0"): byte-for-byte today's path on every card.
+bool sm75_tq_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_SM75_TQ"); return v != nullptr && v[0] == '1'; }();
+    return on;
 }
 [[maybe_unused]] bool kq_on();   // STRATA_PF_FUSED_KQ (below): the HIP builds' reading of the switch (the CUDA builds decide in dev_info with fused_tile::kq_takes)
 template <int T, bool GU, int WW, int NT = THREADS, bool F16 = false> bool setup_ww(int& occ) {
@@ -2934,6 +2943,23 @@ const DevInfo& dev_info() {
                 d.occ_q6k = o9;
                 d.occ_kq8 = o10;
             }
+        }
+        // Gyro trellis pairs on Turing (opt-in STRATA_PF_FUSED_SM75_TQ=1 beside STRATA_PF_FUSED_SM75=1 and STRATA_PF_FUSED_TQ=1):
+        // WW 2 (128x128, 49,664 B) must set up for all four instances; WW 4 (256x64, 63,744 B) is set up when it also fits 64 KB
+        // (else d.t75_tq_w4 stays false and t75_ww falls back to WW 2).  A failed WW 2 setup leaves d.tq false and layers on today's path.
+        if (int og = 1 << 20, od = 1 << 20; d.ok && sm75_tq_requested() && strata::prefill::fused_tq::on(tq_env(), d.s86, d.sms) &&
+            setup_ww<T_TQK6, true, 2>(og) && setup_ww<T_TQ2_T, true, 2>(og) &&
+            setup_ww<T_TQK7, false, 2>(od) && setup_ww<T_TQ2_T, false, 2>(od)) {
+            int og4 = og, od4 = od;
+            if (setup_ww<T_TQK6, true, 4>(og4) && setup_ww<T_TQ2_T, true, 4>(og4) &&
+                setup_ww<T_TQK7, false, 4>(od4) && setup_ww<T_TQ2_T, false, 4>(od4)) {
+                d.t75_tq_w4 = true;
+                og = og4;
+                od = od4;
+            }
+            d.tq = true;
+            d.occ_tq_gu = og;
+            d.occ_tq_d = od;
         }
         d.occ = d.ok ? occ : 1;
         cudaGetLastError();
@@ -3227,12 +3253,15 @@ bool t75_pair_ok(const DevInfo& d, int gu_type, int d_type) {
     if (gu_type == T_Q4_K || gu_type == T_Q5_K) return d.kq && (d_type == T_Q5_1 || (d_type == T_Q8_0 && d.kq8));
     if (gu_type == T_Q6_K) return d.q6k && d_type == T_Q8_0;
     if (gu_type == T_Q8_0) return d.q8gu && d_type == T_Q8_0;
+    if (is_tq(gu_type) || is_tq(d_type))
+        return d.tq && ((gu_type == T_TQK6 && d_type == T_TQK7) || (gu_type == T_TQ2_T && d_type == T_TQ2_T && strata::prefill::fused_tq::gyro_m_on(tq_env())));
     if (t75_bit(gu_type, true) == 0 || (d.t75_set & t75_bit(gu_type, true)) == 0) return false;
     return d_type == T_Q2_0 || (d_type == T_Q8_0 && d.q8d) || (t75_bit(d_type, false) != 0 && (d.t75_set & t75_bit(d_type, false)) != 0);
 }
 // Turing: the instances a launch can run.  The 64-row (WW 4) instance of a format that did not fit 64 KB does not exist, so such a launch takes the 128-row one
 int t75_ww(const DevInfo& d, const NativeGeom& g, int ww) {
     if (ww != 4) return ww;
+    if (is_tq(g.gu_type) || is_tq(g.d_type)) return d.t75_tq_w4 ? 4 : 2;
     const bool gu4 = g.gu_type == T_Q2_0 || (d.t75_w4 & t75_bit(g.gu_type, true)) != 0;
     const bool d4 = g.d_type == T_Q2_0 || (d.t75_w4 & t75_bit(g.d_type, false)) != 0;
     return gu4 && d4 ? 4 : 2;
@@ -3450,7 +3479,7 @@ bool native_supported(int gu_type, int d_type) {
         const DevInfo& d = dev_info();
         return d_type == T_Q8_0 && d.ok && d.q6k && d.occ_nt <= 0 && !d.ws;
     }
-    // The trellis pairs (phase 4; default on sm_86 with 80+ SMs, STRATA_PF_FUSED_TQ=1 on any sm_80+ card; d.tq): Gyro-S's TQK6 / TQK7 and Gyro-M's TQ2_T / TQ2_T only, same conditions.  (A trellis
+    // The trellis pairs (phase 4; default on sm_86 with 80+ SMs, STRATA_PF_FUSED_TQ=1 on any sm_80+ card, or Turing with STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_TQ=1 STRATA_PF_FUSED_SM75_TQ=1; d.tq): Gyro-S's TQK6 / TQK7 and Gyro-M's TQ2_T / TQ2_T only, same conditions.  (A trellis
     // down behind any other gate/up, or the reverse: MMQ.)
     if (is_tq(gu_type) || is_tq(d_type)) {
         // the compiled geometry must suit the trellis path: whole 128-value blocks along both K, and (a folded down) the FP32 H of a row,
@@ -3460,7 +3489,7 @@ bool native_supported(int gu_type, int d_type) {
         const DevInfo& d = dev_info();
         // Gyro-S's pair follows the default rule (d.tq); Gyro-M's TQ2_T / TQ2_T has no gate series yet: only with STRATA_PF_FUSED_TQ=1 (fused_tq::gyro_m_on)
         const bool pair = (gu_type == T_TQK6 && d_type == T_TQK7) || (gu_type == T_TQ2_T && d_type == T_TQ2_T && strata::prefill::fused_tq::gyro_m_on(tq_env()));
-        return geo_ok && pair && d.ok && d.tq && !d.t75 && d.occ_nt <= 0 && !d.ws;
+        return geo_ok && pair && d.ok && d.tq && d.occ_nt <= 0 && !d.ws;
     }
     // NVFP4 (ModelOpt packs), the NVFP4 / NVFP4 pair only (a mixed pair keeps MMQ or the FP16 path): taken when STRATA_PF_FUSED is 1 AS SET (by the user, or by a build without MMQ, whose
     // start-up sets it) - so a build with MMQ keeps its MMQ w4a8 default unless the switch is given - and STRATA_PREFILL_NVFP4 is unset or w4a8 (fp16 asks for the exact reference

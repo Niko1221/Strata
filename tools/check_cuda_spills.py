@@ -28,9 +28,14 @@ yet.  Raising ALLOWED for them would hide any later growth, so they are listed p
 demangled name with its template arguments, without the parameter list) with the bytes measured, each with the reason
 "inherited, not yet fixed".  A violation that is such an instance, at or below its listed bytes, is counted as known and does not
 fail the check; a violation that is not listed (a new instance), and a listed instance above its bytes, fail.  The report line
-prints the known count.  An architecture with no baseline (sm_60: about 400 violations, nothing measured per instance) prints
-"no baseline for <sm>" and its violations fail as before.  --baseline FILE reads another baseline; --print-baseline prints the
-file's entries for the violations found (how the baseline was made).
+prints the known count.  Another CUDA toolkit compiles the same source to other stack sizes, so an architecture can also carry an
+entry per toolkit release, keyed "<sm>@<MAJOR.MINOR>" (sm_75@13.5).  The release is read from the "Build cuda_X.Y." line of the
+given cuobjdump's --version (CMake passes the cuobjdump of the toolkit that compiled the libraries, so give the same one by hand):
+when it is that release, that entry replaces the plain "<sm>" one, whose numbers stay as measured; any other release, or a line
+that cannot be read, uses the plain one.  The report prints the release and the entry each architecture used.  An architecture
+with no baseline (sm_60: about 400 violations, nothing measured per instance) prints "no baseline for <sm>" and its violations
+fail as before.  --baseline FILE reads another baseline; --print-baseline prints the file's entries for the violations found (how
+the baseline was made; for another toolkit's entry, put its output under the key "<sm>@<release>", never over the plain one).
 
 Exit 0 = clean (or only known violations), 1 = a new or grown violation, 2 = the baseline file cannot be read, 77 = cannot run
 here (cuobjdump missing, a library missing; ctest SKIP_RETURN_CODE).
@@ -509,9 +514,12 @@ def instance_key(demangled):
     return s[start:] or demangled
 
 
-def load_baseline(path):
+def load_baseline(path, toolkit=None, used=None):
     """{sm: {instance name: (stack, local, reason)}} from the baseline file; an architecture that is not in the file has no
-    baseline.  A file that cannot be read, or an entry that is incomplete, is an error (ValueError), never an empty baseline."""
+    baseline.  An "<sm>@<toolkit>" entry replaces the plain "<sm>" one when `toolkit` (MAJOR.MINOR) is that release (its key
+    is added to the set `used`, when given); the other releases' entries are read (so a broken one is still an error) and
+    left out.  A file that cannot be read, or an entry that is incomplete or misnamed, is an error (ValueError), never an
+    empty baseline."""
     try:
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
@@ -519,9 +527,16 @@ def load_baseline(path):
         raise ValueError("cannot read the baseline %s: %s" % (path, e))
     if not isinstance(raw, dict):
         raise ValueError("the baseline %s is not a JSON object" % path)
-    out = {}
+    out, own = {}, {}
     for sm, block in raw.items():
-        if sm.startswith("_") or block is None:     # "_about" and the like; null = stated as having no baseline
+        if sm.startswith("_"):                      # "_about" and the like
+            continue
+        arch, at, release = sm.partition("@")
+        if at and not (arch and re.fullmatch(r"[0-9]+\.[0-9]+", release)):
+            raise ValueError("the baseline %s: %s is not <sm>@<MAJOR.MINOR>" % (path, sm))
+        if block is None:                           # null = stated as having no baseline; a toolkit entry must have one
+            if at:
+                raise ValueError("the baseline %s: %s is null" % (path, sm))
             continue
         entries = block.get("instances") if isinstance(block, dict) else None
         if not isinstance(entries, list):
@@ -536,15 +551,21 @@ def load_baseline(path):
             if e["name"] in per:
                 raise ValueError("the baseline %s: %s lists %s twice" % (path, sm, e["name"]))
             per[e["name"]] = (e["stack"], e["local"], e["reason"])
-        out[sm] = per
+        if not at:
+            out[arch] = per
+        elif release == toolkit:
+            own[arch] = per
+            if used is not None:
+                used.add(sm)
+    out.update(own)                                 # this toolkit's own measurement replaces the plain entry whole
     return out
 
 
-def default_baseline():
+def default_baseline(toolkit=None, used=None):
     """The baseline beside this script; a missing file is an empty baseline (every architecture reports "no baseline")."""
     if not os.path.exists(BASELINE_FILE):
         return {}
-    return load_baseline(BASELINE_FILE)
+    return load_baseline(BASELINE_FILE, toolkit, used)
 
 
 def find_violations(rows, names):
@@ -605,13 +626,19 @@ def check(path, rows, names, baseline=None, seen=None, verbose=False):
 
 
 def toolkit_line(cuobjdump):
-    """The last line of `cuobjdump --version` (the toolkit release), for the baseline's "measured_with"."""
+    """The last line of `cuobjdump --version` (the toolkit release): the baseline's "measured_with", and toolkit_release's input."""
     try:
         run = subprocess.run([cuobjdump, "--version"], capture_output=True, text=True, timeout=30)
         lines = [l.strip() for l in run.stdout.splitlines() if l.strip()]
         return lines[-1] if lines else "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def toolkit_release(line):
+    """MAJOR.MINOR from toolkit_line ("Build cuda_13.5.r13.5/compiler.39125733_0" -> "13.5"), or None."""
+    m = re.search(r"\bcuda_(\d+\.\d+)\.", line)
+    return m.group(1) if m else None
 
 
 def main():
@@ -640,10 +667,14 @@ def main():
     baseline = {}
     if not a.list and not a.print_baseline:
         try:
-            baseline = load_baseline(a.baseline) if a.baseline else default_baseline()
+            line, used = toolkit_line(cuobjdump), set()
+            release = toolkit_release(line)
+            baseline = load_baseline(a.baseline, release, used) if a.baseline else default_baseline(release, used)
         except ValueError as e:        # a baseline that cannot be read is never an empty one: that would pass nothing known and hide it
             print("check_cuda_spills: %s" % e)
             return 2
+        print("check_cuda_spills: cuobjdump release %s (%s); toolkit entries used: %s" % (
+            release or "not recognised", line, ", ".join(sorted(used)) or "none, the plain ones"))
     out = csv.writer(sys.stdout, lineterminator="\n") if a.list else None
     if out:
         out.writerow(["library", "object", "sm", "reg", "stack", "local", "shared", "kernel", "mangled", "gated"])
