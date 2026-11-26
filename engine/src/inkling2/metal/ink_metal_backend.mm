@@ -216,11 +216,12 @@ public:
         for (int v = 0; v < c.n_visits; ++v) {
             if (!c.is_swa[c.phys_for_visit(v)]) { ck.swa_k[v].clear(); ck.swa_v[v].clear(); continue; }
             const size_t stride = (size_t)runner_.visit_kv_stride[v];
-            const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
-            ck.swa_k[v].resize(n);
-            ck.swa_v[v].resize(n);
-            std::memcpy(ck.swa_k[v].data(), runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
-            std::memcpy(ck.swa_v[v].data(), runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+            const size_t slot_bytes = runner_.kv_k[v].bytes / runner_.max_slots;
+            const size_t bytes = std::min<size_t>(seq_len, stride) * (slot_bytes / stride);
+            ck.swa_k[v].resize(bytes);
+            ck.swa_v[v].resize(bytes);
+            std::memcpy(ck.swa_k[v].data(), runner_.kv_k[v].as<uint8_t>() + slot * slot_bytes, bytes);
+            std::memcpy(ck.swa_v[v].data(), runner_.kv_v[v].as<uint8_t>() + slot * slot_bytes, bytes);
         }
         for (int l = 0; l < 3; ++l) { ck.dsp_k[l].clear(); ck.dsp_v[l].clear(); }
         ck.frnn.clear();
@@ -252,9 +253,9 @@ public:
         runner_.restore_slot(slot, ck.sconv);
         for (int v = 0; v < c.n_visits; ++v) {
             if (ck.swa_k[v].empty()) continue;
-            const size_t stride = (size_t)runner_.visit_kv_stride[v];
-            std::memcpy(runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_k[v].data(), ck.swa_k[v].size() * 2);
-            std::memcpy(runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_v[v].data(), ck.swa_v[v].size() * 2);
+            const size_t slot_bytes = runner_.kv_k[v].bytes / runner_.max_slots;
+            std::memcpy(runner_.kv_k[v].as<uint8_t>() + slot * slot_bytes, ck.swa_k[v].data(), ck.swa_k[v].size());
+            std::memcpy(runner_.kv_v[v].as<uint8_t>() + slot * slot_bytes, ck.swa_v[v].data(), ck.swa_v[v].size());
         }
         if (runner_.use_dspark && !ck.frnn.empty()) {
             const size_t D = (size_t)c.hidden;
@@ -603,7 +604,7 @@ private:
         int seq_len = 0;
         ink_metal::InkMetalRunner::SlotSconvSnap sconv;
         std::vector<float> frnn;
-        std::vector<std::vector<uint16_t>> swa_k, swa_v;   // per visit; empty for a global visit
+        std::vector<std::vector<uint8_t>> swa_k, swa_v;   // per visit; empty for a global visit
         std::vector<uint16_t> dsp_k[3], dsp_v[3];          // DSpark context layers with a ring (0 and 2)
     };
     void drop_ckpt(int slot) {
