@@ -523,8 +523,15 @@ struct InkDFlash2 {
             INK_CK(cudaFuncSetAttribute(df2::k_df2_gemv_sf4<8>, cudaFuncAttributeMaxDynamicSharedMemorySize, 9 * kFF + 64));
         }
         // the first rings are taken now, inside the start-up reserve; later slots are taken at their first use
-        for (int s = 0; s < std::min(max_slots, 8); ++s)
-            if (!ensure_slot(s)) { err = "not enough GPU memory for the DFlash 2 context rings"; return false; }
+        // As many as fit: on a 16 GB card in compact mode the mix leaves room for 6 or 7 of the 8 (11-26: all 8 or nothing meant no drafter at all there); a slot without a ring decodes plainly.
+        int with_ring = 0;
+        for (int s = 0; s < std::min(max_slots, 8); ++s) {
+            if (!ensure_slot(s)) break;
+            ++with_ring;
+        }
+        if (with_ring == 0) { err = "not enough GPU memory for the DFlash 2 context rings"; return false; }
+        for (int s = with_ring; s < std::min(max_slots, 8); ++s) slot_dead[s] = 1;   // never retried later: the memory they would take is what the rest of the engine needs
+        if (with_ring < std::min(max_slots, 8)) std::fprintf(stderr, "[InkDFlash2] only %d of %d context rings fit on this card; the other slots decode without a drafter\n", with_ring, std::min(max_slots, 8));
         ready = true;
         return true;
     }
