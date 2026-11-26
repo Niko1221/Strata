@@ -43,18 +43,35 @@ constexpr int kSlots = kMaxSplits + 1;   // + the verify tail
 
 __device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
 
+// ldmatrix and mma.m16n8k16 need sm_80 or newer (Turing / Volta device passes of a multi-arch build must still assemble: the bodies are a trap there, the host never
+// selects the tensor-core attention below sm_120: it is a fast-set part of the RTX 50 rows)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800)
+#define INK_TC_ATTN_NO_MMA 1
+#endif
 __device__ __forceinline__ void ldsm_x4(uint32_t (&r)[4], const void* p) {
+#ifdef INK_TC_ATTN_NO_MMA
+    r[0] = r[1] = r[2] = r[3] = 0u; (void)p; __trap();
+#else
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(smem_u32(p)));
+#endif
 }
 __device__ __forceinline__ void ldsm_x4_t(uint32_t (&r)[4], const void* p) {
+#ifdef INK_TC_ATTN_NO_MMA
+    r[0] = r[1] = r[2] = r[3] = 0u; (void)p; __trap();
+#else
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(smem_u32(p)));
+#endif
 }
 __device__ __forceinline__ void mma16816(float (&c)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
+#ifdef INK_TC_ATTN_NO_MMA
+    (void)c; (void)a; (void)b0; (void)b1; __trap();
+#else
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+#endif
 }
 __device__ __forceinline__ uint32_t pack_h2(float lo, float hi) {
     const __half2 h = __floats2half2_rn(lo, hi);
