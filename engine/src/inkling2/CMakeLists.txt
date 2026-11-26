@@ -296,6 +296,4 @@ if(STRATA_INK_BUILD_PREFIX_TESTS)
   add_test(NAME ink_shared_prefix COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shared_prefix.py $<TARGET_FILE:ink_prefix_mock>)
   set_tests_properties(ink_shared_prefix PROPERTIES TIMEOUT 30)
-  add_executable(ink_ckpt_lru_test ink_ckpt_lru_test.cpp)
-  add_test(NAME ink_ckpt_lru COMMAND ink_ckpt_lru_test)
 endif()

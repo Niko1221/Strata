@@ -3,6 +3,8 @@
 // MIT License - Copyright (c) 2026 Strata contributors
 #pragma once
 
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
@@ -16,9 +18,14 @@ namespace ink2 {
 inline int ink_prompt_ckpt_slots(int max_slots, const char* env) {
     if (max_slots <= 8) return max_slots;
     if (!env || !*env) return 0;
-    const int n = std::atoi(env);
+    // a whole decimal number or nothing: "12junk", "" and junk mean 0 (off); too large means every slot
+    char* end = nullptr;
+    errno = 0;
+    const long n = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0') return 0;
+    if (errno == ERANGE) return n > 0 ? max_slots : 0;
     if (n <= 0) return 0;
-    return n < max_slots ? n : max_slots;
+    return n < max_slots ? static_cast<int>(n) : max_slots;
 }
 
 // Before `self` saves a checkpoint: the slot whose checkpoint must go so at most `cap` stay valid (the least recently saved or

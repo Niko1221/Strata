@@ -21,6 +21,12 @@ int main() {
     check(ink_prompt_ckpt_slots(16, "-3") == 0, "negative: none");
     check(ink_prompt_ckpt_slots(32, "12") == 12, "32 slots, 12 asked");
     check(ink_prompt_ckpt_slots(16, "64") == 16, "never more than the slots");
+    check(ink_prompt_ckpt_slots(16, "12junk") == 0, "trailing junk: off");
+    check(ink_prompt_ckpt_slots(16, "abc") == 0, "not a number: off");
+    check(ink_prompt_ckpt_slots(16, "4 ") == 0, "trailing space: off");
+    check(ink_prompt_ckpt_slots(16, "99999999999999999999") == 16, "out of range high: every slot");
+    check(ink_prompt_ckpt_slots(16, "-99999999999999999999") == 0, "out of range low: off");
+    check(ink_prompt_ckpt_slots(16, "3000000000") == 16, "above INT_MAX: every slot");
 
     // 4 slots may hold one, slots 0..5; uses: 5 is the oldest
     std::vector<bool> valid = {true, true, false, true, true, true};
