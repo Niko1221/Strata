@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -81,6 +82,28 @@ inline void add(void (*k)(A...)) {
     reg().fns.insert(reinterpret_cast<const void*>(k));
 }
 
+/// Same, with the kernel's name; STRATA_INK_PDL_SKIP=a,b skips every kernel whose name contains "a" or "b" (a bisect tool for a slowdown), STRATA_INK_PDL_ONLY=a,b keeps only those.
+inline bool name_listed(const char* name, const char* list) {
+    std::string l(list), tok;
+    for (size_t i = 0; i <= l.size(); ++i) {
+        if (i == l.size() || l[i] == ',') {
+            if (!tok.empty() && std::string(name).find(tok) != std::string::npos) return true;
+            tok.clear();
+        } else {
+            tok += l[i];
+        }
+    }
+    return false;
+}
+template <typename... A>
+inline void add_named(const char* name, void (*k)(A...)) {
+    const char* skip = std::getenv("STRATA_INK_PDL_SKIP");
+    const char* only = std::getenv("STRATA_INK_PDL_ONLY");
+    if (skip != nullptr && *skip != '\0' && name_listed(name, skip)) return;
+    if (only != nullptr && *only != '\0' && !name_listed(name, only)) return;
+    reg().fns.insert(reinterpret_cast<const void*>(k));
+}
+
 inline void register_all();   // defined in ink_pdl_kernels.cuh, after every kernel is declared
 
 #ifdef INK_PDL_API
@@ -113,6 +136,10 @@ inline bool rewrite(cudaGraph_t g, RewriteStats& st) {
     if (INK_PDL_GET_EDGES(g, from.data(), to.data(), ed.data(), &ne) != cudaSuccess) { (void)cudaGetLastError(); return false; }
     Registry& R = reg();
     std::unordered_map<cudaGraphNode_t, int> kind;   // 0 not a kernel, 1 a kernel, 2 a kernel that may start early
+    std::unordered_map<cudaGraphNode_t, long> nblk;  // blocks of a kernel node
+    // measured on the 5090: an early-started kernel behind a tiny upstream kernel (1..8 blocks: top-k, bin) only spins; these two knobs bisect that
+    static const long min_up = [] { const char* e = std::getenv("STRATA_INK_PDL_MINBLK"); return e ? std::atol(e) : 2L; }();      // the upstream kernel has at least this many blocks (default 2: behind a one-block kernel an early start only spins; measured on the 5090, exact 121.9 vs 139.1 tok/s)
+    static const long max_down = [] { const char* e = std::getenv("STRATA_INK_PDL_MAXBLK"); return e ? std::atol(e) : 0L; }();   // the downstream kernel has at most this many (0 = no limit)
     auto classify = [&](cudaGraphNode_t n) -> int {
         auto it = kind.find(n);
         if (it != kind.end()) return it->second;
@@ -121,7 +148,9 @@ inline bool rewrite(cudaGraph_t g, RewriteStats& st) {
         if (cudaGraphNodeGetType(n, &t) == cudaSuccess && t == cudaGraphNodeTypeKernel) {
             cudaKernelNodeParams p{};
             k = 1;
+            nblk[n] = 0;
             if (cudaGraphKernelNodeGetParams(n, &p) == cudaSuccess && p.func != nullptr) {
+                nblk[n] = (long)p.gridDim.x * (long)p.gridDim.y * (long)p.gridDim.z;
                 std::lock_guard<std::mutex> lock(R.mu);
                 if (R.fns.count(p.func) != 0) {
                     auto c = R.ok_cache.find(p.func);
@@ -142,6 +171,7 @@ inline bool rewrite(cudaGraph_t g, RewriteStats& st) {
         const int a = classify(from[i]), b = classify(to[i]);
         if (a >= 1 && b >= 1) ++st.kernel_edges;
         if (ed[i].type != 0 || ed[i].from_port != 0 || a < 1 || b != 2) continue;
+        if (nblk[from[i]] < min_up || (max_down > 0 && nblk[to[i]] > max_down)) continue;
         rf.push_back(from[i]); rt.push_back(to[i]); olde.push_back(ed[i]);
         cudaGraphEdgeData n = ed[i];
         n.type = (unsigned char)cudaGraphDependencyTypeProgrammatic;
