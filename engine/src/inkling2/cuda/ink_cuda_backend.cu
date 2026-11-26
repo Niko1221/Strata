@@ -91,6 +91,35 @@ public:
 
     bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
+    bool set_tail_skip(const std::string& spec, std::string& err) override {
+        if (!initialized_) { err = "CUDA backend not initialized"; return false; }
+        strata::ink::InkTailCfg c;
+        if (!strata::ink::ink_tail_parse(spec, c, err)) return false;
+        (void)strata::ink::ink_tail_cfg();   // read the environment first, so it cannot overwrite this later
+        if (c.stats && !strata::ink::ink_tail_cnt_dev()) {
+            void* p = nullptr;
+            if (cudaMalloc(&p, sizeof(unsigned long long) * strata::ink::kInkTailVisits * strata::ink::kInkTailStatW) != cudaSuccess) { err = "no memory for the tail-skip counters"; return false; }
+            cudaMemset(p, 0, sizeof(unsigned long long) * strata::ink::kInkTailVisits * strata::ink::kInkTailStatW);
+            strata::ink::ink_tail_cnt_dev() = static_cast<unsigned long long*>(p);
+        }
+        cudaStreamSynchronize(runner_->st);
+        strata::ink::ink_tail_cfg_ref() = c;
+        // the CUDA graphs of the one-token step carry the old arguments: drop them so the next step captures the new ones
+        for (auto& e : runner_->graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        runner_->graph_cache.clear();
+        return true;
+    }
+
+    bool tail_stats(std::vector<uint64_t>& out, bool reset) override {
+        out.assign((size_t)strata::ink::kInkTailVisits * strata::ink::kInkTailStatW, 0);
+        unsigned long long* d = strata::ink::ink_tail_cnt_dev();
+        if (!initialized_ || !d) return false;
+        cudaStreamSynchronize(runner_->st);
+        if (cudaMemcpy(out.data(), d, out.size() * sizeof(unsigned long long), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (reset) cudaMemset(d, 0, out.size() * sizeof(unsigned long long));
+        return true;
+    }
+
     std::string device_info() const override { return dev_info_; }
 
     BackendStats stats() const override {

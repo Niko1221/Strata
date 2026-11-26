@@ -2500,7 +2500,7 @@ inline void launch_ink_moe_hybrid(
             ink_has_int8_tc() ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, InkTailArgs{});
 
     if (M == 1 && hyb.exact_mode && hyb.exact_graph) {
         // exact mode: the card copies the cold experts in and computes them itself (see k_ink_stage_plan)

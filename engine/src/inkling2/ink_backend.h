@@ -115,6 +115,11 @@ public:
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }
 
+    // Opt-in router tail skip (lane TAILSKIP, 2026-11-26; spec syntax in cuda/ink_tail_skip.cuh). Off by default; only the CUDA backend has it.
+    // set_tail_skip("off") switches it off. tail_stats() returns [48 visits][10] counters (see kInkTailStatW) and can reset them.
+    virtual bool set_tail_skip(const std::string& spec, std::string& err) { (void)spec; err = "this backend has no tail skip"; return false; }
+    virtual bool tail_stats(std::vector<uint64_t>& out, bool reset) { (void)out; (void)reset; return false; }
+
     // Batched 48-visit forward across 1..64 active slots!
     // logits_out: [batch.count_logits(), vocab_unpadded] FP32 (already softcapped by 30*tanh(z/30) and sliced to 200058).
     virtual bool forward_batch(

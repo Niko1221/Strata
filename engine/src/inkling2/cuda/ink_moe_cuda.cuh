@@ -17,6 +17,7 @@
 #include "ink_cuda.cuh"
 #include "strata/core/ink_caps.hpp"
 #include "ink_moe_fp4_sm120.cuh"
+#include "ink_tail_skip.cuh"
 
 #if defined(__CUDACC__)
 #include <mma.h>
@@ -214,7 +215,8 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
     int32_t* __restrict__ topk_idx,     // [M, 8]
     float* __restrict__ topk_w,         // [M, 8]
     float route_scale,
-    int M) {
+    int M,
+    InkTailArgs ta) {
     const int tok = blockIdx.x;
     if (tok >= M) return;
     const int lane = threadIdx.x;
@@ -260,10 +262,51 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
             if (id[j] == mi) sc[j] = -1e30f;
         }
     }
+    // Opt-in TAIL SKIP (ink_tail_skip.cuh): every lane holds the same best_id / best_p, so drop_mask is warp-uniform.
+    uint32_t drop_mask = 0;
+    float kept_psum = psum;
+    if (ta.on) {
+        float dropped_share = 0.0f, dropped_p = 0.0f;
+        const float inv_ps = 1.0f / (psum + 1e-20f);
+#pragma unroll
+        for (int k = kInkTopK - 1; k >= 1; --k) {
+            if (k < ta.first_rank0) continue;
+            const float s = best_p[k] * inv_ps;
+            if (s <= ta.thr && (ta.cap <= 0.0f || dropped_share + s <= ta.cap)) {
+                drop_mask |= (1u << k);
+                dropped_share += s;
+                dropped_p += best_p[k];
+            }
+        }
+        if (ta.renorm && drop_mask) kept_psum = psum - dropped_p;
+        if (ta.cnt && lane == 0) {
+            unsigned long long* c = ta.cnt + (size_t)ta.visit * kInkTailStatW;
+            atomicAdd(c + 0, 1ull);
+            if (drop_mask) {
+#pragma unroll
+                for (int k = 1; k < kInkTopK; ++k) if (drop_mask & (1u << k)) atomicAdd(c + 1 + k, 1ull);
+                atomicAdd(c + 9, (unsigned long long)(dropped_share * 1.0e6f + 0.5f));
+            }
+        }
+        if (drop_mask) {
+#pragma unroll
+            for (int k = 1; k < kInkTopK; ++k) {
+                if (drop_mask & (1u << k)) {
+                    float* row = ta.y_pair + ((size_t)tok * kInkTopK + k) * kInkHidden;
+                    for (int d = lane; d < kInkHidden; d += 32) row[d] = 0.0f;
+                }
+            }
+        }
+    }
     if (lane < kInkTopK) {
-        const float inv = route_scale / (psum + 1e-20f);
-        topk_idx[(size_t)tok * kInkTopK + lane] = best_id[lane];
-        topk_w[(size_t)tok * kInkTopK + lane] = best_p[lane] * inv;
+        const float inv = route_scale / (kept_psum + 1e-20f);
+        if (ta.on && (drop_mask & (1u << lane))) {
+            topk_idx[(size_t)tok * kInkTopK + lane] = -1;
+            topk_w[(size_t)tok * kInkTopK + lane] = 0.0f;
+        } else {
+            topk_idx[(size_t)tok * kInkTopK + lane] = best_id[lane];
+            topk_w[(size_t)tok * kInkTopK + lane] = best_p[lane] * inv;
+        }
     }
 }
 
@@ -291,6 +334,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
 
     for (int i = t; i < P; i += 128) {
         const int e = topk_idx[i];
+        if (e < 0) continue;   // a slot dropped by the opt-in tail skip (ink_tail_skip.cuh)
         if (ex[e].tier <= 1) atomicAdd(&s_cnt[e], 1);  // tier 0=VRAM, 1=pinned host GPU-readable, 2=CPU hybrid
     }
     __syncthreads();
@@ -339,7 +383,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     // Scatter sorted pair indices & source token indices
     for (int i = t; i < P; i += 128) {
         const int e = topk_idx[i];
-        if (ex[e].tier > 1) continue;
+        if (e < 0 || ex[e].tier > 1) continue;
         const int pos = s_off[e] + atomicAdd(&s_fill[e], 1);
         tb.pairs[pos] = i;
         tb.tok_idx[pos] = i / kInkTopK;
@@ -3643,7 +3687,8 @@ inline void launch_ink_moe_router(
     int M,
     InkMoeWorkspace& ws,
     float route_scale = kInkRouteScale,
-    bool force_exact_dec = false) {
+    bool force_exact_dec = false,
+    bool tail_ok = false) {
     if (M <= 16) {
         if (M == 1)      k_ink_router_gemv_smallM<1><<<kInkExperts, 256, 0, st>>>(x_f32, gate_w, ws.r_logits, M);
         else if (M <= 4) k_ink_router_gemv_smallM<4><<<kInkExperts, 256, 0, st>>>(x_f32, gate_w, ws.r_logits, M);
@@ -3658,7 +3703,22 @@ inline void launch_ink_moe_router(
             (!force_exact_dec && ink_has_int8_tc()) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    InkTailArgs ta;   // on = 0: the kernel runs as before
+    if (tail_ok) {
+        const InkTailCfg& tc = ink_tail_cfg();
+        const int tv = ink_tail_cur_visit();
+        if (tc.on && tv >= 0 && tv < kInkTailVisits && ((tc.visit_mask >> tv) & 1ull)) {
+            ta.on = 1;
+            ta.first_rank0 = tc.first_rank - 1;
+            ta.renorm = tc.renorm;
+            ta.visit = tv;
+            ta.thr = tc.thr;
+            ta.cap = tc.cap;
+            ta.y_pair = ws.y_pair;
+            ta.cnt = tc.stats ? ink_tail_cnt_dev() : nullptr;
+        }
+    }
+    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, ta);
     ink_moe_mark(0);
 }
 
@@ -3877,7 +3937,7 @@ inline void launch_ink_moe(
     bool force_exact_dec = false,
     bool run_reduce8 = true) {
     // 1. Exact Top-8 / 128 sigmoid router
-    launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec);
+    launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec, /*tail_ok=*/true);
 
     // 2. Dispatch GPU-resident experts
     launch_ink_moe_dispatch_only(st, sec4_base, experts, info, x_f32, M, ws, force_exact_dec, false);
