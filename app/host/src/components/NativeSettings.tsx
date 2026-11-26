@@ -131,7 +131,7 @@ export function NativeSettings({ model }: {
     const family = (native?.catalog?.families ?? []).find(f => f.sizes.some(s => s.id === model))?.family ?? null;
     const isHy4 = family === HY4_FAMILY || /^hy4-flash/i.test(model);
     const isInkling = family === INKLING_FAMILY || /^inkling-2-mini/i.test(model);
-    const draftingOpts = isHy4 ? ['dfly2', 'off'] : isInkling ? ['dspark', 'off'] : draftingChoices(family, native?.capabilities?.dflash2);
+    const draftingOpts = isHy4 ? ['dfly2', 'off'] : isInkling ? ['dflash2', 'off'] : draftingChoices(family, native?.capabilities?.dflash2);
     const draftingOffered = !!draftingOpts;
     const rows = (native?.fields ?? []).filter(f => (f.id !== 'drafting' || draftingOffered) && (!isHy4 || !HY4_HIDDEN_FIELDS.has(f.id)) && (!isInkling || !INKLING_HIDDEN_FIELDS.has(f.id)) && `${tr(f.label)} ${f.id} ${tr(f.group)}`.toLowerCase().includes(query.toLowerCase())).map(f => f.id === 'drafting' && draftingOpts ? { ...f, choices: draftingOpts } : f);
     const switchRows = switches.filter(sw => `${tr(sw.label)} ${sw.id} ${tr(switchGroup(sw))}`.toLowerCase().includes(query.toLowerCase()));

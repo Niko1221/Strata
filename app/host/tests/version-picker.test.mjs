@@ -33,7 +33,7 @@ test('IQ3_S downloaded and recommended: it is at the top once, with the Download
   // GUI-FB3 item 1: the dropdown carries no "Recommended" tag or badge (the owner, 11-02); the order and the "Downloaded" tag stay
   assert.doesNotMatch(source, /tr\("Recommended"\)/);
   assert.doesNotMatch(source, /version-tag--pick/);
-  assert.match(source, /tr\(have \? <span className="version-row__tags"><span className="version-tag version-tag--have">\{tr\("Downloaded"\)\}<\/span><\/span> : null\)/);
+  assert.match(source, /tr\(have \? <span className="version-tag version-tag--have">\{tr\("Downloaded"\)\}<\/span> : null\)/);        // the Downloaded tag is for a downloaded version only (0.2.23: a quant that is no longer offered gets its own tag beside it)
 });
 
 test('the recommended versions from us come first, in order, then the downloaded ones, then the rest', () => {
