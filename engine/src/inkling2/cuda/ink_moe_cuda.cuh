@@ -18,6 +18,7 @@
 #include "strata/core/ink_caps.hpp"
 #include "ink_moe_fp4_sm120.cuh"
 #include "ink_sm120_cfg.cuh"
+#include "ink_iq_grids.cuh"
 
 #if defined(__CUDACC__)
 #include <mma.h>
@@ -414,6 +415,9 @@ __host__ __device__ inline bool ink_gguf_has_gpu_kernel(uint32_t t) noexcept {
     switch (t) {
         case 0: case 1: case 2: case 6: case 8: case 10: case 11: case 12: case 13: case 14: case 18: case 20: case 23: case 30: case 39:
             return true;
+        // GSQ-RCO files: IQ2_XXS 16, IQ2_XS 17, IQ1_S 19, IQ3_S 21, IQ2_S 22, Q2_0 42 (own decode kernels in ink_gguf_row_dot_multi)
+        case 16: case 17: case 19: case 21: case 22: case 42:
+            return true;
         default:
             return false;
     }
@@ -432,6 +436,12 @@ __host__ __device__ inline size_t ink_gguf_row_bytes(uint32_t t, int K) noexcept
         case 12: return (size_t)(K / 256) * 144u;
         case 13: return (size_t)(K / 256) * 176u;
         case 14: return (size_t)(K / 256) * 210u;
+        case 16: return (size_t)(K / 256) * 66u;
+        case 17: return (size_t)(K / 256) * 74u;
+        case 19: return (size_t)(K / 256) * 50u;
+        case 21: return (size_t)(K / 256) * 110u;
+        case 22: return (size_t)(K / 256) * 82u;
+        case 42: return (size_t)(K / 64) * 18u;
         case 18: return (size_t)(K / 256) * 98u;
         case 20: return (size_t)(K / 32) * 18u;
         case 23: return (size_t)(K / 256) * 136u;
@@ -509,6 +519,13 @@ __global__ void __launch_bounds__(256) k_ink_quant_q8_1_g32(
 
 __device__ __forceinline__ uint32_t gguf_pack4_i8(int8_t a, int8_t b, int8_t c, int8_t d) {
     return (uint32_t)(uint8_t)a | ((uint32_t)(uint8_t)b << 8) | ((uint32_t)(uint8_t)c << 16) | ((uint32_t)(uint8_t)d << 24);
+}
+
+// Four codebook magnitudes (one per byte, 1..127) with a 4-bit sign nibble (bit k = element k negative) applied: -g = (g ^ 0xFF) - 0xFF per byte.
+__device__ __forceinline__ uint32_t ink_apply_signs4(uint32_t g, uint32_t nib) {
+    const uint32_t e = (nib & 1u) | ((nib & 2u) << 7) | ((nib & 4u) << 14) | ((nib & 8u) << 21);   // 0x01 in the bytes to negate
+    const uint32_t m = e * 0xFFu;                                                                // 0xFF there
+    return __vsub4(g ^ m, m);
 }
 
 // Vectorized DP4A multi-token GGUF row dot product: reads & unpacks each weight superblock ONCE across up to MAX_M tokens!
@@ -803,6 +820,154 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     w0 = gguf_pack4_i8(wv[0], wv[1], wv[2], wv[3]);
                     w1 = gguf_pack4_i8(wv[4], wv[5], wv[6], wv[7]);
                 }
+            }
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    int32_t isum = 0;
+                    float xd = 0.0f;
+                    if (valid) {
+                        const InkQ8_1_G32& xb = xq_ptrs[m][b];
+                        xd = xb.d;
+                        const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                        isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    }
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
+                    if (l4 == 0 && valid) acc[m] = fmaf(dl * xd, (float)isum, acc[m]);
+                }
+            }
+        }
+    } else if (ggml_type == 16) {  // IQ2_XXS: 256 elems = 66 B (d, 32 x u16: per 32-sub-block 4 grid bytes + one u32 of 4 x 7-bit signs and a 4-bit scale)
+        for (int b = 0; b < (K >> 8); ++b) {
+            const uint8_t* blk = row + (size_t)b * 66u;
+            const float d = f16_to_f32(ld16_u(blk));
+            const uint8_t* q = blk + 2 + sub * 8;
+            const uint32_t gi = ld32_u(q);
+            const uint32_t sw = ld32_u(q + 4);
+            const float dl = d * (0.5f + (float)(sw >> 28)) * 0.25f;
+            const uint32_t sg = kInkKsignsIq2[(sw >> (7 * l4)) & 127u];
+            const uint64_t g = kInkIq2XxsGrid[(gi >> (8 * l4)) & 0xFFu];
+            const uint32_t w0 = ink_apply_signs4((uint32_t)g, sg & 0xFu);
+            const uint32_t w1 = ink_apply_signs4((uint32_t)(g >> 32), sg >> 4);
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
+                    const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                    int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
+                    if (l4 == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                }
+            }
+        }
+    } else if (ggml_type == 17) {  // IQ2_XS: 256 elems = 74 B (d, 32 x u16 = 9-bit grid index + 7-bit sign index, 8 scale bytes of two nibbles)
+        for (int b = 0; b < (K >> 8); ++b) {
+            const uint8_t* blk = row + (size_t)b * 74u;
+            const float d = f16_to_f32(ld16_u(blk));
+            const uint32_t qv = ld16_u(blk + 2 + sub * 8 + l4 * 2);
+            const uint32_t sc = blk[66 + sub];
+            const float dl = d * (0.5f + (float)((sc >> (4 * (l4 >> 1))) & 0xFu)) * 0.25f;
+            const uint32_t sg = kInkKsignsIq2[qv >> 9];
+            const uint64_t g = kInkIq2XsGrid[qv & 511u];
+            const uint32_t w0 = ink_apply_signs4((uint32_t)g, sg & 0xFu);
+            const uint32_t w1 = ink_apply_signs4((uint32_t)(g >> 32), sg >> 4);
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
+                    const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                    int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);   // two scales per sub-block: lanes (0,1) and (2,3)
+                    if ((l4 & 1) == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                }
+            }
+        }
+    } else if (ggml_type == 22) {  // IQ2_S: 256 elems = 82 B (d, qs[64] = 32 grid bytes then 32 sign bytes, qh[8], scales[8] of two nibbles)
+        for (int b = 0; b < (K >> 8); ++b) {
+            const uint8_t* blk = row + (size_t)b * 82u;
+            const float d = f16_to_f32(ld16_u(blk));
+            const uint32_t qh = blk[66 + sub];
+            const uint32_t sc = blk[74 + sub];
+            const uint32_t gi = (uint32_t)blk[2 + sub * 4 + l4] | ((qh << (8 - 2 * l4)) & 0x300u);
+            const uint32_t sg = blk[34 + sub * 4 + l4];
+            const float dl = d * (0.5f + (float)((sc >> (4 * (l4 >> 1))) & 0xFu)) * 0.25f;
+            const uint64_t g = kInkIq2SGrid[gi];
+            const uint32_t w0 = ink_apply_signs4((uint32_t)g, sg & 0xFu);
+            const uint32_t w1 = ink_apply_signs4((uint32_t)(g >> 32), sg >> 4);
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
+                    const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                    int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
+                    if ((l4 & 1) == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                }
+            }
+        }
+    } else if (ggml_type == 21) {  // IQ3_S: 256 elems = 110 B (d, qs[64], qh[8], signs[32], scales[4] of two nibbles; one scale per 32-sub-block)
+        for (int b = 0; b < (K >> 8); ++b) {
+            const uint8_t* blk = row + (size_t)b * 110u;
+            const float d = f16_to_f32(ld16_u(blk));
+            const uint32_t qh = blk[66 + sub];
+            const uint8_t* qs = blk + 2 + sub * 8;
+            const uint32_t i1 = (uint32_t)qs[2 * l4]     | ((qh << (8 - 2 * l4)) & 256u);
+            const uint32_t i2 = (uint32_t)qs[2 * l4 + 1] | ((qh << (7 - 2 * l4)) & 256u);
+            const uint32_t sg = blk[74 + sub * 4 + l4];
+            const float dl = d * (float)(1 + 2 * ((blk[106 + (sub >> 1)] >> (4 * (sub & 1))) & 0xFu));
+            const uint32_t w0 = ink_apply_signs4(kInkIq3SGrid[i1], sg & 0xFu);
+            const uint32_t w1 = ink_apply_signs4(kInkIq3SGrid[i2], sg >> 4);
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
+                    const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                    int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
+                    if (l4 == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                }
+            }
+        }
+    } else if (ggml_type == 19) {  // IQ1_S: 256 elems = 50 B (d, qs[32], qh u16[8]: 3 index bits x4, 3-bit scale, delta sign); value = dl * (grid + delta)
+        for (int b = 0; b < (K >> 8); ++b) {
+            const uint8_t* blk = row + (size_t)b * 50u;
+            const float d = f16_to_f32(ld16_u(blk));
+            const uint32_t qh = ld16_u(blk + 34 + sub * 2);
+            const float dl = d * (float)(2 * ((qh >> 12) & 7u) + 1);
+            const float delta = (qh & 0x8000u) ? -0.125f : 0.125f;
+            const uint64_t g = kInkIq1SGrid[(uint32_t)blk[2 + sub * 4 + l4] | (((qh >> (3 * l4)) & 7u) << 8)];
+            const uint32_t w0 = (uint32_t)g, w1 = (uint32_t)(g >> 32);   // one signed byte per value, -1 / 0 / +1
+#pragma unroll
+            for (int m = 0; m < MAX_M; ++m) {
+                if (m < n_e) {
+                    const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
+                    const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
+                    int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
+                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
+                    if (l4 == 0) acc[m] = fmaf(dl, fmaf(delta, xb.s, xb.d * (float)isum), acc[m]);   // xb.s = d * sum(q)
+                }
+            }
+        }
+    } else if (ggml_type == 42) {  // Q2_0: 64 elems = 18 B (fp16 scale, 16 bytes of 2-bit codes, value = (q - 1) * d; two 32-blocks per 64)
+        const int nblk = K >> 5;
+        for (int b0 = 0; b0 < nblk; b0 += 8) {
+            const int b = b0 + sub;
+            const bool valid = (b < nblk);
+            float dl = 0.0f;
+            uint32_t w0 = 0u, w1 = 0u;
+            if (valid) {
+                const uint8_t* blk = row + (size_t)(b >> 1) * 18u;
+                dl = f16_to_f32(ld16_u(blk));
+                const uint32_t qv = ld16_u(blk + 2 + (b & 1) * 8 + l4 * 2);
+                const uint32_t lo = qv & 0xFFu, hi = qv >> 8;
+                const uint32_t c0 = (lo & 0x03u) | ((lo & 0x0Cu) << 6) | ((lo & 0x30u) << 12) | ((lo & 0xC0u) << 18);
+                const uint32_t c1 = (hi & 0x03u) | ((hi & 0x0Cu) << 6) | ((hi & 0x30u) << 12) | ((hi & 0xC0u) << 18);
+                w0 = __vsub4(c0, 0x01010101u);
+                w1 = __vsub4(c1, 0x01010101u);
             }
 #pragma unroll
             for (int m = 0; m < MAX_M; ++m) {
