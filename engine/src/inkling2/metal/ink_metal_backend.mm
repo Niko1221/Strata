@@ -365,7 +365,11 @@ public:
         } else {
             if (!runner_.forward_batch(st, nullptr, nullptr, err)) return false;
         }
-        (void)taps_out;
+        if (taps_out && st.capture_taps && runner_.use_dspark) {   // the hidden state after visits 5, 23, 41 and the final norm
+            const float* t = runner_.b_taps4.as<float>();
+            const size_t n = (size_t)st.M * D;
+            for (int i = 0; i < 4; ++i) taps_out->taps[i].assign(t + i * n, t + (i + 1) * n);
+        }
         return true;
     }
 
