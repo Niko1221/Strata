@@ -522,6 +522,9 @@ __global__ void __launch_bounds__(128) k_ink_tc_merge(
 }
 
 
+// Runtime override (the KL harness of f-perflong-kl sets it): -1 = the part switch decides, 0 = old kernels, 1 = this kernel (when its buffers exist).
+inline int& force_ref() { static int v = -1; return v; }
+
 // Slices per KV head for the card in use: 8 heads x nsp blocks = two full waves of the resident blocks (2 per SM), so no wave is left part empty
 // (5090, 170 SMs: 85 slices = 680 blocks; 5070, 48 SMs: 24). STRATA_INK_TC_ATTN_SPLITS=<n> (16..96) overrides it for the A/B runs.
 inline int splits_cur() {
