@@ -4758,7 +4758,7 @@ private:
             launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
             return;
         }
-        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
+        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && (M > 16 || r9700_->cfg.fp8_decode) && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
             auto it = r9700_->fp8_map.find(W);
             if (it != r9700_->fp8_map.end() && it->second.K == K && N <= it->second.N &&
                 (M <= 4 || r9700_->ensure_x_fp8(M, K))) {
@@ -5960,7 +5960,7 @@ private:
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
                         bool ran_fp8_qkv = false;
-                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                        if (r9700_ && r9700_->cfg.fp8_trunk && r9700_->cfg.fp8_decode && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
                             auto it_fp8 = r9700_->fp8_map.find(w_cat);
                             if (it_fp8 != r9700_->fp8_map.end()) {
                                 r9700::k_r9700_fp8_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
@@ -5989,7 +5989,7 @@ private:
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
                         bool ran_fp8_qrg = false;
-                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                        if (r9700_ && r9700_->cfg.fp8_trunk && r9700_->cfg.fp8_decode && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
                             auto it_fp8 = r9700_->fp8_map.find(w_cat);
                             if (it_fp8 != r9700_->fp8_map.end()) {
                                 r9700::k_r9700_fp8_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(
@@ -6614,7 +6614,7 @@ private:
                 } else {
                     k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
                 }
-                if (r9700_ && r9700_->cfg.fp8_moe && !exact_rows_ &&
+                if (r9700_ && r9700_->cfg.fp8_moe && (B > 16 || r9700_->cfg.fp8_decode) && !exact_rows_ &&
                     (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
                     layer_dn_class_[ip] == layer_gu_class_[ip]) {
                     // R9700 Native Zero-Spill Persistent FP8 WMMA MoE (BM=64 prefill, BM=16 decode/C64)
@@ -7853,7 +7853,7 @@ private:
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
                         bool ran_fp8_qkv = false;
-                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                        if (r9700_ && r9700_->cfg.fp8_trunk && r9700_->cfg.fp8_decode && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
                             auto it_fp8 = r9700_->fp8_map.find(w_cat);
                             if (it_fp8 != r9700_->fp8_map.end()) {
                                 r9700::k_r9700_fp8_gemv1_qkvrg<<<(tot_n + ns + 7) / 8, 256, 0, stream_>>>(
@@ -7882,7 +7882,7 @@ private:
                     if (B == 1 && D <= 4096 && (D & 7) == 0) {
                         const int ns = sink_is_f32 ? c_.n_head : 0;
                         bool ran_fp8_qrg = false;
-                        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
+                        if (r9700_ && r9700_->cfg.fp8_trunk && r9700_->cfg.fp8_decode && !exact_rows_ && D <= 2304 && (D & 15) == 0) {
                             auto it_fp8 = r9700_->fp8_map.find(w_cat);
                             if (it_fp8 != r9700_->fp8_map.end()) {
                                 r9700::k_r9700_fp8_gemv1_qkvrg<<<(qrg_n + ns + 7) / 8, 256, 0, stream_>>>(

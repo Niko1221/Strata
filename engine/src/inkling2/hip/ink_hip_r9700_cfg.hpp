@@ -21,6 +21,7 @@ struct Config {
     bool fp8_trunk = false;      // FAST only: per-row FP8_E4M3FN dense trunk + 383 TF wmma_fp8_f32 / hipBLASLt FP8
     bool fp8_moe = false;        // FAST only: native gfx1201 wmma_fp8_f32 SF4/MX8 MoE + BM=16 persistent queue
     bool tree_fp8_moe = false;   // FAST only: double-buffered BM=16 FP8 WMMA MoE in forward_tree_verify (B=2..16)
+    bool fp8_decode = false;     // FAST only: the FP8 trunk and FP8 MoE also run for B <= 16 (decode / verify rows); off = they run for prompt reading (B > 16) only, decode keeps the shipped kernels
     bool fused_rel_attn = false; // FAST only: fused d_rel=16 wmma_f16 inside FlashAttn (deletes 1.61 GiB sc_rel_bias_)
     bool fixed_swa_ring = false; // Decouple swa_ring_=1024 via intra-chunk KV reads (saves 40 GiB at C64)
     bool nt_mall = false;        // Non-temporal load_u128_nt expert streams (64 MiB MALL bypass; lossless)
@@ -146,6 +147,7 @@ inline Config resolve_config(int dev, bool ep2_active, int peer_dev) noexcept {
         cfg.fp8_trunk      = detail::parse_env_truthy("STRATA_INK_R9700_FP8_TRUNK", true);
         cfg.fp8_moe        = detail::parse_env_truthy("STRATA_INK_R9700_FP8_MOE", true);
         cfg.tree_fp8_moe   = detail::parse_env_truthy("STRATA_INK_R9700_TREE_FP8_MOE", false);
+        cfg.fp8_decode     = detail::parse_env_truthy("STRATA_INK_R9700_FP8_DECODE", false);   // measured with DFlash 2: FP8 rows for B <= 16 lower decode (prose -14%, chat -16..-21%, tool -20% for the trunk), so off
         cfg.fused_rel_attn = detail::parse_env_truthy("STRATA_INK_R9700_FUSED_ATTN", true);
         cfg.prefill_chunk  = detail::parse_env_int("STRATA_INK_R9700_CHUNK", 8192);
         if (cfg.prefill_chunk < 512) cfg.prefill_chunk = 512;
