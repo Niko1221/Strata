@@ -427,6 +427,33 @@ API without the engine or the vision encoder. The first generation request or `P
 `application/json` and no foreign browser Origin, and return **409** while a request is active or queued). `/api/health`
 aliases `/health`, and `/v1/status` exposes `loaded` and `auto_load`.
 
+**Several models on one port** (opt-in). `terminal/serve/server.py --engine strata --models models.json` serves every run
+config the file lists from one address, one API key and one process. Each model is set up exactly as its own server
+would be; only one holds the GPU at a time:
+
+```json
+{"models": [{"config": "strata-qwen.json"}, {"config": "strata-inkling.json", "args": ["--parallel", "2"]}],
+ "default": "qwen3.8-flash-next-iq3_s", "auto_swap": false, "swap_wait_s": 120}
+```
+
+| Key | What it does |
+| --- | --- |
+| `config` | A run config (`strata-<model>.json`); a relative path is the models file's folder. |
+| `args` | Server options for that model only, for example `--parallel 2`. `--host`, `--port`, `--api-key` and the like are for the whole server. |
+| `default` | The model loaded at start. `null`: none, the first request or `/v1/load` loads one. Left out: the first model. `--default-model NAME` (or `none`) overrides it. |
+| `auto_swap` | `false` (default): a request for a model that is not loaded gets **409** `model_not_loaded`. `true`: the request switches to its model first. |
+| `swap_wait_s` | How long a switch waits for the running requests of the loaded model (default 120). It never cuts an answer; after that it answers **409** `model_busy` and nothing changes. |
+
+A request goes to the model its `"model"` names (the model's name or an alias, any case). Any other name goes to the
+loaded model, which answers as it does on its own server. `POST /v1/load {"model": "NAME"}` switches: it waits for the
+running requests, unloads the loaded model and loads the other one; requests for the old model get **503**
+`model_switching` with `Retry-After` meanwhile. If the new model cannot load, the old one is loaded again and the answer
+is **503** `model_load_failed` with the reason. `POST /v1/unload {"model": "NAME"}` unloads one. `GET /v1/models` lists
+every model as `loaded` or `unloaded`; the other GET routes (`/health`, `/props`, `/metrics`, ...) answer for the loaded
+model, or for the one named by `?model=NAME`. Every model must use the same API key: give it to the server, not in one
+model's config. Each model's own settings (its reasoning-effort words, `env_to_user`, `engine_ready_s`) are in force while
+it holds the GPU. A switch costs what a start of the other model costs, plus the unload of the loaded one.
+
 **Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
 `"vram_elastic": true` (engine flag `--vram-elastic`) the expert cache is allocated in 512 MiB segments
 (`"vram_segment_mib"`). `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much VRAM is free;
@@ -696,7 +723,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 - `max_tokens`, `max_completion_tokens` and `max_output_tokens` of `-1`, `0` or left out mean no cap: the answer may use the room
   left in the context.
 - The `model` field is not matched against the loaded model, because one server serves one model and OpenAI clients often
-  send names of their own. Only `GET /v1/models` says what is loaded.
+  send names of their own. Only `GET /v1/models` says what is loaded. With `--models` it picks the model (see
+  [Several models on one port](#sharing-the-gpu-with-other-programs-optional)).
 - One request at a time unless `"parallel": N` is set. Images only when set up with them. No video.
 
 ### Context beyond 262K (rope scaling, experimental, off unless you pick it)
