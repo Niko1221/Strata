@@ -55,26 +55,36 @@ class Source(Base):
             os.environ["STRATA_SOURCE"] = value
             self.assertEqual(setup.model_source(), want, value)
 
-    def test_auto_is_huggingface_and_never_asks_the_network(self):
-        """#908: setup does not switch hosts by itself, whatever answers."""
-        with mock.patch.object(setup, "reachable", side_effect=AssertionError("no probe")):
+    def test_auto_falls_back_to_modelscope_when_hf_is_silent(self):
+        """In auto, a Hugging Face that does not answer sends the download to ModelScope instead of waiting it out."""
+        with mock.patch.object(setup, "hf_answers", return_value=False):
+            self.assertEqual(setup.model_source(), "modelscope")
+
+    def test_auto_stays_on_huggingface_when_hf_answers(self):
+        setup._sources.clear()
+        with mock.patch.object(setup, "hf_answers", return_value=True):
             self.assertEqual(setup.model_source(), "huggingface")
 
     def test_a_failed_download_recommends_modelscope(self):
         self.assertIn("--source modelscope", setup.source_hint(HF_URL))
         self.assertEqual(setup.source_hint("https://github.com/example/repo/archive/main.zip"), "")
 
-    def test_hf_endpoint_is_a_choice(self):
+    def test_hf_endpoint_is_probed_but_can_fall_back(self):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        with mock.patch.object(setup, "reachable", return_value=True) as r:
+        with mock.patch.object(setup, "hf_answers", return_value=True) as r:
             self.assertEqual(setup.model_source(), "huggingface")
-            r.assert_not_called()
+            r.assert_called_once()
+        setup._sources.clear()
+        with mock.patch.object(setup, "hf_answers", return_value=False):
+            self.assertEqual(setup.model_source(), "modelscope")   # a dead mirror does not block the download
 
     def test_mapping(self):
         self.assertEqual(setup.ms_file(HF_URL), (REPO, PATH))
         self.assertEqual(setup.ms_url(REPO, PATH),
                          "https://www.modelscope.cn/models/" + REPO + "/resolve/master/" + PATH)
-        self.assertIsNone(setup.ms_file("https://huggingface.co/someone/other/resolve/main/x.gguf"))
+        # any HF repo maps, not just the pinned six: ModelScope mirrors new models too (e.g. Inkling-2)
+        self.assertEqual(setup.ms_file("https://huggingface.co/someone/other/resolve/main/x.gguf"),
+                         ("someone/other", "x.gguf"))
         self.assertIsNone(setup.ms_file("https://github.com/example/repo/archive/main.zip"))
 
 
