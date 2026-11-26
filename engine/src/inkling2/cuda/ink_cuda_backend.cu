@@ -28,6 +28,14 @@
 
 namespace strata::ink {
 
+// PERF-STEP: the INT8-screened exact head (ink_head_screen.cuh): STRATA_INK_HEAD_SCREEN=0/1 decides; unset = on in the fast set of a card with the FP8 trunk cache (the 5090 row), off in exact mode and on every other card
+static bool ink_head_screen_wanted(int gpu_id) {
+    const char* e = std::getenv("STRATA_INK_HEAD_SCREEN");
+    if (e != nullptr && e[0] != 0) return e[0] == '1';
+    const auto& c = strata::ink::sm120_cfg(gpu_id);
+    return c.fast && c.fp8_cache;
+}
+
 // Copy 1 slot's 48-visit ShortConv state [48 x 3 x 6656] <-> snapshot buffer (2.5 us on GDDR7!)
 __global__ void __launch_bounds__(256) k_ink_sconv_slot_copy(
     float* const* __restrict__ sconv_pools,  // [48]
@@ -343,7 +351,7 @@ public:
         plan_in.total_vram = prop.totalGlobalMem;
         plan_in.max_slots = max_slots_;
         plan_in.kv_offload_mode = kv_offload_mode;
-        plan_in.build_screen = opts.enable_dspark && mf.m.dspark.present;
+        plan_in.build_screen = (opts.enable_dspark && mf.m.dspark.present) || strata::ink::ink_head_screen_wanted(gpu_id_);   // PERF-STEP: the head screen needs the INT8 index of the unembed
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
         const VramPlan plan = plan_vram_reserve(plan_in);
@@ -986,7 +994,45 @@ public:
                 }
                 return;
             }
-            runner_->head_logits_from(h_src, nw);
+            // PERF-STEP: STRATA_INK_HEAD_SCREEN=1: the exact top-128 of a single row through the INT8 screening index (the full BF16 head and top-k are skipped);
+            // STRATA_INK_HEAD_SCREEN_CHECK=1 also runs the full path and compares every key (the full path's answer is the one returned)
+            static const bool hs_on = strata::ink::ink_head_screen_wanted(gpu_id_);
+            static const bool hs_chk = [] { const char* e = std::getenv("STRATA_INK_HEAD_SCREEN_CHECK"); return e != nullptr && e[0] == '1'; }();
+            static long hs_cmp = 0, hs_bad = 0;
+            if (hs_on && nw == 1 && cand_out && !hs_chk && topk_.ensure(1) && runner_->head_screen_cands(h_src, topk_)) {
+                const int kc = std::min(kInkCandidates, V);
+                const int dst = dst_rows[0];
+                for (int j = 0; j < kc; ++j) {
+                    int32_t id = strata::ink::ink_topk_key_index(topk_.h_out[j]);
+                    if (id < 0 || id >= V) id = 0;
+                    cand_out->val[(size_t)dst * kInkCandidates + j] = strata::ink::ink_topk_key_value(topk_.h_out[j]);
+                    cand_out->idx[(size_t)dst * kInkCandidates + j] = id;
+                }
+                cand_out->finite[dst] = topk_.h_fin[0] != 0 ? 1 : 0;
+                return;
+            }
+            uint64_t hs_ref[strata::ink::kTopkCand];
+            int hs_ref_fin = 1;
+            bool hs_do_cmp = false;
+            if (hs_on && hs_chk && nw == 1 && cand_out && topk_.ensure(1)) {
+                runner_->head_logits_from(h_src, 1);
+                INK_CK(topk_.run(runner_->d_logits, 1, V, runner_->st));
+                INK_CK(cudaStreamSynchronize(runner_->st));
+                std::memcpy(hs_ref, topk_.h_out, sizeof(hs_ref));
+                hs_ref_fin = topk_.h_fin[0];
+                hs_do_cmp = true;
+                if (runner_->head_screen_cands(h_src, topk_)) {
+                    ++hs_cmp;
+                    int bad = ((topk_.h_fin[0] != 0) != (hs_ref_fin != 0)) ? 1 : 0;   // the full path leaves the flag as 0x01010101, not 1
+                    for (int j = 0; j < strata::ink::kTopkCand; ++j) if (topk_.h_out[j] != hs_ref[j]) ++bad;
+                    if (bad) { ++hs_bad; std::fprintf(stderr, "[InkHeadScreen] CHECK step %ld: %d keys differ from the full head\n", hs_cmp, bad); }
+                }
+                if (hs_cmp % 100 == 1) std::fprintf(stderr, "[InkHeadScreen] CHECK %ld steps compared, %ld differ\n", hs_cmp, hs_bad);
+                std::memcpy(topk_.h_out, hs_ref, sizeof(hs_ref));
+                topk_.h_fin[0] = hs_ref_fin;
+            }
+            (void)hs_do_cmp;
+            if (!hs_do_cmp) runner_->head_logits_from(h_src, nw);
             if (hp) INK_CK(cudaStreamSynchronize(runner_->st));
             auto hq1 = hnow();
             if (cand_out && topk_.ensure(nw)) {
