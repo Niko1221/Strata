@@ -37,6 +37,13 @@ if(_ink_mkl_root AND EXISTS "${_ink_mkl_root}/include/oneapi/mkl/blas.hpp")
   if(NOT WIN32)
     target_link_options(strata-inkling PRIVATE "-L${_ink_mkl_root}/lib" "-Wl,-rpath,${_ink_mkl_root}/lib")
     target_link_libraries(strata_inkling_sycl PUBLIC mkl_sycl_blas mkl_intel_lp64 mkl_sequential mkl_core)
+  else()
+    # Windows oneMKL ships the SYCL domain as DLL import libraries: mkl_sycl_blas_dll.lib resolves the SYCL BLAS
+    # symbols and loads mkl_sycl_blas.6.dll at run time (Intel's redistributable), the other three are the classic
+    # threaded/sequential cores the import library calls into. Without this the Windows link stops at
+    # "unresolved external symbol oneapi::mkl::blas::row_major::gemm".
+    target_link_directories(strata_inkling_sycl PUBLIC "${_ink_mkl_root}/lib")
+    target_link_libraries(strata_inkling_sycl PUBLIC mkl_sycl_blas_dll mkl_intel_lp64 mkl_sequential mkl_core)
   endif()
 endif()
 

@@ -573,6 +573,27 @@ Measured on 0.1.65 and reported by an Arc A770 owner with **two** A770 16 GB car
 Two build-environment traps, reported on the same run: `api-ms-win-crt-*.dll` are not in the root of `System32` but
 under `System32\downlevel\`, and `vc_redist.x64` returns `0x80070666` when a newer runtime is already installed.
 
+### Inkling-2-Mini (`strata-inkling`) on Windows
+
+The shape engines build here too. `strata-inkling` is a separate CMake project with a SYCL backend that names Windows
+and the B70 (`intel_gpu_bmg_g31`) in its own target list:
+
+```sh
+cmake -S engine/src/inkling2 -B build-inkling-win -G Ninja -DCMAKE_CXX_COMPILER=icx -DSTRATA_ENABLE_SYCL=ON
+cmake --build build-inkling-win --target strata-inkling
+```
+
+One change was needed for this: on Windows oneMKL ships its SYCL domain as DLL import libraries
+(`mkl_sycl_blas_dll.lib` -> `mkl_sycl_blas.6.dll`), and the backend's link block skipped oneMKL on Windows, so the link
+stopped at `unresolved external symbol oneapi::mkl::blas::row_major::gemm`. It now links the import library and the
+three core libraries. Like the main engine, it needs Intel's redistributable oneAPI runtime beside the exe.
+
+Served by the Terminal server (`--engine strata --config <json>` with `"arch": "inkling2_loop"`), SQ-15
+(14.35 GB) on this B70: loaded in 5.7 s, 14.85 GiB of device memory, KV 1184 MiB at 32K, 1 slot; a 317-token code
+reply came out in 8.7 s (36.6 tok/s end to end), and a 29-token arithmetic question in 1.8 s. The vision file
+(0.64 GB) loads with it. `DSpark` drafting is off until the 636 MB drafter file is passed with `--dspark`
+(the engine prints `dspark=0`).
+
 ## Reporting a problem
 
 Open an issue with the card, the driver version, the `sycl-ls` output, the oneAPI version, the model and flags, and the engine's
