@@ -27,3 +27,17 @@ Run a deterministic comparison of chunked and contiguous input using the packed 
 ```sh
 python smoke_block.py draft-mxfp8.safetensors
 ```
+
+## Run with the Metal target
+
+The single-slot native launcher uses the target's verified tokens and an MLX draft process. Build `strata-inkling` from this branch. For FP8 target KV, also apply the Metal E4M3 implementation from [PR 6983](https://github.com/Niko1221/Strata/pull/6983) before building. The measurements use this combination.
+
+Set `ENGINE` to the compiled binary, `INK_DFLASH_MODEL` to the SQ-10 pack, `INK_DFLASH_ASSETS` to the packed draft directory, and export the latter two variables. From this tool directory, prepare the target layout and output head once.
+
+```sh
+INK_DFLASH_LAYOUT=1 "$ENGINE" --serve --native "$INK_DFLASH_MODEL" --draft off --kv fp8 </dev/null 2>"$INK_DFLASH_ASSETS/layout.log"
+python pack_head.py
+python launch.py "$ENGINE" "$INK_DFLASH_MODEL" "$INK_DFLASH_ASSETS"
+```
+
+The launcher uses MLX and NumPy. Submit a greedy text request through the engine's native stdin protocol after `READY`. The target returns `BT` token records followed by `BDONE` with the number of offered and accepted drafts.

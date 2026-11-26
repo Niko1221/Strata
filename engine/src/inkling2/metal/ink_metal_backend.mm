@@ -387,6 +387,52 @@ public:
         int32_t* out_emitted,
         int* out_drafted,
         std::string& err) override {
+        if (const char* fd_env = std::getenv("INK_DFLASH_FD")) {
+            // Single-slot text probe: send only newly committed feature rows.
+            const int fd = atoi(fd_env);
+            // Mixed batches interleave rows from both slots. Select only this slot's rows and require an unbroken position chain.
+            auto it=runner_.feature_history.find(slot);
+            if(it==runner_.feature_history.end()) return 0;
+            auto& history=it->second;
+            const bool reset=history.sent<0;
+            const int start=std::max({0,history.sent,anchor_pos-2047});
+            const int kept=anchor_pos-start;
+            for(int pos=start;pos<anchor_pos;++pos) if(history.positions[pos%history.capacity]!=pos){err="missing DFlash prefix feature";return -1;}
+            auto transfer = [&](void* data, size_t bytes, bool sending) {
+                char* cursor = static_cast<char*>(data);
+                while (bytes) {
+                    ssize_t n = sending ? write(fd,cursor,bytes) : read(fd,cursor,bytes);
+                    if (n <= 0) return false;
+                    cursor += n; bytes -= n;
+                }
+                return true;
+            };
+            int request[]={start,kept,int(anchor_tok),std::min(7,max_emit-1),slot,int(reset)};
+            if(kept<=0) return 0;
+            if(!transfer(request,sizeof(request),true)){err="draft IPC header";return -1;}
+            const int d=mod_.man.c.hidden;
+            for(int layer=0;layer<4;++layer) for(int pos=start;pos<anchor_pos;++pos) {
+                float* feature=history.rows.data()+((pos%history.capacity)*4+layer)*d;
+                if(!transfer(feature,d*sizeof(float),true)){err="draft IPC features";return -1;}
+            }
+            history.sent=anchor_pos;
+            const int proposed=request[3];
+            ink_metal::InkBatchStep st;
+            st.M=proposed+1; st.slot_ids.assign(st.M,slot); st.pos.resize(st.M); st.tok_ids.resize(st.M);
+            st.tok_ids[0]=anchor_tok;
+            if (!transfer(&st.tok_ids[1],proposed*sizeof(int32_t),false)) {err="draft IPC reply";return -1;}
+            for (int i=0;i<st.M;++i) st.pos[i]=anchor_pos+i;
+            st.compute_logits=true; st.record_verify_ring=true;
+            int32_t ids[8]{};
+            if (!runner_.forward_batch(st,nullptr,ids,err)) return -1;
+            int matched=0;
+            while (matched<proposed && ids[matched]==st.tok_ids[matched+1]) ++matched;
+            std::copy(ids,ids+matched+1,out_emitted);
+            if (matched<proposed) runner_.restore_verify_step(slot,matched);
+            last_ver_slot_=slot;last_ver_pos0_=anchor_pos;last_ver_m_=st.M;last_tree_slot_=-1;
+            if (out_drafted) *out_drafted=proposed;
+            return matched+1;
+        }
         if (!runner_.use_dspark || !runner_.use_dspark_meff || slot < 0 || slot >= runner_.max_slots ||
             max_emit < 2 || anchor_pos <= 0 || anchor_pos + 12 >= runner_.max_ctx) {
             return 0;

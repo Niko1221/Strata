@@ -226,6 +226,13 @@ struct InkMetalRunner {
     mtl::Buffer w_dsp_q_f16[3], w_dsp_k_f16[3], w_dsp_v_f16[3], w_dsp_o_f16[3];
     mtl::Buffer w_dsp_g_f16[3], w_dsp_u_f16[3], w_dsp_d_f16[3];
 
+    struct FeatureHistory {
+        static constexpr int capacity = 2048;
+        int sent = -1;
+        std::vector<float> rows;
+        std::vector<int> positions;
+    };
+    std::unordered_map<int, FeatureHistory> feature_history;
     double last_gpu_ms = 0.0;
 
     bool init(mtl::Context& ctx, InkMetalModel& m, int slots, int ctx_len, int batch_cap,
@@ -383,6 +390,10 @@ struct InkMetalRunner {
 
         // Allocate KV caches & ShortConv state pools (WorkingSet-aware auto-ctx sizing for 16/24/32 GB Mac M1/M2/M3/M4!)
         const auto& c = mod->man.c;
+        if (getenv("INK_DFLASH_LAYOUT")) for (const char* name : {"model.llm.embed.weight", "model.llm.embed_norm.weight", "model.llm.unembed.weight"}) {
+            const auto& t = mod->man.get(name);
+            fprintf(stderr, "probe_tensor %s %s %llu %lld %lld %d %d\n", name, fmt_name(t.fmt), (unsigned long long)(mod->sec1_off+t.off), (long long)t.rows(), (long long)t.cols(), c.vocab_unpadded, c.vocab_padded);
+        }
         {
             const uint64_t ws_lim = cx->recommended_working_set();
             const uint64_t cur_alloc = cx->allocated();
@@ -1090,7 +1101,7 @@ struct InkMetalRunner {
 
         auto run_visit = [&](int ip, int visit, int pass_idx, bool has_msgs) {
             // Capture DSpark tap if visit in {5, 23, 41}
-            if (step.capture_taps && use_dspark) {
+            if ((step.capture_taps && use_dspark) || getenv("INK_DFLASH_FD")) {
                 for (int ti = 0; ti < 3; ++ti) {
                     if (visit == c.dspark_taps[ti]) {
                         push_copy(mtl::Arg::B(b_cur), mtl::Arg::B(b_taps4, (size_t)ti * M_stride * 4), M_stride);
@@ -1948,8 +1959,10 @@ struct InkMetalRunner {
         }
 
         // 6. Optional DSpark tap[3] (visit 48 = h_norm) -> populate DSpark context KV & f_rnn on GPU!
-        if (step.capture_taps && use_dspark) {
+        if ((step.capture_taps && use_dspark) || getenv("INK_DFLASH_FD")) {
             push_copy(mtl::Arg::B(b_h_norm), mtl::Arg::B(b_taps4, (size_t)3 * M_stride * 4), M_stride);
+        }
+        if (step.capture_taps && use_dspark) {
             // Compute all 3 layer mixes into b_in3[0..2] + f_rnn into dsp_frnn_tmp CONCURRENTLY (1 barrier instead of 4!)
             for (int dl = 0; dl < 3; ++dl) {
                 std::string dp = "dspark.layers." + std::to_string(dl);
@@ -2123,7 +2136,21 @@ struct InkMetalRunner {
 
         // Execute ALL 48 visits in ONE Metal command buffer!
         last_gpu_ms = cx->run_graph(ds) * 1e3;
-
+        if (getenv("INK_DFLASH_FD")) {
+            for (int row=0; row<M; ++row) {
+                auto& history=feature_history[step.slot_ids[row]];
+                const int pos=step.pos[row];
+                if (history.rows.empty()) {
+                    history.rows.resize(size_t(FeatureHistory::capacity)*4*D);
+                    history.positions.resize(FeatureHistory::capacity,-1);
+                }
+                if (pos==0) { history.sent=-1; std::fill(history.positions.begin(),history.positions.end(),-1); }
+                const int index=pos%FeatureHistory::capacity;
+                history.positions[index]=pos;
+                for (int layer=0; layer<4; ++layer)
+                    std::memcpy(history.rows.data()+(index*4+layer)*D,b_taps4.as<float>()+(layer*M+row)*D,D*sizeof(float));
+            }
+        }
         // Update latest f_rnn per slot if taps were captured (tree mode commits via commit_tree_path!)
         if (step.capture_taps && use_dspark && !is_tree) {
             const float* src = dsp_frnn_tmp.as<float>();
