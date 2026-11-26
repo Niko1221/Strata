@@ -1,0 +1,4 @@
+__pycache__/
+*.private.json
+extension.json
+.fixture-build/

@@ -1,0 +1,19 @@
+:host{all:initial;--extension-bg:#161c1e;--extension-ink:#edf2f2;--extension-line:#384246;--extension-accent:#49d5ad;font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--extension-ink);color-scheme:dark;position:fixed;right:max(22px,env(safe-area-inset-right));bottom:max(22px,env(safe-area-inset-bottom));z-index:2147483000}
+:host([data-theme=light]){--extension-bg:#fff;--extension-ink:#172326;--extension-line:#c6d0d0;--extension-accent:#086c50;color-scheme:light}
+*,*::before,*::after{box-sizing:border-box}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible{outline:3px solid var(--extension-accent);outline-offset:4px}
+button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}
+.feedback{position:absolute;bottom:calc(100% + 12px);right:0;width:min(360px,calc(100vw - 36px));padding:16px;background:var(--extension-bg);border:1px solid var(--extension-line);border-radius:14px;box-shadow:0 8px 28px #0004;overflow-wrap:anywhere}
+.feedback p{margin:0 0 12px}.feedback button{min-height:38px;border:1px solid var(--extension-line);border-radius:8px;background:transparent;padding:7px 10px;margin:0 5px 0 0}
+.launcher{border:1px solid var(--extension-line);border-radius:999px;padding:11px 19px;background:var(--extension-bg);color:var(--extension-ink);box-shadow:0 4px 18px #0002;min-height:44px;font-weight:600;letter-spacing:.01em;transition:box-shadow .15s ease}
+.launcher:hover{box-shadow:0 5px 24px #0004}
+dialog{width:min(920px,calc(100vw - 36px));height:min(820px,calc(100dvh - 48px));max-width:none;max-height:none;padding:0;border:1px solid var(--extension-line);border-radius:20px;background:var(--extension-bg);color:var(--extension-ink);box-shadow:0 28px 100px #0006;overflow:hidden}
+dialog[open]{display:flex;flex-direction:column}
+dialog::backdrop{background:#080e15a6}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 20px;border-bottom:1px solid var(--extension-line);flex:none;min-height:60px}
+header strong{font-size:12px;letter-spacing:.02em}
+.close{border:1px solid var(--extension-line);background:transparent;border-radius:9px;padding:8px 14px;min-height:38px}
+iframe{width:100%;flex:1;min-height:0;border:0;background:var(--extension-bg)}
+@media(max-width:600px){:host{right:14px;bottom:max(14px,env(safe-area-inset-bottom))}dialog{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:14px}header{padding:8px 16px}.launcher{padding:10px 16px}}
+@media(prefers-reduced-motion:reduce){.launcher{transition:none}}
