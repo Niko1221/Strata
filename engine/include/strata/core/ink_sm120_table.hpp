@@ -173,8 +173,8 @@ constexpr uint32_t kSm120SmallExact = P_L2PF;
 // NV-ADA-AMPERE candidate sets (to be trimmed by the per-card A/B runs; see rel0223/nv-ada-ampere/RESULTS.md). The sm_120 FP4 kernels do not exist here, so no TC_SMALLM / PREFILL / L2PF.
 constexpr uint32_t kAdaBigFast    = P_PF_ATTN | P_FP8_TRUNK | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC | P_TC_ATTN;
 constexpr uint32_t kAmpereBigFast = P_PF_ATTN | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC | P_TC_ATTN;
-constexpr uint32_t kAdaSmallFast    = P_COMPACT | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
-constexpr uint32_t kAmpereSmallFast = P_COMPACT | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAdaSmallFast    = P_COMPACT | P_COMPACT_HYBRID | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAmpereSmallFast = P_COMPACT | P_COMPACT_HYBRID | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
 constexpr uint32_t kAdaExact = 0;
 #define STRATA_SM120_ADA_MOE { {1 << 30, 16, Sm120Tc::Base, Sm120Tc::Base, 0} }, 1
 
@@ -253,7 +253,7 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 5.0f, 0.0f, 0.0f, true, 1},
         // ---- NV-ADA-AMPERE lane: RTX 40 (cc 8.9) and RTX 30 / A-series (cc 8.6). Candidate sets until a card is measured (measured = false: old path unless STRATA_INK_SM120_ROW=<id>) ----
-#define STRATA_ADA_ROW(ID, NAME, SMLO, SMHI, GLO, GHI, NOTE, FAST, EXACT, FP8, C64, FAM)         {ID, NAME, SMLO, SMHI, GLO, GHI, false, NOTE, FAST, EXACT, FP8, C64, STRATA_SM120_ADA_MOE,          0, 0, 0, 0, 512, 768, 1536, 0, 1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false, (FAM) % 10, FAM}
+#define STRATA_ADA_ROW(ID, NAME, SMLO, SMHI, GLO, GHI, NOTE, FAST, EXACT, FP8, C64, FAM)         {ID, NAME, SMLO, SMHI, GLO, GHI, false, NOTE, FAST, EXACT, FP8, C64, STRATA_SM120_ADA_MOE,          0, 0, ((FAST) & P_COMPACT) ? 256 : 0, ((FAST) & P_COMPACT) ? 20 : 0, 512, 768, 1536, 0, 1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false, (FAM) % 10, FAM}
         STRATA_ADA_ROW("4090", "RTX 4090", 120, 136, 22, 26, "RTX 4090 24 GB", kAdaBigFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::Bspec, 89),
         STRATA_ADA_ROW("4080", "RTX 4080", 74, 84, 15, 17, "RTX 4080 16 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
         STRATA_ADA_ROW("4070tis", "RTX 4070 Ti SUPER", 64, 68, 15, 17, "RTX 4070 Ti SUPER 16 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
