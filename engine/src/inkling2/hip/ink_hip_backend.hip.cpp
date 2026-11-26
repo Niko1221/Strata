@@ -1599,7 +1599,7 @@ public:
         }
         auto& sl = slots_[slot];
         sl.release();
-        if (has_df2_) df2_->reset_slot(slot, 0);
+        if (has_df2_) { df2_->reset_slot(slot, 0); df2_skip_[slot] = df2_plain_run_[slot] = 0; }
         sl.allocated = true;
         sl.max_ctx = max_ctx;
         sl.seq_len = 0;
@@ -1618,7 +1618,7 @@ public:
     void reset_slot(int slot) override {
         if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return;
         auto& sl = slots_[slot];
-        if (has_df2_) df2_->reset_slot(slot, 0);
+        if (has_df2_) { df2_->reset_slot(slot, 0); df2_skip_[slot] = df2_plain_run_[slot] = 0; }
         sl.seq_len = 0;
         sl.dspark_len = 0;
         sl.has_snap = false;
@@ -2006,6 +2006,8 @@ public:
         // the drafter reads the target's taps after visits 5, 23, 41 and the final normed state; a model file without an embedded DSpark does not name them
         if (dspark_cfg_.target_visits.size() < 4) dspark_cfg_.target_visits = {5, 23, 41, c_.n_visits};
         df2_ = std::move(d);
+        df2_skip_.assign(max_slots_, 0);
+        df2_plain_run_.assign(max_slots_, 0);
         has_df2_ = true;
     }
 
@@ -2044,6 +2046,7 @@ public:
     int df2_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) {
         if (max_draft <= 0 || slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return 0;
         if (anchor_pos < 1 || df2_->hi[slot] < anchor_pos) return 0;   // no context ingested up to the anchor yet
+        if (static_cast<size_t>(slot) < df2_skip_.size() && df2_skip_[slot] > 0 && !df2_noskip_) { --df2_skip_[slot]; return 0; }
         int32_t ids[7] = {};
         float conf[7] = {};
         if (!df2_->draft(slot, anchor_tok, anchor_pos, ids, conf, err)) return 0;
@@ -2077,6 +2080,11 @@ public:
             std::fprintf(stderr, "\n");
         }
         for (int i = 0; i < nd; ++i) out_ids[i] = ids[i];
+        // after a plain decision the next steps do not draft at all (the draft costs 3.4 ms on a 7900 XT, more on RDNA2): 1, 2, 3, 3 steps for 1, 2, 3, 4+ plain decisions in a row
+        if (static_cast<size_t>(slot) < df2_skip_.size()) {
+            if (nd == 0) { df2_plain_run_[slot] = std::min(df2_plain_run_[slot] + 1, 3); df2_skip_[slot] = df2_plain_run_[slot]; }
+            else df2_plain_run_[slot] = 0;
+        }
         return nd;
     }
 
@@ -6063,6 +6071,8 @@ private:
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
     double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO); 8 when part of the experts is on the host
     bool df2_ratio_set_ = false;
+    std::vector<int> df2_skip_, df2_plain_run_;              // per slot: steps left without a draft after plain decisions
+    bool df2_noskip_ = std::getenv("STRATA_INK_DFLASH2_NOSKIP") != nullptr;
     bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
     double df2_plain_ = 1.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain, STRATA_INK_DFLASH2_PLAIN=0 turns it off)
     int max_slots_ = 1;
