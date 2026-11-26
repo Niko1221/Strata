@@ -1974,16 +1974,28 @@ public:
             const int s = batch.slot_ids[b];
             if (s >= 0 && s < max_slots_ && !df2_->ensure_slot(s)) { /* that slot has no drafts; its rows are skipped by the ring kernel (null ring) */ }
         }
-        df2_->note_ingest(batch.slot_ids.data(), batch.pos.data(), B);
+        // A prompt's rows older than the drafter's window before the prompt's end are never read: a prefill batch starts at its first row that can matter
+        // (hint_prompt_len gives the prompt's end; decode batches are never skipped).
+        df2_off_ = (B >= 64) ? df2_->skip_prefix(batch.slot_ids.data(), batch.pos.data(), B) : 0;
+        df2_->note_ingest(batch.slot_ids.data() + df2_off_, batch.pos.data() + df2_off_, B - df2_off_);
         (void)err;
         return true;
     }
 
-    void df2_ingest(int B) {
-        df2_->ingest_dev(reinterpret_cast<const float*>(sc_taps_[0].dev_ptr), reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
-                         reinterpret_cast<const float*>(sc_taps_[2].dev_ptr), reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
-                         reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), reinterpret_cast<const int32_t*>(sc_pos_.dev_ptr), B);
+    void hint_prompt_len(int slot, int prompt_len) override {
+        if (has_df2_) df2_->hint_prompt(slot, prompt_len);
     }
+
+    void df2_ingest(int B) {
+        const int off = df2_off_;
+        static const bool no_ingest = std::getenv("STRATA_INK_DFLASH2_NOINGEST") != nullptr;   // ablation: the taps are captured, nothing is ingested
+        if (off >= B || no_ingest) return;
+        const size_t D = static_cast<size_t>(c_.hidden);
+        df2_->ingest_dev(reinterpret_cast<const float*>(sc_taps_[0].dev_ptr) + off * D, reinterpret_cast<const float*>(sc_taps_[1].dev_ptr) + off * D,
+                         reinterpret_cast<const float*>(sc_taps_[2].dev_ptr) + off * D, reinterpret_cast<const float*>(sc_taps_[3].dev_ptr) + off * D,
+                         reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr) + off, reinterpret_cast<const int32_t*>(sc_pos_.dev_ptr) + off, B - off);
+    }
+    int df2_off_ = 0;   // first row of the current batch that the drafter ingests
 
     // One linear chain of up to max_draft tokens. The window follows the expected-tokens-per-cost rule of the CUDA backend: the chain's cumulative confidences are the
     // prefix probabilities, a verify row costs 1 - (15/16)^rows of the MoE share (ratio). Returns the number of draft tokens (0 = a plain step).

@@ -1262,6 +1262,26 @@ struct InkHipDFlash2 {
         n_ingest_rows += n;
     }
 
+    // The end of a request's prompt: its rows more than kKeep positions before it are never attended (the window is 2048), so a prefill batch skips them.
+    std::vector<int64_t> skip_below;
+    void hint_prompt(int slot, int prompt_len) {
+        if (slot < 0 || slot >= max_slots) return;
+        if (skip_below.size() < (size_t)max_slots) skip_below.assign(max_slots, 0);
+        constexpr int kKeep = hdf2::kRingCap - 16;
+        skip_below[slot] = prompt_len > kKeep ? (int64_t)prompt_len - kKeep : 0;
+    }
+    // the number of leading rows of a prefill batch that no draft can ever read (they stay skipped even when the batch is a prefix of several slots' rows: the scan stops at the first row that matters)
+    int skip_prefix(const int32_t* slots, const int32_t* pos, int n) const {
+        if (skip_below.empty()) return 0;
+        int i = 0;
+        while (i < n) {
+            const int s = slots[i];
+            if (s < 0 || s >= max_slots || skip_below[s] <= 0 || pos[i] >= skip_below[s]) break;
+            ++i;
+        }
+        return i;
+    }
+
     // rows at positions >= keep_len were ingested with a verify batch and then rejected: only [0, keep_len) is context
     void rollback(int slot, int64_t keep_len) {
         if (slot < 0 || slot >= max_slots) return;
@@ -1273,6 +1293,7 @@ struct InkHipDFlash2 {
     void reset_slot(int slot, int64_t pos) {
         if (slot < 0 || slot >= max_slots) return;
         lo[slot] = hi[slot] = pos;
+        if (!skip_below.empty()) skip_below[slot] = 0;
     }
 
     // ---- the draft ------------------------------------------------------------------------------------------------------------
