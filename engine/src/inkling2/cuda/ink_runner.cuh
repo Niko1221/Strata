@@ -5,6 +5,8 @@
 #pragma once
 
 #include "ink_attn.cuh"
+#include "ink_attn_shared.cuh"   // opt-in STRATA_INK_VERIFY_SHARED_KV: one KV read per verify step
+#include "ink_attn_probe.cuh"   // debug only (STRATA_INK_ATTN_PROBE), no effect unless that env var is set
 #include "ink_cuda.cuh"
 #include "ink_hybrid.cuh"
 #include "ink_elastic_kv_ssd.cuh"
@@ -2769,6 +2771,7 @@ struct InkCudaRunner {
         cur_moe_ws = &moe_ws;
 
         INK_CK(cudaSetDevice(m.primary_gpu));
+        (void)ink_verify_shared_cfg();   // STRATA_INK_VERIFY_SHARED_KV: read the switch and run its start-up check here, outside any graph capture
         {
             const char* hv = std::getenv("STRATA_INK_HASH");
             if (hv && hv[0] == '1') {
@@ -4987,6 +4990,9 @@ struct InkCudaRunner {
                         d_k, d_v, d_tree_anc32, d_tree_dep,
                         p0_val, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp);
                 } else {
+                    // opt-in (STRATA_INK_VERIFY_SHARED_KV, off by default; LCTX, f-lctx 1cb531beb): a global-visit verify step reads each KV cell once for a group of rows; bit-identical partials
+                    if (!(mode == 2 && ink_launch_splitk_shared(st, d_q, d_rel_table, d_sinks, kv_desc[visit], slot0, d_pos, d_k, d_v,
+                                                                d_tree_anc, d_attn_pm, d_attn_pl, d_attn_po, M, n_sp)))
                     k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                         d_q, d_rel_table, d_sinks,
                         kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
@@ -5131,6 +5137,10 @@ struct InkCudaRunner {
                     kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
                     d_attn_out, M);
             }
+        }
+        if (mode == 0 && M == 1 && !is_swa) {   // STRATA_INK_ATTN_PROBE (debug): read-only look at the softmax mass of this global visit; a no-op when the env var is unset
+            auto& probe = InkAttnProbe::get();
+            if (probe.on) probe.run(st, visit, kv_desc[visit], slot0, p0_val, d_q, d_rel_table, d_sinks, d_gate_attn, d_attn_out);
         }
         prof_mark_end(3); prof_mark_start();
 
