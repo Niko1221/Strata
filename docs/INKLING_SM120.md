@@ -26,7 +26,7 @@ same way and runs the BF16 / Q8_ROW GEMMs when it has none.
 |---|---|
 | `STRATA_INK_SM120=0` | the old path, always (this also turns the default off). The old names `STRATA_INK_RTX5090=0` and `STRATA_INK_RTX5060TI=0` do the same. |
 | `STRATA_INK_SM120=1` | fast mode on a card that has a table row, also on a card where it is not the default. |
-| `STRATA_INK_SM120_EXACT=1` | the form that gives the same tokens as the old path: only the parts that do not change an answer (5090: the deep verify tree; 5060 Ti 16 GB: multi-user drafting and L2 prefetch). With `STRATA_INK_SM120=1` or alone. |
+| `STRATA_INK_SM120_EXACT=1` | the form that gives the same tokens as the old path: only the parts that do not change an answer (5090: the deep verify tree; 5060 Ti 16 GB: L2 prefetch only). With `STRATA_INK_SM120=1` or alone. |
 | not set | the default of the table above. |
 | `STRATA_INK_SM120_<PART>=0|1` | one part on or off: `PF_ATTN FP8_TRUNK MOE_OPT DENSE_OPT DSPARK_OPT C64_SPEC COMPACT COMPACT_XCODE COMPACT_KV FP8_INPLACE TC_SMALLM PLD PACK PREFILL CORE_GRAPH L2PF`. `=0` takes the part out of the default set; an explicit `=1` turns it on on any cc 12.0 card. |
 | `FP8_TRUNK`, `FP8_INPLACE` | `FP8_TRUNK` is ONE implementation on every card: the 5090's cublasLt FP8 with a separate FP8 copy of the attention and loop-controller weights (+641 MiB); it does not start when the card has no room for the copy, and the BF16 / Q8_ROW GEMMs run. The 5060 Ti hand-over's in-place conversion (no copy kept) failed FASTQ on 2026-11-26 (tool calls 6/26 against 23/26 off, 24/26 with FP8_TRUNK=0) and is reachable only as `STRATA_INK_SM120_FP8_INPLACE=1`; it is in no fast set. |

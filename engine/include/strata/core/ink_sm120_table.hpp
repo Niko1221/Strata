@@ -134,7 +134,8 @@ constexpr uint32_t kSm120SmallFast = P_COMPACT | P_TC_SMALLM | P_PLD | P_PACK | 
 // Exact set of the small cards, trimmed by measurement (5060 Ti, new SQ-20 hybrid load, 2026-11-26): PACK (moves experts between the CPU and the GPU lane: rounding differs)
 // and PREFILL (layer-major prefill: tokens differ from gen:9000 on) are out. Then PLD (tokens differ at gen:9000, 2 of 2 runs) and CORE_GRAPH (differ at gen:30 from token 67 when
 // combined with the others) are out too. C64_SPEC + L2PF: tokens identical to off at 30, 9000 and 12000 (2 rounds each), speed equal to off. The speed-ups of the others are fast-only.
-constexpr uint32_t kSm120SmallExact = P_C64_SPEC | P_L2PF;
+// C64_SPEC is out of the exact set too: its multi-user memory plan (FP8 KV, host-resident SWA) assumes COMPACT; with exact (no compact) a 64-slot run on a 16 GB card died ("not enough free GPU memory for the working buffers", global KV all in host RAM). L2PF alone is bit-identical.
+constexpr uint32_t kSm120SmallExact = P_L2PF;
 
 // The table. Order matters: the first row that matches wins, so the more specific names come first (" Ti" before the plain name).
 // PLACEHOLDER rows (measured = false): 5070, 5050 (their numbers come from a rental later), and every other cc 12.0 card. They are listed so
