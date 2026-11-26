@@ -911,6 +911,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         else proto("BT %d %d", rq.slot, tok);
 
                         if (is_stop_tok(tok)) { fin = "stop"; done = true; break; }
+                        if (rq.is_solo && rq.s.hold_budget > 0 && rq.generated >= rq.s.hold_budget && tok != rq.s.hold_token_id) { fin = "hold"; done = true; break; }
                         if (rq.generated >= rq.max_new) { fin = "length"; done = true; break; }
                         if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; break; }
                     }
@@ -975,6 +976,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     else proto("BT %d %d", rq.slot, tok);
 
                     if (is_stop_tok(tok)) { fin = "stop"; done = true; ++accepted; break; }
+                    if (rq.is_solo && rq.s.hold_budget > 0 && rq.generated >= rq.s.hold_budget && tok != rq.s.hold_token_id) {
+                        fin = "hold"; done = true; ++accepted; break;
+                    }
                     if (rq.generated >= rq.max_new) { fin = "length"; done = true; ++accepted; break; }
                     if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; ++accepted; break; }
                     if (i < nd && draft_ok) {
@@ -994,6 +998,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     rq.cur_pos += accepted;
                     if (spec_adapt) gov_step(rq, accepted, (now_s() - gov_b0) * 1000.0);
                 } else if (fin) {
+                    if (accepted <= nd) backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
+                    rq.cur_pos += accepted;
                     finish_req(rq, fin);
                 }
                 continue;
