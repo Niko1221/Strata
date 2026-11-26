@@ -51,6 +51,8 @@ struct BackendOpts {
     bool spec_adapt = false;     // --draft-adapt: per request, drafting goes off for 40 steps when its measured gain falls below 0.93 (all backends, see ink_serve.h)
     std::string dspark_path;     // optional external mtp.safetensors or dspark-*.gguf
     std::string vision_path;
+    std::string vision_reader = "auto";  // --vision-reader auto|gpu|cpu: which reader pictures use (ink_vision_policy.h); auto = the 24 GB rule on the card's real memory
+    int vision_idle_s = -1;      // --vision-idle-s N: seconds without a picture before the NVIDIA GPU reader gives its memory back (< 0 = 120, 0 = never)
 };
 
 struct BackendStats {
@@ -217,6 +219,14 @@ public:
         (void)img; (void)out_embeds; (void)err;
         return false;
     }
+
+    // The memory of the main card as the backend sees it (bytes; 0 = unknown), for the picture-reader rule (ink_vision_policy.h).
+    virtual size_t primary_device_bytes() const { return stats().vram_total_bytes; }
+
+    // An elastic GPU resource (the NVIDIA picture reader) that should be given back after idle: milliseconds until the release is due (< 0: nothing is held).
+    // The serve loop calls it while no request is active and, when it is due, idle_release().  Both default to nothing held.
+    virtual int idle_release_in_ms() const { return -1; }
+    virtual void idle_release() {}
 
     // Verify Section 5 selfcheck / golden ops parity on this backend
     virtual bool selfcheck(std::string& err) = 0;

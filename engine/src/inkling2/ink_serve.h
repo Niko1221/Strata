@@ -28,6 +28,7 @@
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_vision.h"
+#include "ink_vision_policy.h"
 
 namespace ink2 {
 
@@ -425,6 +426,16 @@ public:
         return true;
     }
 
+    // Like wait_next, for at most ms milliseconds: 1 = a line was read, 0 = nothing came in time, -1 = the input has ended.
+    int wait_next_for(std::string& out, int ms) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait_for(lk, std::chrono::milliseconds(std::max(1, ms)), [this] { return !q_.empty() || eof_; });
+        if (q_.empty()) return eof_ ? -1 : 0;
+        out = std::move(q_.front());
+        q_.pop_front();
+        return 1;
+    }
+
     bool is_eof() {
         std::lock_guard<std::mutex> lk(st_->m);
         return st_->eof && st_->q.empty();
@@ -567,6 +578,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (vision_probe(cfg.vision_path, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[inkling2-vision] disabled: %s\n", verr.c_str());
     }
+    // Which reader reads pictures: the card's encoder or the CPU reference (ink_vision_policy.h, the rule Qwen3.8-Flash-Next uses).  The backend's
+    // encode_image is only asked when the rule says GPU; a picture it cannot take (no room, no encoder) is read on the CPU, with one line.
+    bool vision_gpu = false;
+    if (images_ok) {
+        const VisionPlan vplan = plan_vision_reader(vision_ask_from(cfg.bopts.vision_reader), backend.backend_name(),
+                                                    static_cast<double>(backend.primary_device_bytes()) / 1073741824.0);
+        vision_gpu = vplan.gpu;
+        fprintf(stderr, "[inkling2-vision] picture reader: %s - %s\n", vision_gpu ? "GPU" : "CPU", vplan.reason.c_str());
+    }
+    bool vision_gpu_failed_noted = false;
 
     // Allocate all P slots (lazy paged KV uses near-zero memory until populated!)
     for (int s = 0; s < P; ++s) {
@@ -589,12 +610,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (kd == KvDtype::K8V4)     return "k8v4";
         return "fp16";
     }();
-    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1",
+    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1 vision_reader=%s",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
           P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
           (mf.m.dspark.present || backend.dspark_ready()) ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
-          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots);
+          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots, images_ok ? (vision_gpu ? "gpu" : "cpu") : "off");
     proto("READY %d stop hold holdb", eff_max_ctx);
 
     std::vector<ActiveReq> reqs(P);
@@ -675,7 +696,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             for (size_t k = 0; k < recs.size(); ++k) {
                 std::vector<float> emb;
                 std::string verr;
-                if (!backend.encode_image(recs[k], emb, verr)) {
+                if (!(vision_gpu && backend.encode_image(recs[k], emb, verr))) {
+                    if (vision_gpu && !verr.empty() && !vision_gpu_failed_noted) {
+                        vision_gpu_failed_noted = true;
+                        fprintf(stderr, "[inkling2-vision] the GPU reader could not read this picture (%s): reading it on the CPU\n", verr.c_str());
+                    }
                     if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
                     if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
                 }
@@ -877,7 +902,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         std::string line;
         if (!any_active) {
             if (quit_requested) break;
-            if (!in.wait_next(line)) break;
+            // While nothing runs, an elastic GPU resource (the NVIDIA picture reader) is given back once it has been idle long enough.
+            bool got = false;
+            for (;;) {
+                const int due_ms = backend.idle_release_in_ms();
+                if (due_ms < 0) { got = in.wait_next(line); break; }
+                if (due_ms == 0) { backend.idle_release(); continue; }
+                const int r = in.wait_next_for(line, due_ms);
+                if (r != 0) { got = (r > 0); break; }
+            }
+            if (!got) break;
             handle_line(line);
             while (!quit_requested && in.poll(line)) {
                 handle_line(line);

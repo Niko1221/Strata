@@ -548,6 +548,9 @@ public:
         return std::string(buf);
     }
 
+    // The main card's memory alone (the picture-reader rule, ink_vision_policy.h; stats() adds the second card's in ep2).
+    size_t primary_device_bytes() const override { return mem_info_.effective_total_bytes; }
+
     BackendStats stats() const override {
         BackendStats st;
         st.vram_experts_loaded = vram_experts_loaded_;

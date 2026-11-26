@@ -927,6 +927,7 @@ int main(int argc, char** argv) {
     cfg.version = INKLING_VERSION;
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
+    bool vision_reader_given = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
     std::string tkl_corpus, tkl_cfgs, tkl_out, tkl_only, tgen_in, tgen_out, tgen_stop, tkl_calib, turbo_preset;
     int tkl_chunk = 2048;
@@ -985,6 +986,16 @@ int main(int argc, char** argv) {
         } else if (a == "--vision") {
             cfg.vision_path = next();
             cfg.bopts.vision_path = cfg.vision_path;
+        } else if (a == "--vision-reader") {
+            const std::string v = next();
+            if (v != "auto" && v != "gpu" && v != "cpu") {
+                fprintf(stderr, "--vision-reader takes auto, gpu or cpu\n");
+                return 2;
+            }
+            cfg.bopts.vision_reader = v;
+            vision_reader_given = true;
+        } else if (a == "--vision-idle-s") {
+            cfg.bopts.vision_idle_s = std::max(0, std::atoi(next().c_str()));
         } else if (a == "--max-context" || a == "--ctx") {
             cfg.bopts.max_ctx = std::atoi(next().c_str());
         } else if (a == "--parallel" || a == "--batch" || a == "--slots") {
@@ -1096,7 +1107,7 @@ int main(int argc, char** argv) {
                    "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
                    "  --turbo | --turbo-max   opt-in router tail skip presets (answers differ slightly; CUDA and HIP; see docs/INKLING_TURBO.md)\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--vision-reader auto|gpu|cpu] [--vision-idle-s N] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
             return 0;
         } else {
@@ -1151,6 +1162,14 @@ int main(int argc, char** argv) {
     // Auto-select FP8_E4M3 KV when parallel >= 16 unless user explicitly forced a format
     if (cfg.bopts.kv_dtype_auto && cfg.bopts.parallel >= 16) {
         cfg.bopts.kv_dtype = KvDtype::FP8_E4M3;
+    }
+
+    // The picture reader (ink_vision_policy.h): --vision-reader wins over STRATA_INK_VISION_READER; both default to "auto" (the 24 GB rule).
+    if (!vision_reader_given) {
+        if (const char* e = std::getenv("STRATA_INK_VISION_READER"); e && (std::string(e) == "gpu" || std::string(e) == "cpu")) cfg.bopts.vision_reader = e;
+    }
+    if (cfg.bopts.vision_idle_s < 0) {
+        if (const char* e = std::getenv("STRATA_INK_VISION_IDLE_S"); e && *e) cfg.bopts.vision_idle_s = std::max(0, std::atoi(e));
     }
 
     if (mode_serve) {

@@ -12,6 +12,8 @@
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
 #include "ink_topk.cuh"
+#include "ink_vision_cuda.cuh"
+#include "ink_vision_policy.h"
 #include "strata/core/arch_probe.hpp"
 #include "strata/core/ink_chunk.hpp"
 #include "strata/core/volta_forever.hpp"
@@ -347,6 +349,39 @@ public:
 
     std::string device_info() const override { return dev_info_; }
 
+    size_t primary_device_bytes() const override { return primary_mem_bytes_; }
+
+    // The GPU picture reader (ink_vision_cuda.cuh).  It is put on the card with the first picture and, with one GPU, taken off again after
+    // vision_idle_s seconds without one (Qwen's elastic reader); on a machine whose GPU shares the system's RAM (DGX Spark), with several GPUs or with
+    // --vision-idle-s 0 it stays once loaded.  Its room is part of the memory held back from the experts at start (init), so a card does not run out.
+    bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
+        if (!initialized_ || !vit_planned_ || vit_path_.empty()) return false;
+        cudaSetDevice(gpu_id_);
+        if (!vit_) vit_ = std::make_unique<strata::ink::InkVisionCuda>();
+        if (!vit_->loaded()) {
+            const double t0 = strata::ink::now_s();
+            if (!vit_->load(vit_path_, gpu_id_, err)) { vit_->release(); return false; }
+            std::fprintf(stderr, "[InkCUDA] picture reader put on the card: %.0f MiB of weights in %.2f s (%s)\n", (double)vit_->weight_bytes() / 1048576.0,
+                         strata::ink::now_s() - t0, vit_->precision() == strata::ink::VitPrec::TC2 ? "BF16 tensor cores, two-part activation" :
+                         (vit_->precision() == strata::ink::VitPrec::BF16 ? "BF16 tensor cores" : "FP32"));
+        }
+        const bool ok = vit_->encode(img, out_embeds, err);
+        vit_last_ = std::chrono::steady_clock::now();
+        if (!ok) vit_->release();    // a picture that did not fit: give everything back, the CPU reader reads it
+        return ok;
+    }
+    int idle_release_in_ms() const override {
+        if (!vit_ || !vit_->loaded() || !vit_elastic_) return -1;
+        const double left = vit_idle_s_ * 1000.0 - std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - vit_last_).count();
+        return left <= 0.0 ? 0 : (int)left + 1;
+    }
+    void idle_release() override {
+        if (!vit_ || !vit_->loaded()) return;
+        const double mib = (double)vit_->weight_bytes() / 1048576.0;
+        vit_->release();
+        std::fprintf(stderr, "[InkCUDA] picture reader taken off the card after %.0f s without a picture (%.0f MiB given back)\n", vit_idle_s_, mib);
+    }
+
     BackendStats stats() const override {
         BackendStats st{};
         if (initialized_) {
@@ -467,8 +502,34 @@ public:
         kv_dtype_ = plan.kv_dtype;
         const auto cuda_kvd = plan.cuda_kvd;
         const bool build_screen = plan_in.build_screen;
-        const size_t min_reserve_bytes = plan.min_reserve_bytes;
+        size_t min_reserve_bytes = plan.min_reserve_bytes;
         const auto& opt5060 = *plan_in.c5060;
+        // The GPU picture reader (ink_vision_policy.h: 24 GB or more, or --vision-reader gpu): its weights and the working buffers of a 1,024-token picture
+        // come out of the experts' budget like the KV and the workspace do, so the card is not filled to the last byte before the first picture.
+        primary_mem_bytes_ = prop.totalGlobalMem;
+        vit_planned_ = false;
+        vit_elastic_ = false;
+        vit_path_.clear();
+        vit_idle_s_ = ink2::vision_idle_seconds(opts.vision_idle_s);
+        if (!opts.vision_path.empty()) {
+            const ink2::VisionPlan vp = ink2::plan_vision_reader(ink2::vision_ask_from(opts.vision_reader), "cuda", (double)prop.totalGlobalMem / 1073741824.0);
+            ink2::VisionShardInfo vinfo;
+            std::string verr0;
+            if (vp.gpu && !ink2::vision_probe(opts.vision_path, vinfo, verr0)) {
+                std::fprintf(stderr, "[InkCUDA] picture reader not planned: %s\n", verr0.c_str());
+            } else if (vp.gpu) {
+                vit_planned_ = true;
+                vit_path_ = opts.vision_path;
+                const bool shares_ram = prop.integrated != 0;
+                vit_elastic_ = (all_gpus.size() == 1) && !shares_ram && opts.vision_idle_s != 0;
+                const size_t room = (size_t)vinfo.sec1_len + strata::ink::InkVisionCuda::activation_bytes(
+                                        vinfo.c, 1024, strata::ink::InkVisionCuda::default_precision(sm_cc)) + (64ull << 20);
+                min_reserve_bytes += room;
+                std::fprintf(stderr, "[InkCUDA] picture reader on the card: %.0f MiB held back from the experts (weights + a 1,024-token picture); %s\n",
+                             (double)room / 1048576.0,
+                             vit_elastic_ ? "it is put on the card with the first picture and taken off after the idle time" : "it stays on the card once loaded");
+            }
+        }
 
         strata::ink::sm120_plan_slots_ref().store(max_slots_);
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
@@ -2248,6 +2309,7 @@ private:
 
     void cleanup() {
         if (bspec_)  { bspec_->free_all(); bspec_.reset(); }
+        if (vit_) { vit_->release(); vit_.reset(); }
         if (dspark_) { dspark_->free_all(); dspark_.reset(); }
         if (runner_) { runner_->free_all(); runner_.reset(); }
         if (d_sconv_snap_) { cudaFree(d_sconv_snap_); d_sconv_snap_ = nullptr; }
@@ -2287,6 +2349,13 @@ private:
     std::string dev_info_;
 
     strata::ink::InkCudaModel model_;
+    size_t primary_mem_bytes_ = 0;
+    bool vit_planned_ = false;
+    bool vit_elastic_ = false;
+    double vit_idle_s_ = 120.0;
+    std::string vit_path_;
+    std::unique_ptr<strata::ink::InkVisionCuda> vit_;
+    std::chrono::steady_clock::time_point vit_last_ = std::chrono::steady_clock::now();
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
     std::unique_ptr<strata::ink::rtx5090::Rtx5090BatchedSpec> bspec_;

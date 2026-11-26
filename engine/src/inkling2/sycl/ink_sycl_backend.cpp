@@ -50,6 +50,9 @@ public:
         return info;
     }
 
+    // The main card's memory alone (the picture-reader rule, ink_vision_policy.h; stats() adds the second card's in ep2).
+    size_t primary_device_bytes() const override { return (size_t)ink_sycl::dev_caps().global_mem; }
+
     BackendStats stats() const override {
         BackendStats s;
         s.total_experts = (size_t)mod_.man.c.n_phys * (size_t)mod_.man.c.n_experts;

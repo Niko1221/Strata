@@ -263,6 +263,12 @@ if(EXISTS "${_ink_engine_root}/tests/quant/strata_reader_layout_test.cpp")
   add_test(NAME strata_reader_layout_test COMMAND strata_reader_layout_test)
 endif()
 
+# Which picture reader Inkling-2-Mini uses (ink_vision_policy.h): the 24 GB rule on every backend, asked-for wins (header only, no GPU)
+if(EXISTS "${_ink_engine_root}/tests/core/ink_vision_policy_test.cpp")
+  add_executable(ink_vision_policy_test ${_ink_engine_root}/tests/core/ink_vision_policy_test.cpp)
+  add_test(NAME ink_vision_policy_test COMMAND ink_vision_policy_test)
+endif()
+
 # Row-split expert evaluation of the hybrid CPU pool (decode): bit-identical to eval_inkling2_expert for every split
 if(EXISTS "${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp")
   add_executable(ink_expert_split_test ${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp)
