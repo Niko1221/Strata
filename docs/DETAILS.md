@@ -500,7 +500,12 @@ print(r.choices[0].message.content)
 - **Metadata.** `/models` and `/v1/models` list only the loaded model: the OpenAI fields (`id`, `object`, `created`,
   `owned_by`), its context limit (`max_model_len`, `context_length`, `max_context_length`, `meta.n_ctx`), the answer cap
   (`limit.output` and `meta.llamaswap.max_output_tokens`: the context less the engine's margin, lowered by a smaller
-  `max_tokens` from the app's Chat settings) and its input modalities. `/props` exposes
+  `max_tokens` from the app's Chat settings, else by the run config's top-level `"max_tokens"` (a server key, kept with
+  the model and never passed to the engine) and its input modalities. That cap is also what a request that names none
+  gets, on all three APIs (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`), and `/props` reports it as
+  `n_predict`, so the published number and the applied one are the same. A request with thinking on and no cap of its
+  own gets that cap too, so the `answer_room` rule gets its quarter from that cap rather than from the whole context.
+  The `"max_tokens"` inside a `vision` block is a different key: it caps the tokens of a picture, not the answer. `/props` exposes
   the chat template, context limit, configured generation defaults, model path and engine version. `n_predict: -1` means no
   fixed output cap. `/slots` uses llama.cpp's names (`n_ctx`, `n_prompt_tokens`). `total_slots` is the number of `--batch` slots
   (1 without). These endpoints require the API key when one is configured and never load, unload or restart models.
@@ -537,7 +542,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `inkling_thinking_budget` | by level | Inkling-2-Mini only: the default thinking budget, in tokens, for a request (and config) that names none. One number for every level; `0` none. Unset: 1,024 at `none` / `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at `xhigh` / `max`. `STRATA_INKLING_THINKING_BUDGET` in the environment does the same, `STRATA_INKLING_EFFORT` sets the default thinking level (`low`). See [MODELS.md](MODELS.md#inkling-2-mini-thinking-levels). |
 | `inkling_budget_cap` | `true` | Inkling-2-Mini only (#7133): Claude Code's own default request, `thinking.budget_tokens` of exactly 31,999 on `/v1/messages` (level `high`), is held to the default budget of the level it runs at (above): 8,192 tokens at `high`, not 31,999. Every other budget a client sends goes through as it is: any other `budget_tokens`, `reasoning_budget_tokens` and its aliases (`thinking_token_budget`, `thinking_budget`, `thinking_budget_tokens`), a budget with `reasoning_effort` and `max_completion_tokens`; a request's own `0` still means no budget; the run config's own `reasoning_budget_tokens` is not capped. `false` (or `STRATA_INKLING_BUDGET_CAP=0` in the environment) lets Claude Code's default use the full 31,999. The first request that is held prints one `[strata] the client's default thinking budget of ...` line. |
 | `inkling_image_max_mp` | `0.8` on CUDA and CPU, off on HIP, SYCL and Metal | Inkling-2-Mini only: a picture with more megapixels than this is scaled down (same proportions; JPEG stays JPEG, else PNG) before the engine reads it; a picture at or under it, a 1024x768 one for instance, is passed on unchanged (a 1920x1080 screenshot is scaled to about 1190x670). The engine has no GPU picture reader on CUDA: its CPU reader takes about 15 s for 0.25 MP, 1 minute for 0.8 MP, 5.5 minutes for 2 MP and 12 minutes for 3 MP (measured on a 6-core PC, nothing else running), and says nothing meanwhile. One line in the server window names every picture that was scaled. `0` turns the cap off, any number above 0 sets it on every backend. `STRATA_INKLING_IMAGE_MAX_MP` in the environment does the same (the config wins). **Whatever the cap, a request with pictures on the CPU reader is never ended by `engine_silence_s`**: its silence allowance is 3 times the measured time of its pictures plus a minute (at most 3 hours), or your own `engine_silence_s` when that is larger; one line says so. |
-| `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. Requests without `max_tokens` get three quarters of the context. `false` turns it off. Clients should not cap the reply far below what the context allows. Inkling-2-Mini keeps the share for any `max_tokens` of 16 or more, thinking or not. |
+| `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. A request that names no cap gets three quarters of the cap this server applies for it (the Chat settings', else the run config's `"max_tokens"`, else the context). `false` turns it off. Clients should not cap the reply far below what the context allows. Inkling-2-Mini keeps the share for any `max_tokens` of 16 or more, thinking or not. |
 | `reasoning_close_retry` | off | Closes the thinking once and continues when a reply ended inside its thinking with no answer and no tool call (#1053). |
 | `reasoning_loop_recovery` | off | `"stop"` ends, `"recover"` (or `true`) restarts once, a reply whose reasoning repeats whole passages. Checked every 512 output tokens. It can mistake repeated useful code for a loop, so keep the answer quality alongside the completion rate when testing it (#728). |
 | `repeat_stop_tokens` | `256` | A reply that repeats one token this many times in a row ends as `"length"`. `0` turns it off. |
@@ -551,6 +556,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
 | `sampling` | the model card | Defaults for requests that leave sampling fields out, for example `{"temperature": 1.0, "top_p": 0.95, "top_k": 20}`. |
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
+| `max_tokens` | none | The answer cap, in tokens, for a request that names none: the number `/v1/models` publishes as `limit.output` and `/props` reports as `n_predict`, and the number such a request gets on all three APIs. A smaller Chat setting from the web app wins over it; a request's own `max_tokens`, `max_completion_tokens` or `max_output_tokens` wins over both. A cap above the context room changes nothing. Anything but a positive whole number stops the server at start, so a typo does not vanish. Not passed to the engine: it has no default output cap. The `"max_tokens"` inside a `vision` block is another key and caps a picture's tokens. |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_ready_s` | `900` | How long the engine may start without a sign of life, in seconds (`STRATA_ENGINE_READY_S` in the environment does the same; `0` = wait forever). A sign of life is a new line in the engine log or more bytes read from disk by the engine, and each one gives it another full period, so a big model read from a slow hard disk is not ended after 15 minutes while it is still loading; an engine that goes quiet for this long is ended (`the engine did not report READY within ... s`). The whole start ends after 2 hours (or 4 times this number if that is longer) whatever it prints. A start from the Terminal gives a model above 40 GB more (about 8 s per GB, at most 30 minutes) by writing this key into its run config. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |
@@ -844,20 +850,6 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   Set `limit.context` to the context you chose in setup and keep `limit.output` well under it. `strata connect` writes
   configurations for these apps for you.
 - **Codex CLI:** [below](#the-responses-api-and-codex-cli).
-- **Model limits from the server (#545).** With the [models-discovery plugin](https://github.com/yuhp/opencode-models-discovery)
-  you do not write those numbers: `/v1/models` publishes them, and the plugin's `modelInfoFormat: "llama-swap"` reader
-  maps them to `limit.context` and `limit.output`. `meta.n_ctx` is the context you chose less the 8-token slack the
-  engine refuses on (`CTX_SLACK`), and `meta.llamaswap.max_output_tokens` is the Chat settings' `max_tokens` when you
-  set one - the cap this server already hands to clients that do not ask for one - else the run config's top-level
-  `"max_tokens"` (a server key, kept with the model and not passed to the engine: the engine has no default output
-  cap), else an eighth of the context, the ratio in the example above. Either cap is also what a request that asks for
-  none gets, so the published number and the applied one are the same. Without them the plugin guesses 200000/32000,
-  and a long prompt plus that output cap is what the `#545` refusal below is about.
-- **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
-  `max_tokens` would run past the context is answered with `max_tokens` shortened to the room left (agents such as
-  Claude Code ask for 32,000 on every request); the thinking budget follows the shortened cap. For the strict llama.cpp
-  behaviour (400) set `"fit_max_tokens": false` in `strata-<model>.json` or pass `--no-fit-max-tokens` to
-  `serve/server.py`. A prompt that leaves no room at all is always refused.
 
 ### Conversation cache
 

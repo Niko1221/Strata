@@ -4705,18 +4705,25 @@ class Service:
         prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
+    def default_output_cap(self):
+        """The cap a request that names none gets, on all three APIs: the web app's Chat setting for max_tokens when
+        it is a positive number (the server sends it for every request that carries none), else the run config's
+        top-level "max_tokens" (checked at start, max_tokens_from_config).  None: no cap, the request may use the
+        room the context leaves.  One reader, so /v1/models, /props and the three handlers cannot disagree."""
+        shared = self.shared.get("max_tokens")
+        if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
+            return shared
+        return self.config_output_cap
+
     def output_cap(self) -> int:
         """#6402: the most tokens one answer may run to, for a client that sizes a request from /v1/models.  That is
         the room the context itself leaves (ctx - CTX_SLACK, the margin prepare() enforces) - a request with no
-        max_tokens gets exactly that - lowered by the web app's Chat setting for max_tokens when that is smaller
-        (the server sends it for every request that carries none).  No prompt is counted here: a prompt shortens
-        the room at request time, and fit_max_tokens shortens a request to what is left."""
+        max_tokens gets exactly that - lowered by default_output_cap() when that is smaller.  No prompt is counted
+        here: a prompt shortens the room at request time, and fit_max_tokens shortens a request to what is left."""
         room = max(0, self.reported_ctx() - CTX_SLACK)
-        shared = self.shared.get("max_tokens")
-        if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
-            room = min(room, shared)
-        if self.config_output_cap:                       # the config's "max_tokens", checked at start (max_tokens_from_config)
-            room = min(room, self.config_output_cap)
+        cap = self.default_output_cap()
+        if cap:
+            room = min(room, cap)
         return room
 
     def has_vision(self) -> bool:
@@ -5285,7 +5292,7 @@ class Service:
         settings first, then the config's "max_tokens")."""
         s = self.shared
         effort = self.effort_default()
-        cap = s["max_tokens"] if "max_tokens" in s else self.config_output_cap
+        cap = self.default_output_cap()
         if not s and not effort and not cap:
             return req
         req = dict(req)
@@ -8154,7 +8161,7 @@ def make_handler(svc: Service):
             params = {names.get(k, k): v for k, v in defaults.items()
                       if k in ("temperature", "top_p", "top_k", "min_p", "seed", "repetition_penalty",
                                "presence_penalty", "frequency_penalty", "penalty_last_n")}
-            params["n_predict"] = svc.shared.get("max_tokens", -1)
+            params["n_predict"] = svc.default_output_cap() or -1
             props = {"default_generation_settings": {"n_ctx": svc.reported_ctx(), "params": params},
                      "total_slots": max(1, int(getattr(svc.engine, "batch", 0) or 0)),   # #1004: the batch slots
                      "model_alias": svc.model, "chat_template": svc.template.source,
@@ -8630,8 +8637,9 @@ def make_handler(svc: Service):
                 print(f"[strata] /v1/responses: left out the hosted tools {', '.join(sorted(set(skipped) - noted))} "
                       f"(this server cannot run them)", flush=True)
                 noted.update(skipped)
-            if req.get("max_output_tokens") is None and "max_tokens" in svc.shared:   # the shared Chat settings
-                req = {**req, "max_output_tokens": svc.shared["max_tokens"]}
+            cap = svc.default_output_cap()      # the Chat settings, else the config's "max_tokens" (#6402)
+            if cap and req.get("max_output_tokens") is None:
+                req = {**req, "max_output_tokens": cap}
             try:
                 svc.reasoning_budget(req)                    # a bad value is a 400 before anything is sent
             except ValueError as e:
