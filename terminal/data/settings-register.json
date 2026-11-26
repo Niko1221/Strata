@@ -7471,9 +7471,9 @@
    "since": "v0.2.21",
    "last_commit": "66f2ee2b0a",
    "last_date": "2026-11-23",
-   "status": "opt-in",
+   "status": "rollback",
    "owner": "kernels/cpu",
-   "note": "CPU native expert path (0221 QPERF, #6552): =1 uses the 4-row dot kernels (dot_x4) for Q4_K / IQ4_XS and similar; off by default because they are slower than four 1-row calls where memory is the limit (0.24-0.52x on Zen 4, 0.29-0.32x on Zen 3) and only faster on some Intel cores; same bits either way. STRATA_NO_DOT_X4 still forces them off.",
+   "note": "CPU native expert path (#6552, #7075): the 4-row dot kernels (dot_x4) for Q4_K / Q8_0 / IQ4_XS and similar. Since 0.2.23 the default follows the call: on from 2 tokens that share an expert (batched decode, prompt rows), off for 1 token (cold solo decode: slower than four 1-row calls where memory is the limit). =1 forces them on for every call, =0 off for every call (the 0.2.21 / 0.2.22 default); STRATA_NO_DOT_X4 (any value) still wins. Same bits in every mode.",
    "retire_after": "",
    "retired_in": ""
   },
