@@ -1110,6 +1110,9 @@ public:
                 vram_budget += df2_bytes;
             }
         }
+        // part of the experts on the host (hybrid path): a verify row costs more there (the host experts of every row run on the CPU / over the link), so the window model takes a larger
+        // MoE share (RX 6700 XT, SQ-10: json +18%, prose / code +2% against 4.2; the all-GPU 7900 XT is flat between 2 and 8)
+        if (has_df2_ && !df2_ratio_set_ && total_all_exp_bytes > vram_budget) df2_ratio_ = 8.0;
         size_t hybrid_cache_budget = 0;
         size_t static_vram_budget = vram_budget;
         if (total_all_exp_bytes > vram_budget && max_exp_bytes > 0) {
@@ -1984,8 +1987,8 @@ public:
         d->h.vocab = c_.vocab_unpadded;
         d->h.softcap = c_.logit_softcap;
         d->h.small_vram = !mem_info_.is_uma && mem_info_.effective_total_bytes < (24ull << 30);
-        if (const char* e = std::getenv("STRATA_INK_DFLASH2_RATIO"); e && *e && std::atof(e) > 0.0) df2_ratio_ = std::atof(e);
-        else if (opts.spec_cost > 0.0) df2_ratio_ = opts.spec_cost;
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_RATIO"); e && *e && std::atof(e) > 0.0) { df2_ratio_ = std::atof(e); df2_ratio_set_ = true; }
+        else if (opts.spec_cost > 0.0) { df2_ratio_ = opts.spec_cost; df2_ratio_set_ = true; }
         if (opts.spec_plain > 0.0) df2_plain_ = opts.spec_plain;
         if (const char* e = std::getenv("STRATA_INK_DFLASH2_PLAIN"); e && *e) df2_plain_ = std::atof(e);
         size_t f0 = 0, t0 = 0, f1 = 0, t1 = 0;
@@ -6058,7 +6061,8 @@ private:
     bool has_dspark_ = false;
     bool has_df2_ = false;                                   // DFlash 2 is the drafter (ink_hip_df2.hip.h)
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
-    double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
+    double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO); 8 when part of the experts is on the host
+    bool df2_ratio_set_ = false;
     bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
     double df2_plain_ = 1.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain, STRATA_INK_DFLASH2_PLAIN=0 turns it off)
     int max_slots_ = 1;
