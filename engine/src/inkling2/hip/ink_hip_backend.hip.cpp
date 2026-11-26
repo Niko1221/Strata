@@ -530,6 +530,9 @@ public:
     const char* backend_name() const noexcept override { return ep2_active_ ? "hip-ep2" : "hip"; }
 
     int effective_max_ctx() const override { return max_ctx_; }
+    // compact GGUF (GSQ-RCO) on a card of 13 GB or less runs 256-token prefill chunks so that every expert fits in the card (STRATA_INK_GGUF_CHUNK256=0 turns it off)
+    int effective_chunk() const override { return hip_eff_chunk_; }
+    int hip_eff_chunk_ = 0;
 
     int effective_chunk() const override {
         if (r9700_ && r9700_->cfg.prefill_chunk > 0) return r9700_->cfg.prefill_chunk;
@@ -867,11 +870,14 @@ public:
                          (int)halo_->npu_probe.directml_present, (int)halo_->npu_probe.xrt_present);
         }
 
-        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU OR on <= 13 GiB discrete GPUs (8/10/12 GB)
+        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU. The K/V stays FP16 on the 8 / 10 / 12 GB cards (it was FP8 there before 0.2.23: the teacher-forced
+        // KL of the CUDA 8 / 12 GB rows shows the FP8 K/V is the costly part of a small-card setup); the post-load check below still picks FP8 when the FP16 K/V does not fit.
+        // STRATA_HIP_KV_FP8_SMALL=1 brings the old default back.
         default_kv_dtype_ = opts.kv_dtype;
+        const bool kv_fp8_small = std::getenv("STRATA_HIP_KV_FP8_SMALL") && std::getenv("STRATA_HIP_KV_FP8_SMALL")[0] == '1';
         if (opts.kv_dtype_auto &&
             ((opts.parallel >= 16 && mem_info_.effective_total_bytes <= 36ULL * 1073741824ULL) ||
-             (!mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL) ||
+             (kv_fp8_small && !mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL) ||
              (halo_ && halo_->cfg.fp8_kv_c64 && opts.parallel >= 16))) {
             default_kv_dtype_ = KvDtype::FP8_E4M3;
         }
@@ -965,7 +971,11 @@ public:
             if (name == embed_k || name == unemb_k) {
                 GpuPackedTensor pt;
                 pt.info = ti;
-                if (!upload_raw(pt.buf, sec1.data() + ti.off, ti.bytes, err)) return false;
+                if (name == embed_k && model.m.embed_host_tail && ti.bytes > 0) {
+                    // compact GGUF trunk (GSQ-RCO files): the 0.9 GB embedding table stays in pinned mapped host RAM, a lookup reads one 4.6 KB row over PCIe
+                    if (!hip_ok(alloc_gpu_buffer(pt.buf, ti.bytes, true, true), "alloc host embed", err)) return false;
+                    std::memcpy(pt.buf.host_ptr, sec1.data() + ti.off, ti.bytes);
+                } else if (!upload_raw(pt.buf, sec1.data() + ti.off, ti.bytes, err)) return false;
                 packed_trunk_[name] = pt;
             } else if (is_large_2d_matmul(name, ti)) {
                 auto f32 = decode_sec1_f32(sec1.data(), ti);
@@ -1200,6 +1210,7 @@ public:
         expert_sf4_outer_.assign(n_dir, {1.0f, 1.0f});
 
         size_t vram_budget = 0;
+        bool budget_free_limited = false;   // the budget is what is free now (so the drafter loaded above took it from the experts)
         if (opts.vram_experts_gb >= 0.0) {
             vram_budget = static_cast<size_t>(opts.vram_experts_gb * 1073741824.0);
         } else {
@@ -1217,7 +1228,18 @@ public:
             ink2::BatchGeom bg;
             bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
             bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
-            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, 512)));
+            hip_eff_chunk_ = 0;
+            if (model.m.embed_host_tail) {
+                std::fprintf(stderr, "[ink-hip] compact GGUF trunk: embedding in pinned host RAM, trunk in the card %.0f MiB\n", static_cast<double>(trunk_now) / 1048576.0);
+            }
+            if (model.m.embed_host_tail && !mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL && opts.chunk_auto &&
+                !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0')) {
+                hip_eff_chunk_ = 256;
+                std::fprintf(stderr, "[ink-hip] compact GGUF on a card of %.1f GiB: prefill chunk 256 (STRATA_INK_GGUF_CHUNK256=0 or --chunk N overrides)\n",
+                             static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0);
+            }
+            const int plan_chunk_cap = hip_eff_chunk_ > 0 ? hip_eff_chunk_ : 512;
+            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, plan_chunk_cap)));
             vram_budget = plan_expert_vram_budget(mem_info_.effective_total_bytes, mem_info_.reserve_bytes, trunk_now, kv_est, scratch_est, 768ULL << 20);
             // #6711: the budget above is the card's TOTAL minus what this engine holds. The desktop, the browser and other programs hold VRAM too (3 GB on the
             // reporter's R9700 with 29 GB free), so the single arena allocation failed "out of memory" before any model line. What is free NOW (the trunk is
@@ -1233,6 +1255,7 @@ public:
                                  static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(by_free) / 1073741824.0,
                                  static_cast<double>(eff_fr) / 1073741824.0);
                     vram_budget = by_free;
+                    budget_free_limited = true;
                 }
             }
         }
@@ -1245,6 +1268,22 @@ public:
             const size_t aligned = (dir[idx].body_bytes + 63u) & ~size_t(63u);
             total_all_exp_bytes += aligned;
             max_exp_bytes = std::max(max_exp_bytes, aligned);
+        }
+        // Residency first (coordinator, 11-26): a drafter whose VRAM takes the model out of full residency (every expert in the card) costs more than it brings (the engine leaves the
+        // all-GPU path for the hybrid one: 7900 XT, SQ-20: decode -20%, prefill -54%). Then DFlash 2 is not loaded unless `--draft on` (or STRATA_INK_DFLASH2_FORCE=1) asks for it.
+        if (has_df2_ && budget_free_limited && opts.vram_experts_gb < 0.0 && !opts.draft_forced && !std::getenv("STRATA_INK_DFLASH2_FORCE") && total_all_exp_bytes > vram_budget) {
+            const size_t df2_bytes = df2_->footprint_bytes();
+            if (total_all_exp_bytes <= vram_budget + df2_bytes) {
+                std::fprintf(stderr,
+                             "[ink-hip] DFlash 2 not loaded: it would move part of the model off the card (the experts need %.2f GiB, %.2f GiB fit with the drafter's %.0f MiB, %.2f GiB without it): "
+                             "decode and prompt reading get slower than the drafter's gain. `--draft on` loads it anyway.\n",
+                             static_cast<double>(total_all_exp_bytes) / 1073741824.0, static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(df2_bytes) / 1048576.0,
+                             static_cast<double>(vram_budget + df2_bytes) / 1073741824.0);
+                df2_->free_all();
+                df2_.reset();
+                has_df2_ = false;
+                vram_budget += df2_bytes;
+            }
         }
         size_t hybrid_cache_budget = 0;
         size_t static_vram_budget = vram_budget;
@@ -2792,7 +2831,9 @@ public:
             if (mb < 3) rate *= df2_plain_;
             if (rate > best_rate) { best_rate = rate; best_m = mb; }
         }
-        const int nd = best_m - 1;
+        int nd = best_m - 1;
+        static const int fixed_nd = std::getenv("STRATA_INK_DFLASH2_FIXED") ? std::atoi(std::getenv("STRATA_INK_DFLASH2_FIXED")) : 0;   // measurement: always this many drafts
+        if (fixed_nd > 0) nd = std::min(fixed_nd, max_draft);
         if (df2_trace_) {
             std::fprintf(stderr, "[df2] pos %d anchor %d -> nd %d  conf", anchor_pos, anchor_tok, nd);
             for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %.2f", conf[i]);
@@ -4940,7 +4981,7 @@ private:
         for (const auto& b : trunk_qkvrg_) tot += b.bytes;
         for (const auto& kv : trunk_bf16_) tot += kv.second.bytes;
         for (const auto& kv : trunk_f32_) tot += kv.second.bytes;
-        for (const auto& kv : packed_trunk_) tot += kv.second.buf.bytes;
+        for (const auto& kv : packed_trunk_) tot += (model_ && model_->m.embed_host_tail && kv.second.buf.host_mapped) ? 0u : kv.second.buf.bytes;
         for (const auto& kv : static_sconv_) tot += kv.second.bytes;
         for (const auto& b : d_msg_queries_) tot += b.bytes;
         for (const auto& kv : dspark_bf16_) tot += kv.second.bytes;

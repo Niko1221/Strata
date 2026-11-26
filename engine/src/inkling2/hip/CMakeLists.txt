@@ -98,6 +98,8 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_prefill.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_decode.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_megakernel.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_df2.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_iq_codecs.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/../../../include/strata/hip_uma_guard.hpp"
   COMMENT "Compiling strata-inkling multi-gen HIP backend (${STRATA_HIP_ARCHS})"
   VERBATIM

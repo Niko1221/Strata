@@ -1015,6 +1015,7 @@ int main(int argc, char** argv) {
         } else if (a == "--draft") {
             cfg.draft_mode = next();
             cfg.bopts.enable_dspark = (cfg.draft_mode != "off");
+            cfg.bopts.draft_forced = (cfg.draft_mode == "on");
         } else if (a == "--draft-beam") {
             cfg.bopts.spec_beam = std::atoi(next().c_str());
         } else if (a == "--draft-cost") {
@@ -1170,6 +1171,12 @@ int main(int argc, char** argv) {
     }
     // One CUDA GPU (sm_61 or newer: the Q8_ROW kernels): a GSQ-RCO file may compact its trunk (the loader decides per file; STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
     if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty() && ink2::ink_cuda_compact_trunk_supported(cfg.bopts.gpu_index)) {
+        ink2::gguf_detail::compact_trunk_allowed() = true;
+    }
+#endif
+#if defined(INKLING_ENABLE_HIP) && !defined(INKLING_ENABLE_CUDA)
+    // One HIP GPU: a GSQ-RCO file may compact its trunk (Q8_ROW unembed, embedding in pinned host RAM; the loader decides per file, STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty()) {
         ink2::gguf_detail::compact_trunk_allowed() = true;
     }
 #endif
