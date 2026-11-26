@@ -1,0 +1,92 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": "build-final-on",
+      "exit_code": 0,
+      "seconds": 5.323
+    },
+    {
+      "check": "ctest-final",
+      "exit_code": 0,
+      "seconds": 24.508
+    },
+    {
+      "check": "top64-repeat",
+      "exit_code": 0,
+      "seconds": 68.035
+    },
+    {
+      "check": "split-python",
+      "exit_code": 0,
+      "seconds": 0.315
+    },
+    {
+      "check": "top64-microbenchmark",
+      "exit_code": 0,
+      "seconds": 3.369
+    },
+    {
+      "check": "dump-gpu-on",
+      "exit_code": 0,
+      "seconds": 0.008
+    },
+    {
+      "check": "configure-off",
+      "exit_code": 0,
+      "seconds": 1.867
+    },
+    {
+      "check": "build-default-off",
+      "exit_code": 0,
+      "seconds": 10.632
+    },
+    {
+      "check": "dump-gpu-off",
+      "exit_code": 0,
+      "seconds": 0.008
+    },
+    {
+      "check": "restore-config-on",
+      "exit_code": 0,
+      "seconds": 1.867
+    },
+    {
+      "check": "restore-build-on",
+      "exit_code": 0,
+      "seconds": 10.633
+    }
+  ],
+  "reference_gpu_payload_sha256": {
+    "on": "91d976ff50f8d79d29df6f7b3e080adb5c6e95b77f70556389df80da54224f01",
+    "off": "91d976ff50f8d79d29df6f7b3e080adb5c6e95b77f70556389df80da54224f01"
+  },
+  "reference_gpu_payload_bit_identical": true,
+  "no_peer_packaging_check": true,
+  "binary_sha256": {
+    "on": "16771c64f3f43272cac56c5ca4288fe50a06e0ddc216dca7678c020751a2aa14",
+    "off": "7ae3b8b0f5fde9befb4339e945523f84656a81045df195218dd531988e9ead96"
+  },
+  "source_sha256_as_tested": {
+    "engine/src/split/CMakeLists.txt": "894f6753c4da37293a98e9ef879892fa35bcb78dea3d59173dde531a313fe69e",
+    "engine/src/split/src/cuda/topk_sm75.cu": "ea44c008cf812ab23f8d29c72b3cb6b3de4220dce940e3896f16cccff2ca9ef9",
+    "engine/src/split/tools/top64_sm75_test.cu": "7a8b4c8c64492bf50f7228551d11e0af80559170ff0af4e5f702c43d570a2442"
+  },
+  "source_sha256": {
+    "engine/src/split/CMakeLists.txt": "ca24f82d36592de4f265f62b91763b86ff14c24b950c36f0c6e619dcaab9d57f",
+    "engine/src/split/src/cuda/topk_sm75.cu": "5c2ba820eaa02075ae1b138cebbe3cfab554b77cd68cc277f1c1d8e5ed355621",
+    "engine/src/split/tools/top64_sm75_test.cu": "5508addabb2393cfbfec6dea6c3cdbac77271d416d5a3b781996acfddace0b36"
+  },
+  "code_commit": "dd571e4c3af759b3594d38f9656c393d4c91517c",
+  "base_commit": "c234774038d1c9249cb33637d27b895d47b39786",
+  "source_digest_note": "source_sha256 hashes the committed LF-normalized Git blob; as_tested also records Windows checkout bytes.",
+  "hardware": {
+    "gpu": "2 x RTX 2080 Ti, 22 GiB per card",
+    "driver": "595.99.02",
+    "cuda": "13.0",
+    "power_limit_w": 280,
+    "cpu": "Intel Core i7-7700",
+    "host_ram_gib": 32,
+    "os": "Ubuntu 26.04.1 LTS"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "kernel_filter": "kns=sm75_top64",
+  "api_error_reporting": "disabled: the test intentionally accepts graph-update rejection and reinstantiates",
+  "checks": [
+    {
+      "tool": "memcheck",
+      "exit_code": 0,
+      "seconds": 38.882,
+      "summary": [
+        "========= LEAK SUMMARY: 0 bytes leaked in 0 allocations",
+        "========= ERROR SUMMARY: 0 errors"
+      ]
+    },
+    {
+      "tool": "racecheck",
+      "exit_code": 0,
+      "seconds": 544.117,
+      "summary": [
+        "========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)"
+      ]
+    },
+    {
+      "tool": "synccheck",
+      "exit_code": 0,
+      "seconds": 21.802,
+      "summary": [
+        "========= ERROR SUMMARY: 0 errors"
+      ]
+    }
+  ],
+  "version": "Compute Sanitizer 2025.3.1.0 (CUDA 13.0 sanitizer package)",
+  "cases_per_device": 462,
+  "devices": 2,
+  "concurrent_cases_per_device": 2,
+  "full_log_sha256": {
+    "memcheck": "6ebe6c9c6bccfd0fbcac96447385291af60144f00c0ae01d2da9655a04399178",
+    "racecheck": "ddf0ba3fde34f4c5f12445d498e8e08b63cf9f325ce03a768f807e395e1787c5",
+    "synccheck": "8f064214052e546ad488f1747a5e10003ad55e35693b7d05e089349c113e9f34"
+  }
+}

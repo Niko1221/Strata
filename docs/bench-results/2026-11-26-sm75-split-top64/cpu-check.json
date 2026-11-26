@@ -1,0 +1,16 @@
+[
+  {
+    "step": "cmake-cpu",
+    "status": "passed",
+    "passed": 173,
+    "failed": 0,
+    "skipped": 4,
+    "seconds": 161.5,
+    "reason": "strata tests: ON - cpu (gpu tests not registered: neither STRATA_ENABLE_CUDA nor STRATA_ENABLE_HIP is on) (native-expert tests not registered: STRATA_NATIVE_EXPERTS=OFF)",
+    "failures": [],
+    "skips": {
+      "SKIP_RETURN_CODE=77": 2,
+      "SKIP_REGULAR_EXPRESSION_MATCHED": 2
+    }
+  }
+]
