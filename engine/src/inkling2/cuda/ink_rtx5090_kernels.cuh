@@ -2513,12 +2513,34 @@ __global__ void __launch_bounds__(256) k_ink_moe_bin_par_scatter(
 
 // High-Wave Zero-Smem L1-Direct M=1 SF4/MX8 Gate+Up+SITU (256 threads = 8 warps = 16 features/CTA x 16 lanes/feat, 576 CTAs!)
 // Issues 2x upfront register-pipelined uint4 loads (4x uint4 = 64B in flight/thread = 1 KB/warp!) -> saturates GDDR7!
+// PERF-STEP: the L2 prefetch of the routed expert's down matrix, issued by the gate+up CTAs of the same expert (72 CTAs per slot, each one slice, one bulk-prefetch
+// instruction per 16 KiB): the down kernel that follows then reads it from L2. It reads nothing into registers and changes no result. pf_dn = 0 turns it off.
+__device__ __forceinline__ void ink_l2_bulk_prefetch(const void* p, unsigned n) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && defined(__CUDACC_VER_MAJOR__) && (__CUDACC_VER_MAJOR__ >= 12)
+    asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::"l"(reinterpret_cast<unsigned long long>(p)), "r"(n) : "memory");
+#else
+    (void)p; (void)n;
+#endif
+}
+__device__ __forceinline__ void ink_moe_m1_prefetch_dn(const InkExpertDev& ed, const uint8_t* body) {
+    const unsigned total = (ed.dn_code == FMT_SF4) ? (unsigned)(kInkHidden * (kInkInter / 2 + kInkInter / 16))
+                                                   : (unsigned)(kInkHidden * (kInkInter + kInkInter / 32));
+    const unsigned nb = gridDim.x;
+    const unsigned per = (((total + nb - 1) / nb) + 15u) & ~15u;
+    const unsigned off = blockIdx.x * per;
+    if (off >= total) return;
+    const unsigned len = (total - off) < per ? (total - off) : per;
+    const uint8_t* src = body + ed.dn_off + off;
+    for (unsigned o = 0; o < len; o += 16384u) ink_l2_bulk_prefetch(src + o, (len - o) < 16384u ? (len - o) : 16384u);
+}
+
 __global__ void __launch_bounds__(256) k_ink_moe_gu_m1_l1(
     const uint8_t* __restrict__ sec4_base,
     const InkExpertDev* __restrict__ experts,
     const int32_t* __restrict__ topk_idx,   // [8]
     const __half2* __restrict__ x_h2,       // [1152] L1-resident (4.6 KB!)
-    __half2* __restrict__ h_h2_out) { // [8, 576] (output directly in __half2 for DN!)
+    __half2* __restrict__ h_h2_out,         // [8, 576] (output directly in __half2 for DN!)
+    int pf_dn) {                            // PERF-STEP: 1 = prefetch the expert's down matrix into L2 from here
     INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int slot = blockIdx.y;            // 0..7
     const int tid  = threadIdx.x;           // 0..255
@@ -2530,6 +2552,7 @@ __global__ void __launch_bounds__(256) k_ink_moe_gu_m1_l1(
     const InkExpertDev ed = experts[topk_idx[slot]];
     if (ed.tier > 1 || (ed.gu_code != FMT_SF4 && ed.gu_code != FMT_MX8)) return;
     const uint8_t* body = sec4_base + ed.body_off;
+    if (pf_dn != 0 && tid == 0 && (ed.dn_code == FMT_SF4 || ed.dn_code == FMT_MX8)) ink_moe_m1_prefetch_dn(ed, body);
     float ag = 0.0f, au = 0.0f;
 
     if (ed.gu_code == FMT_SF4) {
@@ -3378,7 +3401,11 @@ inline void launch_ink_moe_rtx5090(
         __half2* x_h2 = d_scratch_h2;
         __half2* h_h2 = d_scratch_h2 + (kInkHidden / 2);
         k_ink_f32_to_h2<<<(kInkHidden / 2 + 255) / 256, 256, 0, st>>>(x_f32, x_h2, kInkHidden / 2);
-        k_ink_moe_gu_m1_l1<<<dim3(kInkInter / 16, kInkTopK), 256, 0, st>>>(sec4_base, experts, ws.topk_idx, x_h2, h_h2);
+        static const int m1_dn_pf = [] {   // PERF-STEP: STRATA_INK_M1_DNPF=1 (default 0 until measured)
+            const char* e = std::getenv("STRATA_INK_M1_DNPF");
+            return (e != nullptr && e[0] == '1') ? 1 : 0;
+        }();
+        k_ink_moe_gu_m1_l1<<<dim3(kInkInter / 16, kInkTopK), 256, 0, st>>>(sec4_base, experts, ws.topk_idx, x_h2, h_h2, m1_dn_pf);
         ink_moe_mark(2);
         k_ink_moe_dn_m1_l1<<<dim3((kInkHidden / 2) / 16, kInkTopK), 256, 0, st>>>(sec4_base, experts, ws.topk_idx, ws.topk_w, h_h2, ws.y_pair);
         ink_moe_mark(3);
