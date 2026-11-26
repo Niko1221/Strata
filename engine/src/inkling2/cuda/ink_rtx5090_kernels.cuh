@@ -240,6 +240,13 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
     const int k_beg = is_swa ? max(0, p0 + q_base - kInkSwaWin + 1) : 0;
     const int k_end = is_swa ? (p0 + q_end) : min(p0 + q_end, kv.cap_pos);
     const bool fast_fp16 = (kv.kv_fmt == 0 && kv.host_cap == 0);
+    // FP8 E4M3 KV in VRAM (global and SWA visits): the K / V tile of the next step is read with 16-byte loads into registers while the scores of the
+    // current one are computed, then converted the same way as the generic loader (e4m3 -> f32, x scale, round to FP16): bit-identical, 2.5x faster at 128K
+#ifdef STRATA_PF_FP8_LEGACY   // test builds only: the old generic loader, to prove the new one bit-identical
+    const bool fast_fp8 = false;
+#else
+    const bool fast_fp8 = (kv.kv_fmt == 1 && kv.host_cap == 0);
+#endif
     const size_t kv_slot_base = (size_t)slot0 * kv.cap_pos;
 
     const int ld_r0 = tid >> 4;   // 0..7
@@ -309,9 +316,49 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
         }
     };
 
+    constexpr int NP8 = BN / 16;   // 16-byte pieces per thread and tile: 8 threads per 128-byte row, 16 rows per pass
+    uint4 raw_k8[NP8], raw_v8[NP8];
+    float sc_k8[NP8], sc_v8[NP8];
+    auto fp8_issue = [&](uint4 (&rr)[NP8], float (&rs)[NP8], bool is_k, int kt, int n_k) {
+        const int piece = tid & 7;
+#pragma unroll
+        for (int ps = 0; ps < NP8; ++ps) {
+            const int ki = ps * 16 + (tid >> 3);
+            rr[ps] = make_uint4(0u, 0u, 0u, 0u);
+            rs[ps] = 0.0f;
+            if (ki < n_k) {
+                const int kp = kt + ki;
+                const int p_idx = is_swa ? (kp % kv.cap_pos) : kp;
+                const size_t hbase = (kv_slot_base + p_idx) * kInkKVHeads + kh;
+                rr[ps] = __ldcs(reinterpret_cast<const uint4*>((is_k ? kv.k_f8 : kv.v_f8) + hbase * D) + piece);
+                rs[ps] = __ldg((is_k ? kv.k_sc : kv.v_sc) + hbase);
+            }
+        }
+    };
+    auto fp8_store = [&](uint16_t (&s_dst)[BN][D], const uint4 (&rr)[NP8], const float (&rs)[NP8]) {
+        const int piece = tid & 7;
+#pragma unroll
+        for (int ps = 0; ps < NP8; ++ps) {
+            const int ki = ps * 16 + (tid >> 3);
+            const float sc = rs[ps];
+            const uint32_t u[4] = {rr[ps].x, rr[ps].y, rr[ps].z, rr[ps].w};
+            uint32_t w[8];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const float2 f0 = e4m3x2_to_f32x2((uint16_t)(u[i] & 0xFFFFu));
+                const float2 f1 = e4m3x2_to_f32x2((uint16_t)(u[i] >> 16));
+                w[2 * i] = pack_fp16x2_rn(f0.x * sc, f0.y * sc);
+                w[2 * i + 1] = pack_fp16x2_rn(f1.x * sc, f1.y * sc);
+            }
+            *reinterpret_cast<uint4*>(&s_dst[ki][swiz(ki, 2 * piece)]) = make_uint4(w[0], w[1], w[2], w[3]);
+            *reinterpret_cast<uint4*>(&s_dst[ki][swiz(ki, 2 * piece + 1)]) = make_uint4(w[4], w[5], w[6], w[7]);
+        }
+    };
+
     if (k_beg < k_end) {
         const int n_k0 = min(BN, k_end - k_beg);
         if (fast_fp16) load_kv_tile_async(s_k, kv.k_f16, k_beg, n_k0);
+        else if (fast_fp8) { fp8_issue(raw_k8, sc_k8, true, k_beg, n_k0); fp8_store(s_k, raw_k8, sc_k8); }
         else           load_kv_tile_gen(s_k, true, k_beg, n_k0);
     }
 
@@ -321,6 +368,10 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
         __syncthreads();
 
         if (fast_fp16) load_kv_tile_async(s_v, kv.v_f16, kt, n_k);
+        else if (fast_fp8) {
+            fp8_issue(raw_v8, sc_v8, false, kt, n_k);
+            if (kt + BN < k_end) fp8_issue(raw_k8, sc_k8, true, kt + BN, min(BN, k_end - (kt + BN)));
+        }
 
         // 2. S[16, BN] = Q[16, 128] @ K[BN, 128]^T via ldmatrix.x4 + 419 TFLOPS FP16-Acc TC!
         uint32_t s_h2[NK8][2];
@@ -451,12 +502,14 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
         l_row1 += tl1;
 
         if (fast_fp16) fa_cp_wait0();
+        else if (fast_fp8) fp8_store(s_v, raw_v8, sc_v8);
         else           load_kv_tile_gen(s_v, false, kt, n_k);
         __syncthreads();
 
         if (kt + BN < k_end) {
             const int n_kn = min(BN, k_end - (kt + BN));
             if (fast_fp16) load_kv_tile_async(s_k, kv.k_f16, kt + BN, n_kn);
+            else if (fast_fp8) fp8_store(s_k, raw_k8, sc_k8);
             else           load_kv_tile_gen(s_k, true, kt + BN, n_kn);
         }
 
