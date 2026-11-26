@@ -198,6 +198,10 @@ public:
             err = std::string("cudaSetDevice failed: ") + cudaGetErrorString(ce);
             return false;
         }
+        {   // the opt-in tail skip (environment): its tables are loaded before anything is captured into a CUDA graph (the runner may capture while it initialises)
+            const strata::ink::InkTailCfg& tc0 = strata::ink::ink_tail_cfg();
+            if (tc0.on) strata::ink::ink_tail_sync_tables(tc0);
+        }
         cudaDeviceProp prop{};
         ce = cudaGetDeviceProperties(&prop, gpu_id_);
         if (ce != cudaSuccess) {
