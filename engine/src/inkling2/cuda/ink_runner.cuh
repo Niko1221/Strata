@@ -2900,6 +2900,10 @@ struct InkCudaRunner {
             int vram_fit_ctx = (n_glob_g0 > 0)
                 ? (int)std::min<size_t>((size_t)max_ctx, (avail_glob / std::max<size_t>(1, per_pos_glob)) & ~(size_t)63)
                 : max_ctx;
+            if (m.all_sf4_vram) {
+                std::fprintf(stderr, "[Ink5060Ti] compact sizing: free %.0f MiB, swa %.1f MiB, sconv %.1f MiB, ws reserve %.1f MiB, %zu B per global position, device KV that fits %d tokens\n",
+                             (double)vfree / 1048576.0, (double)eff_swa_vram / 1048576.0, (double)sconv_bytes / 1048576.0, (double)ws_reserve / 1048576.0, per_pos_glob, vram_fit_ctx);
+            }
             const int c1_init_dev_cap = m.all_sf4_vram ? 10240 : 8192;
             if (m.all_sf4_vram && max_slots == 1 && kv_dtype != InkKvDtype::FP16 && vram_fit_ctx < std::min(max_ctx, c1_init_dev_cap)) {
                 vram_fit_ctx = std::min(max_ctx, c1_init_dev_cap);
@@ -2913,6 +2917,21 @@ struct InkCudaRunner {
                 ? (int)std::min<size_t>((size_t)max_ctx, ((size_t)(host_avail - host_os_res) / std::max<size_t>(1, per_pos_all_glob)) & ~(size_t)63)
                 : max_ctx;
 
+            // COMPACT never ends with less than ~128 MiB free (rows lane 11-26): the device K/V is the elastic part of what compact allocates, so when the workspaces, the SWA ring and the
+            // K/V of the floor above would leave less, the K/V that does not fit goes to mapped host memory (the Auto Host KV Offload below). An RTX 5080 (driver 595, CUDA 13.0) ended with
+            // 104 MiB free after the floor's 7680 device tokens and its engine died at the first top-k (ink_cuda_backend.cu:995, "Tree CUDA Graph capture unavailable (err=2)"); an RTX 5070 Ti
+            // with 149 MiB free and the 5060 Ti (140 MiB) ran. 128 MiB gives a margin over the card that failed by 24 MiB and keeps all of the K/V on cards that have the room.
+            if (m.all_sf4_vram && max_slots == 1 && kv_offload_mode == 0 && host_fit_ctx >= 256) {
+                const double keep = 128.0 * 1048576.0;
+                const double room = (double)vfree - (double)eff_swa_vram - (double)sconv_bytes - (double)ws_reserve - keep;
+                const int safe_dev = room > 0.0 ? ((int)std::min<double>((double)(1 << 20), room / (double)std::max<size_t>(1, per_pos_glob)) & ~63) : 0;
+                const int dev_target = (vram_fit_ctx >= max_ctx) ? std::min(max_ctx, c1_init_dev_cap)
+                                                                 : (vram_fit_ctx >= 1024 ? ((vram_fit_ctx * 3 / 4) & ~255) : 0);
+                if (dev_target > safe_dev) {
+                    std::fprintf(stderr, "[Ink5060Ti] compact keeps 128 MiB free: device K/V %d -> %d tokens, the rest in mapped host memory\n", dev_target, safe_dev >= 768 ? safe_dev : 0);
+                    vram_fit_ctx = (safe_dev >= 768) ? std::min(max_ctx - 1, safe_dev * 4 / 3) : 0;
+                }
+            }
             const int eff_kv_offload_mode = swa_in_host ? 1 : kv_offload_mode;
             if (ink_elastic_1m_enabled(m.primary_gpu) && !m.ls_active) {
                 elastic_kv.plan(m.primary_gpu, max_slots, max_ctx, kv_dtype, vram_fit_ctx, eff_kv_offload_mode,
