@@ -93,8 +93,19 @@ inline bool ink_tail_parse_visits(const std::string& s, uint64_t& mask, std::str
     return true;
 }
 
-inline bool ink_tail_parse(const std::string& spec, InkTailCfg& out, std::string& err) {
+// The two opt-in presets (owner decision 2026-11-26): `--turbo` / STRATA_INK_TAIL_SKIP=turbo and `--turbo-max` / STRATA_INK_TAIL_SKIP=turbo-max.
+// turbo: Pass 2 only (visits 30..41), ranks 7-8 at <= 8 % share, kept weights not renormalised: about 3 % of the expert reads, KL about 1e-3 (docs/INKLING_TURBO.md).
+// turbo-max: ranks 6-8 at <= 8 % share on every visit, renormalised: about 16 % of the reads, KL about 1.3e-2.
+inline const char* ink_tail_preset(const std::string& name) {
+    if (name == "turbo") return "thr=0.08,rank=7,visits=30-41,cap=0,renorm=0";
+    if (name == "turbo-max" || name == "turbo_max") return "thr=0.08,rank=6,visits=all,cap=0,renorm=1";
+    return nullptr;
+}
+
+inline bool ink_tail_parse(const std::string& spec_in, InkTailCfg& out, std::string& err) {
     InkTailCfg c;
+    const char* preset = ink_tail_preset(spec_in);
+    const std::string spec = preset ? std::string(preset) : spec_in;
     if (spec.empty() || spec == "off" || spec == "0") { out = c; return true; }
     c.on = true;
     (void)ink_tail_parse_visits("18-41", c.visit_mask, err);

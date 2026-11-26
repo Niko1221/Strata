@@ -515,6 +515,15 @@ public:
 
     bool dspark_ready() const override { return has_dspark_; }
 
+    // Opt-in router tail skip (cuda/ink_tail_skip.cuh): the HIP router reads the process-wide setting at every launch; the direct MoE path applies it.
+    bool set_tail_skip(const std::string& spec, std::string& err) override {
+        strata::ink::InkTailCfg c;
+        if (!strata::ink::ink_tail_parse(spec, c, err)) return false;
+        (void)strata::ink::ink_tail_cfg();
+        strata::ink::ink_tail_cfg_ref() = c;
+        return true;
+    }
+
     std::string device_info() const override {
         char buf[512];
         if (ep2_active_) {
