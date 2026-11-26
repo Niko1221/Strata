@@ -283,4 +283,73 @@ static inline int cmd_tail_kl(const std::string& model_path, const std::string& 
     return 0;
 }
 
+// strata-inkling --native MODEL --max-context N --draft off --tail-gen PROMPTS.tsv --tail-gen-out OUT.tsv [--tail-stop id,id]
+// PROMPTS.tsv: name <TAB> ids <TAB> n_gen. The exact model answers each prompt greedily (stops at a stop id, which is kept, or after n_gen tokens);
+// OUT.tsv: name <TAB> prompt + answer ids <TAB> score range "P-1-(n-2)" (the positions that predict the answer tokens), for --tail-kl.
+static inline int cmd_tail_gen(const std::string& model_path, const std::string& in_path, const std::string& out_path, const std::string& stop_str,
+                               const BackendOpts& bopts, bool force_cpu) {
+    std::string err;
+    std::vector<int32_t> stop;
+    if (!stop_str.empty()) {
+        std::vector<std::string> parts;
+        tkl_split(stop_str, ',', parts);
+        for (const auto& p : parts) if (!p.empty()) stop.push_back(std::atoi(p.c_str()));
+    }
+    std::ifstream f(in_path, std::ios::binary);
+    if (!f) { fprintf(stderr, "tail-gen: cannot open %s\n", in_path.c_str()); return 2; }
+    InkModelFile mf;
+    if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
+    auto backend = make_default_backend(force_cpu, &bopts);
+    if (!backend->init(mf, bopts, err) || !backend->alloc_slot(0, bopts.max_ctx, bopts.kv_dtype, err)) { fprintf(stderr, "init: %s\n", err.c_str()); return 1; }
+    const int V = mf.m.c.vocab_unpadded;
+    FILE* fo = std::fopen(out_path.c_str(), "wb");
+    if (!fo) { fprintf(stderr, "tail-gen: cannot write %s\n", out_path.c_str()); return 1; }
+    std::string line;
+    std::vector<std::string> cols;
+    std::vector<float> one(V);
+    StepBatch batch;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        tkl_split(line, '\t', cols);
+        if (cols.size() < 3) continue;
+        std::vector<int32_t> ids;
+        {
+            const char* p = cols[1].c_str();
+            char* e = nullptr;
+            while (*p) { long v = std::strtol(p, &e, 10); if (e == p) break; ids.push_back((int32_t)v); p = (*e == ',') ? e + 1 : e; }
+        }
+        const int n_gen = std::max(1, std::atoi(cols[2].c_str()));
+        const int P = (int)ids.size();
+        if (P < 2 || P + n_gen >= bopts.max_ctx) { fprintf(stderr, "tail-gen: %s skipped (prompt %d + gen %d vs ctx %d)\n", cols[0].c_str(), P, n_gen, bopts.max_ctx); continue; }
+        backend->reset_slot(0);
+        auto t0 = std::chrono::steady_clock::now();
+        for (int i0 = 0; i0 < P; i0 += 2048) {
+            const int i1 = std::min(P, i0 + 2048);
+            batch.clear();
+            for (int i = i0; i < i1; ++i) batch.push(0, i, ids[i], i == P - 1);
+            if (!backend->forward_batch(batch, one.data(), nullptr, err)) { fprintf(stderr, "tail-gen: %s\n", err.c_str()); return 1; }
+        }
+        std::vector<int32_t> out = ids;
+        for (int g = 0; g < n_gen; ++g) {
+            int b = 0;
+            for (int v = 1; v < V; ++v) if (one[v] > one[b]) b = v;
+            out.push_back(b);
+            if (std::find(stop.begin(), stop.end(), b) != stop.end()) break;
+            batch.clear();
+            batch.push(0, P + g, b, true);
+            if (!backend->forward_batch(batch, one.data(), nullptr, err)) { fprintf(stderr, "tail-gen: %s\n", err.c_str()); return 1; }
+        }
+        const int n = (int)out.size();
+        fprintf(fo, "%s\t", cols[0].c_str());
+        for (int i = 0; i < n; ++i) fprintf(fo, "%s%d", i ? "," : "", out[i]);
+        fprintf(fo, "\t%d-%d\n", P - 1, n - 2);
+        fflush(fo);
+        fprintf(stderr, "[tail-gen] %s: prompt %d, generated %d tokens in %.1fs\n", cols[0].c_str(), P, n - P,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::fclose(fo);
+    return 0;
+}
+
 }  // namespace ink2
