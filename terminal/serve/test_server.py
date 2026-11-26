@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
-                          StrataEngine, Vision, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
+                          StrataEngine, Vision, api_key_of, engine_args, key_matches, layer_split_value, max_tokens_from_config, prompt_progress,
                           prompt_tokens_seen,
                           request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
@@ -3736,6 +3736,148 @@ class ConfigReasoningEffort(unittest.TestCase):
         self.assertEqual(cfg, {"args": ["--ctx", "4096"]})
 
 
+class ConfigMaxTokens(unittest.TestCase):
+    """The config's top-level "max_tokens": the cap a request that asks for none gets, and the /v1/models limit.output.
+    One reader, default_output_cap(), is behind /v1/models, /props and the three request paths: a Chat setting that is
+    a positive number wins over the config's key; a Chat setting of 0, null or a non-number asks for no cap, so the
+    config's applies."""
+
+    def svc(self, cap=None, shared=None):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.config_output_cap = cap
+        svc.shared = shared or {}
+        return svc
+
+    def test_no_cap_changes_nothing(self):
+        req = {"messages": []}
+        self.assertIs(self.svc().with_shared(req, "openai"), req)
+        self.assertIsNone(self.svc().default_output_cap())
+
+    def test_the_cap_fills_a_request_that_asks_for_none(self):
+        for api in ("openai", "anthropic"):
+            self.assertEqual(self.svc(512).with_shared({}, api)["max_tokens"], 512)
+        self.assertEqual(self.svc(512).default_output_cap(), 512)
+
+    def test_a_request_with_its_own_cap_keeps_it(self):
+        self.assertEqual(self.svc(512).with_shared({"max_tokens": 5}, "openai")["max_tokens"], 5)
+        self.assertEqual(self.svc(512).with_shared({"max_completion_tokens": 7}, "openai")["max_completion_tokens"], 7)
+
+    def test_a_positive_chat_setting_wins_over_the_config_even_when_larger(self):
+        self.assertEqual(self.svc(512, {"max_tokens": 77}).with_shared({}, "openai")["max_tokens"], 77)
+        self.assertEqual(self.svc(512, {"max_tokens": 77}).default_output_cap(), 77)
+        self.assertEqual(self.svc(512, {"max_tokens": 4096}).default_output_cap(), 4096)
+
+    def test_a_chat_setting_that_means_no_cap_falls_through_to_the_config(self):
+        for shared in ({"max_tokens": 0}, {"max_tokens": None}, {"max_tokens": "512"}):
+            with self.subTest(shared=shared):
+                self.assertEqual(self.svc(512, shared).default_output_cap(), 512)
+
+    def test_the_value_is_checked(self):
+        for bad in (0, -1, 1.5, True, "512", float("inf"), float("-inf"), float("nan")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(SystemExit):
+                    max_tokens_from_config({"max_tokens": bad})
+        self.assertIsNone(max_tokens_from_config({}))
+        self.assertIsNone(max_tokens_from_config({"max_tokens": None}))
+        self.assertEqual(max_tokens_from_config({"max_tokens": 512}), 512)
+        self.assertEqual(max_tokens_from_config({"max_tokens": 512.0}), 512)
+
+
+class ConfigCapInModelLimit(unittest.TestCase):
+    """The config's "max_tokens" lowers the answer cap /v1/models publishes (upstream #6402 publishes the room)."""
+
+    def svc(self):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+
+    def test_without_a_config_cap_the_room_is_published(self):
+        self.assertEqual(self.svc().output_cap(), CTX - CTX_SLACK)
+
+    def test_the_config_cap_is_the_published_cap(self):
+        svc = self.svc()
+        svc.config_output_cap = 512
+        self.assertEqual(svc.output_cap(), 512)
+
+    def test_a_config_cap_above_the_room_changes_nothing(self):
+        svc = self.svc()
+        svc.config_output_cap = CTX * 4
+        self.assertEqual(svc.output_cap(), CTX - CTX_SLACK)
+
+
+class ConfigCapOnEveryApi(unittest.TestCase):
+    """refs #6402: a request that names no cap gets the config's cap on all three APIs, not only where the Chat
+    settings are read. The Responses API fills `max_output_tokens` and /props reports `n_predict` from the same
+    number, so /v1/models' `limit.output`, /props' `n_predict` and the engine's limit agree."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = RecordingEngine(tok, "</think>\n\n" + ANSWER, max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.svc.config_output_cap = 64
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_the_published_number_is_the_applied_one(self):
+        with urllib.request.urlopen(self.base + "/v1/models", timeout=30) as r:
+            self.assertEqual(json.loads(r.read())["data"][0]["limit"]["output"], 64)
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                self.assertEqual(self.request(api), 200)
+                self.assertEqual(self.engine.last_max_new, 64)
+
+    def request(self, api, **budget):
+        """One request that names no cap; -> status. The engine records the cap it was given."""
+        if api == "openai":
+            body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], **budget}
+            path = "/v1/chat/completions"
+        elif api == "anthropic":
+            body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], **budget}
+            path = "/v1/messages"
+        else:
+            body = {"model": "m", "input": "hi", **budget}
+            path = "/v1/responses"
+        return self.post(path, body)[0]
+
+    def test_props_reports_the_same_cap(self):
+        with urllib.request.urlopen(self.base + "/props", timeout=30) as r:
+            props = json.loads(r.read())
+        self.assertEqual(props["default_generation_settings"]["params"]["n_predict"], 64)
+
+    def test_a_request_with_its_own_cap_keeps_it(self):
+        # the request wins over the config, on the Responses API's name too
+        self.assertEqual(self.request("openai", max_tokens=5), 200)
+        self.assertEqual(self.engine.last_max_new, 5)
+        self.assertEqual(self.request("responses", max_output_tokens=7), 200)
+        self.assertEqual(self.engine.last_max_new, 7)
+
+    def test_the_chat_settings_still_win_over_the_config(self):
+        self.svc.shared = {"max_tokens": 33}
+        try:
+            for api in ("openai", "anthropic", "responses"):
+                with self.subTest(api=api):
+                    self.assertEqual(self.request(api), 200)
+                    self.assertEqual(self.engine.last_max_new, 33)
+        finally:
+            self.svc.shared = {}
+
+
 class LoadSharedSettings(unittest.TestCase):
     """#4933: one unknown key in `.shared-settings.json` used to clear EVERY shared setting, silently.
 
@@ -4979,6 +5121,22 @@ class ThinkingBudget(unittest.TestCase):
         msg = b["choices"][0]["message"]
         self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
         self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        self.assertLess(len(msg["reasoning_content"]), 1024 - 256)
+        self.assertEqual(len(self.engine.prompts), 2)              # the wrap-up continuation
+
+    def test_the_config_cap_is_the_cap_the_answer_room_works_from(self):
+        """A request with thinking on and no cap of its own gets the config's "max_tokens", so the answer room (a
+        quarter of the cap) works from it and not from the whole context."""
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40    # 1,800 reasoning tokens
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}]}      # no cap of its own
+        self.svc.config_output_cap = 1024
+        try:
+            code, b = self.post("/v1/chat/completions", body)
+        finally:
+            self.svc.config_output_cap = None
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
         self.assertLess(len(msg["reasoning_content"]), 1024 - 256)
         self.assertEqual(len(self.engine.prompts), 2)              # the wrap-up continuation
 
