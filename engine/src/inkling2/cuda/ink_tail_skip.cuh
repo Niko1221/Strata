@@ -28,8 +28,9 @@
 namespace strata::ink {
 
 constexpr int kInkTailVisits = 48;
-constexpr int kInkTailStatW = 12;   // per visit: [0] token-visits seen, [2..8] dropped slots by rank 2..8, [9] dropped share * 1e6,
-                                     // [10] sum over MoE calls of the experts the exact router would have read, [11] of the experts read with the skip
+constexpr int kInkTailStatW = 14;   // per visit: [0] token-visits seen, [2..8] dropped slots by rank 2..8, [9] dropped share * 1e6,
+                                     // [10] sum over MoE calls of the experts the exact router would have read, [11] of the experts read with the skip,
+                                     // [12] routed slots that are cold (not in VRAM), [13] of those, slots skipped or swapped for a resident expert
 
 struct InkTailCfg {
     bool on = false;
@@ -39,6 +40,12 @@ struct InkTailCfg {
     int renorm = 1;
     uint64_t visit_mask = 0;            // bit v = visit v
     bool stats = false;
+    // lane TAILSKIP part 2: calibrated bias, cold-aware skip, resident fallback
+    int mode_fb = 0;                    // 1: a skipped slot is swapped for fb[layer][expert] when that is resident (else skipped)
+    int cold_only = 0;                  // 1: only a cold slot (not resident) is eligible
+    float comp_scale = 1.0f;            // scale of the bias
+    int calib = 0;                      // 1: nothing is skipped; the dropped experts' weighted outputs are summed per layer (tail_calib)
+    std::string comp_path, hot_path, fb_path;   // [24,2304] f32 bias, [24,128] u8 virtual hot mask (1 = resident), [24,128] u16 fallback table
 };
 
 // Kernel argument (by value). on = 0: the kernel behaves exactly as before.
@@ -51,6 +58,14 @@ struct InkTailArgs {
     float cap = 0.0f;
     float* y_pair = nullptr;            // [M * 8, 2304] zeroed for a dropped slot
     unsigned long long* cnt = nullptr;  // [48 * kInkTailStatW] or nullptr
+    int ip = 0;                         // physical layer of the visit
+    int mode_fb = 0, cold_only = 0, calib = 0;
+    float comp_scale = 1.0f;
+    const void* ex = nullptr;           // InkExpertDev* of the layer (real tiers: tier 2 = cold)
+    const uint8_t* hot = nullptr;       // [24 * 128] virtual hot mask (overrides the tiers)
+    const uint16_t* fb = nullptr;       // [24 * 128]
+    const float* comp = nullptr;        // [24 * 2304]
+    int* mask_out = nullptr;            // [tokens] drop candidates (calibration)
 };
 
 inline InkTailCfg& ink_tail_cfg_ref() { static InkTailCfg c; return c; }
@@ -96,6 +111,13 @@ inline bool ink_tail_parse(const std::string& spec, InkTailCfg& out, std::string
         else if (k == "cap") c.cap = (float)std::atof(v.c_str());
         else if (k == "renorm") c.renorm = std::atoi(v.c_str());
         else if (k == "stats") c.stats = std::atoi(v.c_str()) != 0;
+        else if (k == "mode") c.mode_fb = (v == "fb") ? 1 : 0;
+        else if (k == "cold") c.cold_only = std::atoi(v.c_str()) != 0;
+        else if (k == "compscale") c.comp_scale = (float)std::atof(v.c_str());
+        else if (k == "calib") c.calib = std::atoi(v.c_str()) != 0;
+        else if (k == "comp") c.comp_path = v;
+        else if (k == "hot") c.hot_path = v;
+        else if (k == "fb") c.fb_path = v;
         else if (k == "visits") { if (!ink_tail_parse_visits(v, c.visit_mask, err)) return false; }
         else if (k == "on") { /* accepted */ }
         else { err = "unknown tail-skip key: " + k; return false; }

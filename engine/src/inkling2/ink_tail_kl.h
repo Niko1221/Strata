@@ -358,4 +358,45 @@ static inline int cmd_tail_gen(const std::string& model_path, const std::string&
     return 0;
 }
 
+// strata-inkling --native MODEL --max-context N --draft off --tail-calib CORPUS.tsv --tail-cfgs SPEC --tail-out OUT.bin
+// Runs the corpus (chunked prefill) with the spec (a visit mask and thresholds; the engine adds calib=1: nothing is skipped) and writes the per-layer mean of the weighted
+// output of the experts the skip would have dropped, [24 x 2304] float32 = the sq.tail_comp table. The mean is per dropped slot: the router applies it once per skipped slot.
+static inline int cmd_tail_calib(const std::string& model_path, const std::string& corpus_path, const std::string& spec_in, const std::string& out_path, int chunk,
+                                 const BackendOpts& bopts, bool force_cpu) {
+    std::string err;
+    std::vector<TailKlSeq> seqs;
+    if (!tkl_load_corpus(corpus_path, seqs, err)) { fprintf(stderr, "tail-calib: %s\n", err.c_str()); return 2; }
+    for (auto& s : seqs) s.rows.clear();   // no logits are needed
+    InkModelFile mf;
+    if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
+    auto backend = make_default_backend(force_cpu, &bopts);
+    if (!backend->init(mf, bopts, err) || !backend->alloc_slot(0, bopts.max_ctx, bopts.kv_dtype, err)) { fprintf(stderr, "init: %s\n", err.c_str()); return 1; }
+    std::string spec = spec_in + ",calib=1";
+    if (!backend->set_tail_skip(spec, err)) { fprintf(stderr, "tail-calib: %s\n", err.c_str()); return 1; }
+    std::vector<float> buf;
+    size_t ntok = 0;
+    for (const auto& s : seqs) {
+        if (!tkl_run_seq(*backend, s, chunk, buf, mf.m.c.vocab_unpadded, err, [](size_t, int, const float*) {})) { fprintf(stderr, "tail-calib: %s: %s\n", s.name.c_str(), err.c_str()); return 1; }
+        ntok += s.ids.size();
+    }
+    std::vector<double> sum;
+    std::vector<uint64_t> cnt;
+    if (!backend->tail_calib(sum, cnt, true)) { fprintf(stderr, "tail-calib: no calibration sums\n"); return 1; }
+    const int H = 2304;
+    std::vector<float> comp((size_t)24 * H, 0.0f);
+    for (int l = 0; l < 24; ++l)
+        if (cnt[l] > 0) for (int d = 0; d < H; ++d) comp[(size_t)l * H + d] = (float)(sum[(size_t)l * H + d] / (double)cnt[l]);
+    FILE* fo = std::fopen(out_path.c_str(), "wb");
+    if (!fo) { fprintf(stderr, "tail-calib: cannot write %s\n", out_path.c_str()); return 1; }
+    std::fwrite(comp.data(), 4, comp.size(), fo);
+    std::fclose(fo);
+    printf("[tail-calib] %zu tokens; dropped slots per layer:", ntok);
+    for (int l = 0; l < 24; ++l) printf(" %llu", (unsigned long long)cnt[l]);
+    printf("\n[tail-calib] mean |bias| per layer:");
+    for (int l = 0; l < 24; ++l) { double a = 0; for (int d = 0; d < H; ++d) a += std::fabs(comp[(size_t)l * H + d]); printf(" %.3g", a / H); }
+    printf("\n[tail-calib] wrote %s\n", out_path.c_str());
+    backend->set_tail_skip("off", err);
+    return 0;
+}
+
 }  // namespace ink2

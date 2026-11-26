@@ -110,6 +110,18 @@ public:
         return true;
     }
 
+    bool tail_calib(std::vector<double>& sum, std::vector<uint64_t>& cnt, bool reset) override {
+        auto& t = strata::ink::ink_tail_dev();
+        sum.assign((size_t)24 * strata::ink::kInkHidden, 0.0);
+        cnt.assign(24, 0);
+        if (!initialized_ || !t.acc) return false;
+        cudaStreamSynchronize(runner_->st);
+        if (cudaMemcpy(sum.data(), t.acc, sum.size() * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (cudaMemcpy(cnt.data(), t.cnt, 24 * sizeof(uint64_t), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (reset) { cudaMemset(t.acc, 0, sum.size() * sizeof(double)); cudaMemset(t.cnt, 0, 24 * sizeof(uint64_t)); }
+        return true;
+    }
+
     bool tail_stats(std::vector<uint64_t>& out, bool reset) override {
         out.assign((size_t)strata::ink::kInkTailVisits * strata::ink::kInkTailStatW, 0);
         unsigned long long* d = strata::ink::ink_tail_cnt_dev();

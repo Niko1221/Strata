@@ -840,7 +840,7 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
-    std::string tkl_corpus, tkl_cfgs, tkl_out, tkl_only, tgen_in, tgen_out, tgen_stop;
+    std::string tkl_corpus, tkl_cfgs, tkl_out, tkl_only, tgen_in, tgen_out, tgen_stop, tkl_calib;
     int tkl_chunk = 2048;
     int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0, batch_check_n = 0;
     float cli_temp = 0.0f;
@@ -884,6 +884,8 @@ int main(int argc, char** argv) {
             tkl_out = next();
         } else if (a == "--tail-chunk") {
             tkl_chunk = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--tail-calib") {
+            tkl_calib = next();
         } else if (a == "--tail-only") {
             tkl_only = next();
         } else if (a == "--native" || a == "--model") {
@@ -1058,6 +1060,7 @@ int main(int argc, char** argv) {
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
+    if (!tkl_calib.empty()) return cmd_tail_calib(cfg.model_path, tkl_calib, tkl_cfgs, tkl_out, tkl_chunk, cfg.bopts, cfg.force_cpu);
     if (!tgen_in.empty()) return cmd_tail_gen(cfg.model_path, tgen_in, tgen_out, tgen_stop, cfg.bopts, cfg.force_cpu);
     if (!tkl_corpus.empty()) return cmd_tail_kl(cfg.model_path, tkl_corpus, tkl_cfgs, tkl_out, tkl_chunk, tkl_only, cfg.bopts, cfg.force_cpu);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);

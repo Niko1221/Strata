@@ -119,6 +119,8 @@ public:
     // set_tail_skip("off") switches it off. tail_stats() returns [48 visits][10] counters (see kInkTailStatW) and can reset them.
     virtual bool set_tail_skip(const std::string& spec, std::string& err) { (void)spec; err = "this backend has no tail skip"; return false; }
     virtual bool tail_stats(std::vector<uint64_t>& out, bool reset) { (void)out; (void)reset; return false; }
+    // calibration (spec calib=1): per layer the sum of the dropped experts' weighted outputs [24 x 2304] and the number of dropped slots [24]; reset zeroes them
+    virtual bool tail_calib(std::vector<double>& sum, std::vector<uint64_t>& cnt, bool reset) { (void)sum; (void)cnt; (void)reset; return false; }
 
     // Batched 48-visit forward across 1..64 active slots!
     // logits_out: [batch.count_logits(), vocab_unpadded] FP32 (already softcapped by 30*tanh(z/30) and sliced to 200058).
