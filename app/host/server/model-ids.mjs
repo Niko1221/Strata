@@ -1,9 +1,9 @@
 /** #6778 / #6621: which model names a client sends are Strata's own catalog ids. The same rule as `strata serve` (terminal/serve/server.py check_model):
  *  a request that names one of these but not the loaded model gets a clear "not loaded" answer, while a placeholder another app sends ("gpt-4o", "claude-5-5-sonnet") is still
  *  served by the one loaded model (#5312). */
-const PREFIXES = ['inkling-2-mini', 'hy4-flash', 'qwen3.8-flash-next', 'qwen3.6-', 'qwen3.5-'];
+const PREFIXES = ['inkling-2-mini', 'hy4-flash', 'qwen3.8-flash-next', 'qwen3.6-', 'qwen3.5-', 'ornith-1.5-'];
 const SIZE_NAME = /^(?:(?:ud-)?i?q\d_[0-9a-z_]+(?:-v\d+)?|sq-\d+|gyro-[a-z])$/;
-const FAMILY_PREFIX = /^(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|hy4-flash|inkling-2-mini)-/;
+const FAMILY_PREFIX = /^(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|ornith-1\.5-35b-a3b|hy4-flash|inkling-2-mini)-/;
 
 export const looksLikeStrataModelId = name => {
   if (typeof name !== 'string') return false;

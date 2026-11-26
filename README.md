@@ -68,6 +68,15 @@ The number in the name is the RAM the pack is made for.
 </details>
 
 <details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Ornith-1.5-35B-A3B</b></summary>
+
+**Ornith AI (MIT):** Q4_K_M, Q5_K_M, Q6_K, Q8_0. The same architecture and engine path as Qwen3.6-35B-A3B. Catalog entry from eSPiYa's patch.
+
+[Sizes and setup](docs/MODELS.md#ornith-15-35b-a3b).
+
+</details>
+
+<details>
 <summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
 
 | Provider | Choices |
