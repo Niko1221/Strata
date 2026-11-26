@@ -121,6 +121,7 @@ void check_mmvq(int t, int n_in, int n_out, cudaStream_t s, std::mt19937& rng) {
 struct Grouped {
     k::NativeExpertLayout L;
     int n_groups = 0, n_ent = 0, cap_groups = 0, cap_ent = 0, n_tok = 0;
+    bool host_blobs = false;
     std::vector<uint8_t*> blobs;
     unsigned long long* dptr = nullptr;
     int32_t *dstart = nullptr, *dn = nullptr, *ddst = nullptr, *dtok = nullptr;
@@ -129,10 +130,11 @@ struct Grouped {
     float* dout = nullptr;
     size_t out_floats = 0;
 
-    Grouped(int gu, int dt, int64_t H, int64_t FF, const std::vector<int>& counts, int tokens, std::mt19937& rng) {
+    Grouped(int gu, int dt, int64_t H, int64_t FF, const std::vector<int>& counts, int tokens, std::mt19937& rng,
+            bool pcie = false, size_t align_shift = 0) : host_blobs(pcie) {
         L = k::native_expert_layout(gu, dt, H, FF);
         n_groups = (int) counts.size();
-        cap_groups = n_groups + 2;
+        cap_groups = std::max(n_groups + 2, 4);
         n_tok = tokens;
         std::vector<int32_t> start(1, 0), tok, dst;
         for (int c : counts) start.push_back(start.back() + c);
@@ -149,17 +151,27 @@ struct Grouped {
             const auto d = random_rows(dt, H, FF, rng);
             b.insert(b.end(), d.begin(), d.end());
             if (b.size() != L.bytes) { std::fprintf(stderr, "blob size %zu != %zu\n", b.size(), L.bytes); std::exit(2); }
-            uint8_t* db = dalloc<uint8_t>(b.size());
-            ck(cudaMemcpy(db, b.data(), b.size(), cudaMemcpyHostToDevice), "blob");
-            blobs.push_back(db);
-            ptr.push_back((unsigned long long) db);
+            if (pcie) {
+                void* hb = nullptr;
+                void* dp = nullptr;
+                ck(cudaHostAlloc(&hb, b.size() + align_shift, cudaHostAllocMapped), "hostalloc");
+                std::memcpy((uint8_t*) hb + align_shift, b.data(), b.size());
+                ck(cudaHostGetDevicePointer(&dp, hb, 0), "hostdevptr");
+                blobs.push_back((uint8_t*) hb);
+                ptr.push_back((unsigned long long) ((uint8_t*) dp + align_shift));
+            } else {
+                uint8_t* db = dalloc<uint8_t>(b.size() + align_shift);
+                ck(cudaMemcpy(db + align_shift, b.data(), b.size(), cudaMemcpyHostToDevice), "blob");
+                blobs.push_back(db);
+                ptr.push_back((unsigned long long) (db + align_shift));
+            }
         }
         dptr = dalloc<unsigned long long>(cap_groups);
         dstart = dalloc<int32_t>(cap_groups + 1);
         dn = dalloc<int32_t>(1);
         ddst = dalloc<int32_t>(cap_ent);
         dtok = dalloc<int32_t>(cap_ent);
-        ck(cudaMemcpy(dptr, ptr.data(), ptr.size() * 8, cudaMemcpyHostToDevice), "ptr");
+        if (!ptr.empty()) ck(cudaMemcpy(dptr, ptr.data(), ptr.size() * 8, cudaMemcpyHostToDevice), "ptr");
         ck(cudaMemcpy(dstart, start.data(), start.size() * 4, cudaMemcpyHostToDevice), "start");
         ck(cudaMemcpy(dn, &n_groups, 4, cudaMemcpyHostToDevice), "n");
         if (n_ent) {
@@ -175,20 +187,23 @@ struct Grouped {
         dout = dalloc<float>(out_floats);
     }
     ~Grouped() {
-        for (auto* b : blobs) cudaFree(b);
+        for (auto* b : blobs) {
+            if (host_blobs) cudaFreeHost(b);
+            else cudaFree(b);
+        }
         cudaFree(dptr); cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
         cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout);
     }
-    void run(bool old, cudaStream_t s) {
+    void run(bool old, cudaStream_t s, int64_t grid_groups = 0) {
         k::iq_set_old_kernels(old);
         k::quantize_q8_1_rows(dx, n_tok, L.n_embd, dxq, s);
-        k::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, cap_groups, cap_ent, dxq, dscr, dout, s);
+        k::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, cap_groups, cap_ent, dxq, dscr, dout, s, grid_groups);
         k::iq_set_old_kernels(false);
     }
-    std::vector<float> result(bool old, cudaStream_t s) {
+    std::vector<float> result(bool old, cudaStream_t s, int64_t grid_groups = 0) {
         ck(cudaMemset(dout, 0xFF, out_floats * 4), "memset");
         ck(cudaMemset(dscr, 0, k::native_expert_scratch_bytes(cap_ent, L.n_ff)), "memset");
-        run(old, s);
+        run(old, s, grid_groups);
         ck(cudaStreamSynchronize(s), "sync");
         std::vector<float> o(out_floats);
         ck(cudaMemcpy(o.data(), dout, o.size() * 4, cudaMemcpyDeviceToHost), "out");
@@ -209,6 +224,35 @@ void check_grouped(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::m
     std::printf("SUM grouped %-6s/%-6s %5lld x %4lld  %016llx  %s\n", name_of(gu), name_of(dt), (long long) H, (long long) FF,
                 (unsigned long long) fnv(b.data(), b.size() * 4), ok ? "decode-once == per-column" : "FAIL");
     if (!ok) { std::printf("  %zu of %zu floats differ%s\n", diff, a.size(), finite ? "" : ", non-finite outputs"); ++g_fail; }
+}
+
+void check_grouped_tq2t_strided_pcie(cudaStream_t s, std::mt19937& rng) {
+    const struct {
+        const char* label;
+        std::vector<int> counts;
+        int64_t gy;
+        bool pcie;
+        size_t shift;
+    } cases[] = {
+        {"strided gy=3",              {1, 3, 4, 5, 0, 8, 2, 11, 1}, 3, false, 0},
+        {"pcie ng=0 gy=4",            {},                           4, true,  0},
+        {"pcie ng=2 gy=4",            {1, 2},                       4, true,  0},
+        {"pcie strided align2 gy=2",  {1, 2, 3, 4, 5, 0},           2, true,  2},
+    };
+    for (const auto& tc : cases) {
+        Grouped G(144, 144, 2560, 640, tc.counts, 8, rng, tc.pcie, tc.shift);
+        const auto a = G.result(true, s, tc.gy), b = G.result(false, s, tc.gy);
+        size_t diff = 0;
+        bool finite = true;
+        for (size_t i = 0; i < a.size(); ++i) {
+            diff += std::memcmp(&a[i], &b[i], 4) != 0;
+            if (i < (size_t) G.n_ent * 2560) finite = finite && std::isfinite(b[i]);
+        }
+        const bool ok = diff == 0 && finite;
+        std::printf("SUM grouped TQ2_T /TQ2_T  %-26s  %016llx  %s\n", tc.label,
+                    (unsigned long long) fnv(b.data(), b.size() * 4), ok ? "decode-once == per-column" : "FAIL");
+        if (!ok) { std::printf("  %zu of %zu floats differ%s\n", diff, a.size(), finite ? "" : ", non-finite outputs"); ++g_fail; }
+    }
 }
 
 // ---- Gyro-L pair trellis (TQP5/6/7, ggml 147-149) against a reference written from the format definition (no ggml):
@@ -436,6 +480,8 @@ int main(int argc, char** argv) {
     }
     check_grouped(148, 146, 2560, 640, s, rng_p);
     check_grouped(145, 148, 2560, 640, s, rng_p);
+    std::mt19937 rng_r4(44);
+    check_grouped_tq2t_strided_pcie(s, rng_r4);
     if (do_bench) bench(s, rng);
     std::printf("tq_pascal_bench: %d failures\n", g_fail);
     cudaStreamDestroy(s);

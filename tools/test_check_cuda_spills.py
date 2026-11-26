@@ -236,6 +236,33 @@ class BaselineFile(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=p):
                     CS.load_baseline(p)
 
+    def test_a_toolkit_entry_replaces_the_plain_one_for_that_release_only(self):
+        other = "strata::kernels::only_on_the_old_toolkit<1>"   # listed in the plain entry only
+        with tempfile.TemporaryDirectory() as d:
+            p = self.write(d, {"sm_86": {"instances": [self.entry(), self.entry(name=other, stack=16)]},
+                               "sm_86@13.5": {"instances": [self.entry(stack=64)]},
+                               "sm_75@13.5": {"instances": [self.entry(stack=8)]}})
+            plain = {"sm_86": {KNOWN_KEY: (48, 0, CS.KNOWN_REASON), other: (16, 0, CS.KNOWN_REASON)}}
+            self.assertEqual(CS.load_baseline(p), plain)
+            used = set()
+            self.assertEqual(CS.load_baseline(p, "13.3", used), plain)
+            self.assertEqual(used, set())
+            # replaced whole, not merged: the old toolkit's instance is not known under 13.5
+            self.assertEqual(CS.load_baseline(p, "13.5", used), {"sm_86": {KNOWN_KEY: (64, 0, CS.KNOWN_REASON)},
+                                                                 "sm_75": {KNOWN_KEY: (8, 0, CS.KNOWN_REASON)}})
+            self.assertEqual(used, {"sm_86@13.5", "sm_75@13.5"})
+            bad = [{"sm_86": {"instances": [self.entry()]}, "sm_86@13.5": {"instances": [self.entry(reason="")]}},
+                   {"sm_86@13.5": None}]                  # another release's broken entry, a null toolkit entry
+            bad += [{key: {"instances": [self.entry()]}} for key in ("sm_86@", "@13.5", "sm_86@13.5@x", "sm_86@13")]
+            for raw in bad:
+                with self.assertRaises(ValueError, msg=raw):
+                    CS.load_baseline(self.write(d, raw), "13.3")
+
+    def test_the_release_is_read_from_the_toolkit_line(self):
+        self.assertEqual(CS.toolkit_release("Build cuda_13.5.r13.5/compiler.39125733_0"), "13.5")   # cuobjdump 13.5's last line
+        self.assertEqual(CS.toolkit_release("Build cuda_12.8.r12.8/compiler.35583870_0"), "12.8")
+        self.assertIsNone(CS.toolkit_release("unknown"))
+
     def test_the_default_baseline_is_the_file_beside_the_script_and_a_missing_one_is_empty(self):
         self.assertEqual(Path(CS.BASELINE_FILE), ROOT / "tools" / "cuda_spill_baseline.json")
         with mock.patch.object(CS, "BASELINE_FILE", str(ROOT / "terminal" / "tools" / "no_such_baseline.json")):
@@ -246,7 +273,10 @@ class BaselineFile(unittest.TestCase):
         self.assertIn("sm_120", base)
         self.assertIn("sm_86", base)
         self.assertNotIn("sm_60", base)                       # about 400 violations, nothing measured per instance: no baseline
-        for sm, per in base.items():
+        with open(CS.BASELINE_FILE, encoding="utf-8") as f:
+            releases = sorted({k.partition("@")[2] for k in json.load(f) if "@" in k})
+        for base, sm, per in [(b, sm, per) for b in [CS.load_baseline(CS.BASELINE_FILE, r) for r in [None] + releases]
+                              for sm, per in b.items()]:      # each release's entries judged by that release's baseline
             for name, (stack, local, reason) in per.items():
                 self.assertTrue(reason.strip(), (sm, name))
                 mangled = "_Z%d" % len(name)                  # one stand-in kernel per entry, at its own bytes
@@ -276,6 +306,18 @@ class BaselineMain(unittest.TestCase):
         rc, out = run_main(self.d.name, self.filt, [row()], ["--baseline", str(self.path)])
         self.assertEqual(rc, 0, out)
         self.assertIn("check_cuda_spills: baseline sm_86: 1 known violations seen, 1 listed", out)
+        own = json.loads(self.path.read_text(encoding="utf-8"))
+        own["sm_86@13.5"] = {"instances": [{"name": KNOWN_KEY, "stack": 56, "local": 0, "reason": CS.KNOWN_REASON}]}
+        self.path.write_text(json.dumps(own), encoding="utf-8")
+        for line, rc_want, said in (("Build cuda_13.5.r13.5/compiler.39125733_0", 0, "release 13.5 (Build cuda_13.5.r13.5/"
+                                     "compiler.39125733_0); toolkit entries used: sm_86@13.5"),
+                                    ("Build cuda_12.8.r12.8/compiler.35583870_0", 1, "toolkit entries used: none, the plain ones"),
+                                    ("unknown", 1, "release not recognised (unknown)")):
+            with mock.patch.object(CS, "toolkit_line", return_value=line):   # the release cuobjdump reports picks the entry
+                rc, out = run_main(self.d.name, self.filt, [row(stack=56)], ["--baseline", str(self.path)])
+            self.assertEqual(rc, rc_want, (line, out))
+            self.assertIn(said, out)
+        self.path.write_text(json.dumps({"sm_86": own["sm_86"]}), encoding="utf-8")
         rc, out = run_main(self.d.name, self.filt, [row(stack=56)], ["--baseline", str(self.path)])
         self.assertEqual(rc, 1, out)
         self.assertIn("known instance grew", out)

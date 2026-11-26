@@ -12,7 +12,7 @@
 //   GRP      the whole layer in one native_expert_grouped call (the grouped decode-family kernels on q8_1 activations): what the Qwen3.6 engine
 //            (q36_engine.cu) runs for a layer with neither fused kernels nor MMQ, and what the verify window uses.  Off unless --grouped or --shape=q36.
 //   FUSED    Strata's own fused int8 kernels (moe_fused_iq.hpp experts_native; at the Qwen3.6 shape the copy moe_fused_iq_q36.cu's experts_native_ext)
-//            where the card has them for the pair.  The opt-in switches that select them (STRATA_PF_FUSED=1, _KQ, _Q50, _Q8D, _Q8GU, _Q6K) are set
+//            where the card has them for the pair.  The opt-in switches that select them (STRATA_PF_FUSED=1, _KQ, _Q50, _Q8D, _Q8GU, _Q6K, _TQ, _SM75, _SM75_TQ) are set
 //            when not already set, so the column shows what the kernels do, not what the engine picks by default on this card.
 // No model file is read.  Every path's output is hashed (FNV-1a over the bits, in pair order) and a sample of pairs (default 96) is compared with a
 // CPU FP32 reference (ggml's own to_float of the weights, FP32 activations, double sums): rel RMS and worst row.
@@ -21,7 +21,7 @@
 // experts per token, uniform (--skew=0, as the timing part of prefill_fused_iq_test.cpp) or Zipf-skewed (--skew=S: expert e has weight (e+1)^-S).
 //
 //   prefill_expert_paths_bench [--shape=flash|q36|N,FF,E,K] [--tokens=2048,4096,8192,20000] [--only=NAME]... [--all] [--list]
-//       [--repeats=7] [--warm-ms=1000] [--skew=S] [--experts=E] [--sample=96] [--seed=N] [--grouped] [--no-mmq] [--no-fused] [--no-fp16] [--no-ref] [--quick]
+//       [--repeats=7] [--warm-ms=1000] [--skew=S] [--experts=E] [--sample=96] [--seed=N] [--grouped] [--folded] [--no-mmq] [--no-fused] [--no-fp16] [--no-ref] [--quick]
 //   Exit 0 when it ran, 1 on an error, 77 without a device (ctest skip).  One machine-readable line per cell starts with "RESULT ".
 //
 // What it does not capture of a real run: expert streaming (every expert is resident here), the engine's chunking of a long prompt (one chunk of T tokens),
@@ -44,6 +44,13 @@
 #include "ggml.h"
 #include "strata/quant/types.hpp"
 #include "../prefill/bench_blob_layout.hpp"
+
+// the trellis types' fp16 codebook (Gyro: TQ2_T 144, TQK6 145, TQK7 146) for the host reference
+#pragma push_macro("__device__")
+#undef __device__
+#define __device__
+#include "../../third_party/ggml/ggml-common-tq.h"
+#pragma pop_macro("__device__")
 
 #include <cuda_runtime.h>
 
@@ -105,10 +112,49 @@ struct Pair {
     const char* name;
 };
 
-size_t type_size(ggml_type t) { return ggml_type_size(t); }
-int64_t blck_size(ggml_type t) { return ggml_blck_size(t); }
+bool tq_type(ggml_type t) { return (int) t >= 144 && (int) t <= 146; }
+size_t type_size(ggml_type t) { return (int) t == 144 ? 34 : (int) t == 145 ? 26 : (int) t == 146 ? 30 : ggml_type_size(t); }
+int64_t blck_size(ggml_type t) { return tq_type(t) ? 128 : ggml_blck_size(t); }
 size_t row_size(ggml_type t, int64_t n) { return (size_t) (n / blck_size(t)) * type_size(t); }
 bool fits_blocks(ggml_type t, int64_t n) { return n % blck_size(t) == 0; }
+float fp16_bits(uint16_t h) {
+    const uint32_t s = (uint32_t) (h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023;
+    uint32_t f;
+    if (e == 0) return (h >> 15 ? -1.0f : 1.0f) * std::ldexp((float) m, -24);
+    if (e == 31) f = s | 0x7f800000u | (m << 13);
+    else f = s | ((e + 112) << 23) | (m << 13);
+    float v;
+    std::memcpy(&v, &f, 4);
+    return v;
+}
+void tq_block(int t, const uint8_t* b, float* out) {
+    uint16_t dh;
+    std::memcpy(&dh, b, 2);
+    const float d = fp16_bits(dh);
+    const uint8_t* qs = b + 2;
+    const int K = t == 145 ? 6 : t == 146 ? 7 : 8, nbits = 32 * K;
+    auto bit = [&](int i) { i %= nbits; return (qs[i >> 3] >> (i & 7)) & 1; };
+    for (int st = 0; st < 32; ++st) {
+        uint32_t s = 0;
+        if (t == 144) s = ((uint32_t) qs[(st + 31) % 32] << 8) | qs[st];
+        else for (int k = 0; k < 16; ++k) s |= (uint32_t) bit((31 - st) * K + k) << k;
+        const uint32_t x = (s & 0x7fffu) * 0x9e3779b1u;
+        const uint32_t pt[2] = {x >> 21, (x >> 10) & 2047u};
+        for (int h = 0; h < 2; ++h)
+            for (int c = 0; c < 2; ++c)
+                out[4 * st + 2 * h + c] = d * fp16_bits(tq_lut_f16[2 * pt[h] + c]);
+    }
+}
+void rot128(float* x, int n, const float* signs) {
+    for (int b = 0; b < n; b += 128) {
+        double v[128];
+        for (int i = 0; i < 128; ++i) v[i] = (double) x[b + i] * (signs ? signs[b + i] : 1.0f);
+        for (int st = 1; st < 128; st <<= 1)
+            for (int i = 0; i < 128; ++i)
+                if (!(i & st)) { const double a = v[i], c = v[i + st]; v[i] = a + c; v[i + st] = a - c; }
+        for (int i = 0; i < 128; ++i) x[b + i] = (float) (v[i] / std::sqrt(128.0));
+    }
+}
 
 // NVFP4 (ModelOpt packs: gate/up and down NVFP4): the blob ends with a 16-byte tail {s_gate, s_up, s_down, 0}, the per-expert weight_scale_2 values
 // (cpu::NativeFmt::tail_off = down_off + d_row n_embd).  Every path applies them as the engine does: MMQ around its products (swiglu_scaled, scale_down_rows),
@@ -137,7 +183,7 @@ struct Geo {
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
     const size_t bs = type_size(t), nb = (size_t) rows * (size_t) (cols / blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
-    const float lo = t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K ? 0.00004f : t == GGML_TYPE_Q5_1 ? 0.0006f
+    const float lo = tq_type(t) ? 0.003f : t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K ? 0.00004f : t == GGML_TYPE_Q5_1 ? 0.0006f
                    : t == GGML_TYPE_Q8_0 ? 0.0001f : t == GGML_TYPE_IQ3_S ? 0.0004f : t == GGML_TYPE_IQ4_XS ? 0.00005f
                    : t == GGML_TYPE_IQ4_NL ? 0.0002f : t == GGML_TYPE_Q2_0 ? 0.004f : t == GGML_TYPE_Q6_K ? 0.000005f
                    : t == GGML_TYPE_IQ1_M ? 0.002f : 0.0008f;
@@ -179,13 +225,19 @@ std::vector<uint8_t> make_blob(const Pair& p, const Geo& g, const Shape& s, std:
 }
 
 // ggml's dequantized weights of one expert: gate [FF][N], up [FF][N] (rows 0..FF-1 and FF..2FF-1 of gu), down [N][FF]
+void dequant_row(ggml_type t, const uint8_t* src, float* dst, int cols) {
+    if (tq_type(t)) {
+        const size_t bs = type_size(t);
+        for (int b = 0; b < cols / 128; ++b) tq_block((int) t, src + (size_t) b * bs, dst + b * 128);
+        return;
+    }
+    ggml_get_type_traits(t)->to_float(src, dst, cols);
+}
 void dequant(const Pair& p, const Geo& g, const Shape& s, const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
     gu.resize((size_t) 2 * s.FF * s.N);
     dn.resize((size_t) s.N * s.FF);
-    const auto* tg = ggml_get_type_traits(p.gu);
-    const auto* td = ggml_get_type_traits(p.d);
-    for (int r = 0; r < 2 * s.FF; ++r) tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * s.N, s.N);
-    for (int r = 0; r < s.N; ++r) td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * s.FF, s.FF);
+    for (int r = 0; r < 2 * s.FF; ++r) dequant_row(p.gu, b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * s.N, s.N);
+    for (int r = 0; r < s.N; ++r) dequant_row(p.d, b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * s.FF, s.FF);
     if (g.tail_off) {   // NVFP4: each projection times its own per-expert scale
         float t[4];
         std::memcpy(t, b.data() + g.tail_off, 16);
@@ -334,12 +386,14 @@ struct Fp16Path {
     int64_t rows;
     int T;
     bool fr_ok;
+    const float *had_sx = nullptr, *had_sh = nullptr;
     kern::NativeExpertLayout FL;
     Fp16Path(const Pair& p_, const Shape& s_, const Geo& g_, pf::Gemm& gm, int T_, int64_t rows_, const Routing& r_,
-             const std::vector<const uint8_t*>& blob_, const Dev& gu_, const Dev& dm_, bool want_fr)
+             const std::vector<const uint8_t*>& blob_, const Dev& gu_, const Dev& dm_, bool want_fr,
+             const float* had_sx_ = nullptr, const float* had_sh_ = nullptr)
         : p(p_), s(s_), geo(g_), gemm(gm), xs((size_t) rows_ * s_.N * 2), hh((size_t) rows_ * s_.FF * 2),
           dqgu0((size_t) s_.FF2() * s_.N * 2), dqgu1((size_t) s_.FF2() * s_.N * 2), dqd0((size_t) s_.N * s_.FF * 2), dqd1((size_t) s_.N * s_.FF * 2),
-          gu(gu_), dm(dm_), r(r_), blob(blob_), rows(rows_), T(T_), fr_ok(false) {
+          gu(gu_), dm(dm_), r(r_), blob(blob_), rows(rows_), T(T_), fr_ok(false), had_sx(had_sx_), had_sh(had_sh_) {
         fr_ok = want_fr && kern::native_expert_supported((int) p.gu, (int) p.d, s.N, s.FF);
         if (fr_ok) {
             FL = kern::native_expert_layout((int) p.gu, (int) p.d, s.N, s.FF);
@@ -356,6 +410,7 @@ struct Fp16Path {
     void run(bool fr, const float* x_dev, const uint16_t* x16_dev, const int32_t* src_dev, cudaStream_t st) {
         const int N = s.N, FF = s.FF, FF2 = s.FF2();
         pf::gather_rows16(x16_dev, src_dev, xs.as<uint16_t>(), rows, N, st);
+        if (had_sx) kern::hadamard_rows_f16(xs.as<uint16_t>(), rows, N, 128, had_sx, st);
         if (fr && fr_ok) kern::quantize_q8_1_rows(x_dev, T, N, fr_xq.p, st);   // the layer's T rows as q8_1, once
         size_t j = 0;
         for (int32_t e : r.order) {
@@ -375,6 +430,7 @@ struct Fp16Path {
                 kern::iq_dequant_f16((int) p.d, bl + geo.down_off, (int64_t) N * FF, dd, st, geo.tail_off ? (const float*) (bl + geo.tail_off) + 2 : nullptr);
                 gemm.f16(xs.as<uint16_t>() + o0 * N, dgu, gu.as<float>() + o0 * FF2, ne, FF2, N);
                 pf::swiglu_interleaved(gu.as<float>() + o0 * FF2, hh.as<uint16_t>() + o0 * FF, ne, st);
+                if (had_sh) kern::hadamard_rows_f16(hh.as<uint16_t>() + o0 * FF, ne, FF, 128, had_sh, st);
                 gemm.f16(hh.as<uint16_t>() + o0 * FF, dd, dm.as<float>() + o0 * N, ne, N, FF);
             }
             ++j;
@@ -455,6 +511,7 @@ struct FusedFlash {
     static constexpr int kMaxB = fused::kMaxBatch;
     static bool supported(int g, int d) { return fused::native_supported(g, d); }
     static void quant(const float* x, int64_t rows, int64_t cols, void* xa, void* st) { fused::quantize_act_native(x, rows, cols, xa, st); }
+    static void set_rot(bool on, const float* sh) { fused::set_down_rotation(on, sh); }
     static void experts(const Batch& b, const Geom& g, int ne, int64_t n, const void* scr, const void* xa, const int32_t* src, void* ha, float* dm, void* st) {
         fused::experts_native(b, g, ne, n, scr, xa, src, ha, dm, st);
     }
@@ -467,6 +524,7 @@ struct FusedQ36 {
     static constexpr int kMaxB = fq::kQ36MaxBatch;
     static bool supported(int g, int d) { return fq::native_supported_ext(g, d); }
     static void quant(const float* x, int64_t rows, int64_t cols, void* xa, void* st) { fq::quantize_act_native(x, rows, cols, xa, st); }
+    static void set_rot(bool, const float*) {}
     static void experts(const Batch& b, const Geom& g, int ne, int64_t n, const void* scr, const void* xa, const int32_t* src, void* ha, float* dm, void* st) {
         fq::experts_native_ext(b, g, ne, n, scr, xa, src, ha, dm, st);
     }
@@ -480,24 +538,31 @@ struct FusedBase {
 };
 template <class F>
 struct FusedPath : FusedBase {
-    Dev xa, ha, scratch, slot_, src_, ids;
+    Dev xa, ha, scratch, slot_, src_, ids, xr;
     typename F::Geom ng;
     const Shape& s;
     const std::vector<const uint8_t*>& blob;
     const Dev& dm;
     int T;
     int64_t rows;
+    const float *had_sx = nullptr, *had_sh = nullptr;
     FusedPath(const Pair& p, const Geo& geo, const Shape& s_, int T_, int64_t rows_, const std::vector<int32_t>& ids_h,
-              const std::vector<const uint8_t*>& blob_, const Dev& dm_)
+              const std::vector<const uint8_t*>& blob_, const Dev& dm_,
+              const float* had_sx_ = nullptr, const float* had_sh_ = nullptr)
         : xa(fused::act_bytes(T_, s_.N)), ha(fused::act_bytes(rows_, s_.FF)), scratch(fused::group_bytes(rows_, s_.E)), slot_((size_t) rows_ * 4),
-          src_((size_t) rows_ * 4), ids((size_t) rows_ * 4), s(s_), blob(blob_), dm(dm_), T(T_), rows(rows_) {
+          src_((size_t) rows_ * 4), ids((size_t) rows_ * 4), xr(had_sx_ ? (size_t) T_ * s_.N * 4 : 0),
+          s(s_), blob(blob_), dm(dm_), T(T_), rows(rows_), had_sx(had_sx_), had_sh(had_sh_) {
         ng = {};
         ng.gu_type = (int) p.gu; ng.d_type = (int) p.d; ng.gu_row = geo.gu_row; ng.d_row = geo.d_row; ng.up_off = geo.up_off; ng.down_off = geo.down_off;
         ck(cudaMemcpy(ids.p, ids_h.data(), ids_h.size() * 4, cudaMemcpyHostToDevice), "ids");
     }
     void run(const float* x_dev, cudaStream_t st) override {
-        F::quant(x_dev, T, s.N, xa.p, st);
+        const float* x_in = x_dev;
+        if (had_sx) { kern::hadamard_rows(x_dev, xr.as<float>(), T, s.N, 128, had_sx, st); x_in = xr.as<float>(); }
+        F::quant(x_in, T, s.N, xa.p, st);
         fused::group(ids.as<int32_t>(), rows, s.K, s.E, scratch.p, slot_.as<int32_t>(), src_.as<int32_t>(), st);
+        struct RotOff { bool on; ~RotOff() { if (on) F::set_rot(false, nullptr); } } ro{had_sh != nullptr};
+        if (had_sh) F::set_rot(true, had_sh);
         for (int e0 = 0; e0 < s.E; e0 += F::kMaxB) {
             typename F::Batch bt;
             bt.e0 = e0;
@@ -590,7 +655,7 @@ struct Opts {
     std::vector<int> tokens = {2048, 4096, 8192, 20000};
     std::vector<std::string> only;
     std::vector<int> i8_tms;   // --i8-tm=2,3,4: one extra I8 column per tile-row count (STRATA_I8_TM set around each run)
-    bool dense = false, tokens_set = false, all = false, list = false, grouped = false, i8 = false, no_grp = false, no_mmq = false, no_fused = false, no_fp16 = false, no_ref = false, quick = false;
+    bool dense = false, tokens_set = false, all = false, list = false, grouped = false, i8 = false, folded = false, no_grp = false, no_mmq = false, no_fused = false, no_fp16 = false, no_ref = false, quick = false;
     int repeats = 7, sample = 96, experts = 0;
     float warm_ms = 1000.0f;
     double skew = 0;
@@ -660,7 +725,9 @@ const std::vector<Pair>& all_pairs() {
         {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, "Q4_K / Q5_K"},         {GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, "Q4_K / Q6_K"},
         {GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, "Q5_K / Q6_K"},
         // NVFP4 (ModelOpt packs: Strata's GPTQ pack, NVIDIA's): NVFP4 gate/up and down, the blob's tail = the per-expert scales
-        {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"}};
+        {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"},
+        // Gyro trellis pairs (agentionai's ids outside pinned ggml.h): Gyro-S (TQK6 / TQK7) and Gyro-M (TQ2_T / TQ2_T)
+        {(ggml_type) 145, (ggml_type) 146, "TQK6 / TQK7"},       {(ggml_type) 144, (ggml_type) 144, "TQ2_T / TQ2_T"}};
     return pairs;
 }
 constexpr int kDefaultPairs = 4;   // pairs[0..3]
@@ -734,7 +801,20 @@ void run_cell(const Pair& p, const Shape& s, int T, const Opts& o, const Card& c
     }
     Dev gu((size_t) rows * FF2 * 4), hmq((size_t) rows * FF * 4), dm((size_t) rows * N * 4);   // shared by the paths (one runs at a time)
 
-    const bool mmq_ok = !o.no_mmq && mmq::built() && mmq::supported((int) p.gu) && mmq::supported((int) p.d) && mmq::fits((int) p.gu, FF2) && mmq::fits((int) p.d, N);
+    const bool folded_on = o.folded && tq_type(p.gu) && (N % 128 == 0) && (FF % 128 == 0);
+    std::vector<float> sx_h, sh_h;
+    Dev dsx(folded_on ? (size_t) N * 4 : 0), dsh(folded_on ? (size_t) FF * 4 : 0);
+    if (folded_on) {
+        std::mt19937 rs(20261111);
+        sx_h.resize((size_t) N);
+        sh_h.resize((size_t) FF);
+        for (float& v : sx_h) v = (rs() & 1) ? 1.0f : -1.0f;
+        for (float& v : sh_h) v = (rs() & 1) ? 1.0f : -1.0f;
+        ck(cudaMemcpy(dsx.p, sx_h.data(), sx_h.size() * 4, cudaMemcpyHostToDevice), "had_sx");
+        ck(cudaMemcpy(dsh.p, sh_h.data(), sh_h.size() * 4, cudaMemcpyHostToDevice), "had_sh");
+    }
+
+    const bool mmq_ok = !folded_on && !o.no_mmq && mmq::built() && mmq::supported((int) p.gu) && mmq::supported((int) p.d) && mmq::fits((int) p.gu, FF2) && mmq::fits((int) p.d, N);
     const bool fp16_ok = !o.no_fp16 && fp16_shape_ok && kern::iq_supported((int) p.gu) && kern::iq_supported((int) p.d);
     const bool fused_flash = !o.no_fused && N == (int) fused::kMoeEmbd && FF == (int) fused::kMoeFF && FusedFlash::supported((int) p.gu, (int) p.d);
 #if !defined(FB_HIP)
@@ -742,9 +822,9 @@ void run_cell(const Pair& p, const Shape& s, int T, const Opts& o, const Card& c
 #else
     const bool fused_q36 = false;
 #endif
-    const bool grp_ok = !o.no_grp && (o.grouped || s.name == "q36") && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF);
-    const bool fr_ok = fp16_ok && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF);
-    const bool i8_ok = o.i8 && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF) && kern::native_expert_i8_supported(kern::native_expert_layout((int) p.gu, (int) p.d, N, FF));
+    const bool grp_ok = !folded_on && !o.no_grp && (o.grouped || s.name == "q36") && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF);
+    const bool fr_ok = !folded_on && fp16_ok && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF);
+    const bool i8_ok = !folded_on && o.i8 && kern::native_expert_supported((int) p.gu, (int) p.d, N, FF) && kern::native_expert_i8_supported(kern::native_expert_layout((int) p.gu, (int) p.d, N, FF));
 
     std::unique_ptr<MmqPath> mp;
     std::unique_ptr<Fp16Path> fp;
@@ -752,10 +832,10 @@ void run_cell(const Pair& p, const Shape& s, int T, const Opts& o, const Card& c
     std::unique_ptr<I8Path> ip;
     std::unique_ptr<FusedBase> fu;
     if (mmq_ok) mp = std::make_unique<MmqPath>(p, s, geo, rows, r, blob, gu, hmq, dm);
-    if (fp16_ok) fp = std::make_unique<Fp16Path>(p, s, geo, gemm, T, rows, r, blob, gu, dm, fr_ok);
+    if (fp16_ok) fp = std::make_unique<Fp16Path>(p, s, geo, gemm, T, rows, r, blob, gu, dm, fr_ok, folded_on ? dsx.as<float>() : nullptr, folded_on ? dsh.as<float>() : nullptr);
     if (grp_ok) gp = std::make_unique<GrpPath>(p, s, T, rows, r, blob, dm);
     if (i8_ok) ip = std::make_unique<I8Path>(p, s, T, rows, r, blob, dm);
-    if (fused_flash) fu = std::make_unique<FusedPath<FusedFlash>>(p, geo, s, T, rows, ids, blob, dm);
+    if (fused_flash) fu = std::make_unique<FusedPath<FusedFlash>>(p, geo, s, T, rows, ids, blob, dm, folded_on ? dsx.as<float>() : nullptr, folded_on ? dsh.as<float>() : nullptr);
 #if !defined(FB_HIP)
     if (fused_q36) fu = std::make_unique<FusedPath<FusedQ36>>(p, geo, s, T, rows, ids, blob, dm);
 #endif
@@ -809,17 +889,23 @@ void run_cell(const Pair& p, const Shape& s, int T, const Opts& o, const Card& c
         const int nth = std::max(1, std::min(16, (int) std::thread::hardware_concurrency()));
         for (int w = 0; w < nth; ++w)
             th.emplace_back([&, w] {
-                std::vector<float> g, dn, h((size_t) FF);
+                std::vector<float> g, dn, h((size_t) FF), xr_buf((size_t) N);
                 for (size_t j = (size_t) w; j < pick.size(); j += (size_t) nth) {
                     const size_t i = pick[j];
                     dequant(p, geo, s, blob_bytes(ids[i]), g, dn);
                     const float* xr = x.data() + (i / (size_t) K) * (size_t) N;
+                    if (folded_on) {
+                        std::memcpy(xr_buf.data(), xr, (size_t) N * 4);
+                        rot128(xr_buf.data(), N, sx_h.data());
+                        xr = xr_buf.data();
+                    }
                     for (int f = 0; f < FF; ++f) {
                         double gt = 0, up = 0;
                         const float *wg = g.data() + (size_t) f * N, *wu = g.data() + (size_t) (FF + f) * N;
                         for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xr[k]; up += (double) wu[k] * xr[k]; }
                         h[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
                     }
+                    if (folded_on) rot128(h.data(), FF, sh_h.data());
                     for (int oo = 0; oo < N; ++oo) {
                         double a = 0;
                         const float* wd = dn.data() + (size_t) oo * FF;
@@ -1225,6 +1311,7 @@ int main(int argc, char** argv) {
                 for (size_t q = 0; q < v10.size();) { o.i8_tms.push_back(std::atoi(v10.c_str() + q)); q = v10.find(',', q) == std::string::npos ? v10.size() : v10.find(',', q) + 1; }
             }
             else if (!std::strcmp(a, "--i8")) o.i8 = true;
+            else if (!std::strcmp(a, "--folded")) o.folded = true;
             else if (!std::strcmp(a, "--no-grp")) o.no_grp = true;
             else if (!std::strcmp(a, "--no-mmq")) o.no_mmq = true;
             else if (!std::strcmp(a, "--no-fused")) o.no_fused = true;
@@ -1253,6 +1340,11 @@ int main(int argc, char** argv) {
         defenv("STRATA_PF_FUSED_Q8GU", "1");
         defenv("STRATA_PF_FUSED_Q6K", "1");
         defenv("STRATA_MMQ_KQ", "1");
+        // the Turing set and the trellis pairs, as an engine build without MMQ sets them (own_only_switches.hpp), plus the Turing trellis opt-in, so the
+        // FUSED column of a Gyro pair (TQK6 / TQK7, TQ2_T / TQ2_T) exists on a 2080 Ti; STRATA_PF_FUSED_SM75_TQ=0 shows today's Turing path
+        defenv("STRATA_PF_FUSED_TQ", "1");
+        defenv("STRATA_PF_FUSED_SM75", "1");
+        defenv("STRATA_PF_FUSED_SM75_TQ", "1");
 
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no GPU device: skipped\n"); return 77; }

@@ -21,6 +21,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <type_traits>
 #include <cmath>
@@ -3957,8 +3958,470 @@ static int hc_q8_bf16tc_mode() {
 #endif
 }
 
+#if !defined(__HIPCC__)
+// ================================ Round 8 (STRATA_NEON_GR_Q8=1): coalesced bitwise-exact Q8_0 hyper-connection read
+// Bitwise identical to gr_down_q8_kernel / gr_up_q8_kernel for T = 1..8 on CUDA (sm_75 target, compiles on all sm_*):
+//   1. Coalesced 32-bit warp loads + 3 __shfl_sync + __funnelshift_r (1.06 LDG.32/lane per 4 Q8_0 blocks vs 3 LDG.16).
+//   2. Software-pipelined multi-row register blocking (RR = 4 for T <= 4, RR = 2 for T = 5..8): shares each float4 smem
+//      load across RR rows (2x-4x fewer LDS.128) while staying ~42-54 regs/thread (0 spills).
+//   3. 64 KiB shared-memory carveout once per device on sm_70+ so all 176 down / 160 up blocks stay 3-4 blocks/SM (1 wave).
+//   4. Down: skips ssp/tsum on the 10 non-zero row groups, loads w_norm once per column, broadcasts gw per warp.
+//   5. Up: pre-reduces part -> lo_buf / rs_buf once in neon_gr_lo_q8_kernel (T >= 2, using unused xn_scratch tail, 0 new
+//      VRAM), assigns 8 contiguous rows/warp, and runs a coalesced 16-col epilogue with explicit __fmul_rn/__fadd_rn.
+constexpr bool kNeonGrQ8Ok =
+    (LR >= 128) && (LR % 64 == 0) && ((HC * UPM_COLS) % WARPS == 0) && (UPM_COLS % ((HC * UPM_COLS) / WARPS) == 0) &&
+    (Q8_NKC * (PR + 1) + LR + HC <= D);
+
+__device__ __forceinline__ void neon_q8_load4_raw(const uint8_t* __restrict__ p, int lane,
+                                                  uint32_t& w_main, uint32_t& w_tail) {
+    const uint32_t* p32 = reinterpret_cast<const uint32_t*>(p);
+    w_main = p32[lane];
+    w_tail = lane >= 30 ? p32[lane + 2] : 0u;
+}
+__device__ __forceinline__ float4 neon_q8_unpack4(uint32_t w_main, uint32_t w_tail, int lane) {
+    const int bl = lane >> 3, sub = lane & 7;
+    const bool odd = (bl & 1) != 0;
+    const int id_d = (34 * bl) >> 2;
+    const int id_a = ((34 * bl + 2) >> 2) + sub;
+    const int id_b = (id_a + 1) & 31;
+    const uint32_t dw = __shfl_sync(0xffffffffu, w_main, id_d);
+    const uint32_t wa_shfl = __shfl_sync(0xffffffffu, w_main, id_a & 31);
+    const uint32_t wb = __shfl_sync(0xffffffffu, w_main, id_b);
+    const uint32_t wa = lane >= 30 ? w_tail : wa_shfl;
+    const float d = q8_half(odd ? (dw >> 16) : (dw & 0xffffu));
+    const uint32_t q = odd ? wa : __funnelshift_r(wa, wb, 16);
+    return q8_four(q, d);
+}
+__device__ __forceinline__ uint32_t neon_q8_load2_raw(const uint8_t* __restrict__ p, int lane) {
+    const uint32_t* p32 = reinterpret_cast<const uint32_t*>(p);
+    return lane < 17 ? p32[lane] : 0u;
+}
+__device__ __forceinline__ float4 neon_q8_unpack2(uint32_t w_main, int lane) {
+    const int bl = (lane & 15) >> 3, sub = lane & 7;
+    const bool odd = (bl & 1) != 0;
+    const int id_d = (34 * bl) >> 2;
+    const int id_a = ((34 * bl + 2) >> 2) + sub;
+    const int id_b = (id_a + 1) & 31;
+    const uint32_t dw = __shfl_sync(0xffffffffu, w_main, id_d);
+    const uint32_t wa = __shfl_sync(0xffffffffu, w_main, id_a);
+    const uint32_t wb = __shfl_sync(0xffffffffu, w_main, id_b);
+    const float d = q8_half(odd ? (dw >> 16) : (dw & 0xffffu));
+    const uint32_t q = odd ? wa : __funnelshift_r(wa, wb, 16);
+    return q8_four(q, d);
+}
+
+template <int T, int RR>
+__global__ void __launch_bounds__(THREADS) neon_gr_down_q8_kernel(GrMulti m, float* __restrict__ part,
+                                                                  float* __restrict__ ssg) {
+    static_assert(Q8_RPW % RR == 0, "RR must divide Q8_RPW");
+    constexpr int P = pow2_ceil(T);
+    __shared__ __align__(16) float xs[T][Q8_KC];
+    __shared__ float red[WARPS][T];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int tk = tsum_token<P>(lane);   // tsum leaves token tk's sum in lane tsum_lane<P>(tk)
+    const bool owner = lane == tsum_lane<P>(tk) && tk < T;
+    const int rg = blockIdx.x, kc = blockIdx.y, c = kc / Q8_CPS;
+    const bool inj = rg == Q8_RG;
+    const bool inj_active = inj && warp < HC && (m.a[0].w_inject != nullptr || m.a[0].q8_inject != nullptr);
+    const size_t row_bytes = (size_t) (D / 32) * Q8B;
+    const uint8_t* const wb = m.a[0].q8_down;
+    const int row0 = rg * (WARPS * Q8_RPW) + warp * Q8_RPW;
+    const size_t chunk_off = (size_t) (kc * (Q8_KC / 32)) * Q8B;
+
+    // Overlap step s=0 weight DRAM fetch for the first RR rows with xs staging and block sync.
+    uint32_t u_main[RR], u_tail[RR];
+#pragma unroll
+    for (int r = 0; r < RR; ++r) {
+        if (!inj) {
+            neon_q8_load4_raw(wb + (size_t) (row0 + r) * row_bytes + chunk_off, lane, u_main[r], u_tail[r]);
+        } else {
+            u_main[r] = 0u;
+            u_tail[r] = 0u;
+        }
+    }
+
+    float ssp[P];
+#pragma unroll
+    for (int k = 0; k < P; ++k) ssp[k] = 0.0f;
+
+    float gw_k[T];
+#pragma unroll
+    for (int k = 0; k < T; ++k) {
+        float g0 = 0.0f;
+        if (lane == 0 && m.a[k].apply) g0 = 2.0f * sigmoidf_(m.a[k].inj_prev[c] / (float) HC);
+        gw_k[k] = __shfl_sync(0xffffffffu, g0, 0);
+    }
+
+    for (int i = t; i < Q8_KC / 4; i += THREADS) {
+        const int col = kc * Q8_KC + 4 * i;
+        const float4 gn = *reinterpret_cast<const float4*>(m.a[0].w_norm + col);
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            const FusedGrArgs& a = m.a[k];
+            float4 r = *reinterpret_cast<const float4*>(a.R + col);
+            if (a.apply) {
+                const float4 b = *reinterpret_cast<const float4*>(a.bo_prev + (col - c * N));
+                const float gw = gw_k[k];
+                r.x = fmaf(b.x, gw, r.x);
+                r.y = fmaf(b.y, gw, r.y);
+                r.z = fmaf(b.z, gw, r.z);
+                r.w = fmaf(b.w, gw, r.w);
+            }
+            if (rg == 0) ssp[k] += r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w;
+            *reinterpret_cast<float4*>(&xs[k][4 * i]) =
+                make_float4(r.x * gn.x, r.y * gn.y, r.z * gn.z, r.w * gn.w);
+        }
+    }
+    if (rg == 0) {
+        const float ssum = tsum<P>(ssp, lane);
+        if (owner) red[warp][tk] = ssum;
+    }
+    __syncthreads();
+    if (rg == 0 && t < T) {
+        float s = 0.0f;
+#pragma unroll
+        for (int w = 0; w < WARPS; ++w) s += red[w][t];
+        ssg[t * Q8_NKC + kc] = s;
+    }
+
+    if (inj) {
+        if (!inj_active) return;
+        float acc[P];
+#pragma unroll
+        for (int k = 0; k < P; ++k) acc[k] = 0.0f;
+        const size_t irow = (size_t) warp * D + (size_t) kc * Q8_KC;
+        const uint16_t* wi = m.a[0].w_inject;
+        // the Q8_0 inject copy when there is one (the live engine has it), loaded and decoded as gr_down_q8_kernel does
+        const uint8_t* qrow = m.a[0].q8_inject != nullptr ? m.a[0].q8_inject + (size_t) warp * row_bytes + chunk_off : nullptr;
+#pragma unroll
+        for (int s = 0; s < Q8_SPB; ++s) {
+            const int v = 128 * s + 4 * lane;   // = 32 * (4 s + lane / 8) + 4 * (lane % 8), the old kernel's column
+            float w0, w1, w2, w3;
+            if (qrow != nullptr) {
+                const uint8_t* blk = qrow + (4 * s + (lane >> 3)) * Q8B;
+                const uint32_t q = q8_ld16(blk + 2 + 4 * (lane & 7)) | q8_ld16(blk + 4 + 4 * (lane & 7)) << 16;
+                const float4 w = q8_four(q, q8_half(q8_ld16(blk)));
+                w0 = w.x; w1 = w.y; w2 = w.z; w3 = w.w;
+            } else {
+                w0 = __uint_as_float((uint32_t) wi[irow + v + 0] << 16);   // bf16 -> f32, as gr_down_q8_kernel
+                w1 = __uint_as_float((uint32_t) wi[irow + v + 1] << 16);
+                w2 = __uint_as_float((uint32_t) wi[irow + v + 2] << 16);
+                w3 = __uint_as_float((uint32_t) wi[irow + v + 3] << 16);
+            }
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+                const float4 x = *reinterpret_cast<const float4*>(&xs[k][v]);
+                float a = acc[k];
+                a = fmaf(w0, x.x, a);
+                a = fmaf(w1, x.y, a);
+                a = fmaf(w2, x.z, a);
+                a = fmaf(w3, x.w, a);
+                acc[k] = a;
+            }
+        }
+        const float mine = tsum<P>(acc, lane);
+        if (owner) part[((size_t) tk * Q8_NKC + kc) * PR + LR + warp] = mine;
+        return;
+    }
+
+#pragma unroll
+    for (int p = 0; p < Q8_RPW; p += RR) {
+        float acc[RR][P];
+#pragma unroll
+        for (int r = 0; r < RR; ++r) {
+#pragma unroll
+            for (int k = 0; k < P; ++k) acc[r][k] = 0.0f;
+        }
+#pragma unroll
+        for (int s = 0; s < Q8_SPB; ++s) {
+            float4 wv[RR];
+#pragma unroll
+            for (int r = 0; r < RR; ++r) wv[r] = neon_q8_unpack4(u_main[r], u_tail[r], lane);
+            if (s + 1 < Q8_SPB) {
+                const size_t next_off = chunk_off + (size_t) (s + 1) * (4 * Q8B);
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    neon_q8_load4_raw(wb + (size_t) (row0 + p + r) * row_bytes + next_off, lane, u_main[r], u_tail[r]);
+                }
+            } else if (p + RR < Q8_RPW) {
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    neon_q8_load4_raw(wb + (size_t) (row0 + p + RR + r) * row_bytes + chunk_off, lane, u_main[r], u_tail[r]);
+                }
+            }
+            const int v = 128 * s + 4 * lane;
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+                const float4 x = *reinterpret_cast<const float4*>(&xs[k][v]);
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    float a = acc[r][k];
+                    a = fmaf(wv[r].x, x.x, a);
+                    a = fmaf(wv[r].y, x.y, a);
+                    a = fmaf(wv[r].z, x.z, a);
+                    a = fmaf(wv[r].w, x.w, a);
+                    acc[r][k] = a;
+                }
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < RR; ++r) {
+            const float mine = tsum<P>(acc[r], lane);
+            if (owner) part[((size_t) tk * Q8_NKC + kc) * PR + (row0 + p + r)] = mine;
+        }
+    }
+}
+
+template <int T>
+__global__ void __launch_bounds__(THREADS) neon_gr_lo_q8_kernel(GrMulti m, const float* __restrict__ part,
+                                                                const float* __restrict__ ssg,
+                                                                float* __restrict__ lo_buf,
+                                                                float* __restrict__ rs_buf) {
+    __shared__ float rsS[HC];
+    const int k = blockIdx.x;
+    const int t = threadIdx.x;
+    if (t < HC) {
+        float ss = 0.0f;
+#pragma unroll
+        for (int j = 0; j < Q8_CPS; ++j) ss += ssg[(size_t) k * Q8_NKC + t * Q8_CPS + j];
+        const float rs = rsqrtf(ss / (float) N + m.a[k].eps);
+        rsS[t] = rs;
+        rs_buf[k * HC + t] = rs;
+        m.a[k].rs[t] = rs;
+    }
+    __syncthreads();
+    for (int r = t; r < PR; r += THREADS) {
+        float sum = 0.0f;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) {
+            float p = 0.0f;
+#pragma unroll
+            for (int j = 0; j < Q8_CPS; ++j) p += part[((size_t) k * Q8_NKC + c * Q8_CPS + j) * PR + r];
+            sum = fmaf(rsS[c], p, sum);
+        }
+        if (r < LR) {
+            const float x = sum / (float) HC;
+            lo_buf[(size_t) k * LR + r] = x / (1.0f + __expf(-x));
+        } else if (m.a[k].w_inject != nullptr) {
+            m.a[k].inject_out[r - LR] = sum;
+        }
+    }
+}
+
+template <int T, int RR, bool PRE_LO>
+__global__ void __launch_bounds__(THREADS) neon_gr_up_q8_kernel(GrMulti m, const float* __restrict__ part,
+                                                                const float* __restrict__ ssg,
+                                                                const float* __restrict__ lo_buf,
+                                                                const float* __restrict__ rs_buf) {
+    constexpr int UP_RPW = (HC * UPM_COLS) / WARPS;
+    static_assert(kNeonGrQ8Ok && UP_RPW % RR == 0, "neon_gr_up_q8 geometry/RR check");
+    constexpr int FULL_S = LR / 128;
+    constexpr bool HAS_HALF = (LR % 128) == 64;
+    constexpr int P = pow2_ceil(T);
+    __shared__ __align__(16) float lo[T][LR];
+    __shared__ float rsS[T][HC];
+    __shared__ float g[T][HC][UPM_COLS];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int tk = tsum_token<P>(lane);
+    const bool owner = lane == tsum_lane<P>(tk) && tk < T;
+    const int d0 = blockIdx.x * UPM_COLS;
+
+    const size_t row_bytes = (size_t) (LR / 32) * Q8B;
+    const uint8_t* const wb = m.a[0].q8_up;
+    const int c_warp = (warp * UP_RPW) / UPM_COLS;
+    const int dd_base = (warp * UP_RPW) % UPM_COLS;
+    const int row0_i = c_warp * N + d0 + dd_base;
+
+    uint32_t u_main[RR], u_tail[RR];
+#pragma unroll
+    for (int r = 0; r < RR; ++r) {
+        neon_q8_load4_raw(wb + (size_t) (row0_i + r) * row_bytes, lane, u_main[r], u_tail[r]);
+    }
+
+    if constexpr (PRE_LO) {
+        if (t < T * HC) rsS[t / HC][t % HC] = rs_buf[t];
+        const float4* lo4 = reinterpret_cast<const float4*>(lo_buf);
+        float4* dst4 = reinterpret_cast<float4*>(&lo[0][0]);
+        for (int i = t; i < T * (LR / 4); i += THREADS) dst4[i] = lo4[i];
+        __syncthreads();
+    } else {
+        if (t < T * HC) {
+            const int k = t / HC, c = t - k * HC;
+            float ss = 0.0f;
+#pragma unroll
+            for (int j = 0; j < Q8_CPS; ++j) ss += ssg[(size_t) k * Q8_NKC + c * Q8_CPS + j];
+            const float rs = rsqrtf(ss / (float) N + m.a[k].eps);
+            rsS[k][c] = rs;
+            if (blockIdx.x == 0) m.a[k].rs[c] = rs;
+        }
+        __syncthreads();
+        for (int i = t; i < T * PR; i += THREADS) {
+            const int k = i / PR, r = i - k * PR;
+            float sum = 0.0f;
+#pragma unroll
+            for (int c = 0; c < HC; ++c) {
+                float p = 0.0f;
+#pragma unroll
+                for (int j = 0; j < Q8_CPS; ++j) p += part[((size_t) k * Q8_NKC + c * Q8_CPS + j) * PR + r];
+                sum = fmaf(rsS[k][c], p, sum);
+            }
+            if (r < LR) {
+                const float x = sum / (float) HC;
+                lo[k][r] = x / (1.0f + __expf(-x));
+            } else if (blockIdx.x == 0 && m.a[k].w_inject != nullptr) {
+                m.a[k].inject_out[r - LR] = sum;
+            }
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int p = 0; p < UP_RPW; p += RR) {
+        float acc[RR][P];
+#pragma unroll
+        for (int r = 0; r < RR; ++r) {
+#pragma unroll
+            for (int k = 0; k < P; ++k) acc[r][k] = 0.0f;
+        }
+
+#pragma unroll
+        for (int s = 0; s < FULL_S; ++s) {
+            float4 wv[RR];
+#pragma unroll
+            for (int r = 0; r < RR; ++r) wv[r] = neon_q8_unpack4(u_main[r], u_tail[r], lane);
+            if (s + 1 < FULL_S) {
+                const size_t next_off = (size_t) (s + 1) * (4 * Q8B);
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    neon_q8_load4_raw(wb + (size_t) (row0_i + p + r) * row_bytes + next_off, lane, u_main[r], u_tail[r]);
+                }
+            } else if constexpr (HAS_HALF) {
+                const size_t half_off = (size_t) FULL_S * (4 * Q8B);
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    u_main[r] = neon_q8_load2_raw(wb + (size_t) (row0_i + p + r) * row_bytes + half_off, lane);
+                }
+            } else if (p + RR < UP_RPW) {
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    neon_q8_load4_raw(wb + (size_t) (row0_i + p + RR + r) * row_bytes, lane, u_main[r], u_tail[r]);
+                }
+            }
+            const int v = 128 * s + 4 * lane;
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+                const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    float a = acc[r][k];
+                    a = fmaf(wv[r].x, x.x, a);
+                    a = fmaf(wv[r].y, x.y, a);
+                    a = fmaf(wv[r].z, x.z, a);
+                    a = fmaf(wv[r].w, x.w, a);
+                    acc[r][k] = a;
+                }
+            }
+        }
+
+        if constexpr (HAS_HALF) {
+            float4 wv[RR];
+#pragma unroll
+            for (int r = 0; r < RR; ++r) wv[r] = neon_q8_unpack2(u_main[r], lane);
+            if (p + RR < UP_RPW) {
+#pragma unroll
+                for (int r = 0; r < RR; ++r) {
+                    neon_q8_load4_raw(wb + (size_t) (row0_i + p + RR + r) * row_bytes, lane, u_main[r], u_tail[r]);
+                }
+            }
+            if (lane < 16) {
+                const int v = 128 * FULL_S + 4 * lane;
+#pragma unroll
+                for (int k = 0; k < T; ++k) {
+                    const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
+#pragma unroll
+                    for (int r = 0; r < RR; ++r) {
+                        float a = acc[r][k];
+                        a = fmaf(wv[r].x, x.x, a);
+                        a = fmaf(wv[r].y, x.y, a);
+                        a = fmaf(wv[r].z, x.z, a);
+                        a = fmaf(wv[r].w, x.w, a);
+                        acc[r][k] = a;
+                    }
+                }
+            }
+        }
+
+#pragma unroll
+        for (int r = 0; r < RR; ++r) {
+            const float mine = tsum<P>(acc[r], lane);
+            if (owner) g[tk][c_warp][dd_base + p + r] = mine;
+        }
+    }
+
+    __syncthreads();
+
+    for (int idx = t; idx < T * UPM_COLS; idx += THREADS) {
+        const int k = idx / UPM_COLS, col = idx - k * UPM_COLS;
+        const FusedGrArgs& a = m.a[k];
+        const bool apply = a.apply != 0;
+        const float bo = apply ? a.bo_prev[d0 + col] : 0.0f;
+        float sum = 0.0f;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) {
+            const int row_i = c * N + d0 + col;
+            float rv = a.R[row_i];
+            if (apply) {
+                rv = fmaf(bo, 2.0f * sigmoidf_(a.inj_prev[c] / (float) HC), rv);
+                a.R_out[row_i] = rv;
+            }
+            const float x = rv * a.w_norm[row_i] * rsS[k][c];
+            const float gc = __fmul_rn(x, sigmoidf_(g[k][c][col]));
+            sum = __fadd_rn(sum, gc);
+        }
+        a.mixed[d0 + col] = sum / (float) HC;
+    }
+    if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0);   // S26 STRATA_QFUSE
+}
+
+template <int TAG, typename K>
+static void neon_gr_set_carveout(K kernel) {
+    static std::atomic<unsigned long long> done_mask{0};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return;
+    const unsigned long long bit = 1ull << dev;
+    if (done_mask.load(std::memory_order_relaxed) & bit) return;
+    int major = 0;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major >= 7) {
+        (void) cudaFuncSetAttribute(kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+    }
+    done_mask.fetch_or(bit, std::memory_order_relaxed);
+}
+#endif
+
 template <int T> void launch_q8_t(const GrMulti& m, float* part, float* ssg, cudaStream_t st, unsigned long long* stamp_buf,
                                   int stamp_i0) {
+#if !defined(__HIPCC__)
+    // STRATA_NEON_GR_Q8=1: the round-8 kernels; otherwise (and when the weights are not 4-byte aligned, or the q8_1
+    // image would need gr_up_q8_q32_kernel's counter-free form) the default path below, unchanged
+    static const bool neon_gr = [] { const char* v = std::getenv("STRATA_NEON_GR_Q8"); return v != nullptr && std::atoi(v) == 1; }();
+    if constexpr (kNeonGrQ8Ok) {
+        if (neon_gr && (m.a[0].q8_mixed == nullptr || m.a[0].q8_cnt != nullptr) &&
+            ((((uintptr_t) m.a[0].q8_down) | ((uintptr_t) m.a[0].q8_up)) & 3u) == 0u) {
+            constexpr int RR = (T <= 4) ? 4 : 2;
+            constexpr bool PRE_LO = (T >= 2);
+            float* lo_buf = ssg + (size_t) T * Q8_NKC;
+            float* rs_buf = lo_buf + (size_t) T * LR;
+            neon_gr_set_carveout<T>(neon_gr_down_q8_kernel<T, RR>);
+            neon_gr_set_carveout<16 + T>(neon_gr_up_q8_kernel<T, RR, PRE_LO>);
+            if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
+            neon_gr_down_q8_kernel<T, RR><<<dim3(Q8_RG + 1, Q8_NKC), THREADS, 0, st>>>(m, part, ssg);
+            if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
+            if constexpr (PRE_LO) neon_gr_lo_q8_kernel<T><<<T, THREADS, 0, st>>>(m, part, ssg, lo_buf, rs_buf);
+            neon_gr_up_q8_kernel<T, RR, PRE_LO><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg, lo_buf, rs_buf);
+            return;
+        }
+    }
+#endif
     // High-wave coalesced INT8 TC path (default on sm_80+ CUDA; STRATA_HC_Q8_TC=0 disables, =1 uses fast down + TC up,
     // =2 uses TC down (336 CTAs, uint2 coalesced) + TC up (320 CTAs, uint4 coalesced)).
     const int tc_mode = hc_q8_tc_mode();

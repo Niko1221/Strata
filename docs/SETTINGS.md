@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (338)
+## Switches you can turn on (343)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -183,6 +183,10 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_MTP_KEEP` | on / off | NVIDIA and AMD | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_MTP_Q8_SM60` | on / off | NVIDIA and AMD | [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_MTP_ROOM_MIN` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
+| `STRATA_NEON_EXPERT` | number | NVIDIA and AMD | - |
+| `STRATA_NEON_GR_Q8` | number | NVIDIA and AMD | - |
+| `STRATA_NEON_MMVQ` | on / off | NVIDIA and AMD | - |
+| `STRATA_NEON_Q8` | on / off | NVIDIA and AMD | - |
 | `STRATA_NIB_GU_PROTO` | number | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_NO_ARENA_THP` | on / off | NVIDIA and AMD, Intel Arc | [TROUBLESHOOTING.md](TROUBLESHOOTING.md), [README.md](bench-results/2026-10-12-community-gfx1103/README.md) |
 | `STRATA_NO_AVXVNNI` | number | CPU | [DETAILS.md](DETAILS.md) |
@@ -215,6 +219,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PF_FUSED_NT` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_Q2N` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_PF_FUSED_SM75` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
+| `STRATA_PF_FUSED_SM75_TQ` | on / off | NVIDIA and AMD | - |
 | `STRATA_PF_FUSED_WS` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_GROUP_SCRATCH` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_HC_REGION` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
