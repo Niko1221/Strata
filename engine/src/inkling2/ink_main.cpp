@@ -374,10 +374,17 @@ static int cmd_kld_eval(const std::string& model_path, const std::string& ref_pa
 
     std::vector<float> got_lg(static_cast<size_t>(n_tok) * V);
     StepBatch batch;
-    for (int i = 0; i < n_tok; ++i) batch.push(0, i, ids[i], true);
-    if (!backend->forward_batch(batch, got_lg.data(), nullptr, err)) {
-        fprintf(stderr, "forward: %s\n", err.c_str());
-        return 1;
+    // INK_KLD_CHUNK=n feeds the tokens n at a time (as INK_DUMP_CHUNK does for --dump-ref; 16 = the verify-width kernels, 1 = the one-token decode kernels), default: all in one batch
+    int kld_chunk = n_tok;
+    if (const char* kc = std::getenv("INK_KLD_CHUNK"); kc && std::atoi(kc) > 0) kld_chunk = std::min<int>(std::atoi(kc), n_tok);
+    for (int i0 = 0; i0 < n_tok; i0 += kld_chunk) {
+        const int i1 = std::min<int>(n_tok, i0 + kld_chunk);
+        batch.clear();
+        for (int i = i0; i < i1; ++i) batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, got_lg.data() + static_cast<size_t>(i0) * V, nullptr, err)) {
+            fprintf(stderr, "forward: %s\n", err.c_str());
+            return 1;
+        }
     }
 
     double kld_sum = 0.0, nll_sum = 0.0;
