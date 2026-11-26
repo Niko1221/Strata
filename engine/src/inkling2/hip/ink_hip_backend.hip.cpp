@@ -531,13 +531,13 @@ public:
 
     int effective_max_ctx() const override { return max_ctx_; }
     // compact GGUF (GSQ-RCO) on a card of 13 GB or less runs 256-token prefill chunks so that every expert fits in the card (STRATA_INK_GGUF_CHUNK256=0 turns it off)
-    int effective_chunk() const override { return hip_eff_chunk_; }
-    int hip_eff_chunk_ = 0;
-
+    // (the R9700 and Strix Halo opt-ins keep their own chunk when they are active; the compact-GGUF chunk applies to every other run)
     int effective_chunk() const override {
         if (r9700_ && r9700_->cfg.prefill_chunk > 0) return r9700_->cfg.prefill_chunk;
-        return (halo_ && halo_->cfg.prefill_chunk > 0) ? halo_->cfg.prefill_chunk : 0;
+        if (halo_ && halo_->cfg.prefill_chunk > 0) return halo_->cfg.prefill_chunk;
+        return hip_eff_chunk_;
     }
+    int hip_eff_chunk_ = 0;
 
     bool dspark_ready() const override { return has_dspark_ || has_df2_; }
 
