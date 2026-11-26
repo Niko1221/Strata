@@ -7,6 +7,7 @@
 #include "ink_attn.cuh"
 #include "ink_cuda.cuh"
 #include "ink_hybrid.cuh"
+#include "ink_elastic_kv_ssd.cuh"
 #include "ink_kernels.cuh"
 #include "ink_manifest.hpp"
 #include "ink_moe_cuda.cuh"
@@ -302,6 +303,9 @@ struct InkCudaModel {
     }
 
     static size_t safe_host_ram_cap(double ram_experts_gb, bool ssd_experts) noexcept {
+        if (ink_elastic_1m_enabled() || ink_elastic_ram_cap_bytes() > 0) {
+            return ink_elastic_expert_ram_cap(ram_experts_gb, ssd_experts, ink_ram_available_bytes());
+        }
         if (ssd_experts || ram_experts_gb == 0.0) return 0u;
         if (ram_experts_gb > 0.0) return static_cast<size_t>(ram_experts_gb * 1073741824.0);
         const uint64_t avail = ink_ram_available_bytes();
@@ -482,7 +486,7 @@ struct InkCudaModel {
                 size_t add = 0;
                 for (int di = 0; di < n_total; ++di) if (in_vram[di]) add += (size_t)((dir[di].body_bytes + 63ull) & ~63ull);
                 const uint64_t avail_ram = ink_ram_available_bytes();
-                if (avail_ram == 0 || avail_ram > (uint64_t)(host_used + add) + (5ull << 30)) tier_mode = true;
+                if (ink_elastic_allow_host_tier_dup(avail_ram, host_used, add, primary_gpu)) tier_mode = true;
                 else std::fprintf(stderr, "[InkTier] off: the host copy of the card's experts (%.2f GiB more) does not fit the available RAM (%.2f GiB, %.2f GiB already planned)\n",
                                   (double)add / 1073741824.0, (double)avail_ram / 1073741824.0, (double)host_used / 1073741824.0);
             }
@@ -2056,6 +2060,8 @@ struct InkCudaRunner {
     float*  d_bspec_sconv = nullptr;
     int     bspec_m_cap = 0;
     int     bspec_k_slot = 0;
+    InkElasticKvSsd elastic_kv;
+    int cur_max_pos = 0;
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
@@ -2308,7 +2314,11 @@ struct InkCudaRunner {
                 ? (int)std::min<size_t>((size_t)max_ctx, ((size_t)(host_avail - host_os_res) / std::max<size_t>(1, per_pos_all_glob)) & ~(size_t)63)
                 : max_ctx;
 
-            if (kv_offload_mode == 1 && host_fit_ctx >= 256) {
+            if (ink_elastic_1m_enabled(m.primary_gpu) && !m.ls_active) {
+                elastic_kv.plan(m.primary_gpu, max_slots, max_ctx, kv_dtype, vram_fit_ctx, kv_offload_mode,
+                                host_avail, kv_dev_ctx, kv_host_ctx, max_ctx);
+                kv_alloc_ctx = kv_dev_ctx + kv_host_ctx;
+            } else if (kv_offload_mode == 1 && host_fit_ctx >= 256) {
                 if (host_fit_ctx < max_ctx) max_ctx = std::max(256, host_fit_ctx);
                 kv_dev_ctx = 0;
                 kv_host_ctx = max_ctx;
@@ -2682,6 +2692,7 @@ struct InkCudaRunner {
     // Elastic Global KV Cache Growth: starts compact (4K..8K) and grows in 8K-token chunks up to max_ctx!
     // Returns false cleanly if VRAM is exhausted (NEVER aborts with exit(3)!).
     bool ensure_global_kv_cap(int needed_pos) {
+        if (elastic_kv.enabled) return elastic_kv.ensure_cap(*this, needed_pos);
         if (needed_pos <= kv_alloc_ctx) return true;
         if (needed_pos > max_ctx) return false;
         const int old_cap = kv_alloc_ctx;
@@ -2860,6 +2871,7 @@ struct InkCudaRunner {
     }
 
     void reset_slot(int slot) {
+        elastic_kv.reset_slot(slot);
         constexpr int c_off[4] = {0, kInkKVDim, 2 * kInkKVDim, 2 * kInkKVDim + kInkHidden};
         constexpr int c_len[4] = {kInkKVDim, kInkKVDim, kInkHidden, kInkHidden};
         for (int v = 0; v < kInkVisits; ++v) {
@@ -3780,6 +3792,7 @@ struct InkCudaRunner {
         const float* p_rc = (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_l2_clip.scale");
         const int qc_elems = (int)(ti_qc.bytes / 4);
         const int rc_elems = (int)(ti_rc.bytes / 4);
+        const bool t2_write = (!is_swa && elastic_kv.tier2_active_for_pos(cur_max_pos));
         if (mode == 3 && d_bspec_k && d_bspec_v && d_bspec_sconv) {
             float* hk_pool = d_sconv_pool[visit];
             float* hv_pool = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots;
@@ -3793,9 +3806,12 @@ struct InkCudaRunner {
                 d_bspec_v + (size_t)visit * bspec_m_cap * kInkKVDim,
                 d_bspec_sconv + (size_t)visit * bspec_m_cap * kInkSconvCh,
                 !is_swa, bspec_k_slot, M);
-        } else if ((mode == 0 && M == 1) || mode == 1 || mode == 2) {
+        } else if ((mode == 0 && M == 1) || (mode == 1 && !t2_write) || mode == 2) {
             float* hk_pool = d_sconv_pool[visit];
             float* hv_pool = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots;
+            InkKvVisitDesc wdesc = (mode == 0 && M == 1 && t2_write)
+                ? elastic_kv.prepare_single_write_desc(visit, p0_val, slot0, st)
+                : kv_desc[visit];
             k_ink_post_qkv_fused<<<dim3(64, M), 128, 0, st>>>(
                 d_q, p_qc, qc_elems,
                 d_k_raw, d_v_raw, m.d_sconv_k[ip], m.d_sconv_v[ip],
@@ -3806,8 +3822,8 @@ struct InkCudaRunner {
                 (mode == 2) ? (d_stage_k + (size_t)visit * tree_cap * kInkKVDim) : nullptr,
                 (mode == 2) ? (d_stage_v + (size_t)visit * tree_cap * kInkKVDim) : nullptr,
                 (mode == 2) ? (d_stage_sconv + (size_t)visit * tree_cap * kInkSconvCh) : nullptr,
-                kv_desc[visit], !is_swa, mode, M);
-        } else if (qkv_bf16_io) {
+                wdesc, !is_swa, mode, M);
+        } else if (qkv_bf16_io && !t2_write) {
             float* hk_slot = d_sconv_pool[visit] + (size_t)slot0 * 3 * kInkKVDim;
             float* hv_slot = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots + (size_t)slot0 * 3 * kInkKVDim;
             rtx5090::k_ink_post_qkv_prefill_sm120_bf16<<<M, 256, 0, st>>>(
@@ -3820,7 +3836,7 @@ struct InkCudaRunner {
             rtx5090::k_ink_save_kv_hist_2x_bf16<<<1, 256, 0, st>>>(
                 reinterpret_cast<const __nv_bfloat16*>(d_k_raw), reinterpret_cast<const __nv_bfloat16*>(d_v_raw),
                 hk_slot, hv_slot, M);
-        } else if (mode == 0 && M > 16 && rtx5090::dense_opt_on() && kv_desc[visit].kv_fmt == 0 && kv_desc[visit].host_cap == 0) {
+        } else if (mode == 0 && M > 16 && rtx5090::dense_opt_on() && kv_desc[visit].kv_fmt == 0 && kv_desc[visit].host_cap == 0 && !t2_write) {
             float* hk_slot = d_sconv_pool[visit] + (size_t)slot0 * 3 * kInkKVDim;
             float* hv_slot = d_sconv_pool[visit] + (size_t)kInkKVDim * 3 * max_slots + (size_t)slot0 * 3 * kInkKVDim;
             rtx5090::k_ink_post_qkv_prefill_sm120<<<M, 256, 0, st>>>(
@@ -3837,7 +3853,12 @@ struct InkCudaRunner {
                 d_q, p_qc, qc_elems,
                 d_k, d_v, d_r, p_rc, rc_elems,
                 d_pos, !is_swa, M);
-            k_ink_kv_write<<<dim3(kInkKVHeads, M), 128, 0, st>>>(d_k, d_v, nullptr, slot0, d_pos, kv_desc[visit], M);
+            k_ink_kv_write<<<dim3(kInkKVHeads, M), 128, 0, st>>>(d_k, d_v, (mode == 1) ? d_slots : nullptr, slot0, d_pos, kv_desc[visit], M);
+            if (t2_write) {
+                const int p_min = (mode == 1) ? 0 : p0_val;
+                const int p_max = (mode == 1) ? cur_max_pos : (p0_val + M - 1);
+                elastic_kv.write_tier2_kv_batch(visit, d_k, d_v, (mode == 1) ? d_slots : nullptr, slot0, d_pos, p_min, p_max, M, st);
+            }
         }
 
         // 7. RelPos Table + Fused Sink Flash-GQA (Adaptive Split-K 16/32 for M==1 (#6591), O(1)-VRAM KV-Tiled TC for prefill M>=128 (#6609/#6605)!)
@@ -3847,8 +3868,9 @@ struct InkCudaRunner {
         {
             const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
             dim3 gr(kInkHeads, M);
-            const bool use_rtx_pf_attn = (mode == 0 && M >= 128 && rtx5090::pf_attn_on() && d_rtx_rel_proj_T[ip] != nullptr);
-            const bool want_wo_h2 = (M <= 8 && fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_attn[ip][5] != nullptr);
+            const bool t2_attn = (!is_swa && elastic_kv.tier2_active_for_pos(cur_max_pos));
+            const bool use_rtx_pf_attn = (mode == 0 && M >= 128 && !t2_attn && rtx5090::pf_attn_on() && d_rtx_rel_proj_T[ip] != nullptr);
+            const bool want_wo_h2 = (M <= 8 && !t2_attn && fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_attn[ip][5] != nullptr);
             if (!use_rtx_pf_attn) {
                 k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
             }
@@ -3859,6 +3881,14 @@ struct InkCudaRunner {
                     kv_desc[visit], d_slots, d_pos,
                     d_k, d_v, d_attn_out, bspec_k_slot, M);
             } else if (M <= 16 || mode == 2) {
+              if (t2_attn) {
+                    elastic_kv.run_global_decode_attn_3tier(
+                        visit, kv_desc[visit], slot0, (mode == 1) ? d_slots : nullptr,
+                        d_pos, cur_max_pos, M, mode, p0_val,
+                        d_q, d_rel_table, d_sinks, d_gate_attn,
+                        (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr, (mode == 2) ? d_tree_anc : nullptr,
+                        d_attn_pm, d_attn_pl, d_attn_po, d_attn_out, st);
+              } else {
                 // #6671: a verify tree uses the one-token step's split count, so row m is the value the step at that position gives (the key split, the
                 // warp walk and the merge are the same; only the count differed: 8 for M > 1 against 16 / 32 for M == 1)
                 const int n_sp = (M == 1 || mode == 2) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
@@ -3885,6 +3915,7 @@ struct InkCudaRunner {
                 } else {
                     k_ink_flash_gqa_merge<<<gr, 128, 0, st>>>(d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, M, n_sp);
                 }
+              }
             } else if (use_rtx_pf_attn) {
                 // Opt-in RTX 5090: Pipelined cp.async + ldmatrix.x4.trans FP16-TC FlashAttention-2 (BN=32 SWA / BN=64 Global, BF16-IO + fused amax!)
                 float* am_ptr = (fp8_eng.cache_ready && fp8_eng.d_inp_amax != nullptr) ? (fp8_eng.d_inp_amax + 3) : nullptr;
@@ -3900,7 +3931,7 @@ struct InkCudaRunner {
                     if (is_swa) rtx5090::k_ink_flash_gqa_pf_sm120<32, false><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
                     else        rtx5090::k_ink_flash_gqa_pf_sm120<64, false><<<gpf, 128, 0, st>>>(d_q, d_r, d_rtx_rel_proj_T[ip], d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out, am_ptr);
                 }
-            } else if (mode == 0 && M >= 128 && (cur_cc >= 70 || cur_cc == 60) && ensure_pf_attn(kInkPfKvTile)) {
+            } else if (mode == 0 && (M >= 128 || t2_attn) && (cur_cc >= 70 || cur_cc == 60) && ensure_pf_attn(kInkPfKvTile)) {
                 // O(1)-VRAM KV-Tiled Online-Softmax Tensor Core Prefill Attention (fixed <= ~114 MiB even at 256K+ ctx!)
                 const bool use_fp16_pf = (cur_cc < 80);
                 const cudaDataType_t pf_dt = use_fp16_pf ? CUDA_R_16F : CUDA_R_16BF;
@@ -3914,7 +3945,7 @@ struct InkCudaRunner {
                 const float sc_qk = 0.08838834764831845f;
                 const float one = 1.0f, zero = 0.0f;
 
-                if (K_len <= kInkPfKvTile) {
+                if (K_len <= kInkPfKvTile && !(!is_swa && elastic_kv.tier2_active_for_pos(cur_max_pos))) {
                     if (use_fp16_pf) k_ink_pf_pack_kv<true><<<dim3(kInkKVHeads, K_len), 128, 0, st>>>(kv_desc[visit], slot0, k_start, K_len, d_pf_k, d_pf_v);
                     else             k_ink_pf_pack_kv<false><<<dim3(kInkKVHeads, K_len), 128, 0, st>>>(kv_desc[visit], slot0, k_start, K_len, d_pf_k, d_pf_v);
                     for (int q0 = 0; q0 < M; q0 += Q_CH) {
@@ -3949,42 +3980,58 @@ struct InkCudaRunner {
                 } else {
                     // Long-context KV-Tiled Online-Softmax TC Attention (K_len > 2048 -> O(1) 114 MiB VRAM forever!)
                     float* d_alpha_tmp = d_ctrl_gain;  // [max_batch * 2304] >> 24 * 256 floats!
-                    for (int q0 = 0; q0 < M; q0 += Q_CH) {
-                        const int C = std::min(Q_CH, M - q0);
-                        const int k_sub_beg = is_swa ? std::max(k_start, p0_val + q0 - kInkSwaWin + 1) : k_start;
-                        const int k_sub_end = p0_val + q0 + C;
-                        k_ink_pf_online_init<<<dim3(kInkHeads, C), 128, 0, st>>>(d_sinks, d_pf_m, d_pf_l, d_pf_o, q0, C);
-                        for (int kt = k_sub_beg; kt < k_sub_end; kt += kInkPfKvTile) {
-                            const int K_t = std::min(kInkPfKvTile, k_sub_end - kt);
-                            const bool is_last = (kt + K_t >= k_sub_end);
-                            if (use_fp16_pf) k_ink_pf_pack_kv<true><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
-                            else             k_ink_pf_pack_kv<false><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
-                            INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
-                                cublas, CUBLAS_OP_T, CUBLAS_OP_N,
-                                K_t, C, kInkHeadDim, &sc_qk,
-                                d_pf_k, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
-                                d_pf_q + (size_t)q0 * kInkHeadDim, pf_dt, kInkHeadDim, (long long)M * kInkHeadDim,
-                                &zero, d_pf_s, CUDA_R_32F, K_t, (long long)C * K_t,
-                                kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
-                            if (use_fp16_pf) {
-                                k_ink_pf_softmax_tile_online<true><<<dim3(C, kInkHeads), 256, 0, st>>>(
-                                    d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
-                            } else {
-                                k_ink_pf_softmax_tile_online<false><<<dim3(C, kInkHeads), 256, 0, st>>>(
-                                    d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
+                    if (!is_swa && elastic_kv.enabled && elastic_kv.ensure_pf_multi_qc((M + Q_CH - 1) / Q_CH)) {
+                        elastic_kv.run_global_prefill_attn_3tier(
+                            visit, kv_desc[visit], slot0, p0_val, M,
+                            use_fp16_pf, pf_dt, pf_algo, cublas, st,
+                            d_q, d_rel_table, d_sinks, d_gate_attn,
+                            d_pf_q, d_pf_k, d_pf_v, d_pf_s, d_pf_p, d_pf_ot,
+                            d_alpha_tmp, d_attn_out);
+                    } else {
+                        for (int q0 = 0; q0 < M; q0 += Q_CH) {
+                            const int C = std::min(Q_CH, M - q0);
+                            const int k_sub_beg = is_swa ? std::max(k_start, p0_val + q0 - kInkSwaWin + 1) : k_start;
+                            const int k_sub_end = p0_val + q0 + C;
+                            k_ink_pf_online_init<<<dim3(kInkHeads, C), 128, 0, st>>>(d_sinks, d_pf_m, d_pf_l, d_pf_o, q0, C);
+                            for (int kt = k_sub_beg; kt < k_sub_end; kt += kInkPfKvTile) {
+                                const int K_t = std::min(kInkPfKvTile, k_sub_end - kt);
+                                const bool is_last = (kt + K_t >= k_sub_end);
+                                if (use_fp16_pf) k_ink_pf_pack_kv<true><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
+                                else             k_ink_pf_pack_kv<false><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
+                                INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
+                                    cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                    K_t, C, kInkHeadDim, &sc_qk,
+                                    d_pf_k, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
+                                    d_pf_q + (size_t)q0 * kInkHeadDim, pf_dt, kInkHeadDim, (long long)M * kInkHeadDim,
+                                    &zero, d_pf_s, CUDA_R_32F, K_t, (long long)C * K_t,
+                                    kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
+                                if (use_fp16_pf) {
+                                    k_ink_pf_softmax_tile_online<true><<<dim3(C, kInkHeads), 256, 0, st>>>(
+                                        d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
+                                } else {
+                                    k_ink_pf_softmax_tile_online<false><<<dim3(C, kInkHeads), 256, 0, st>>>(
+                                        d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
+                                }
+                                INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
+                                    cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                                    kInkHeadDim, C, K_t, &one,
+                                    d_pf_v, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
+                                    d_pf_p, pf_dt, K_t, (long long)C * K_t,
+                                    &zero, d_pf_ot, CUDA_R_32F, kInkHeadDim, (long long)C * kInkHeadDim,
+                                    kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
+                                k_ink_pf_accum_tile<<<dim3(kInkHeads, C), 128, 0, st>>>(
+                                    d_pf_ot, d_alpha_tmp, d_pf_l, d_pf_o, d_gate_attn, d_attn_out, q0, C, is_last);
                             }
-                            INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
-                                cublas, CUBLAS_OP_N, CUBLAS_OP_N,
-                                kInkHeadDim, C, K_t, &one,
-                                d_pf_v, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
-                                d_pf_p, pf_dt, K_t, (long long)C * K_t,
-                                &zero, d_pf_ot, CUDA_R_32F, kInkHeadDim, (long long)C * kInkHeadDim,
-                                kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
-                            k_ink_pf_accum_tile<<<dim3(kInkHeads, C), 128, 0, st>>>(
-                                d_pf_ot, d_alpha_tmp, d_pf_l, d_pf_o, d_gate_attn, d_attn_out, q0, C, is_last);
                         }
                     }
                 }
+            } else if (!is_swa && elastic_kv.tier2_active_for_pos(cur_max_pos)) {
+                elastic_kv.run_global_decode_attn_3tier(
+                    visit, kv_desc[visit], slot0, (mode == 1) ? d_slots : nullptr,
+                    d_pos, cur_max_pos, M, mode, p0_val,
+                    d_q, d_rel_table, d_sinks, d_gate_attn,
+                    nullptr, nullptr, nullptr,
+                    d_attn_pm, d_attn_pl, d_attn_po, d_attn_out, st);
             } else {
                 dim3 g3(kInkKVHeads, M);
                 k_ink_flash_gqa_gqa3<<<g3, 128, 0, st>>>(
@@ -4353,6 +4400,7 @@ struct InkCudaRunner {
     // ---- Launch Full 48-Visit Forward (with Safe CUDA Graph Capture -> Eager Fallback, NEVER exit(3)!) ----
     void forward_seq(const int32_t* tok_ids, int p0, int M, int slot0, bool want_taps) {
         if (m.ls_active && cur_stage != 0) bind_stage(0);
+        cur_max_pos = p0 + M - 1;
         int32_t* slot_buf = h_meta_pin + (meta_ring_idx++ & 63ull) * meta_ring_stride;
         std::memcpy(slot_buf, tok_ids, (size_t)M * 4);
         int32_t* h_pos = slot_buf + M;
@@ -4360,7 +4408,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_tok_ids, slot_buf, (size_t)M * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, h_pos, (size_t)M * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0 && !m.hybrid.needs_eager()) {
+        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0 && !m.hybrid.needs_eager() && !elastic_kv.needs_eager_for_pos(cur_max_pos)) {
             GraphKey key{M, 0, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -4462,6 +4510,11 @@ struct InkCudaRunner {
     void forward_tree_verify(const InkTreeSpec& tree, int p0, int slot0, bool want_taps) {
         if (m.ls_active && cur_stage != 0) bind_stage(0);
         const int M = tree.M;
+        {
+            int md = 0;
+            for (int i = 0; i < M; ++i) md = std::max(md, (int)tree.depth[i]);
+            cur_max_pos = p0 + md;
+        }
         int32_t* slot_buf = h_meta_pin + (meta_ring_idx++ & 63ull) * meta_ring_stride;
         int32_t* h_tok = slot_buf;
         int32_t* h_pos = slot_buf + kInkMaxTree;
@@ -4486,7 +4539,7 @@ struct InkCudaRunner {
             INK_CK(cudaMemcpyAsync(d_tree_anc32, h_bytes + 512, kInkMaxTree * kInkMaxTree, cudaMemcpyHostToDevice, st));
         }
 
-        if (use_cuda_graph && !m.ls_active && max_passes_override == 0 && slot0 == 0 && M <= tree_cap && m.n_host_experts == 0) {
+        if (use_cuda_graph && !m.ls_active && max_passes_override == 0 && slot0 == 0 && M <= tree_cap && m.n_host_experts == 0 && !elastic_kv.needs_eager_for_pos(cur_max_pos)) {
             GraphKey key{M, 2, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -4529,6 +4582,11 @@ struct InkCudaRunner {
     // Batched multi-slot 1-token-per-slot step (B = 1..64 concurrent requests, with safe eager fallback!)
     void forward_batched(const int32_t* tok_ids, const int32_t* slot_ids, const int32_t* pos_arr, int B, bool want_taps = false) {
         if (m.ls_active && cur_stage != 0) bind_stage(0);
+        {
+            int mp = 0;
+            for (int i = 0; i < B; ++i) mp = std::max(mp, pos_arr[i]);
+            cur_max_pos = mp;
+        }
         int32_t* slot_buf = h_meta_pin + (meta_ring_idx++ & 63ull) * meta_ring_stride;
         std::memcpy(slot_buf, tok_ids, (size_t)B * 4);
         std::memcpy(slot_buf + B, slot_ids, (size_t)B * 4);
@@ -4537,7 +4595,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_slots, slot_buf + B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, slot_buf + 2 * B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || (B == 1 && !m.hybrid.needs_eager()))) {
+        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || (B == 1 && !m.hybrid.needs_eager())) && !elastic_kv.needs_eager_for_pos(cur_max_pos)) {
             GraphKey key{B, 10, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -4739,6 +4797,7 @@ struct InkCudaRunner {
     }
 
     void free_all() {
+        elastic_kv.free_all();
         if (m.ls_active && cur_stage != 0) bind_stage(0);
         for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
         graph_cache.clear();

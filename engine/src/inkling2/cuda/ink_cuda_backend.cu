@@ -198,6 +198,13 @@ public:
                 }
             }
         }
+        if (strata::ink::ink_elastic_1m_enabled(gpu_id_) && opts.kv_dtype_auto) {
+            auto dt = strata::ink::ink_elastic_select_kv_dtype(
+                kv_dtype_ == KvDtype::FP8_E4M3 ? strata::ink::InkKvDtype::FP8 : strata::ink::InkKvDtype::FP16,
+                true, opts.max_ctx, max_slots_, strata::ink::ink_ram_available_bytes(), gpu_id_);
+            if (dt == strata::ink::InkKvDtype::FP8) kv_dtype_ = KvDtype::FP8_E4M3;
+            else if (dt == strata::ink::InkKvDtype::K8V4) kv_dtype_ = KvDtype::K8V4;
+        }
         auto map_kvd = [](KvDtype d) -> strata::ink::InkKvDtype {
             if (d == KvDtype::FP8_E4M3) return strata::ink::InkKvDtype::FP8;
             if (d == KvDtype::K8V8)     return strata::ink::InkKvDtype::K8V8;
@@ -954,6 +961,8 @@ public:
                         runner_->d_sconv_pool_arr, runner_->d_stage_sconv, runner_->d_acc_path, M, slot, runner_->max_slots, runner_->tree_cap);
                     strata::ink::k_ink_commit_kv_all48<<<dim3(strata::ink::kInkVisits, strata::ink::kInkKVHeads), 128, 0, runner_->st>>>(
                         runner_->d_kv_desc_arr, runner_->d_stage_k, runner_->d_stage_v, runner_->d_acc_path, p0, M, slot, runner_->tree_cap);
+                    runner_->elastic_kv.commit_tier2_tree(
+                        runner_->d_stage_k, runner_->d_stage_v, runner_->d_acc_path, p0, M, slot, runner_->tree_cap, runner_->st);
                     snap_p0_[slot] = p0;
                     snap_M_[slot] = M;
                 } else {
@@ -1348,6 +1357,8 @@ public:
             runner_->d_sconv_pool_arr, runner_->d_stage_sconv, runner_->d_acc_path, n_emit, 0, runner_->max_slots, runner_->tree_cap);
         strata::ink::k_ink_commit_kv_all48<<<dim3(strata::ink::kInkVisits, strata::ink::kInkKVHeads), 128, 0, runner_->st>>>(
             runner_->d_kv_desc_arr, runner_->d_stage_k, runner_->d_stage_v, runner_->d_acc_path, anchor_pos, n_emit, 0, runner_->tree_cap);
+        runner_->elastic_kv.commit_tier2_tree(
+            runner_->d_stage_k, runner_->d_stage_v, runner_->d_acc_path, anchor_pos, n_emit, 0, runner_->tree_cap, runner_->st);
         for (int t = 0; t < 4; ++t) {
             strata::ink::k_ink_compact_taps<<<n_emit, 256, 0, runner_->st>>>(
                 runner_->d_taps[t], runner_->d_taps_compact[t], runner_->d_acc_path, n_emit);
