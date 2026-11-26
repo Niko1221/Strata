@@ -2562,6 +2562,15 @@ struct InkCudaRunner {
     };
     std::vector<GraphEntry> graph_cache;
     std::vector<GraphEntry> prefix_core_graph_cache;
+    // Every captured decode graph holds the K/V descriptor pointers and the lane it was captured with: when the K/V layout changes (elastic tier-1 growth, a new device cap)
+    // or the cold-expert lane flips, ALL of them go, the 5060 Ti prefix+core graphs included. (Dropping only graph_cache left stale prefix+core graphs that read the freed
+    // host K/V buffer: CUDA error 700 on the first prompt over 16K with PACK + CORE_GRAPH + elastic KV, found 11-26.)
+    void drop_all_graphs() {
+        for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        graph_cache.clear();
+        for (auto& e : prefix_core_graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        prefix_core_graph_cache.clear();
+    }
     bool use_cuda_graph = true;
     // Mode-3 batched multi-slot speculative staging pointers (owned by Rtx5090BatchedSpec when active)
     __half* d_bspec_k = nullptr;
@@ -3416,8 +3425,7 @@ struct InkCudaRunner {
                                     kv_desc[v].cap_pos  = kv_dev_ctx + hcap;
                                 }
                                 INK_CK(cudaMemcpy(d_kv_desc_arr, kv_desc, sizeof(kv_desc), cudaMemcpyHostToDevice));
-                                for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-                                graph_cache.clear();
+                                drop_all_graphs();
                                 kv_host_ctx = hcap;
                                 kv_alloc_ctx = kv_dev_ctx + hcap;
                                 std::fprintf(stderr, "[InkCUDA] Elastic global KV spilled to mapped host RAM: %d VRAM + %d host = %d tokens\n",
@@ -3516,8 +3524,7 @@ struct InkCudaRunner {
         }
         cudaSetDevice(m.primary_gpu);
         INK_CK(cudaMemcpy(d_kv_desc_arr, kv_desc, sizeof(kv_desc), cudaMemcpyHostToDevice));
-        for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-        graph_cache.clear();
+        drop_all_graphs();
         kv_dev_ctx = new_cap;
         kv_alloc_ctx = new_cap;
         std::fprintf(stderr, "[InkCUDA] Elastic global KV grown: %d -> %d tokens (max_ctx=%d)\n", old_cap, new_cap, max_ctx);
@@ -6438,8 +6445,7 @@ struct InkCudaRunner {
         constexpr int kWarm = 6, kTimed = 18;
         const auto run_lane = [&](bool exact) -> double {
             h.set_lane(exact);
-            for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-            graph_cache.clear();
+            drop_all_graphs();
             std::vector<double> ms;
             for (int i = 0; i < kWarm + kTimed; ++i) {
                 int32_t tok = kProbeTok[i];
@@ -6457,8 +6463,7 @@ struct InkCudaRunner {
         h.probing = false;
         const bool exact = t_card < 0.9 * t_cpu;
         h.set_lane(exact);
-        for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-        graph_cache.clear();
+        drop_all_graphs();
         if (h.d_use_cnt) INK_CK(cudaMemsetAsync(h.d_use_cnt, 0, (size_t)h.n_layers * h.n_experts * sizeof(float), st));
         if (h.d_stat) INK_CK(cudaMemsetAsync(h.d_stat, 0, 2 * sizeof(unsigned long long), st));
         std::fill(h.h_use_batch.begin(), h.h_use_batch.end(), 0.0f);   // the eager copy lane counted its routing here

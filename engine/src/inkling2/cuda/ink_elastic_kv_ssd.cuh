@@ -1071,8 +1071,7 @@ struct InkElasticKvSsd {
                 r.kv_host_ctx = want_t1;
                 r.kv_alloc_ctx = dev_cap + want_t1;
                 INK_CK(cudaMemcpy(r.d_kv_desc_arr, r.kv_desc, sizeof(r.kv_desc), cudaMemcpyHostToDevice));
-                for (auto& e : r.graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-                r.graph_cache.clear();
+                r.drop_all_graphs();
                 const auto ms = ink_query_proc_mem_stats();
                 std::fprintf(stderr,
                     "[InkElasticKV] Tier-1 RAM grown: %d VRAM + %d RAM = %d tok (VmRSS=%.2f GiB, VmHWM=%.2f GiB)\n",
@@ -1081,8 +1080,7 @@ struct InkElasticKvSsd {
             } else {
                 // Pinning failed unexpectedly: seal Tier-1 at current old_h (page-aligned) & fail over cleanly to Tier-2 SSD!
                 INK_CK(cudaMemcpy(r.d_kv_desc_arr, r.kv_desc, sizeof(r.kv_desc), cudaMemcpyHostToDevice));
-                for (auto& e : r.graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
-                r.graph_cache.clear();
+                r.drop_all_graphs();
                 tier1_max_ctx = (old_h / kPageTokens) * kPageTokens;
                 ssd_base = dev_cap + tier1_max_ctx;
                 num_ssd_pages = (max_ctx > ssd_base) ? ((max_ctx - ssd_base + kPageTokens - 1) / kPageTokens) : 0;
