@@ -134,11 +134,13 @@ inline Config resolve_config(int dev, bool ep2_active, int peer_dev) noexcept {
 
     // Lossless features (active in BOTH EXACT and FAST unless individually turned off via sub-switch=0):
     // Note: nt_mall defaults OFF in EXACT to guarantee 4/4 100% greedy bit-identity with OFF (verified on p620).
-    cfg.nt_mall        = detail::parse_env_truthy("STRATA_INK_R9700_NT_MALL", !cfg.exact);
+    // NT_MALL: decode-only, changes prose tokens and lowers prose decode by 5% with DFlash 2 (p620 only-X matrix): off in both modes now.
+    cfg.nt_mall        = detail::parse_env_truthy("STRATA_INK_R9700_NT_MALL", false);
     cfg.spec_opt       = detail::parse_env_truthy("STRATA_INK_R9700_SPEC", true);
     // Single-pass prefill computes the last prompt token inside the big batch instead of alone after the checkpoint; on HIP a row of a batch is not bit-identical to the same row alone,
     // so it changes tokens. Off in EXACT (measured on p620: EXACT with it differs from off on 3 of 4 prompts, without it on 0 of 4); STRATA_INK_R9700_ASYNC_CKPT=1 forces it.
-    cfg.async_ckpt     = detail::parse_env_truthy("STRATA_INK_R9700_ASYNC_CKPT", !cfg.exact);
+    // With DFlash 2 it also changed code/prose tokens and lowered code decode by 12% (only-X matrix): off in both modes, STRATA_INK_R9700_ASYNC_CKPT=1 still enables it.
+    cfg.async_ckpt     = detail::parse_env_truthy("STRATA_INK_R9700_ASYNC_CKPT", false);
     cfg.cand_rows      = detail::parse_env_truthy("STRATA_INK_R9700_CAND", true);
 
     // Lossy features (STRICTLY OFF in EXACT mode, ON by default in FAST mode unless sub-switch=0):
