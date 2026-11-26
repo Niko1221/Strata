@@ -96,7 +96,7 @@ int main() {
         const Sm120Decision p = decide(pro6000, {});
         CHECK(p.mode == Sm120Decision::Fast && p.default_on_applied && (p.parts & P_TC_ATTN) && (p.parts & P_FP8_TRUNK) && !(p.parts & P_COMPACT));
         const Sm120Decision q = decide(r5090, {});
-        CHECK(!(q.parts & P_TC_ATTN));                                                         // the 5090 row is unchanged
+        CHECK((q.parts & P_TC_ATTN) && q.parts == kSm120Fast5090);                            // the 5090 row: the big set + TC_ATTN (FASTQ equal, 11-26)
         const Sm120Decision e = decide(r5080, {{"STRATA_INK_SM120", "1"}});                   // one switch away
         CHECK(e.mode == Sm120Decision::Fast && (e.parts & P_COMPACT) && !e.default_on_applied);
     }

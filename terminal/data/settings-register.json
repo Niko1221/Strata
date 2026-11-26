@@ -282,8 +282,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1222",
-    "docs/DETAILS.md:1687",
+    "docs/DETAILS.md:1237",
+    "docs/DETAILS.md:1702",
     "docs/bench-results/2026-10-11-rtx-5090-callback-affinity/README.md:46"
    ],
    "first_commit": "4058aa782b",
@@ -416,7 +416,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1274"
+    "docs/DETAILS.md:1289"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -457,7 +457,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1274"
+    "docs/DETAILS.md:1289"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -498,7 +498,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1274"
+    "docs/DETAILS.md:1289"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -533,7 +533,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1274"
+    "docs/DETAILS.md:1289"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -575,7 +575,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1455"
+    "docs/DETAILS.md:1470"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -636,12 +636,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1272",
-    "docs/DETAILS.md:1273",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1500",
-    "docs/DETAILS.md:1504",
-    "docs/DETAILS.md:1732",
+    "docs/DETAILS.md:1287",
+    "docs/DETAILS.md:1288",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1519",
+    "docs/DETAILS.md:1747",
     "docs/OLDER_GPUS.md:150",
     "docs/bench-results/2026-10-05-community-e5-2673v3-rtx-4060ti/README.md:56",
     "docs/bench-results/2026-10-09-community-rtx-5080-4060ti-0.1.41/README.md:40"
@@ -740,11 +740,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1272",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1500",
-    "docs/DETAILS.md:1504",
-    "docs/DETAILS.md:1505",
+    "docs/DETAILS.md:1287",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1519",
+    "docs/DETAILS.md:1520",
     "docs/OLDER_GPUS.md:150",
     "docs/bench-results/2026-10-04-community-rtx-5070ti-windows/README.md:113",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:104",
@@ -797,11 +797,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1272",
-    "docs/DETAILS.md:1274",
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1504",
-    "docs/DETAILS.md:1733",
+    "docs/DETAILS.md:1287",
+    "docs/DETAILS.md:1289",
+    "docs/DETAILS.md:1514",
+    "docs/DETAILS.md:1519",
+    "docs/DETAILS.md:1748",
     "docs/NVIDIA_V100.md:57",
     "docs/OLDER_GPUS.md:260"
    ],
@@ -943,7 +943,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1223"
+    "docs/DETAILS.md:1238"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -978,7 +978,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:125"
+    "docs/BATCHING.md:143"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1253,7 +1253,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:289",
-    "docs/DETAILS.md:1679",
+    "docs/DETAILS.md:1694",
     "docs/bench-results/2026-10-03-community-2x-mi50/README.md:52",
     "docs/bench-results/2026-10-03-community-2x-mi50/README.md:69"
    ],
@@ -1324,7 +1324,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:478",
-    "docs/BATCHING.md:375",
+    "docs/BATCHING.md:393",
     "docs/DETAILS.md:295",
     "docs/DETAILS.md:298",
     "docs/MULTI_GPU.md:164",
@@ -1534,7 +1534,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1634"
+    "docs/DETAILS.md:1649"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1609,7 +1609,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/NVIDIA_V100.md:75",
     "docs/NVIDIA_V100.md:135"
@@ -1693,11 +1693,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1307",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1501",
-    "docs/DETAILS.md:1502",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1322",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1516",
+    "docs/DETAILS.md:1517",
+    "docs/DETAILS.md:1738",
     "docs/DGX_SPARK_LINUX.md:120",
     "docs/DGX_SPARK_LINUX.md:123"
    ],
@@ -2013,7 +2013,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354"
+    "docs/DETAILS.md:1369"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2087,7 +2087,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1451"
+    "docs/DETAILS.md:1466"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2122,7 +2122,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1456",
+    "docs/DETAILS.md:1471",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:341"
    ],
    "first_commit": "4058aa782b",
@@ -2183,11 +2183,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1311",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1500",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1326",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1514",
+    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1738",
     "docs/NVIDIA_V100.md:50",
     "docs/NVIDIA_V100.md:57",
     "docs/OLDER_GPUS.md:150"
@@ -2239,8 +2239,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:713",
-    "docs/BATCHING.md:722"
+    "docs/BATCHING.md:731",
+    "docs/BATCHING.md:740"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2315,12 +2315,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:188",
-    "docs/BATCHING.md:251",
-    "docs/BATCHING.md:346",
-    "docs/BATCHING.md:348",
-    "docs/BATCHING.md:353",
-    "docs/BATCHING.md:407"
+    "docs/BATCHING.md:206",
+    "docs/BATCHING.md:269",
+    "docs/BATCHING.md:364",
+    "docs/BATCHING.md:366",
+    "docs/BATCHING.md:371",
+    "docs/BATCHING.md:425"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2507,8 +2507,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:714",
-    "docs/BATCHING.md:722"
+    "docs/BATCHING.md:732",
+    "docs/BATCHING.md:740"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2576,9 +2576,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:97",
-    "docs/BATCHING.md:478",
-    "docs/BATCHING.md:480",
+    "docs/BATCHING.md:115",
+    "docs/BATCHING.md:496",
+    "docs/BATCHING.md:498",
     "docs/release-notes-0.2.1.md:43",
     "docs/release-notes-0.2.7.md:21"
    ],
@@ -2634,7 +2634,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:30"
+    "docs/BATCHING.md:48"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2735,8 +2735,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:46",
-    "docs/BATCHING.md:97"
+    "docs/BATCHING.md:64",
+    "docs/BATCHING.md:115"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2823,9 +2823,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:127",
-    "docs/BATCHING.md:516",
-    "docs/BATCHING.md:604"
+    "docs/BATCHING.md:145",
+    "docs/BATCHING.md:534",
+    "docs/BATCHING.md:622"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2959,7 +2959,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:358"
+    "docs/BATCHING.md:376"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3217,7 +3217,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1358",
+    "docs/DETAILS.md:1373",
     "docs/NVIDIA_V100.md:41",
     "docs/OLDER_GPUS.md:28",
     "docs/OLDER_GPUS.md:128",
@@ -3495,10 +3495,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1799",
-    "docs/DETAILS.md:1805",
-    "docs/DETAILS.md:1806",
-    "docs/DETAILS.md:1813"
+    "docs/DETAILS.md:1814",
+    "docs/DETAILS.md:1820",
+    "docs/DETAILS.md:1821",
+    "docs/DETAILS.md:1828"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3533,9 +3533,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1799",
-    "docs/DETAILS.md:1808",
-    "docs/DETAILS.md:1809"
+    "docs/DETAILS.md:1814",
+    "docs/DETAILS.md:1823",
+    "docs/DETAILS.md:1824"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3601,9 +3601,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:123",
-    "docs/BATCHING.md:124",
-    "docs/DETAILS.md:1808"
+    "docs/BATCHING.md:141",
+    "docs/BATCHING.md:142",
+    "docs/DETAILS.md:1823"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3645,7 +3645,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1808"
+    "docs/DETAILS.md:1823"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3748,7 +3748,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:124"
+    "docs/BATCHING.md:142"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3783,7 +3783,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1806"
+    "docs/DETAILS.md:1821"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4553,10 +4553,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1283",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1642",
+    "docs/DETAILS.md:1298",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1514",
+    "docs/DETAILS.md:1657",
     "docs/NVIDIA_V100.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -4644,7 +4644,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 1239,
+     "line": 1282,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4677,7 +4677,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 1237,
+     "line": 1280,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -5012,7 +5012,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:576"
+    "docs/BATCHING.md:594"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -5375,13 +5375,13 @@
    ],
    "doc_mentions": [
     "docs/AMD_HIP.md:537",
-    "docs/BATCHING.md:478",
-    "docs/BATCHING.md:480",
-    "docs/DETAILS.md:1215",
-    "docs/DETAILS.md:1294",
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1515",
+    "docs/BATCHING.md:496",
+    "docs/BATCHING.md:498",
+    "docs/DETAILS.md:1230",
+    "docs/DETAILS.md:1309",
+    "docs/DETAILS.md:1514",
     "docs/DETAILS.md:1530",
+    "docs/DETAILS.md:1545",
     "docs/DGX_SPARK_LINUX.md:108",
     "docs/DGX_SPARK_LINUX.md:126",
     "docs/MMVQ_IL_TABLE.md:18",
@@ -5595,7 +5595,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:273",
-    "docs/DETAILS.md:1298",
+    "docs/DETAILS.md:1313",
     "docs/bench-results/2026-10-05-community-gfx1151/prefill-ab.md:24",
     "docs/bench-results/2026-10-05-community-gfx1151/prefill-ab.md:26"
    ],
@@ -5690,7 +5690,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1839"
+    "docs/DETAILS.md:1854"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -5725,11 +5725,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1319",
-    "docs/DETAILS.md:1320",
-    "docs/DETAILS.md:1507",
-    "docs/DETAILS.md:1723",
-    "docs/DETAILS.md:1826",
+    "docs/DETAILS.md:1334",
+    "docs/DETAILS.md:1335",
+    "docs/DETAILS.md:1522",
+    "docs/DETAILS.md:1738",
+    "docs/DETAILS.md:1841",
     "docs/OLDER_GPUS.md:138",
     "docs/OLDER_GPUS.md:251",
     "docs/release-notes-0.2.7.md:23",
@@ -7346,7 +7346,7 @@
    "doc_mentions": [
     "docs/BATCHED_DMA.md:3",
     "docs/BATCHED_DMA.md:9",
-    "docs/DETAILS.md:1272"
+    "docs/DETAILS.md:1287"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -7469,8 +7469,8 @@
    "first_commit": "66f2ee2b0a",
    "first_date": "2026-11-23",
    "since": "v0.2.21",
-   "last_commit": "66f2ee2b0a",
-   "last_date": "2026-11-23",
+   "last_commit": "5bafbe3bcd",
+   "last_date": "2026-11-26",
    "status": "rollback",
    "owner": "kernels/cpu",
    "note": "CPU native expert path (#6552, #7075): the 4-row dot kernels (dot_x4) for Q4_K / Q8_0 / IQ4_XS and similar. Since 0.2.23 the default follows the call: on from 2 tokens that share an expert (batched decode, prompt rows), off for 1 token (cold solo decode: slower than four 1-row calls where memory is the limit). =1 forces them on for every call, =0 off for every call (the 0.2.21 / 0.2.22 default); STRATA_NO_DOT_X4 (any value) still wins. Same bits in every mode.",
@@ -8020,7 +8020,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1839"
+    "docs/DETAILS.md:1854"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8055,8 +8055,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1281",
-    "docs/DETAILS.md:1736"
+    "docs/DETAILS.md:1296",
+    "docs/DETAILS.md:1751"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8234,9 +8234,9 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:299",
-    "docs/DETAILS.md:1409",
-    "docs/DETAILS.md:1507",
-    "docs/DETAILS.md:1689",
+    "docs/DETAILS.md:1424",
+    "docs/DETAILS.md:1522",
+    "docs/DETAILS.md:1704",
     "docs/EXCHANGE_ROTATION.md:11",
     "docs/EXCHANGE_ROTATION.md:15",
     "docs/EXCHANGE_ROTATION.md:19",
@@ -8286,9 +8286,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1309",
-    "docs/DETAILS.md:1505",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1324",
+    "docs/DETAILS.md:1520",
+    "docs/DETAILS.md:1738",
     "docs/EXPERTDEC.md:1",
     "docs/EXPERTDEC.md:4",
     "docs/EXPERTDEC.md:5",
@@ -9248,7 +9248,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:291",
-    "docs/DETAILS.md:1688",
+    "docs/DETAILS.md:1703",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:4",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:18",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:106",
@@ -9588,7 +9588,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1286"
+    "docs/DETAILS.md:1301"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9675,7 +9675,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1286"
+    "docs/DETAILS.md:1301"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9854,9 +9854,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:274",
-    "docs/DETAILS.md:1278",
-    "docs/DETAILS.md:1730",
+    "docs/BATCHING.md:292",
+    "docs/DETAILS.md:1293",
+    "docs/DETAILS.md:1745",
     "docs/OLDER_GPUS.md:227"
    ],
    "first_commit": "4058aa782b",
@@ -10005,7 +10005,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1500",
+    "docs/DETAILS.md:1515",
     "docs/NVIDIA_V100.md:72",
     "docs/NVIDIA_V100.md:138",
     "docs/OLDER_GPUS.md:151"
@@ -10154,8 +10154,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354",
-    "docs/DETAILS.md:1500",
+    "docs/DETAILS.md:1369",
+    "docs/DETAILS.md:1515",
     "docs/OLDER_GPUS.md:150"
    ],
    "first_commit": "4058aa782b",
@@ -10286,8 +10286,8 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:308",
     "docs/AMD_HIP.md:318",
-    "docs/DETAILS.md:1277",
-    "docs/DETAILS.md:1729",
+    "docs/DETAILS.md:1292",
+    "docs/DETAILS.md:1744",
     "docs/GDN_CONTRACT.md:66",
     "docs/bench-results/2026-10-09-community-rtx5090-9800x3d-swift-1m/README.md:73"
    ],
@@ -11054,7 +11054,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/NVIDIA_V100.md:59",
     "docs/RADEON_780M.md:87",
@@ -11112,8 +11112,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1830",
-    "docs/DETAILS.md:1838",
+    "docs/DETAILS.md:1845",
+    "docs/DETAILS.md:1853",
     "docs/GDN_CONTRACT.md:64"
    ],
    "first_commit": "4058aa782b",
@@ -11439,19 +11439,19 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3038,
+     "line": 3065,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3129,
+     "line": 3156,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3163,
+     "line": 3190,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -11597,13 +11597,13 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3099,
+     "line": 3126,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3125,
+     "line": 3152,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -11729,7 +11729,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1218"
+    "docs/DETAILS.md:1233"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11807,8 +11807,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1218",
-    "docs/DETAILS.md:1219"
+    "docs/DETAILS.md:1233",
+    "docs/DETAILS.md:1234"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11876,7 +11876,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1220"
+    "docs/DETAILS.md:1235"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12087,7 +12087,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1823"
+    "docs/DETAILS.md:1838"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12436,10 +12436,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1353",
-    "docs/DETAILS.md:1501",
-    "docs/DETAILS.md:1502",
-    "docs/DETAILS.md:1506",
+    "docs/DETAILS.md:1368",
+    "docs/DETAILS.md:1516",
+    "docs/DETAILS.md:1517",
+    "docs/DETAILS.md:1521",
     "docs/DGX_SPARK_LINUX.md:120",
     "docs/DGX_SPARK_LINUX.md:123"
    ],
@@ -12626,8 +12626,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1506",
+    "docs/DETAILS.md:1514",
+    "docs/DETAILS.md:1521",
     "docs/NVIDIA_V100.md:57",
     "docs/NVIDIA_V100.md:76",
     "docs/NVIDIA_V100.md:135"
@@ -12790,7 +12790,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:51",
     "docs/NVIDIA_V100.md:57"
    ],
@@ -12886,7 +12886,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:51",
     "docs/NVIDIA_V100.md:57"
    ],
@@ -12930,7 +12930,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:51",
     "docs/NVIDIA_V100.md:57"
    ],
@@ -13133,10 +13133,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1353",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1500",
-    "docs/DETAILS.md:1501",
+    "docs/DETAILS.md:1368",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1516",
     "docs/DGX_SPARK_LINUX.md:124",
     "docs/OLDER_GPUS.md:151"
    ],
@@ -13338,7 +13338,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1315",
+    "docs/DETAILS.md:1330",
     "docs/bench-results/2026-10-03-community-rx7900xtx-rocm102-nightly/README.md:29",
     "docs/bench-results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md:35",
     "docs/bench-results/2026-10-09-community-rtx-5080-4060ti-0.1.41/README.md:39",
@@ -13493,8 +13493,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1501",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1516",
     "docs/DGX_SPARK_LINUX.md:124"
    ],
    "first_commit": "4058aa782b",
@@ -13530,7 +13530,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:129"
+    "docs/BATCHING.md:147"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -13979,8 +13979,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1316",
-    "docs/DETAILS.md:1723"
+    "docs/DETAILS.md:1331",
+    "docs/DETAILS.md:1738"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14136,8 +14136,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:459",
-    "docs/DETAILS.md:1313",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1328",
+    "docs/DETAILS.md:1738",
     "docs/DGX_SPARK_LINUX.md:115",
     "docs/DGX_SPARK_LINUX.md:141",
     "docs/RADEON_780M.md:92",
@@ -14455,7 +14455,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 757,
+     "line": 760,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14488,7 +14488,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 764,
+     "line": 767,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14722,7 +14722,7 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:274",
     "docs/AMD_HIP.md:288",
-    "docs/DETAILS.md:1298",
+    "docs/DETAILS.md:1313",
     "docs/bench-results/2026-10-07-rdna2-qsa-select-simt/README.md:13",
     "docs/bench-results/2026-10-09-community-2x-rx-6900xt-0.1.41/README.md:23",
     "docs/bench-results/2026-10-09-community-2x-rx-6900xt-0.1.41/README.md:73",
@@ -14785,13 +14785,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1947,
+     "line": 1950,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1947,
+     "line": 1950,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15009,7 +15009,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 770,
+     "line": 773,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15042,13 +15042,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3591,
+     "line": 3594,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3591,
+     "line": 3594,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15305,25 +15305,25 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2202,
+     "line": 2205,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2202,
+     "line": 2205,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5075,
+     "line": 5078,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5075,
+     "line": 5078,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15592,8 +15592,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1295",
-    "docs/DETAILS.md:1506"
+    "docs/DETAILS.md:1310",
+    "docs/DETAILS.md:1521"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -16772,7 +16772,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 275,
+     "line": 283,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16883,7 +16883,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 134,
+     "line": 147,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16916,7 +16916,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
-     "line": 290,
+     "line": 337,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16988,7 +16988,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
-     "line": 317,
+     "line": 364,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17014,6 +17014,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_DFLASH2_F32",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
+     "line": 163,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "3886fe60a8",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "3886fe60a8",
+   "last_date": "2026-11-26",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "Test hook (NV-OLDER): runs DFlash 2 in the FP32 form (the form cards below sm_80 take) on an sm_80+ card too. =1 forces, unset = by compute capability.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DFLASH2_FORCE",
    "backends": [
     "cuda-hip"
@@ -17021,7 +17054,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 48,
+     "line": 56,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17035,6 +17068,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
+   "first_commit": "402cd017e4",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "402cd017e4",
+   "last_date": "2026-11-26",
    "status": "opt-in",
    "owner": "sm120-rows",
    "note": "=1 loads DFlash 2 even when the residency-first rule (strata/core/ink_draft_rule.hpp) would not: same as --draft on",
@@ -17049,7 +17087,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
-     "line": 98,
+     "line": 102,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17071,6 +17109,39 @@
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "DFlash 2 drafter tuning / format switches (weights format, slots, codebook, confidence exponent, profile, dump).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_SCREEN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
+     "line": 155,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "3886fe60a8",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "3886fe60a8",
+   "last_date": "2026-11-26",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "A/B switch of DFlash 2's head screen: cublas (INT8 GEMM, sm_61+) or kernel (dp4a). Unset: by compute capability.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17115,7 +17186,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 109,
+     "line": 117,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17148,12 +17219,18 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 110,
+     "line": 118,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
+     "line": 123,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
    ],
-   "parse": "flag",
+   "parse": "string",
    "default_state": null,
    "code_default": null,
    "engine_sets": [],
@@ -17165,7 +17242,7 @@
    "first_commit": "7a0d50b15f",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "a35a0c1505",
+   "last_commit": "0b493c7d80",
    "last_date": "2026-11-26",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -17210,7 +17287,7 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "3a82b438f6",
+   "last_commit": "402cd017e4",
    "last_date": "2026-11-26",
    "status": "default",
    "owner": "inkling2/cuda",
@@ -17327,7 +17404,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 748,
+     "line": 751,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17360,13 +17437,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 463,
+     "line": 505,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 463,
+     "line": 505,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17499,13 +17576,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2834,
+     "line": 2877,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 749,
+     "line": 752,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17538,7 +17615,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2837,
+     "line": 2880,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17571,7 +17648,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 34,
+     "line": 36,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17604,7 +17681,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1191,
+     "line": 1259,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17769,13 +17846,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 220,
+     "line": 222,
      "backend": "cuda-hip",
      "fn": "env_get"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 221,
+     "line": 223,
      "backend": "cuda-hip",
      "fn": "env_get"
     }
@@ -18006,13 +18083,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 505,
+     "line": 546,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 505,
+     "line": 546,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18045,7 +18122,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 589,
+     "line": 657,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18111,7 +18188,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 582,
+     "line": 650,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18441,7 +18518,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 506,
+     "line": 547,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18474,13 +18551,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 1250,
+     "line": 1315,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 594,
+     "line": 662,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18579,7 +18656,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1162,
+     "line": 1184,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18645,7 +18722,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 355,
+     "line": 412,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18681,7 +18758,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 356,
+     "line": 413,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18716,7 +18793,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 355,
+     "line": 412,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18752,7 +18829,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 356,
+     "line": 413,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18787,7 +18864,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 355,
+     "line": 412,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18810,7 +18887,7 @@
    "first_commit": "22f73e018a",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "dccdac2320",
+   "last_commit": "9188799840",
    "last_date": "2026-11-26",
    "status": "default",
    "owner": "inkling2/cuda",
@@ -18859,7 +18936,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 2000,
+     "line": 2068,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18925,7 +19002,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 2127,
+     "line": 2195,
      "backend": "cuda-hip",
      "fn": "env2"
     }
@@ -18958,7 +19035,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1752,
+     "line": 1820,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18991,7 +19068,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1756,
+     "line": 1824,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19024,13 +19101,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 257,
+     "line": 265,
      "backend": "cuda-hip",
      "fn": "env2"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 263,
+     "line": 271,
      "backend": "cuda-hip",
      "fn": "env2"
     }
@@ -19063,7 +19140,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 356,
+     "line": 413,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19082,7 +19159,7 @@
    "first_commit": "22f73e018a",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "dccdac2320",
+   "last_commit": "b60a5d2d0b",
    "last_date": "2026-11-26",
    "status": "opt-in",
    "owner": "inkling2/cuda",
@@ -19436,7 +19513,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1600,
+     "line": 1668,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19502,7 +19579,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 394,
+     "line": 453,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19522,7 +19599,7 @@
    "first_commit": "22f73e018a",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "dccdac2320",
+   "last_commit": "b60a5d2d0b",
    "last_date": "2026-11-26",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -19637,7 +19714,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 509,
+     "line": 550,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19670,19 +19747,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 374,
+     "line": 415,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 420,
+     "line": 461,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1790,
+     "line": 1858,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19715,19 +19792,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 375,
+     "line": 416,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 421,
+     "line": 462,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1792,
+     "line": 1860,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19760,7 +19837,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 381,
+     "line": 422,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19793,19 +19870,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 376,
+     "line": 417,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 422,
+     "line": 463,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1793,
+     "line": 1861,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19871,7 +19948,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1052,
+     "line": 1120,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19904,7 +19981,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 736,
+     "line": 739,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -19937,13 +20014,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1138,
+     "line": 1152,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1228,
+     "line": 1250,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -19960,11 +20037,11 @@
    "engine_sets": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1142
+     "line": 1156
     },
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1144
+     "line": 1158
     }
    ],
    "engine_defaults": [],
@@ -19981,7 +20058,7 @@
    "first_commit": "fa48f00d34",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "4d5ecc5e85",
+   "last_commit": "29575b8250",
    "last_date": "2026-11-26",
    "status": "opt-in",
    "owner": "inkling2/cuda",
@@ -19997,7 +20074,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 577,
+     "line": 580,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -20133,7 +20210,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 573,
+     "line": 641,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -20419,6 +20496,105 @@
    "status": "opt-in",
    "owner": "inkling2/cuda",
    "note": "Long-context work (PERF-LONGCTX / LCTX): tensor-core split-K decode attention (TC_ATTN, fast only), one-read verify kernel, KV-first placement, attention-mass probe. All off by default.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_VISION_IDLE_S",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 1173,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e62e8448d8",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "e62e8448d8",
+   "last_date": "2026-11-26",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "Seconds the GPU picture reader stays loaded after the last picture (default 120; --vision-idle-s).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_VISION_READER",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 1170,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e62e8448d8",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "e62e8448d8",
+   "last_date": "2026-11-26",
+   "status": "default",
+   "owner": "inkling2/cuda",
+   "note": "Picture reader of an Inkling model: auto (the 24 GB rule: CPU reader under 24 GB, the card's from 24 GB), gpu or cpu. --vision-reader wins over it.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_VIT_PREC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_vision_cuda.cuh",
+     "line": 246,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9c313502fa",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "9c313502fa",
+   "last_date": "2026-11-26",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "Precision form of the GPU picture reader's matrix products (BF16 tensor cores by default, FP32-class accuracy); diagnostic A/B.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -20757,7 +20933,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:310",
-    "docs/DETAILS.md:1680",
+    "docs/DETAILS.md:1695",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
    ],
@@ -20874,7 +21050,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:276",
+    "docs/BATCHING.md:294",
     "docs/DETAILS.md:310",
     "docs/DETAILS.md:317",
     "docs/DETAILS.md:318",
@@ -21099,7 +21275,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1293"
+    "docs/DETAILS.md:1308"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21366,12 +21542,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:630",
-    "docs/BATCHING.md:761",
+    "docs/BATCHING.md:648",
+    "docs/BATCHING.md:779",
     "docs/DETAILS.md:391",
     "docs/DETAILS.md:668",
-    "docs/DETAILS.md:1293",
-    "docs/DETAILS.md:1636",
+    "docs/DETAILS.md:1308",
+    "docs/DETAILS.md:1651",
     "docs/OLDER_GPUS.md:268",
     "docs/RESEARCH_RUNS.md:21",
     "docs/SPLIT_SERVE.md:125",
@@ -21882,7 +22058,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1214"
+    "docs/DETAILS.md:1229"
    ],
    "first_commit": "461b94b43a",
    "first_date": "2026-11-19",
@@ -22872,7 +23048,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:256",
-    "docs/DETAILS.md:1506"
+    "docs/DETAILS.md:1521"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23314,8 +23490,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1279",
-    "docs/DETAILS.md:1643"
+    "docs/DETAILS.md:1294",
+    "docs/DETAILS.md:1658"
    ],
    "first_commit": "534802c8dc",
    "first_date": "2026-11-22",
@@ -23350,7 +23526,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1279"
+    "docs/DETAILS.md:1294"
    ],
    "first_commit": "534802c8dc",
    "first_date": "2026-11-22",
@@ -23614,7 +23790,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/RADEON_780M.md:87",
     "docs/STRIX_HALO.md:116"
@@ -24185,7 +24361,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1289"
+    "docs/DETAILS.md:1304"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26586,7 +26762,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11479,
+     "line": 11499,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -27094,7 +27270,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1219",
+    "docs/DETAILS.md:1234",
     "docs/QUANTS.md:37",
     "docs/QUANTS.md:39",
     "docs/QUANTS.md:51",
@@ -27438,7 +27614,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1528",
     "docs/MMVQ_IL_TABLE.md:17"
    ],
    "first_commit": "4058aa782b",
@@ -27480,7 +27656,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1530",
     "docs/MMVQ_IL_TABLE.md:18",
     "docs/release-notes-0.2.7.md:23"
    ],
@@ -27517,7 +27693,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1824",
+    "docs/DETAILS.md:1839",
     "docs/MMVQ_IL_TABLE.md:40",
     "docs/MMVQ_IL_TABLE.md:42"
    ],
@@ -27624,7 +27800,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1826",
+    "docs/DETAILS.md:1841",
     "docs/MMVQ_IL_TABLE.md:19",
     "docs/release-notes-0.2.7.md:23"
    ],
@@ -27694,7 +27870,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1528",
     "docs/MMVQ_IL_TABLE.md:10"
    ],
    "first_commit": "4058aa782b",
@@ -28765,7 +28941,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1292"
+    "docs/DETAILS.md:1307"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -29233,7 +29409,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1285"
+    "docs/DETAILS.md:1300"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -29329,8 +29505,8 @@
    "first_commit": "7aaa789a94",
    "first_date": "2026-11-22",
    "since": "v0.2.20",
-   "last_commit": "66f2ee2b0a",
-   "last_date": "2026-11-23",
+   "last_commit": "5bafbe3bcd",
+   "last_date": "2026-11-26",
    "status": "rollback",
    "owner": "quant/x86",
    "note": "disable 4-row shared-activation AVX-512 VNNI dot_*_x4 kernels and fall back to single-row dots",
@@ -29631,7 +29807,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1214"
+    "docs/DETAILS.md:1229"
    ],
    "first_commit": "461b94b43a",
    "first_date": "2026-11-19",
@@ -29786,7 +29962,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -30417,7 +30593,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1411",
+    "docs/DETAILS.md:1426",
     "docs/release-notes-0.2.2.md:11"
    ],
    "first_commit": "4058aa782b",
@@ -30523,7 +30699,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1411",
+    "docs/DETAILS.md:1426",
     "docs/release-notes-0.2.2.md:11"
    ],
    "first_commit": "4058aa782b",
@@ -30644,8 +30820,8 @@
     }
    ],
    "doc_mentions": [
-    "docs/DETAILS.md:1529",
-    "docs/DETAILS.md:1530"
+    "docs/DETAILS.md:1544",
+    "docs/DETAILS.md:1545"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30923,7 +31099,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1288"
+    "docs/DETAILS.md:1303"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31162,10 +31338,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1799",
-    "docs/DETAILS.md:1807",
-    "docs/DETAILS.md:1808",
-    "docs/DETAILS.md:1810"
+    "docs/DETAILS.md:1814",
+    "docs/DETAILS.md:1822",
+    "docs/DETAILS.md:1823",
+    "docs/DETAILS.md:1825"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31347,7 +31523,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1811"
+    "docs/DETAILS.md:1826"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31382,7 +31558,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1810"
+    "docs/DETAILS.md:1825"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31700,7 +31876,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1355"
+    "docs/DETAILS.md:1370"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31735,7 +31911,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1356"
+    "docs/DETAILS.md:1371"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31803,8 +31979,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1215",
-    "docs/DETAILS.md:1719"
+    "docs/DETAILS.md:1230",
+    "docs/DETAILS.md:1734"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31839,9 +32015,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1276",
-    "docs/DETAILS.md:1508",
-    "docs/DETAILS.md:1734"
+    "docs/DETAILS.md:1291",
+    "docs/DETAILS.md:1523",
+    "docs/DETAILS.md:1749"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31901,7 +32077,7 @@
     "docs/AMD_HIP.md:428",
     "docs/AMD_HIP.md:526",
     "docs/AMD_HIP.md:536",
-    "docs/DETAILS.md:1215",
+    "docs/DETAILS.md:1230",
     "docs/bench-results/2026-10-20-0.2.1-idle-gpu/README.md:45",
     "docs/bench-results/2026-11-14-rdna2-pcie-auto/README.md:3",
     "docs/bench-results/2026-11-14-rdna2-pcie-auto/README.md:58"
@@ -31939,7 +32115,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1215"
+    "docs/DETAILS.md:1230"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32010,7 +32186,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1215"
+    "docs/DETAILS.md:1230"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32362,8 +32538,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1830",
-    "docs/DETAILS.md:1835"
+    "docs/DETAILS.md:1845",
+    "docs/DETAILS.md:1850"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32577,7 +32753,7 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3634,
+     "line": 3661,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -32779,19 +32955,19 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3392,
+     "line": 3419,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3408,
+     "line": 3435,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3426,
+     "line": 3453,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -32861,13 +33037,13 @@
     "docs/AMD_HIP.md:516",
     "docs/AMD_HIP.md:772",
     "docs/AMD_HIP.md:800",
-    "docs/DETAILS.md:1211",
-    "docs/DETAILS.md:1217",
-    "docs/DETAILS.md:1356",
-    "docs/DETAILS.md:1365",
-    "docs/DETAILS.md:1516",
-    "docs/DETAILS.md:1518",
-    "docs/DETAILS.md:1634",
+    "docs/DETAILS.md:1226",
+    "docs/DETAILS.md:1232",
+    "docs/DETAILS.md:1371",
+    "docs/DETAILS.md:1380",
+    "docs/DETAILS.md:1531",
+    "docs/DETAILS.md:1533",
+    "docs/DETAILS.md:1649",
     "docs/DGX_SPARK_LINUX.md:112",
     "docs/MULTI_GPU.md:361",
     "docs/OLDER_GPUS.md:227",
@@ -32932,7 +33108,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2780,
+     "line": 2807,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -32946,8 +33122,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1830",
-    "docs/DETAILS.md:1836"
+    "docs/DETAILS.md:1845",
+    "docs/DETAILS.md:1851"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32968,7 +33144,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3391,
+     "line": 3418,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -32982,7 +33158,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1211"
+    "docs/DETAILS.md:1226"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33003,7 +33179,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3407,
+     "line": 3434,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33043,19 +33219,19 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2920,
+     "line": 2947,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2963,
+     "line": 2990,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3032,
+     "line": 3059,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33117,7 +33293,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3417,
+     "line": 3444,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33132,7 +33308,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:304",
-    "docs/DETAILS.md:1365"
+    "docs/DETAILS.md:1380"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33153,7 +33329,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2784,
+     "line": 2811,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33167,8 +33343,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1830",
-    "docs/DETAILS.md:1834"
+    "docs/DETAILS.md:1845",
+    "docs/DETAILS.md:1849"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33189,7 +33365,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2948,
+     "line": 2975,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33203,9 +33379,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1357",
-    "docs/DETAILS.md:1360",
-    "docs/DETAILS.md:1364",
+    "docs/DETAILS.md:1372",
+    "docs/DETAILS.md:1375",
+    "docs/DETAILS.md:1379",
     "docs/release-notes-0.2.7.md:53"
    ],
    "first_commit": "4058aa782b",
@@ -33228,13 +33404,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2718,
+     "line": 2745,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3121,
+     "line": 3148,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33268,13 +33444,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2736,
+     "line": 2763,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3200,
+     "line": 3227,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33308,13 +33484,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2724,
+     "line": 2751,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3145,
+     "line": 3172,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33348,13 +33524,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2730,
+     "line": 2757,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3193,
+     "line": 3220,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33394,13 +33570,13 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2964,
+     "line": 2991,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3529,
+     "line": 3556,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -33445,7 +33621,7 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2900,
+     "line": 2927,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33459,7 +33635,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1356"
+    "docs/DETAILS.md:1371"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33480,7 +33656,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2907,
+     "line": 2934,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33513,7 +33689,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2918,
+     "line": 2945,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33546,7 +33722,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2894,
+     "line": 2921,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33579,7 +33755,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3330,
+     "line": 3357,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33617,7 +33793,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3152,
+     "line": 3179,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -33656,7 +33832,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2788,
+     "line": 2815,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33670,8 +33846,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1830",
-    "docs/DETAILS.md:1837"
+    "docs/DETAILS.md:1845",
+    "docs/DETAILS.md:1852"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33829,7 +34005,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1290"
+    "docs/DETAILS.md:1305"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33937,7 +34113,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1290"
+    "docs/DETAILS.md:1305"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33993,7 +34169,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3764,
+     "line": 3791,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -34164,7 +34340,7 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2821,
+     "line": 2848,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -34197,7 +34373,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 2834,
+     "line": 2861,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -34303,7 +34479,7 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3615,
+     "line": 3642,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -34383,7 +34559,7 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3625,
+     "line": 3652,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -34918,7 +35094,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3102,
+     "line": 3129,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -35205,6 +35381,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PF_SYNC_DEBUG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/prefill/moe_fused_iq.cu",
+     "line": 81,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "fd5fc4aa76",
+   "first_date": "2026-11-26",
+   "since": null,
+   "last_commit": "fd5fc4aa76",
+   "last_date": "2026-11-26",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "Debug: synchronise after every prefill step to find which kernel faults (FIX-ENGINE).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PF_TILE_DEBUG",
    "backends": [
     "cuda-hip"
@@ -35212,7 +35421,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3345,
+     "line": 3372,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -35245,7 +35454,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3174,
+     "line": 3201,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -35278,7 +35487,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3159,
+     "line": 3186,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -35547,7 +35756,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:294",
-    "docs/DETAILS.md:1686",
+    "docs/DETAILS.md:1701",
     "docs/DOCKER.md:158",
     "docs/TERMINAL_LAUNCH.md:81",
     "docs/bench-results/README.md:153",
@@ -35732,8 +35941,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:288",
-    "docs/BATCHING.md:253",
-    "docs/BATCHING.md:288"
+    "docs/BATCHING.md:271",
+    "docs/BATCHING.md:306"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35801,7 +36010,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:255"
+    "docs/BATCHING.md:273"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35869,7 +36078,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:353"
+    "docs/BATCHING.md:371"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35904,7 +36113,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:354"
+    "docs/BATCHING.md:372"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35978,10 +36187,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:498",
-    "docs/BATCHING.md:501",
-    "docs/BATCHING.md:521",
-    "docs/BATCHING.md:653",
+    "docs/BATCHING.md:516",
+    "docs/BATCHING.md:519",
+    "docs/BATCHING.md:539",
+    "docs/BATCHING.md:671",
     "docs/release-notes-0.2.7.md:41"
    ],
    "first_commit": "4058aa782b",
@@ -36017,8 +36226,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:350",
-    "docs/BATCHING.md:757"
+    "docs/BATCHING.md:368",
+    "docs/BATCHING.md:775"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36792,9 +37001,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:425",
-    "docs/BATCHING.md:434",
-    "docs/BATCHING.md:660",
+    "docs/BATCHING.md:443",
+    "docs/BATCHING.md:452",
+    "docs/BATCHING.md:678",
     "docs/release-notes-0.2.7.md:53"
    ],
    "first_commit": "4058aa782b",
@@ -36830,7 +37039,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:126"
+    "docs/BATCHING.md:144"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36905,7 +37114,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1224"
+    "docs/DETAILS.md:1239"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37128,7 +37337,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1839"
+    "docs/DETAILS.md:1854"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37188,7 +37397,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1839"
+    "docs/DETAILS.md:1854"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37364,7 +37573,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1437",
+    "docs/DETAILS.md:1452",
     "docs/release-notes-0.2.2.md:17"
    ],
    "first_commit": "4058aa782b",
@@ -37400,8 +37609,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1279",
-    "docs/DETAILS.md:1643"
+    "docs/DETAILS.md:1294",
+    "docs/DETAILS.md:1658"
    ],
    "first_commit": "edef565b90",
    "first_date": "2026-11-19",
@@ -37478,7 +37687,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1279"
+    "docs/DETAILS.md:1294"
    ],
    "first_commit": "534802c8dc",
    "first_date": "2026-11-22",
@@ -37692,8 +37901,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1218",
-    "docs/DETAILS.md:1530"
+    "docs/DETAILS.md:1233",
+    "docs/DETAILS.md:1545"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37820,7 +38029,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1340"
+    "docs/DETAILS.md:1355"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37855,7 +38064,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1340"
+    "docs/DETAILS.md:1355"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37904,11 +38113,11 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:288",
     "docs/DETAILS.md:393",
-    "docs/DETAILS.md:1211",
-    "docs/DETAILS.md:1212",
-    "docs/DETAILS.md:1213",
-    "docs/DETAILS.md:1290",
-    "docs/DETAILS.md:1715",
+    "docs/DETAILS.md:1226",
+    "docs/DETAILS.md:1227",
+    "docs/DETAILS.md:1228",
+    "docs/DETAILS.md:1305",
+    "docs/DETAILS.md:1730",
     "docs/OLDER_GPUS.md:260",
     "docs/OLDER_GPUS.md:268",
     "docs/OLDER_GPUS.md:381",
@@ -37963,8 +38172,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1211",
-    "docs/DETAILS.md:1213"
+    "docs/DETAILS.md:1226",
+    "docs/DETAILS.md:1228"
    ],
    "first_commit": "a620ffb619",
    "first_date": "2026-11-19",
@@ -38005,7 +38214,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1211"
+    "docs/DETAILS.md:1226"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38053,9 +38262,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1211",
-    "docs/DETAILS.md:1212",
-    "docs/DETAILS.md:1213"
+    "docs/DETAILS.md:1226",
+    "docs/DETAILS.md:1227",
+    "docs/DETAILS.md:1228"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38115,8 +38324,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1212",
-    "docs/DETAILS.md:1213"
+    "docs/DETAILS.md:1227",
+    "docs/DETAILS.md:1228"
    ],
    "first_commit": "16c3fa0cd1",
    "first_date": "2026-11-19",
@@ -38307,7 +38516,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1287",
+    "docs/DETAILS.md:1302",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:90",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:105",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:327"
@@ -38412,7 +38621,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1317"
+    "docs/DETAILS.md:1332"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38460,7 +38669,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:273",
+    "docs/BATCHING.md:291",
     "docs/GYRO.md:367",
     "docs/MULTI_GPU.md:148",
     "docs/MULTI_GPU.md:293",
@@ -38576,7 +38785,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:351",
-    "docs/DETAILS.md:1216",
+    "docs/DETAILS.md:1231",
     "docs/release-notes-0.2.0.md:61"
    ],
    "first_commit": "4058aa782b",
@@ -38619,7 +38828,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1342"
+    "docs/DETAILS.md:1357"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39051,13 +39260,13 @@
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3476,
+     "line": 3503,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/moe_fused_iq.cu",
-     "line": 3557,
+     "line": 3584,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -39264,7 +39473,7 @@
    "doc_mentions": [
     "docs/AMD_HIP_PERFORMANCE.md:21",
     "docs/DETAILS.md:352",
-    "docs/DETAILS.md:1220",
+    "docs/DETAILS.md:1235",
     "docs/bench-results/2026-10-03-community-rx7900xtx-rocm102-nightly/README.md:29",
     "docs/bench-results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md:35",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:89",
@@ -39306,7 +39515,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1334"
+    "docs/DETAILS.md:1349"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39341,7 +39550,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1335"
+    "docs/DETAILS.md:1350"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -40647,8 +40856,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1314",
-    "docs/DETAILS.md:1723"
+    "docs/DETAILS.md:1329",
+    "docs/DETAILS.md:1738"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -41112,7 +41321,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1291"
+    "docs/DETAILS.md:1306"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -41153,7 +41362,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1284",
+    "docs/DETAILS.md:1299",
     "docs/bench-results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md:66"
    ],
    "first_commit": "4058aa782b",
@@ -41189,7 +41398,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354"
+    "docs/DETAILS.md:1369"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -42324,7 +42533,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57"
    ],
    "first_commit": "e6efa2b169",
@@ -42863,8 +43072,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354",
-    "docs/DETAILS.md:1823"
+    "docs/DETAILS.md:1369",
+    "docs/DETAILS.md:1838"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -42944,7 +43153,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1634"
+    "docs/DETAILS.md:1649"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -43292,9 +43501,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1308",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1323",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1738",
     "docs/QSAROWS.md:1",
     "docs/QSAROWS.md:3",
     "docs/QSAROWS.md:51",
@@ -43359,8 +43568,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:128",
-    "docs/BATCHING.md:604"
+    "docs/BATCHING.md:146",
+    "docs/BATCHING.md:622"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -43407,8 +43616,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1312",
-    "docs/DETAILS.md:1723"
+    "docs/DETAILS.md:1327",
+    "docs/DETAILS.md:1738"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -43501,7 +43710,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1331"
+    "docs/DETAILS.md:1346"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -43572,9 +43781,9 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:277",
-    "docs/DETAILS.md:1506",
-    "docs/DETAILS.md:1683",
-    "docs/DETAILS.md:1684",
+    "docs/DETAILS.md:1521",
+    "docs/DETAILS.md:1698",
+    "docs/DETAILS.md:1699",
     "docs/release-notes-0.2.7.md:53"
    ],
    "first_commit": "4058aa782b",
@@ -44405,8 +44614,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1584",
-    "docs/DETAILS.md:1779",
+    "docs/DETAILS.md:1599",
+    "docs/DETAILS.md:1794",
     "docs/bench-results/2026-10-04-community-rtx-4080s-iq3s/README.md:262",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:105",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:110",
@@ -44742,9 +44951,9 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1294",
-    "docs/DETAILS.md:1531",
-    "docs/DETAILS.md:1720",
+    "docs/DETAILS.md:1309",
+    "docs/DETAILS.md:1546",
+    "docs/DETAILS.md:1735",
     "docs/release-notes-0.2.0.md:55",
     "docs/release-notes-0.2.7.md:7"
    ],
@@ -44833,7 +45042,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1294"
+    "docs/DETAILS.md:1309"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -44874,7 +45083,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1294"
+    "docs/DETAILS.md:1309"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45046,11 +45255,11 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1230",
-    "docs/DETAILS.md:1241",
     "docs/DETAILS.md:1245",
-    "docs/DETAILS.md:1246",
-    "docs/DETAILS.md:1717",
+    "docs/DETAILS.md:1256",
+    "docs/DETAILS.md:1260",
+    "docs/DETAILS.md:1261",
+    "docs/DETAILS.md:1732",
     "docs/DOCKER.md:160",
     "docs/NVFP4.md:71",
     "docs/NVFP4.md:72",
@@ -45401,8 +45610,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1353",
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1368",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -45531,8 +45740,8 @@
     "docs/AMD_HIP.md:305",
     "docs/AMD_HIP.md:352",
     "docs/AMD_HIP.md:353",
-    "docs/DETAILS.md:1355",
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1370",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/bench-results/2026-10-11-gfx1100-qsa-scores/README.md:15",
     "docs/bench-results/2026-10-11-gfx1100-qsa-scores/README.md:62",
@@ -45732,7 +45941,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/OLDER_GPUS.md:184",
     "docs/release-notes-0.2.7.md:53"
@@ -45861,7 +46070,7 @@
     "docs/AMD_HIP.md:519",
     "docs/AMD_HIP.md:725",
     "docs/AMD_HIP.md:810",
-    "docs/DETAILS.md:1356",
+    "docs/DETAILS.md:1371",
     "docs/OLDER_GPUS.md:281",
     "docs/OLDER_GPUS.md:291",
     "docs/bench-results/2026-10-07-rdna2-qsa-select-simt/README.md:3"
@@ -45941,7 +46150,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1322"
+    "docs/DETAILS.md:1337"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45976,7 +46185,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1329"
+    "docs/DETAILS.md:1344"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46011,7 +46220,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1328"
+    "docs/DETAILS.md:1343"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46455,7 +46664,7 @@
     "docs/AMD_HIP.md:276",
     "docs/AMD_HIP.md:289",
     "docs/AMD_HIP.md:292",
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/RADEON_780M.md:87",
     "docs/STRIX_HALO.md:118",
@@ -46553,12 +46762,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1310",
-    "docs/DETAILS.md:1498",
-    "docs/DETAILS.md:1499",
-    "docs/DETAILS.md:1500",
-    "docs/DETAILS.md:1501",
-    "docs/DETAILS.md:1723",
+    "docs/DETAILS.md:1325",
+    "docs/DETAILS.md:1513",
+    "docs/DETAILS.md:1514",
+    "docs/DETAILS.md:1515",
+    "docs/DETAILS.md:1516",
+    "docs/DETAILS.md:1738",
     "docs/DGX_SPARK_LINUX.md:116",
     "docs/NVIDIA_V100.md:57",
     "docs/OLDER_GPUS.md:150"
@@ -46669,7 +46878,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:123"
+    "docs/BATCHING.md:141"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46711,7 +46920,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:122"
+    "docs/BATCHING.md:140"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46753,8 +46962,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:121",
-    "docs/BATCHING.md:604"
+    "docs/BATCHING.md:139",
+    "docs/BATCHING.md:622"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46975,7 +47184,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1501"
+    "docs/DETAILS.md:1516"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -47017,7 +47226,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1502",
+    "docs/DETAILS.md:1517",
     "docs/DGX_SPARK_LINUX.md:87",
     "docs/DGX_SPARK_LINUX.md:107",
     "docs/DGX_SPARK_LINUX.md:126",
@@ -47143,7 +47352,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:55"
    ],
    "first_commit": "534802c8dc",
@@ -47199,7 +47408,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/COMMUNITY_BENCHMARKS.md:40",
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:49",
     "docs/NVIDIA_V100.md:50",
     "docs/NVIDIA_V100.md:57",
@@ -47244,7 +47453,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1352"
+    "docs/DETAILS.md:1367"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -47343,7 +47552,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/DGX_SPARK_LINUX.md:125",
     "docs/NVIDIA_V100.md:57"
    ],
@@ -47829,8 +48038,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:634",
-    "docs/DETAILS.md:1737",
-    "docs/DETAILS.md:1738"
+    "docs/DETAILS.md:1752",
+    "docs/DETAILS.md:1753"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -47967,7 +48176,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:635",
-    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1752",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
    ],
@@ -48042,7 +48251,7 @@
     "docs/DETAILS.md:635",
     "docs/DETAILS.md:653",
     "docs/DETAILS.md:664",
-    "docs/DETAILS.md:1738",
+    "docs/DETAILS.md:1753",
     "docs/release-notes-0.2.7.md:53"
    ],
    "first_commit": "4058aa782b",
@@ -48820,7 +49029,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:273",
+    "docs/BATCHING.md:291",
     "docs/MULTI_GPU.md:149",
     "docs/MULTI_GPU.md:295",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:109",
@@ -49583,8 +49792,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1227",
-    "docs/DETAILS.md:1739",
+    "docs/DETAILS.md:1242",
+    "docs/DETAILS.md:1754",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:341",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
@@ -49622,7 +49831,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1225"
+    "docs/DETAILS.md:1240"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -49664,7 +49873,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1225",
+    "docs/DETAILS.md:1240",
     "docs/INTEL.md:45",
     "docs/UNSLOTH_Q4.md:235",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:7",
@@ -49707,8 +49916,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1275",
-    "docs/DETAILS.md:1731"
+    "docs/DETAILS.md:1290",
+    "docs/DETAILS.md:1746"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -49774,7 +49983,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:98",
+    "docs/BATCHING.md:116",
     "docs/MULTI_GPU.md:170",
     "docs/MULTI_GPU.md:224",
     "docs/MULTI_GPU.md:296",
@@ -50116,7 +50325,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1211"
+    "docs/DETAILS.md:1226"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -51494,7 +51703,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:302"
+    "docs/BATCHING.md:320"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -52407,8 +52616,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354",
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1369",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -52444,7 +52653,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1354"
+    "docs/DETAILS.md:1369"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -52487,7 +52696,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:314",
-    "docs/DETAILS.md:1297",
+    "docs/DETAILS.md:1312",
     "docs/TROUBLESHOOTING.md:252"
    ],
    "first_commit": "4058aa782b",
@@ -52836,9 +53045,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:131",
-    "docs/DETAILS.md:1339",
-    "docs/DETAILS.md:1815",
+    "docs/BATCHING.md:149",
+    "docs/DETAILS.md:1354",
+    "docs/DETAILS.md:1830",
     "docs/INTEL.md:429",
     "docs/bench-results/2026-10-05-community-arc-b65/benchy-v1/README.md:14",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:109"
@@ -53023,7 +53232,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1499",
+    "docs/DETAILS.md:1514",
     "docs/NVIDIA_V100.md:57",
     "docs/NVIDIA_V100.md:80",
     "docs/RADEON_780M.md:87",
@@ -53214,7 +53423,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/BATCHING.md:158"
+    "docs/BATCHING.md:176"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -53581,7 +53790,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1282"
+    "docs/DETAILS.md:1297"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -54688,7 +54897,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1286"
+    "docs/DETAILS.md:1301"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -54756,7 +54965,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1741",
+    "docs/DETAILS.md:1756",
     "docs/release-notes-0.2.7.md:53"
    ],
    "first_commit": "4058aa782b",
@@ -54902,7 +55111,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1556"
+    "docs/DETAILS.md:1571"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -55277,7 +55486,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1358"
+    "docs/DETAILS.md:1373"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
