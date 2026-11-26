@@ -3789,7 +3789,8 @@ private:
             cur, B, D, c_.rms_eps);
 
         auto maybe_tap = [&](int visit_id, const float* vec) {
-            if (!need_taps) return;
+            static const bool notap = std::getenv("STRATA_INK_DFLASH2_NOTAP") != nullptr;   // ablation only
+            if (!need_taps || notap) return;
             for (int k = 0; k < 4 && k < static_cast<int>(dspark_cfg_.target_visits.size()); ++k) {
                 if (dspark_cfg_.target_visits[k] == visit_id) {
                     (void)hipMemcpyAsync(sc_taps_[k].dev_ptr, vec, static_cast<size_t>(B) * D * 4, hipMemcpyDeviceToDevice, stream_);
