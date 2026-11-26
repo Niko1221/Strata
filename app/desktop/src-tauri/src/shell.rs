@@ -6,8 +6,10 @@
 //!   { "port": 0 | 1024..65535, "tray": false, "language": "en" }
 //!
 //! * `port`: the port the window's origin uses. 0 is the default, 47831. When the port is busy the shell takes a free one and tells the
-//!   host (`STRATA_PORT_NOTICE=busy:<wanted>:<used>`), which shows the person a warning: the chats and settings of the page are kept per
-//!   port, so a different port starts empty.
+//!   host (`STRATA_PORT_NOTICE=busy:<wanted>:<used>`, or `reserved:<wanted>:<used>` when nothing listens on it: the system keeps the port
+//!   back, #7244), which shows the person a warning: the chats and settings of the page are kept per port, so a different port starts
+//!   empty. The port taken is remembered in `shell-fallback-port.json` (written by the shell only) and used again at the next start while
+//!   it is free, so the page keeps one origin.
 //! * `tray`: closing the window hides it and keeps Strata running in the tray (Windows, macOS). The tray menu follows `language`.
 //! * `/shell/notify` on the loopback bridge shows a desktop notification (an approval is waiting) whether the window is open or hidden.
 
@@ -60,6 +62,74 @@ pub fn wanted_port(prefs: &Prefs, usual: u16) -> u16 {
 /// The notice the host shows when the wanted port was taken.
 pub fn busy_notice(wanted: u16, used: u16) -> String {
     format!("busy:{wanted}:{used}")
+}
+
+/// The notice when the wanted port could not be bound and NOTHING listens on it (#7244): Windows keeps blocks of ports for itself (WSL
+/// mirrored networking, Hyper-V, Docker) and answers a bind there like a port that is in use, without listing the block anywhere.
+pub fn reserved_notice(wanted: u16, used: u16) -> String {
+    format!("reserved:{wanted}:{used}")
+}
+
+/// What stands on a port the app could not bind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holder {
+    /// A program answered a connection: it is in use.
+    Program,
+    /// The connection was refused: nobody listens, so the port is reserved by the system.
+    Nobody,
+    /// Neither (a timeout, a firewall): not told apart, the old wording is kept.
+    Unknown,
+}
+
+/// The holder from what a connection attempt to the port gave: `None` = it connected, else the error kind.
+pub fn holder_from(attempt: Option<std::io::ErrorKind>) -> Holder {
+    match attempt {
+        None => Holder::Program,
+        Some(std::io::ErrorKind::ConnectionRefused) => Holder::Nobody,
+        Some(_) => Holder::Unknown,
+    }
+}
+
+/// One connection attempt to 127.0.0.1:port. A closed loopback port answers "refused" at once on Linux and macOS but only after the SYN retries on
+/// Windows (about 2 s, measured on the owner PC: an 800 ms limit gave TimedOut), so the limit is 4 s; it is paid only when the wanted port could not be bound.
+pub fn holder_of(port: u16) -> Holder {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    holder_from(match std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(4000)) {
+        Ok(_) => None,
+        Err(e) => Some(e.kind()),
+    })
+}
+
+/// `<data folder>/shell-fallback-port.json`: the port the app used the last time its wanted port could not be bound, so a computer where the usual
+/// port is reserved keeps ONE port (the page's chats and settings belong to the port, #3402) instead of a new random one on every start (#7244).
+/// The shell alone writes it, so it never meets the host's write of shell-prefs.json.
+pub fn fallback_path() -> PathBuf {
+    crate::desktoplog::data_dir().join("shell-fallback-port.json")
+}
+
+/// The remembered port for this wanted port: only one saved for the same wanted port, in range, and not the wanted port itself.
+pub fn parse_fallback(text: &str, wanted: u16) -> Option<u16> {
+    let value: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let saved_wanted = value.get("wanted").and_then(Value::as_u64)?;
+    let port = value.get("port").and_then(Value::as_u64).filter(|p| (1024..=65535).contains(p))? as u16;
+    (saved_wanted == wanted as u64 && port != wanted).then_some(port)
+}
+
+pub fn fallback_text(wanted: u16, port: u16) -> String {
+    format!("{{\"wanted\":{wanted},\"port\":{port}}}\n")
+}
+
+pub fn read_fallback(wanted: u16) -> Option<u16> {
+    std::fs::read_to_string(fallback_path()).ok().and_then(|t| parse_fallback(&t, wanted))
+}
+
+/// Best effort: a folder that cannot be written only means the next start picks again, as before.
+pub fn write_fallback(wanted: u16, port: u16) {
+    let path = fallback_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, fallback_text(wanted, port));
 }
 
 /// `%41%20b` -> "A b" (a query value from the host). Bad escapes are kept as typed.
@@ -210,6 +280,38 @@ mod tests {
         assert_eq!(wanted_port(&Prefs::default(), 47831), 47831);
         assert_eq!(wanted_port(&Prefs { port: 47900, ..Prefs::default() }, 47831), 47900);
         assert_eq!(busy_notice(47831, 51234), "busy:47831:51234");
+    }
+
+    #[test]
+    fn a_reserved_port_is_told_from_a_busy_one_by_what_a_connection_gives() {
+        use std::io::ErrorKind;
+        assert_eq!(reserved_notice(47831, 30159), "reserved:47831:30159");
+        assert_eq!(holder_from(None), Holder::Program, "somebody answered: in use");
+        assert_eq!(holder_from(Some(ErrorKind::ConnectionRefused)), Holder::Nobody, "nobody listens: the system keeps the port back");
+        assert_eq!(holder_from(Some(ErrorKind::TimedOut)), Holder::Unknown, "a firewall that drops is not told apart");
+        assert_eq!(holder_from(Some(ErrorKind::PermissionDenied)), Holder::Unknown);
+    }
+
+    #[test]
+    fn a_listening_port_is_a_program_and_a_closed_one_is_nobody() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let open = listener.local_addr().unwrap().port();
+        assert_eq!(holder_of(open), Holder::Program);
+        drop(listener);
+        assert_eq!(holder_of(open), Holder::Nobody);
+    }
+
+    #[test]
+    fn the_fallback_port_is_kept_for_the_port_it_replaced() {
+        let text = fallback_text(47831, 30159);
+        assert_eq!(parse_fallback(&text, 47831), Some(30159));
+        assert_eq!(parse_fallback(&text, 47900), None, "a different wanted port (the person changed it) forgets it");
+        assert_eq!(parse_fallback(&fallback_text(47831, 47831), 47831), None, "never the wanted port itself");
+        assert_eq!(parse_fallback(&fallback_text(47831, 80), 47831), None, "below 1024 is not used");
+        assert_eq!(parse_fallback("{ not json", 47831), None);
+        assert_eq!(parse_fallback("{\"wanted\":47831}", 47831), None);
+        assert_eq!(parse_fallback("\u{feff}{\"wanted\":47831,\"port\":51000}", 47831), Some(51000));
+        assert_eq!(parse_fallback(r#"{"wanted":"47831","port":"51000"}"#, 47831), None, "a text is not a number");
     }
 
     #[test]

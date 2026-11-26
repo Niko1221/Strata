@@ -14,7 +14,7 @@ export interface ShellState {
     defaultPort: number;
     pinnedPort: number | null;
     minimizeToTray: boolean;
-    portNotice: { wanted: number; used: number; terminal?: boolean } | null;
+    portNotice: { wanted: number; used: number; terminal?: boolean; reserved?: boolean } | null;
 }
 
 export function useShellState(): [ShellState | null, (patch: { port?: number | null; tray?: boolean }) => Promise<string | null>] {
