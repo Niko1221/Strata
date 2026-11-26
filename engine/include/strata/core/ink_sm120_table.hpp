@@ -139,6 +139,9 @@ struct Sm120Row {
       {1536, 64, Sm120Tc::Direct, Sm120Tc::Base, 128}, {1 << 30, 128, Sm120Tc::Tr128Bk128, Sm120Tc::Tr128, 128} }, 4
 
 constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;   // P_TC_ATTN joins this set only after the long-context A/B and the KL check (PERF-LONGCTX)
+// The 5090 row's default set: the big set plus TC_ATTN (11-26: FASTQ tools 24/26 and 24/26, code 11/11 both, math 146/150 and 148/150, needles 20/20 both with and without it, KL at the engine's noise floor,
+// 128K decode 84 -> 238 tok/s; STRATA_INK_SM120_TC_ATTN=0 takes it out). The other big rows (placeholders, DGX Spark) keep the big set until they are measured.
+constexpr uint32_t kSm120Fast5090 = kSm120BigFast | P_TC_ATTN;
 // The exact form must not change the DRAFTING POLICY against off (tree shape, window, beam, node count, spec_cost, slot cap): with DFlash 2 as the only drafter DSPARK_OPT (deep verify tree, 2-block chain, row spec numbers) does, and the Spark and the R9700 saw exact differ from off for that reason, so the 5090 exact set is EMPTY: only the bit-identical kernels that have their own switches (PDL, PFQ, the sm_120a build) differ from off.
 constexpr uint32_t kSm120BigExact = 0;
 // The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
@@ -169,7 +172,7 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         //   c1_chunk_big, headroom, c1_chunk, compact_max, fp8_cache_headroom, ws_fp8, ws_dspark, experts policy,
         //   beam, max_nodes, pld_max_m, c64_k, cost, plain, pcie_share
         {"5090", "RTX 5090", 160, 192, 30, 34, true, "measured on a 32 GB RTX 5090 (hand-over 11-26)",
-         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         kSm120Fast5090, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
         {"5060ti-16", "RTX 5060 Ti", 34, 38, 15, 17, true, "measured on a 16 GB RTX 5060 Ti (hand-over 11-26)",

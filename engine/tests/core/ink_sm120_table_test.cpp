@@ -86,7 +86,9 @@ int main() {
     {
         const Sm120Decision a = decide(r5090, {});
         CHECK(a.mode == Sm120Decision::Fast && a.default_on_applied && a.asked && a.row && std::string(a.row->id) == "5090" && !a.note.empty());
-        CHECK((a.parts & P_FP8_TRUNK) && (a.parts & P_MOE_OPT) && (a.parts & P_PF_ATTN) && (a.parts & P_DSPARK_OPT) && !(a.parts & P_COMPACT));
+        CHECK((a.parts & P_FP8_TRUNK) && (a.parts & P_MOE_OPT) && (a.parts & P_PF_ATTN) && (a.parts & P_DSPARK_OPT) && (a.parts & P_TC_ATTN) && a.parts == kSm120Fast5090 && !(a.parts & P_COMPACT));
+        const Sm120Decision a0 = decide(r5090, {{"STRATA_INK_SM120_TC_ATTN", "0"}});   // the long-context attention can be taken out by name
+        CHECK(a0.mode == Sm120Decision::Fast && !(a0.parts & P_TC_ATTN) && (a0.parts | P_TC_ATTN) == kSm120Fast5090);
         const Sm120Decision b = decide(r5060ti, {});
         CHECK(b.mode == Sm120Decision::Fast && b.default_on_applied && b.row && std::string(b.row->id) == "5060ti-16");
         CHECK((b.parts & P_COMPACT) && (b.parts & P_COMPACT_XCODE) && (b.parts & P_COMPACT_KV) && !(b.parts & P_FP8_TRUNK) && !(b.parts & P_FP8_INPLACE));
