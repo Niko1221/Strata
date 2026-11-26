@@ -2045,7 +2045,9 @@ public:
             if (mb < 3) rate *= df2_plain_;
             if (rate > best_rate) { best_rate = rate; best_m = mb; }
         }
-        const int nd = best_m - 1;
+        int nd = best_m - 1;
+        static const int fixed_nd = std::getenv("STRATA_INK_DFLASH2_FIXED") ? std::atoi(std::getenv("STRATA_INK_DFLASH2_FIXED")) : 0;   // measurement: always this many drafts
+        if (fixed_nd > 0) nd = std::min(fixed_nd, max_draft);
         if (df2_trace_) {
             std::fprintf(stderr, "[df2] pos %d anchor %d -> nd %d  conf", anchor_pos, anchor_tok, nd);
             for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %.2f", conf[i]);
