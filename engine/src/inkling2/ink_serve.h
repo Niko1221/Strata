@@ -383,61 +383,73 @@ inline bool parse_gen_cmd(const std::string& line, ParsedGen& r, std::string& er
 }
 
 // ---- Non-blocking stdin reader thread ----
+//
+// The reader is detached: it sits in getline() on stdin and cannot be woken, so it can outlive run_serve_loop().  Its mutex, queue
+// and flags therefore live in a State that the thread owns a share of (shared_ptr), never in this object: after QUIT the serve loop
+// returns, `in` is destroyed while the backend is still being torn down (seconds on a big GPU model), and the harness closing stdin
+// then woke the reader, which locked a destroyed mutex ("terminate called after throwing std::system_error: Invalid argument") or
+// wrote into a freed stack frame (segmentation fault), in about 1 of 6 runs on every build.
 class ServeInput {
 public:
-    std::atomic<bool> solo_stop{false};
     void start() {
-        th_ = std::thread([this] {
+        auto st = st_;
+        std::thread([st] {
             std::string line;
             while (std::getline(std::cin, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-                if (line == "STOP") {
-                    solo_stop.store(true);
-                    std::lock_guard<std::mutex> lk(m_);
-                    q_.push_back(line);
-                    cv_.notify_one();
-                    continue;
-                }
-                std::lock_guard<std::mutex> lk(m_);
-                q_.push_back(std::move(line));
-                cv_.notify_one();
+                if (line == "STOP") st->solo_stop.store(true);
+                std::lock_guard<std::mutex> lk(st->m);
+                st->q.push_back(std::move(line));
+                st->cv.notify_one();
             }
-            std::lock_guard<std::mutex> lk(m_);
-            eof_ = true;
-            cv_.notify_all();
-        });
-        th_.detach();
+            std::lock_guard<std::mutex> lk(st->m);
+            st->eof = true;
+            st->cv.notify_all();
+        }).detach();
     }
 
     bool poll(std::string& out) {
-        std::lock_guard<std::mutex> lk(m_);
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->q.empty()) return false;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
         return true;
     }
 
     bool wait_next(std::string& out) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait(lk, [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::unique_lock<std::mutex> lk(st_->m);
+        st_->cv.wait(lk, [this] { return !st_->q.empty() || st_->eof; });
+        if (st_->q.empty()) return false;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
         return true;
     }
 
     bool is_eof() {
-        std::lock_guard<std::mutex> lk(m_);
-        return eof_ && q_.empty();
+        std::lock_guard<std::mutex> lk(st_->m);
+        return st_->eof && st_->q.empty();
     }
 
 private:
-    std::thread th_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::string> q_;
-    bool eof_ = false;
+    struct State {
+        std::mutex m;
+        std::condition_variable cv;
+        std::deque<std::string> q;
+        std::atomic<bool> solo_stop{false};
+        bool eof = false;
+    };
+    std::shared_ptr<State> st_ = std::make_shared<State>();
 };
+
+/// After QUIT, with the backend already released: leave the process without exit()'s own teardown.  The stdin reader above is a detached thread
+/// blocked in getline(); with stdin still open, exit() waits for it on glibc (it holds the stdio lock) and the engine never ended until its client
+/// killed it.  Nothing is left to flush or free that matters here.
+[[noreturn]] inline void leave_after_quit(int rc) {
+    std::cout.flush();
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(rc);
+}
 
 struct ActiveReq {
     bool active = false;

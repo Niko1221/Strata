@@ -1232,7 +1232,10 @@ int main(int argc, char** argv) {
     }
 
     if (mode_serve) {
-        return run_serve_loop(cfg, mf, *backend);
+        const int rc = run_serve_loop(cfg, mf, *backend);
+        // QUIT: free the backend here, as the old end of main did, then leave without exit()'s own teardown (leave_after_quit, ink_serve.h)
+        backend.reset();
+        leave_after_quit(rc);
     }
 
     // Direct CLI generation mode

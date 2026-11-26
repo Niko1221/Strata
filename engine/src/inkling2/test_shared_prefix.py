@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import time
 import unittest
 
 ENGINE = sys.argv.pop(1)
@@ -213,6 +214,50 @@ class SharedPrefix(unittest.TestCase):
         tokens, reuse = self.engine.request(B)
         self.assertEqual(reuse, 20)
         self.assertEqual(tokens, self.cold(B))
+
+
+class QuitShutdown(unittest.TestCase):
+    """QUIT, then stdin closed while the backend is still being torn down: the exit code must be 0 every time.
+
+    The stdin reader is a detached thread sitting in getline().  It used to keep its mutex and queue in the serve loop's frame, so the
+    EOF that follows QUIT (the client closes stdin a moment later) reached a destroyed mutex (std::terminate, "Invalid argument") or a
+    freed frame (segmentation fault).  And with stdin still open the process did not exit at all (exit() waited for the reader).
+    """
+
+    def run_once(self, teardown_ms, close_after_s):
+        """close_after_s: None leaves stdin open, 0 closes it at once, else after that many seconds (the backend is torn down meanwhile)."""
+        env = dict(os.environ)
+        env["INK_TEST_SLOW_TEARDOWN_MS"] = str(teardown_ms)
+        p = subprocess.Popen([ENGINE], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        while not p.stdout.readline().startswith("READY "):
+            pass
+        p.stdin.write("QUIT\n")
+        p.stdin.flush()
+        if close_after_s is not None:
+            time.sleep(close_after_s)
+            p.stdin.close()
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            self.fail("the engine did not exit after QUIT (stdin %s)" % ("open" if close_after_s is None else "closed"))
+        err = p.stderr.read()
+        p.stdout.close()
+        p.stderr.close()
+        self.assertEqual(p.returncode, 0, f"engine exit {p.returncode}: {err[-300:]}")
+
+    def test_stdin_closed_at_once(self):
+        for _ in range(10):
+            self.run_once(100, 0)
+
+    def test_stdin_closed_while_the_backend_is_torn_down(self):
+        for _ in range(20):
+            self.run_once(400, 0.05)
+
+    def test_stdin_left_open(self):
+        for _ in range(5):
+            self.run_once(50, None)
 
 
 if __name__ == "__main__":
