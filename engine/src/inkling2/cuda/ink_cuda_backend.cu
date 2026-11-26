@@ -167,7 +167,7 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     // Note: unembed_screen (441 MiB) is allocated INSIDE load_from_model_file BEFORE expert packing.
     p.dspark_pad = in.build_screen ? (opt5060.pack ? (540ull << 20) : (224ull << 20)) : 0ull;
     // STRATA_INK_DRAFTER=dflash2: the DFlash 2 drafter's weights (Q8 + bf16) and scratch, ~480 MiB more than DSpark's buffers, are held back
-    if (in.build_screen && strata::ink::InkDFlash2::requested()) p.dspark_pad += ((strata::ink::sm120_cfg(in.gpu_id).fast ? 200ull : 0ull) + 42ull * (size_t)std::min(in.max_slots, 8)) << 20;   // the compact (pack) loader leaves DSpark's weights off the card
+    if (in.build_screen && strata::ink::InkDFlash2::requested()) p.dspark_pad += (strata::ink::sm120_cfg(in.gpu_id).fast ? (strata::ink::df2_total_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30)), in.max_slots) - 200ull) : 42ull * (size_t)std::min(in.max_slots, 8)) << 20;   // the compact (pack) loader leaves DSpark's weights off the card
     p.ws_pad = opt5060.pack
         ? ((in.max_slots >= 16 ? (700ull << 20) : (420ull << 20)) + p.dspark_pad)
         : (((in.max_slots >= 8) ? (1280ull << 20)
@@ -176,7 +176,7 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
                                                : (832ull << 20))) + p.dspark_pad);
     p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
     // DFlash 2 on a card with hybrid experts (not the compact 16 GB mode): hold back what its weights, rings and graphs need, as --vram-reserve-mib 1850 does
-    if (in.build_screen && !strata::ink::sm120_cfg(in.gpu_id).fast && strata::ink::InkDFlash2::requested()) p.min_reserve_bytes = std::max<size_t>(p.min_reserve_bytes, 1850ull << 20);
+    if (in.build_screen && !strata::ink::sm120_cfg(in.gpu_id).fast && strata::ink::InkDFlash2::requested()) p.min_reserve_bytes = std::max<size_t>(p.min_reserve_bytes, (size_t)(1850.0 + strata::ink::df2_big_mib(strata::ink::df2_variant(in.total_vram < (24ull << 30))) - strata::ink::df2_big_mib(strata::ink::Df2Variant{2, 2})) << 20);
     if (opts.vram_reserve_mib >= 0) {
         p.min_reserve_bytes = std::max(p.min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
     }

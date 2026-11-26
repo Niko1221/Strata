@@ -35,6 +35,43 @@ inline bool df2_requested() {
     return s == "dflash2";
 }
 
+
+// ---- the format of the block weights (attention q/o, feed-forward gate/up/down); the rest (fc, K/V and convolution projections, selector, norms, codebooks) stays bf16 / f32 ----
+// kinds: 0 bf16 (reference), 1 Q8 row-scaled, 2 4-bit groups of 32, 3 SF4 (E2M1 + UE4M3 per 16 + fp32 per tensor).
+struct Df2Variant {
+    int attn = 1, ffn = 1;
+};
+
+inline Df2Variant df2_variant(bool small_vram) {
+    Df2Variant v;
+    v.attn = v.ffn = small_vram ? 2 : 1;   // what shipped first: 4-bit groups on cards below 24 GB, Q8 above
+    if (const char* e = std::getenv("STRATA_INK_DFLASH2_W4")) v.attn = v.ffn = (std::string(e) == "1") ? 2 : 1;
+    if (const char* e = std::getenv("STRATA_INK_DFLASH2_WQ")) {
+        const std::string s(e);
+        if (s == "bf16") v.attn = v.ffn = 0;
+        else if (s == "q8") v.attn = v.ffn = 1;
+        else if (s == "q4") v.attn = v.ffn = 2;
+        else if (s == "sf4") v.attn = v.ffn = 3;
+        else if (s == "mix") { v.attn = 1; v.ffn = 3; }
+        else if (s == "mixq4") { v.attn = 1; v.ffn = 2; }
+    }
+    return v;
+}
+
+inline double df2_bytes_per_param(int kind) {
+    return kind == 0 ? 2.0 : (kind == 1 ? 1.0 : 0.5625);   // 4-bit kinds: 0.5 + one 8/16-bit scale per 16 or 32
+}
+
+// MiB of the block weights of the 5 layers (attention 18.9 M parameters, feed-forward 47.8 M per layer)
+inline double df2_big_mib(Df2Variant v) {
+    return (5.0 * 18.874368e6 * df2_bytes_per_param(v.attn) + 5.0 * 47.775744e6 * df2_bytes_per_param(v.ffn)) / 1048576.0;
+}
+
+// what the drafter holds on a small card: the bf16 rest (fc, K/V, convolutions, selector, norms: 112 MiB), the block weights, rings (42 MiB a slot, up to 8), scratch and a margin
+inline size_t df2_total_mib(Df2Variant v, int slots) {
+    return (size_t)(112.0 + df2_big_mib(v) + 42.0 * (double)(slots < 8 ? slots : 8) + 120.0);
+}
+
 // STRATA_INK_DFLASH2 (a file, or a folder holding model.safetensors / dflash2.safetensors), else a sidecar in the model's folder. "" = none found.
 inline std::string df2_resolve_path(const std::string& model_path) {
     auto exists = [](const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (f) { std::fclose(f); return true; } return false; };

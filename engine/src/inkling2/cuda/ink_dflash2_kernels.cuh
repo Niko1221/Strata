@@ -225,6 +225,123 @@ __global__ void __launch_bounds__(256) k_df2_gemv_q4(const uint8_t* __restrict__
     }
 }
 
+
+// ---- SF4 (Strata's FMT_SF4 layout): [N][K/2] bytes of E2M1 x 2 (low nibble first), [N][K/16] UE4M3 block scales, one fp32 tensor scale (w_outer) ------------------------------
+// value = E2M1(nibble) * e4m3(block scale) * w_outer. w_outer = amax / (6 * 448), block scale = amax_block / (6 * w_outer) rounded to E4M3.
+__global__ void __launch_bounds__(256) k_df2_amax_bf16(const uint16_t* __restrict__ src, size_t n, uint32_t* __restrict__ out) {
+    float am = 0.0f;
+    for (size_t i = (size_t)blockIdx.x * 256 + threadIdx.x; i < n; i += (size_t)gridDim.x * 256) am = fmaxf(am, fabsf(df2_bf16f(src[i])));
+    am = warp_max(am);
+    __shared__ float sh[8];
+    if ((threadIdx.x & 31) == 0) sh[threadIdx.x >> 5] = am;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float g = sh[0];
+        for (int i = 1; i < 8; ++i) g = fmaxf(g, sh[i]);
+        atomicMax(out, __float_as_uint(g));
+    }
+}
+
+__global__ void __launch_bounds__(256) k_df2_bf16_to_sf4(const uint16_t* __restrict__ src, uint8_t* __restrict__ dst_p, uint8_t* __restrict__ dst_s,
+                                                         float w_outer, int N, int K) {
+    const int r = blockIdx.x;
+    if (r >= N) return;
+    const int nb = K >> 4;
+    for (int b = threadIdx.x; b < nb; b += 256) {
+        const uint16_t* w = src + (size_t)r * K + (size_t)b * 16;
+        float v[16];
+        float am = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 16; ++i) { v[i] = df2_bf16f(w[i]); am = fmaxf(am, fabsf(v[i])); }
+        uint8_t sc_byte = 0u;
+        float inv = 0.0f;
+        if (am > 0.0f) {
+            const float sc_f = fminf(am / (w_outer * 6.0f), 448.0f);
+            const __nv_fp8_e4m3 fp8(sc_f);
+            sc_byte = fp8.__x;
+            const float denom = w_outer * (float)fp8;
+            inv = denom > 0.0f ? 1.0f / denom : 0.0f;
+        }
+        uint8_t* dp = dst_p + (size_t)r * (K >> 1) + (size_t)b * 8;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) dp[j] = ink_pack_e2m1x2_portable(v[2 * j] * inv, v[2 * j + 1] * inv);
+        dst_s[(size_t)r * nb + b] = sc_byte;
+    }
+}
+
+// E2M1 values times 2 are the integers 0 1 2 3 4 6 8 12; two nibbles of a byte -> two int8 through a 256-entry table in shared memory, then dp4a with the int8 activations.
+__global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict__ Wp, const uint8_t* __restrict__ Ws, float w_outer, const int8_t* __restrict__ xq,
+                                                      const float* __restrict__ xs, float* __restrict__ Y, int M, int N, int K, int n_chunks) {
+    extern __shared__ __align__(16) uint8_t g_smem[];
+    __shared__ uint16_t lut[256];
+    const int nb = K >> 5;
+    int8_t* sq = reinterpret_cast<int8_t*>(g_smem);
+    float* ss = reinterpret_cast<float*>(g_smem + (size_t)kGemvMR * K);
+    {
+        const int mag[8] = {0, 1, 2, 3, 4, 6, 8, 12};
+        const int lo = threadIdx.x & 15, hi = threadIdx.x >> 4;
+        const int vlo = (lo & 8) ? -mag[lo & 7] : mag[lo & 7];
+        const int vhi = (hi & 8) ? -mag[hi & 7] : mag[hi & 7];
+        lut[threadIdx.x] = (uint16_t)(((uint32_t)(vlo & 0xFF)) | ((uint32_t)(vhi & 0xFF) << 8));
+    }
+    const int mc = blockIdx.x % n_chunks;
+    const int rb = blockIdx.x / n_chunks;
+    const int m0 = mc * kGemvMR;
+    const int mrows = min(kGemvMR, M - m0);
+    {
+        const int4* src = reinterpret_cast<const int4*>(xq + (size_t)m0 * K);
+        int4* dst = reinterpret_cast<int4*>(sq);
+        const int n16 = mrows * K / 16;
+        for (int i = threadIdx.x; i < n16; i += 256) dst[i] = src[i];
+        const float* s2 = xs + (size_t)m0 * nb;
+        for (int i = threadIdx.x; i < mrows * nb; i += 256) ss[i] = s2[i];
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int n = rb * 8 + warp;
+    if (n >= N) return;
+    const uint4* w16 = reinterpret_cast<const uint4*>(Wp + (size_t)n * (K / 2));
+    const uint8_t* wsr = Ws + (size_t)n * (K / 16);
+    float acc[kGemvMR];
+#pragma unroll
+    for (int m = 0; m < kGemvMR; ++m) acc[m] = 0.0f;
+    for (int b = lane; b < nb; b += 32) {
+        const uint4 w = w16[b];
+        __nv_fp8_e4m3 f0, f1;
+        f0.__x = wsr[2 * b];
+        f1.__x = wsr[2 * b + 1];
+        const float s0 = (float)f0, s1 = (float)f1;
+        const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
+        uint32_t d[8];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            d[2 * j] = (uint32_t)lut[wv[j] & 0xFF] | ((uint32_t)lut[(wv[j] >> 8) & 0xFF] << 16);
+            d[2 * j + 1] = (uint32_t)lut[(wv[j] >> 16) & 0xFF] | ((uint32_t)lut[(wv[j] >> 24) & 0xFF] << 16);
+        }
+#pragma unroll
+        for (int m = 0; m < kGemvMR; ++m) {
+            if (m < mrows) {
+                const uint4 a0 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32);
+                const uint4 a1 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32 + 16);
+                int p0 = dp4a_i8(d[0], a0.x, 0);
+                p0 = dp4a_i8(d[1], a0.y, p0);
+                p0 = dp4a_i8(d[2], a0.z, p0);
+                p0 = dp4a_i8(d[3], a0.w, p0);
+                int p1 = dp4a_i8(d[4], a1.x, 0);
+                p1 = dp4a_i8(d[5], a1.y, p1);
+                p1 = dp4a_i8(d[6], a1.z, p1);
+                p1 = dp4a_i8(d[7], a1.w, p1);
+                acc[m] += ((float)p0 * s0 + (float)p1 * s1) * ss[m * nb + b];
+            }
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < kGemvMR; ++m) {
+        const float s = warp_sum(acc[m]);
+        if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s * 0.5f * w_outer;
+    }
+}
+
 // ---- convolutions ------------------------------------------------------------------------------------------------------------
 
 // out[r][c] = (b0[c] + dyn[g]) * z[r][c] + (t > 0 ? (b1[c] + dyn[144 + g]) * z[r-1][c] : 0); t = r % 8, g = c / 16. Optional bf16 copy.

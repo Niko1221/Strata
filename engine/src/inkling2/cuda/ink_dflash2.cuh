@@ -43,11 +43,16 @@ struct InkDFlash2 {
     bool host_codebooks = false;
     double conf_pow = std::getenv("STRATA_INK_DFLASH2_CONF_POW") ? std::atof(std::getenv("STRATA_INK_DFLASH2_CONF_POW")) : 1.0;   // < 1 trusts the selector more
     bool w4 = false;   // 4-bit block weights (tight-VRAM cards; STRATA_INK_DFLASH2_W4=0|1)
+    Df2Variant var;
+    __nv_bfloat16* d_xb = nullptr;   // bf16 copy of the activation for the bf16 variant
+    uint32_t* d_amax = nullptr;
     size_t bytes_weights = 0, bytes_scratch = 0;
 
     struct Layer {
         void *wq = nullptr, *wo = nullptr, *wg = nullptr, *wu = nullptr, *wd = nullptr;   // int8 [N][K] (+ float scale per row) or, with w4, 4-bit groups (+ half scale per 32)
         void *sq = nullptr, *so = nullptr, *sg = nullptr, *su = nullptr, *sd = nullptr;
+        int kq = 1, ko = 1, kg = 1, ku = 1, kd = 1;            // 0 bf16, 1 Q8, 2 4-bit groups, 3 SF4 (see ink_dflash2_path.cuh)
+        float oq = 1, oo = 1, og = 1, ou = 1, od = 1;           // SF4 tensor scales
         uint16_t *wkv = nullptr, *conv_a = nullptr, *conv_f = nullptr;   // bf16
         float *base_a = nullptr, *base_f = nullptr, *attn_norm = nullptr, *post_norm = nullptr, *q_norm = nullptr, *k_norm = nullptr;
     } L[df2::kLayers];
@@ -171,17 +176,34 @@ struct InkDFlash2 {
         {
             size_t vf = 0, vt = 0;
             (void)ink_cuda_mem_info(&vf, &vt);
-            w4 = m.all_sf4_vram || (vt > 0 && vt < (24ull << 30));
-            if (const char* e = std::getenv("STRATA_INK_DFLASH2_W4")) w4 = (std::string(e) == "1");
+            const bool small_vram = m.all_sf4_vram || (vt > 0 && vt < (24ull << 30));
+            var = df2_variant(small_vram);
+            w4 = (var.attn == 2 || var.ffn == 2);
         }
         uint16_t* tmp = dalloc<uint16_t>((size_t)df2::kFF * df2::kHidden);   // the largest matrix, bf16, before it is quantized
-        auto up_q8 = [&](const std::string& name, int N, int K, void*& q, void*& sc) -> bool {
+        d_amax = dalloc<uint32_t>(1);
+        auto up_q8 = [&](const std::string& name, int N, int K, int kind, void*& q, void*& sc, float& outer) -> bool {
             if (!get(name, (size_t)N * K * 2)) return false;
             INK_CK(cudaMemcpy(tmp, host.data(), (size_t)N * K * 2, cudaMemcpyHostToDevice));
-            if (w4) {
+            if (kind == 0) {
+                q = wal<uint16_t>((size_t)N * K);
+                sc = nullptr;
+                INK_CK(cudaMemcpy(q, host.data(), (size_t)N * K * 2, cudaMemcpyHostToDevice));
+            } else if (kind == 2) {
                 q = wal<uint8_t>((size_t)N * K / 2);
                 sc = wal<__half>((size_t)N * (K / 32));
                 df2::k_df2_bf16_to_q4<<<N, 256>>>(tmp, (uint8_t*)q, (__half*)sc, N, K);
+            } else if (kind == 3) {
+                q = wal<uint8_t>((size_t)N * K / 2);
+                sc = wal<uint8_t>((size_t)N * K / 16);
+                INK_CK(cudaMemset(d_amax, 0, 4));
+                df2::k_df2_amax_bf16<<<256, 256>>>(tmp, (size_t)N * K, d_amax);
+                uint32_t am_bits = 0;
+                INK_CK(cudaMemcpy(&am_bits, d_amax, 4, cudaMemcpyDeviceToHost));
+                float am;
+                std::memcpy(&am, &am_bits, 4);
+                outer = std::max(am / (6.0f * 448.0f), 1e-12f);
+                df2::k_df2_bf16_to_sf4<<<N, 256>>>(tmp, (uint8_t*)q, (uint8_t*)sc, outer, N, K);
             } else {
                 q = wal<int8_t>((size_t)N * K);
                 sc = wal<float>((size_t)N);
@@ -196,11 +218,13 @@ struct InkDFlash2 {
         for (int l = 0; ok && l < df2::kLayers; ++l) {
             Layer& y = L[l];
             const std::string p = "layers." + std::to_string(l) + ".";
-            ok = up_q8(p + "self_attn.q_proj.weight", df2::kQ, df2::kHidden, y.wq, y.sq) &&
-                 up_q8(p + "self_attn.o_proj.weight", df2::kHidden, df2::kQ, y.wo, y.so) &&
-                 up_q8(p + "mlp.gate_proj.weight", df2::kFF, df2::kHidden, y.wg, y.sg) &&
-                 up_q8(p + "mlp.up_proj.weight", df2::kFF, df2::kHidden, y.wu, y.su) &&
-                 up_q8(p + "mlp.down_proj.weight", df2::kHidden, df2::kFF, y.wd, y.sd) &&
+            y.kq = y.ko = var.attn;
+            y.kg = y.ku = y.kd = var.ffn;
+            ok = up_q8(p + "self_attn.q_proj.weight", df2::kQ, df2::kHidden, y.kq, y.wq, y.sq, y.oq) &&
+                 up_q8(p + "self_attn.o_proj.weight", df2::kHidden, df2::kQ, y.ko, y.wo, y.so, y.oo) &&
+                 up_q8(p + "mlp.gate_proj.weight", df2::kFF, df2::kHidden, y.kg, y.wg, y.sg, y.og) &&
+                 up_q8(p + "mlp.up_proj.weight", df2::kFF, df2::kHidden, y.ku, y.wu, y.su, y.ou) &&
+                 up_q8(p + "mlp.down_proj.weight", df2::kHidden, df2::kFF, y.kd, y.wd, y.sd, y.od) &&
                  up_bf16(p + "self_attn.k_proj.weight", (size_t)df2::kKV * df2::kHidden, y.wkv, 0, true, (size_t)2 * df2::kKV * df2::kHidden) &&
                  up_bf16(p + "self_attn.v_proj.weight", (size_t)df2::kKV * df2::kHidden, y.wkv, (size_t)df2::kKV * df2::kHidden, false) &&
                  up_bf16(p + "attention_conv.kernel_projection.weight", (size_t)df2::kDyn * df2::kHidden, y.conv_a) &&
@@ -273,6 +297,7 @@ struct InkDFlash2 {
         d_u = sal<float>((size_t)R * kFF);
         d_act = sal<float>((size_t)R * kFF);
         d_aq = sal<int8_t>((size_t)R * kFF);
+        d_xb = sal<__nv_bfloat16>((size_t)R * kFF);
         d_as = sal<float>((size_t)R * (kFF / 32));
         p_m = sal<float>((size_t)8 * 24 * 32 + 64);
         p_l = sal<float>((size_t)8 * 24 * 32 + 64);
@@ -315,6 +340,7 @@ struct InkDFlash2 {
         // the dp4a GEMV's dynamic shared memory: 9 * K bytes for K up to 6912
         INK_CK(cudaFuncSetAttribute(df2::k_df2_gemv_q8, cudaFuncAttributeMaxDynamicSharedMemorySize, 9 * kFF + 64));
         INK_CK(cudaFuncSetAttribute(df2::k_df2_gemv_q4, cudaFuncAttributeMaxDynamicSharedMemorySize, 9 * kFF + 64));
+        INK_CK(cudaFuncSetAttribute(df2::k_df2_gemv_sf4, cudaFuncAttributeMaxDynamicSharedMemorySize, 9 * kFF + 64));
         // the first rings are taken now, inside the start-up reserve; later slots are taken at their first use
         for (int s = 0; s < std::min(max_slots, 8); ++s)
             if (!ensure_slot(s)) { err = "not enough GPU memory for the DFlash 2 context rings"; return false; }
@@ -352,14 +378,21 @@ struct InkDFlash2 {
         INK_CUBLAS_CK(cublasGemmEx(r.cublas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &a, W, CUDA_R_16BF, K, X, CUDA_R_16BF, K, &b, Y, CUDA_R_32F, N,
                                    CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    // Y[M][N] fp32 = X[M][K] fp32 * Wq8[N][K]^T (X quantized per 32 values)
-    void mv(const void* W, const void* wsc, const float* X, float* Y, int M, int N, int K, bool quant = true) {
+    // Y[M][N] fp32 = X[M][K] fp32 * W[N][K]^T; kind 0 bf16 (cuBLAS), 1 Q8 row-scaled, 2 4-bit groups, 3 SF4 (the last three on activations quantized per 32 values; quant = false reuses the last)
+    void mv(const void* W, const void* wsc, int kind, float outer, const float* X, float* Y, int M, int N, int K, bool quant = true) {
         using namespace df2;
+        if (kind == 0) {
+            if (quant) k_ink_f32_to_bf16<<<(unsigned)((((size_t)M * K + 3) / 4 + 255) / 256), 256, 0, r.st>>>(X, d_xb, (size_t)M * K);
+            gemm_bf16((const uint16_t*)W, d_xb, Y, M, N, K);
+            return;
+        }
         if (quant) k_df2_quant_act<<<dim3((K / 32 + 7) / 8, M), 256, 0, r.st>>>(X, d_aq, d_as, M, K, 0);
         const int nch = (M + kGemvMR - 1) / kGemvMR;
         const int nrb = (N + 7) / 8;
-        if (w4) k_df2_gemv_q4<<<nrb * nch, 256, (size_t)9 * K + 16, r.st>>>((const uint8_t*)W, (const __half*)wsc, d_aq, d_as, Y, M, N, K, nch);
-        else k_df2_gemv_q8<<<nrb * nch, 256, (size_t)9 * K + 16, r.st>>>((const int8_t*)W, (const float*)wsc, d_aq, d_as, Y, M, N, K, nch);
+        const size_t sm = (size_t)9 * K + 16;
+        if (kind == 2) k_df2_gemv_q4<<<nrb * nch, 256, sm, r.st>>>((const uint8_t*)W, (const __half*)wsc, d_aq, d_as, Y, M, N, K, nch);
+        else if (kind == 3) k_df2_gemv_sf4<<<nrb * nch, 256, sm, r.st>>>((const uint8_t*)W, (const uint8_t*)wsc, outer, d_aq, d_as, Y, M, N, K, nch);
+        else k_df2_gemv_q8<<<nrb * nch, 256, sm, r.st>>>((const int8_t*)W, (const float*)wsc, d_aq, d_as, Y, M, N, K, nch);
     }
 
     // ---- context ingest ---------------------------------------------------------------------------------------------------
@@ -481,7 +514,7 @@ struct InkDFlash2 {
             k_ink_rms_norm<<<R, 256, 0, r.st>>>(d_x, y.attn_norm, d_xn, d_xn_bf, R, kHidden);
             gemm_bf16(y.conv_a, d_xn_bf, d_dyn, R, kDyn, kHidden);
             k_df2_conv_pre<<<R, 256, 0, r.st>>>(d_xn, d_dyn, y.base_a, d_c, d_c_bf, R);
-            mv(y.wq, y.sq, d_c, d_q, R, kQ, kHidden);
+            mv(y.wq, y.sq, y.kq, y.oq, d_c, d_q, R, kQ, kHidden);
             gemm_bf16(y.wkv, d_c_bf, d_kb, R, kKV, kHidden);
             gemm_bf16(y.wkv + (size_t)kKV * kHidden, d_c_bf, d_vb, R, kKV, kHidden);
             k_df2_rmsnorm_rope<<<dim3(kHeads, R), 128, 0, r.st>>>(d_q, y.q_norm, d_pos, theta, R, kHeads);
@@ -490,17 +523,17 @@ struct InkDFlash2 {
             k_df2_ring_write<<<R, 256, 0, r.st>>>(d_kb, d_vb, d_srow, d_pos, l, d_rk_tab, d_rv_tab, R);
             k_df2_attn_part<<<dim3(kKvHeads, B, split), 256, 0, r.st>>>(d_q, d_rk_tab, d_rv_tab, d_meta, d_meta + B * 5, l, split, p_m, p_l, p_o);
             k_df2_attn_combine<<<dim3(kKvHeads, B, 32), 128, 0, r.st>>>(p_m, p_l, p_o, split, d_attn);
-            mv(y.wo, y.so, d_attn, d_z, R, kHidden, kQ);
+            mv(y.wo, y.so, y.ko, y.oo, d_attn, d_z, R, kHidden, kQ);
             k_df2_conv_post_add<<<R, 256, 0, r.st>>>(d_z, d_dyn, y.base_a, d_x, R);
             // ---- feed-forward sublayer
             k_ink_rms_norm<<<R, 256, 0, r.st>>>(d_x, y.post_norm, d_xn, d_xn_bf, R, kHidden);
             gemm_bf16(y.conv_f, d_xn_bf, d_dyn, R, kDyn, kHidden);
             k_df2_conv_pre<<<R, 256, 0, r.st>>>(d_xn, d_dyn, y.base_f, d_c, nullptr, R);
             // gate and up share the quantized activation
-            mv(y.wg, y.sg, d_c, d_g, R, kFF, kHidden);
-            mv(y.wu, y.su, d_c, d_u, R, kFF, kHidden, false);
+            mv(y.wg, y.sg, y.kg, y.og, d_c, d_g, R, kFF, kHidden);
+            mv(y.wu, y.su, y.ku, y.ou, d_c, d_u, R, kFF, kHidden, false);
             k_df2_swiglu<<<(unsigned)(((size_t)R * kFF + 255) / 256), 256, 0, r.st>>>(d_g, d_u, d_act, (size_t)R * kFF);
-            mv(y.wd, y.sd, d_act, d_z, R, kHidden, kFF);
+            mv(y.wd, y.sd, y.kd, y.od, d_act, d_z, R, kHidden, kFF);
             k_df2_conv_post_add<<<R, 256, 0, r.st>>>(d_z, d_dyn, y.base_f, d_x, R);
         }
         // ---- head

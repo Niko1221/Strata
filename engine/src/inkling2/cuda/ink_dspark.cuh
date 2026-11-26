@@ -1205,7 +1205,7 @@ struct InkDSpark {
         if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16 && m.all_sf4_vram) multislot_ready = true;
         std::fprintf(stderr, "[InkDFlash2] DFlash 2 drafter on: %s, %d slot(s), weights %.0f MiB + scratch %.0f MiB (GPU memory taken %.0f MiB), codebooks on the %s, %s block weights\n",
                      path.c_str(), df2->max_slots, (double)df2->bytes_weights / 1048576.0, (double)df2->bytes_scratch / 1048576.0,
-                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->w4 ? "4-bit" : "8-bit");
+                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->var.attn == 0 ? "bf16" : (df2->var.attn == 1 && df2->var.ffn == 1 ? "Q8" : (df2->var.attn == 2 ? "4-bit groups" : (df2->var.ffn == 3 ? (df2->var.attn == 1 ? "mix Q8 + SF4" : "SF4") : "mixed"))));
         return true;
     }
 
