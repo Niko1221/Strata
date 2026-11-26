@@ -478,6 +478,15 @@ public:
             return false;
         }
 
+        {   // --turbo / --turbo-max (STRATA_INK_TAIL_SKIP): the RTX 50 fast-path MoE kernels (the 5090's, and the 5060 Ti's all-VRAM COMPACT kernels) do not carry the tail-skip arguments:
+            // say so once instead of being silently ineffective (the old path, STRATA_INK_SM120=0, runs the tail skip)
+            const strata::ink::InkTailCfg& tcn = strata::ink::ink_tail_cfg();
+            const auto& sxn = strata::ink::sm120_cfg(gpu_id_);
+            if (tcn.on && ((sxn.moe_opt && !sxn.exact) || (model_.all_sf4_vram && sxn.compact))) {
+                std::fprintf(stderr, "[InkCUDA] --turbo / STRATA_INK_TAIL_SKIP has no effect on this card's RTX 50 fast path; STRATA_INK_SM120=0 runs the tail skip\n");
+            }
+        }
+
         {
             char buf[512];
             if (model_.ls_active) {

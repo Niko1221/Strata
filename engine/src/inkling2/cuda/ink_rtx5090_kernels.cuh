@@ -3438,7 +3438,7 @@ inline void launch_ink_moe_rtx5090(
         else if (M <= 4) k_ink_router_gemv_fp16<4><<<kInkExperts, 128, 0, st>>>(x_f32, w_router_h2, ws.r_logits, M);
         else if (M <= 8) k_ink_router_gemv_fp16<8><<<kInkExperts, 128, 0, st>>>(x_f32, w_router_h2, ws.r_logits, M);
         else             k_ink_router_gemv_fp16<16><<<kInkExperts, 128, 0, st>>>(x_f32, w_router_h2, ws.r_logits, M);
-        k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+        k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, InkTailArgs{});   // tail skip (opt-in, f-tailskip) is not wired into the 5090 fast router path
         ink_moe_mark(0);
     } else {
         launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec);

@@ -145,7 +145,7 @@ def engine_reads_mtp(info: dict | None) -> bool:
 #: The one drafter of every Inkling-2-Mini build (the engine's default, and `--draft` on in Control only when the file is there): incoai/Inkling-2-Mini-DFlash2 (Apache-2.0, not
 #: gated, anonymous download), pinned to a commit. The engine reads it from a file beside the model named dflash2.safetensors (the repository calls it model.safetensors).
 #: BF16, 989,975,616 bytes (the engine quantizes the block weights at load: STRATA_INK_DFLASH2_WQ). Setup and update fetch it beside EVERY Inkling model that Strata
-#: downloaded (the .strata packs and the GGUFs). The DFlash 2 support follows the Basalt pull request 763 by tjm8874. See notices/.
+#: downloaded (the .strata packs and the GGUFs). The DFlash 2 port is by tjm8874. See notices/.
 DFLASH2_FILE = "dflash2.safetensors"
 DFLASH2_COMMIT = "4f9088ea66c21f2b99ed657d1941c306b03e84d2"
 DFLASH2_URL = f"https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/{DFLASH2_COMMIT}/model.safetensors"
