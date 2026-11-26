@@ -66,6 +66,18 @@ inline int st_dtype_to_wfmt(const std::string& dt) {
     return -1;
 }
 
+// The CUDA runner reads these trunk tensors through a plain (const float*) cast (norms, router gate, short convs, loop controllers,
+// attention clips, depth-mix queries). A GGUF stores them as F32; the official HF checkpoint stores most of them as BF16, so they
+// have to be widened to F32 while loading, the same way the drafter vectors are (ink_dspark_wants_f32). Matrices that go through the
+// format-aware linear() (wq/wk/wv/wr/wo/gate_attn/attn_sink_proj, embed, unembed) stay BF16.
+inline bool st_trunk_wants_f32(const std::string& name, size_t rank, int wfmt) {
+    if (wfmt != 102 && wfmt != 103) return false;
+    if (rank <= 1) return true;
+    for (const char* k : {"norm", "sconv", ".controllers.", ".mlp.gate.", "rel_logits_proj", "_l2_clip.", "attn_res.", "middle_cycle_cross_pass"})
+        if (name.find(k) != std::string::npos) return true;
+    return false;
+}
+
 inline bool st_is_expert_tensor(const std::string& name) {
     return name.find(".mlp.experts.") != std::string::npos;
 }
@@ -389,15 +401,17 @@ struct SafetensorsAdapter {
 
             uint64_t off = align64(sec1_total_bytes);
             uint64_t sz  = st_t.end - st_t.begin;
+            const bool widen = detail::st_trunk_wants_f32(name, st_t.shape.size(), wfmt);
+            const uint64_t dst_bytes = widen ? sz * 2 : sz;
             TInfoT ti;
             ti.name = name;
-            ti.fmt = wfmt;
+            ti.fmt = widen ? 101 : wfmt;
             ti.shape = st_t.shape;
             ti.off = off;
-            ti.bytes = sz;
+            ti.bytes = dst_bytes;
             m.trunk[name] = std::move(ti);
-            sec1_items.push_back({name, false, kv.second.first, &st_t, off, sz});
-            sec1_total_bytes = off + sz;
+            sec1_items.push_back({name, false, kv.second.first, &st_t, off, sz, widen ? wfmt : 0});
+            sec1_total_bytes = off + dst_bytes;
         }
 
         if (has_mtp) {
