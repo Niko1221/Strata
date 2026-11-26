@@ -1270,6 +1270,62 @@ struct InkHipDFlash2 {
         h_meta[5] = (int32_t)hc;   // meta[B * 5 + b]: where the context ends
         hipStream_t st = h.stream;
         if (hipMemcpyAsync(d_meta, h_meta, 6 * 4, hipMemcpyHostToDevice, st) != hipSuccess) { err = "dflash2 meta upload"; return false; }
+        // The kernels read everything that changes per draft (slot, position, window, anchor) from d_meta, so one captured graph serves every draft. The first draft runs
+        // directly (library first-use work must not happen inside a capture); a failed capture falls back to direct launches for good.
+        if (graph_enabled && n_drafts_run >= 1 && !graph_failed) {
+            if (!g_draft) {
+                hipGraph_t g = nullptr;
+                bool ok = hipStreamBeginCapture(st, hipStreamCaptureModeThreadLocal) == hipSuccess;
+                if (ok) {
+                    emit_draft(st);
+                    ok = hipStreamEndCapture(st, &g) == hipSuccess && g != nullptr;
+                }
+                if (ok) ok = hipGraphInstantiate(&g_draft, g, nullptr, nullptr, 0) == hipSuccess;
+                if (g) (void)hipGraphDestroy(g);
+                if (!ok) {
+                    (void)hipGetLastError();
+                    g_draft = nullptr;
+                    graph_failed = true;
+                    std::fprintf(stderr, "[InkHipDFlash2] the draft graph could not be captured: direct launches\n");
+                    return draft_launch_direct(out_ids, out_conf, err);
+                }
+            }
+            if (hipGraphLaunch(g_draft, st) != hipSuccess) { err = "dflash2 graph launch"; return false; }
+        } else {
+            emit_draft(st);
+        }
+        return draft_finish(out_ids, out_conf, err);
+    }
+
+    bool draft_launch_direct(int32_t* out_ids, float* out_conf, std::string& err) {
+        emit_draft(h.stream);
+        return draft_finish(out_ids, out_conf, err);
+    }
+
+    bool draft_finish(int32_t* out_ids, float* out_conf, std::string& err) {
+        hipStream_t st = h.stream;
+        (void)hipMemcpyAsync(h_ids, d_ids, hdf2::kDraft * 4, hipMemcpyDeviceToHost, st);
+        (void)hipMemcpyAsync(h_conf, d_conf, hdf2::kDraft * 4, hipMemcpyDeviceToHost, st);
+        const hipError_t se = hipStreamSynchronize(st);
+        if (se != hipSuccess) { err = std::string("dflash2 draft: ") + hipGetErrorString(se); return false; }
+        std::memcpy(out_ids, h_ids, hdf2::kDraft * 4);
+        std::memcpy(out_conf, h_conf, hdf2::kDraft * 4);
+        ++n_drafts_run;
+        return true;
+    }
+
+    void drop_graph() {
+        if (g_draft) { (void)hipGraphExecDestroy(g_draft); g_draft = nullptr; }
+    }
+
+    hipGraphExec_t g_draft = nullptr;
+    bool graph_enabled = !(std::getenv("STRATA_INK_DFLASH2_GRAPH") && std::getenv("STRATA_INK_DFLASH2_GRAPH")[0] == '0');
+    bool graph_failed = false;
+
+    // the whole block forward + head + selector on stream st (everything it needs per draft is in d_meta)
+    void emit_draft(hipStream_t st) {
+        using namespace hdf2;
+        const int R = kBlock, R7 = kDraft;
         const int32_t* d_anchor = d_meta + 4;
         h.embed(d_anchor, d_anchor_emb, 1);
         k_hdf2_build_x<<<R, 256, 0, st>>>(d_anchor_emb, mask_row, d_x, 1);
@@ -1310,17 +1366,10 @@ struct InkHipDFlash2 {
         k_hdf2_tile_part<<<dim3(nchunk, R7), 256, 0, st>>>(d_logits, V, cap, d_part, d_part_lse);
         k_hdf2_top16_merge<<<R7, 512, 0, st>>>(d_part, d_part_lse, nchunk, V, cap, d_cand, d_tail);
         k_hdf2_select<<<1, 512, 0, st>>>(d_meta, d_cand, d_tail, d_gsel, pred, succ, kDraft, V, cap, d_ids, d_conf);
-        (void)hipMemcpyAsync(h_ids, d_ids, kDraft * 4, hipMemcpyDeviceToHost, st);
-        (void)hipMemcpyAsync(h_conf, d_conf, kDraft * 4, hipMemcpyDeviceToHost, st);
-        const hipError_t se = hipStreamSynchronize(st);
-        if (se != hipSuccess) { err = std::string("dflash2 draft: ") + hipGetErrorString(se); return false; }
-        std::memcpy(out_ids, h_ids, kDraft * 4);
-        std::memcpy(out_conf, h_conf, kDraft * 4);
-        ++n_drafts_run;
-        return true;
     }
 
     void free_all() {
+        drop_graph();
         for (auto& p : ring_k_h) if (p) (void)hipFree(p);
         for (auto& p : ring_v_h) if (p) (void)hipFree(p);
         ring_k_h.clear();

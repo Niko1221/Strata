@@ -5764,6 +5764,7 @@ private:
     }
 
     void invalidate_graph() {
+        if (df2_) df2_->drop_graph();   // the drafter's graph holds scratch pointers of the GEMM hook
         if (graph_exec_) {
             (void)hipGraphExecDestroy(graph_exec_);
             graph_exec_ = nullptr;
