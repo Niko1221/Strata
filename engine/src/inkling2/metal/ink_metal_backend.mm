@@ -104,7 +104,8 @@ public:
         const int par = std::max(1, std::min(64, opts.parallel));
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
-                          opts.enable_dspark, opts.vision_path, "", err)) {
+                          opts.enable_dspark, opts.vision_path, "",
+                          opts.kv_dtype == KvDtype::FP8_E4M3, err)) {
             return false;
         }
         snaps_.resize((size_t)par);
@@ -216,11 +217,12 @@ public:
         for (int v = 0; v < c.n_visits; ++v) {
             if (!c.is_swa[c.phys_for_visit(v)]) { ck.swa_k[v].clear(); ck.swa_v[v].clear(); continue; }
             const size_t stride = (size_t)runner_.visit_kv_stride[v];
-            const size_t n = std::min<size_t>((size_t)seq_len, stride) * row;
-            ck.swa_k[v].resize(n);
-            ck.swa_v[v].resize(n);
-            std::memcpy(ck.swa_k[v].data(), runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
-            std::memcpy(ck.swa_v[v].data(), runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, n * 2);
+            const size_t slot_bytes = runner_.kv_k[v].bytes / runner_.max_slots;
+            const size_t bytes = std::min<size_t>(seq_len, stride) * (slot_bytes / stride);
+            ck.swa_k[v].resize(bytes);
+            ck.swa_v[v].resize(bytes);
+            std::memcpy(ck.swa_k[v].data(), runner_.kv_k[v].as<uint8_t>() + slot * slot_bytes, bytes);
+            std::memcpy(ck.swa_v[v].data(), runner_.kv_v[v].as<uint8_t>() + slot * slot_bytes, bytes);
         }
         for (int l = 0; l < 3; ++l) { ck.dsp_k[l].clear(); ck.dsp_v[l].clear(); }
         ck.frnn.clear();
@@ -253,12 +255,29 @@ public:
         // The target is back at the prompt boundary. Rebuild the external
         // drafter from the retained target rows before asking for candidates.
         auto history = runner_.feature_history.find(slot);
-        if (history != runner_.feature_history.end()) history->second.sent = -1;
+        if (history != runner_.feature_history.end()) {
+            if (const char* fd_env = std::getenv("INK_DFLASH_FD")) {
+                if (history->second.sent > seq_len) {
+                    // The target resumed this checkpoint. Tell the drafter to
+                    // trim the unverified continuation back to the boundary;
+                    // rows up to it are unchanged. count=0 is a trim request.
+                    const int fd = atoi(fd_env);
+                    int request[] = {seq_len, 0, 0, 0, slot, 0};
+                    ssize_t written = write(fd, request, sizeof(request));
+                    int ack = -1;
+                    if (written == (ssize_t)sizeof(request)) {
+                        char* cursor = (char*)&ack; size_t left = sizeof(ack);
+                        while (left) { ssize_t n = read(fd, cursor, left); if (n <= 0) break; cursor += n; left -= n; }
+                    }
+                    history->second.sent = ack == 0 ? seq_len : -1;
+                }
+            } else if (history->second.sent > seq_len) history->second.sent = -1;
+        }
         for (int v = 0; v < c.n_visits; ++v) {
             if (ck.swa_k[v].empty()) continue;
-            const size_t stride = (size_t)runner_.visit_kv_stride[v];
-            std::memcpy(runner_.kv_k[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_k[v].data(), ck.swa_k[v].size() * 2);
-            std::memcpy(runner_.kv_v[v].as<uint16_t>() + (size_t)slot * stride * row, ck.swa_v[v].data(), ck.swa_v[v].size() * 2);
+            const size_t slot_bytes = runner_.kv_k[v].bytes / runner_.max_slots;
+            std::memcpy(runner_.kv_k[v].as<uint8_t>() + slot * slot_bytes, ck.swa_k[v].data(), ck.swa_k[v].size());
+            std::memcpy(runner_.kv_v[v].as<uint8_t>() + slot * slot_bytes, ck.swa_v[v].data(), ck.swa_v[v].size());
         }
         if (runner_.use_dspark && !ck.frnn.empty()) {
             const size_t D = (size_t)c.hidden;
@@ -415,8 +434,30 @@ public:
                 }
                 return true;
             };
+            // Realized-gain adaptive cooldown, same policy as the built-in
+            // DSpark path: when batched verification stops paying for itself,
+            // decode M=1 for a while and probe again periodically. capture_taps
+            // stays on so feature history keeps advancing for the next probe.
+            if (slot_cooldown_[slot] > 0) {
+                --slot_cooldown_[slot];
+                ink_metal::InkBatchStep plain;
+                plain.M = 1;
+                plain.slot_ids = {slot};
+                plain.pos = {anchor_pos};
+                plain.tok_ids = {anchor_tok};
+                plain.capture_taps = true;
+                plain.compute_logits = true;
+                int32_t tok = 0;
+                if (!runner_.forward_batch(plain, nullptr, &tok, err)) return -1;
+                out_emitted[0] = tok;
+                if (out_drafted) *out_drafted = 0;
+                last_ver_slot_ = -1;
+                last_tree_slot_ = -1;
+                return 1;
+            }
+            const double t_step0 = mtl::now_s();
             int request[]={start,kept,int(anchor_tok),std::min(7,max_emit-1),slot,int(reset)};
-            if(kept<=0) return 0;
+            if(kept<0||(kept==0&&(reset||history.sent<0))) return 0;
             if(!transfer(request,sizeof(request),true)){err="draft IPC header";return -1;}
             const int d=mod_.man.c.hidden;
             for(int layer=0;layer<4;++layer) for(int pos=start;pos<anchor_pos;++pos) {
@@ -439,6 +480,20 @@ public:
             if (matched<proposed) runner_.restore_verify_step(slot,matched);
             last_ver_slot_=slot;last_ver_pos0_=anchor_pos;last_ver_m_=st.M;last_tree_slot_=-1;
             if (out_drafted) *out_drafted=proposed;
+            {
+                const double step_ms = std::max(1.0, (mtl::now_s() - t_step0) * 1e3);
+                const double t_plain_ms = runner_.is_apple10 ? 13.5 : 41.0;
+                const double step_gain = (double)(matched + 1) * t_plain_ms / step_ms;
+                slot_ema_gain_[slot] = 0.72 * slot_ema_gain_[slot] + 0.28 * step_gain;
+                if (step_gain >= 1.05) {
+                    slot_ema_gain_[slot] = std::max(slot_ema_gain_[slot], 1.14);
+                    slot_cd_len_[slot] = 8;
+                } else if (slot_ema_gain_[slot] < 0.90) {
+                    slot_cooldown_[slot] = slot_cd_len_[slot];
+                    slot_cd_len_[slot] = std::min(16, slot_cd_len_[slot] + 4);
+                    slot_ema_gain_[slot] = 0.96;
+                }
+            }
             return matched+1;
         }
         if (!runner_.use_dspark || !runner_.use_dspark_meff || slot < 0 || slot >= runner_.max_slots ||
@@ -657,7 +712,7 @@ private:
         int seq_len = 0;
         ink_metal::InkMetalRunner::SlotSconvSnap sconv;
         std::vector<float> frnn;
-        std::vector<std::vector<uint16_t>> swa_k, swa_v;   // per visit; empty for a global visit
+        std::vector<std::vector<uint8_t>> swa_k, swa_v;   // per visit; empty for a global visit
         std::vector<uint16_t> dsp_k[3], dsp_v[3];          // DSpark context layers with a ring (0 and 2)
     };
     void drop_ckpt(int slot) {
