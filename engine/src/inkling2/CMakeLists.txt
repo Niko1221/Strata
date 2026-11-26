@@ -256,6 +256,13 @@ if(EXISTS "${_ink_engine_root}/tests/quant/strata_v1_1_inkling2_test.cpp")
   target_link_libraries(strata_v1_1_inkling2_test PRIVATE strata_inkling_core)
 endif()
 
+# The .strata header layouts (4 KiB and 16 KiB aligned): the real 0.2.22 headers, synthetic files of both layouts, what is refused (no model, no GPU)
+if(EXISTS "${_ink_engine_root}/tests/quant/strata_reader_layout_test.cpp")
+  add_executable(strata_reader_layout_test ${_ink_engine_root}/tests/quant/strata_reader_layout_test.cpp)
+  target_link_libraries(strata_reader_layout_test PRIVATE strata_inkling_core)
+  add_test(NAME strata_reader_layout_test COMMAND strata_reader_layout_test)
+endif()
+
 # Row-split expert evaluation of the hybrid CPU pool (decode): bit-identical to eval_inkling2_expert for every split
 if(EXISTS "${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp")
   add_executable(ink_expert_split_test ${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp)

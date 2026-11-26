@@ -28,6 +28,7 @@
 
 #include "../ink_json.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/artifact/strata_layout.hpp"
 #include "strata/core/device_error_exit.hpp"
 #ifdef INK_SYCL_WITH_MODEL_FILE
 #include "../ink_gguf_transcode.h"
@@ -780,14 +781,14 @@ struct InkSyclModel {
 
         uint8_t frame[4096];
         if (std::fread(frame, 1, 4096, fp) != 4096) { std::fclose(fp); err = "short header"; return false; }
-        static const uint8_t kMagic[8] = {'S', 'T', 'R', 'A', 'T', 'A', 0x00, 0x01};
-        if (std::memcmp(frame, kMagic, 8) != 0) { std::fclose(fp); err = "bad .strata magic"; return false; }
-        uint32_t hdr_flags = 0;
-        std::memcpy(&hdr_flags, frame + 8, 4);
-        format_minor = (uint8_t)(hdr_flags & 0xFFu);
-
-        strata::artifact::StrataSectionEntry secs[6]{};
-        for (int i = 0; i < 6; ++i) std::memcpy(&secs[i], frame + 0x10 + i * 64, 64);
+        // magic, 6 sections, and which header layout (4 KiB or 16 KiB aligned) this file has: strata_layout.hpp
+        strata::artifact::StrataHeader shdr;
+        if (!strata::artifact::strata_parse_header_frame(frame, 4096, strata::artifact::strata_file_size(fp), shdr, err)) {
+            std::fclose(fp);
+            return false;
+        }
+        format_minor = (uint8_t)(shdr.flags & 0xFFu);
+        const strata::artifact::StrataSectionEntry* secs = shdr.sections;
 
         std::string mjson;
         if (!read_section0_zstd(fp, secs[0].file_offset, secs[0].byte_length, mjson, err)) {
@@ -860,7 +861,13 @@ struct InkSyclModel {
                 std::fclose(fp); err = "short read Section 3"; return false;
             }
             const bool has_order = (secs[3].flags & 1u) != 0;
-            const size_t n_ent = has_order ? (s3.size() / 34) : (s3.size() / 32);
+            // the 16 KiB layout pads Section 3: the entry count is then the manifest's (layers x experts), not length / 34
+            size_t n_ent = 0;
+            if (!strata::artifact::strata_section3_entry_count(shdr, s3.size(), has_order,
+                                                               shdr.layout == strata::artifact::StrataLayout::Page16K ? n_total : 0, n_ent, err)) {
+                std::fclose(fp);
+                return false;
+            }
             const auto* raw_ents = reinterpret_cast<const strata::artifact::StrataExpertEntry*>(s3.data());
             for (size_t i = 0; i < std::min(n_ent, n_total); ++i) {
                 const size_t layer = i / (size_t)man.c.n_experts;
@@ -1501,8 +1508,12 @@ struct InkSyclModel {
         if (!fp) { err = "cannot open " + p; return false; }
         uint8_t frame[4096];
         if (std::fread(frame, 1, 4096, fp) != 4096) { std::fclose(fp); err = "short header"; return false; }
-        strata::artifact::StrataSectionEntry s0{};
-        std::memcpy(&s0, frame + 0x10, 64);
+        strata::artifact::StrataHeader shdr;  // either header layout (4 KiB or 16 KiB aligned): strata_layout.hpp
+        if (!strata::artifact::strata_parse_header_frame(frame, 4096, strata::artifact::strata_file_size(fp), shdr, err)) {
+            std::fclose(fp);
+            return false;
+        }
+        const strata::artifact::StrataSectionEntry s0 = shdr.sections[0];
         std::string mjson;
         bool ok = read_section0_zstd(fp, s0.file_offset, s0.byte_length, mjson, err);
         std::fclose(fp);

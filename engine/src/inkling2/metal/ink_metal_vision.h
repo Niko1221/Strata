@@ -83,8 +83,9 @@ struct InkMetalVision {
 
         uint8_t frame[4096];
         if (::pread(fd, frame, 4096, 0) != 4096) { err = "short read on vision header"; return false; }
-        strata::artifact::StrataSectionEntry secs[6]{};
-        for (int i = 0; i < 6; ++i) std::memcpy(&secs[i], frame + 0x10 + i * 64, 64);
+        strata::artifact::StrataHeader shdr;  // either header layout (4 KiB or 16 KiB aligned): strata_layout.hpp
+        if (!strata::artifact::strata_parse_header_frame(frame, 4096, (uint64_t)fsize, shdr, err)) return false;
+        const strata::artifact::StrataSectionEntry* secs = shdr.sections;
         sec1_off = secs[1].file_offset;
 
         std::string mjson;

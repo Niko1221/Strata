@@ -93,9 +93,16 @@ static int print_info(const std::string& path, const std::string& vis_path) {
     if (fd < 0) { fprintf(stderr, "cannot open %s\n", path.c_str()); return 1; }
     uint8_t frame[4096];
     if (::pread(fd, frame, 4096, 0) != 4096) { ::close(fd); return 1; }
-    strata::artifact::StrataSectionEntry s0{};
-    std::memcpy(&s0, frame + 0x10, 64);
     std::string mjson, err;
+    strata::artifact::StrataHeader shdr;  // either header layout (4 KiB or 16 KiB aligned): strata_layout.hpp
+    struct stat sst{};
+    if (::fstat(fd, &sst) != 0 ||
+        !strata::artifact::strata_parse_header_frame(frame, 4096, (uint64_t)sst.st_size, shdr, err)) {
+        fprintf(stderr, "%s\n", err.c_str());
+        ::close(fd);
+        return 1;
+    }
+    const strata::artifact::StrataSectionEntry s0 = shdr.sections[0];
     // Read section 0
     std::vector<uint8_t> raw(s0.byte_length);
     if (::pread(fd, raw.data(), raw.size(), (off_t)s0.file_offset) != (ssize_t)raw.size()) { ::close(fd); return 1; }
