@@ -63,6 +63,8 @@ struct NativeFmt {
     /// Opt-in hy4-flash CPU contract: per32 Q8_1 with half scale/sum, Q4_K/Q6_K integer dots.
     /// This changes CPU arithmetic; it does not promise CUDA reduction/transcendental bitwise equality.
     bool gpu_q8_1 = false;
+    // Device-derived tables for Q8_1 quantization and SwiGLU.
+    const uint32_t* q81_aligned_table = nullptr;
 };
 constexpr int kNvfp4Type = 40;
 constexpr size_t kNvfp4Tail = 16;

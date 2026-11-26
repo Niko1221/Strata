@@ -13,6 +13,35 @@ if(STRATA_CPU_X86)
     set_source_files_properties(src/hy4flash_gguf/cpu/native_q81_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
   endif()
 endif()
+if(STRATA_CPU_X86 AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  set(_q81_flags -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mf16c -mfma -ffp-contract=off)
+  cmake_push_check_state(RESET)
+  string(JOIN " " CMAKE_REQUIRED_FLAGS ${_q81_flags})
+  set(CMAKE_REQUIRED_LIBRARIES mvec)
+  check_cxx_source_compiles([=[
+    #include <immintrin.h>
+    extern "C" __m512 _ZGVeN16v_exp2f(__m512);
+    int main(int argc, char **) {
+      __m512i v = _mm512_set1_epi32(argc);
+      __m512i dot = _mm512_dpbusd_epi32(v, v, v);
+      return __builtin_cpu_supports("avx512dq") &&
+             _mm512_reduce_add_ps(_ZGVeN16v_exp2f(_mm512_cvtepi32_ps(dot))) > 0;
+    }
+  ]=] STRATA_CAN_BUILD_Q81_ALIGNED)
+  cmake_pop_check_state()
+  if(STRATA_CAN_BUILD_Q81_ALIGNED)
+    set(_strata_q81_aligned ON)
+    target_sources(strata_hy4_flash_cpu PRIVATE src/hy4flash_gguf/cpu/q81_aligned_avx512.cpp
+                                                src/hy4flash_gguf/cpu/q81_aligned_tables.cu)
+    set_source_files_properties(src/hy4flash_gguf/cpu/q81_aligned_avx512.cpp PROPERTIES COMPILE_OPTIONS
+        "${_q81_flags}")
+    set_property(SOURCE src/hy4flash_gguf/cpu/native_expert.cpp src/hy4flash_gguf/cpu_experts.cpp
+                 APPEND PROPERTY COMPILE_DEFINITIONS STRATA_Q81_ALIGNED)
+    target_link_libraries(strata_hy4_flash_cpu PRIVATE mvec CUDA::cudart)
+  endif()
+endif()
 target_link_libraries(strata_hy4_flash_cpu PUBLIC strata_kernels_cpu PRIVATE ggml-cpu)
 add_library(strata_hy4_flash STATIC src/hy4flash_gguf/cpu_experts.cpp src/hy4flash_gguf/engine.cpp src/hy4flash_gguf/geometry.cpp src/hy4flash_gguf/ihc.cu src/hy4flash_gguf/ihc_fused.cu
                                   src/hy4flash_gguf/engram.cpp src/hy4flash_gguf/attention.cu
@@ -80,6 +109,12 @@ if(STRATA_BUILD_TESTS)
                    src/hy4flash_gguf/cpu_experts.cpp)
     target_link_libraries(hy4_flash_cpu_experts_test PRIVATE strata_hy4_flash_cpu ggml-base)
     add_test(NAME hy4_flash_cpu_experts_test COMMAND hy4_flash_cpu_experts_test)
+    if(_strata_q81_aligned)
+      add_executable(hy4_flash_q81_aligned_test tests/hy4flash_gguf/q81_aligned_test.cpp)
+      target_link_libraries(hy4_flash_q81_aligned_test PRIVATE strata_hy4_flash strata_hy4_flash_cpu strata_kernels CUDA::cudart)
+      add_test(NAME hy4_flash_q81_aligned_test COMMAND hy4_flash_q81_aligned_test)
+      set_tests_properties(hy4_flash_q81_aligned_test PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "STRATA_HY4_FLASH_CPU_Q81_ALIGNED=1")
+    endif()
     add_executable(hy4_flash_q81_vector_quant_test tests/hy4flash_gguf/q81_vector_quant_test.cpp)
     target_link_libraries(hy4_flash_q81_vector_quant_test PRIVATE strata_hy4_flash_cpu ggml-base)
     add_test(NAME hy4_flash_q81_vector_quant_test COMMAND hy4_flash_q81_vector_quant_test)

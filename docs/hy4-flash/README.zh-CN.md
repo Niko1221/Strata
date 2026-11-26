@@ -110,6 +110,8 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
 | 环境变量 | 默认行为 | 说明 |
 |---|---|---|
 | `STRATA_HY4_FLASH_CPU_WORKERS` | `32` | CPU 专家计算线程数 |
+| `STRATA_HY4_FLASH_CPU_NATIVE_Q8K` | `0` | 主干 CPU 专家默认使用 Q8_1 激活，设为 `1` 可切回原生 Q8_K。 |
+| `STRATA_HY4_FLASH_CPU_Q81_ALIGNED` | `1` | 在 Linux x86-64 上，如果编译器支持 AVX-512 VNNI 且 glibc 的 libmvec 提供向量 exp2f 函数，满足条件的 Q8_1 CPU 专家采用与 GPU 一致的舍入方式，其他配置使用常规 Q8_1 路径。对齐内核每个进程生成一次 96 MiB 主存查找表，启用日志为 `HY4_FLASH_CPU_Q81_ALIGNED active=1`。 |
 | `STRATA_HY4_FLASH_PREFILL_CHUNK` | 按显存自动适配 | Prefill 计算分块大小（如 `512` / `1024` / `2048` / `4096` 或 `auto`） |
 | `STRATA_HY4_FLASH_PREFILL_BORROW` | 按配置自动选择 | `1` 允许预填充临时借用主干专家池的显存，`0` 关闭。拆分驻留模式（`--resident-experts`）不执行借还。 |
 | `STRATA_HY4_FLASH_PREFILL_LAYER_MAJOR` | `1` | 长提示按层预填充（12 GiB 等极限显存跑长文本时可设为 `0`） |

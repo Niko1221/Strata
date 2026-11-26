@@ -435,7 +435,8 @@ def test_runner_default_config_matches_plan_and_keeps_overrides():
         exe.chmod(0o700)
         s = S.LaunchSettings(name="hy4-flash-defaults", family="hy4-flash", model_path=str(model),
             pack_path=str(pack), engine_path=str(exe), mtp="on", context=8192,
-            expert_vram=48, extra={"STRATA_HY4_FLASH_WINDOW_SKIP_EMPTY": "0"})
+            expert_vram=48, extra={"STRATA_HY4_FLASH_WINDOW_SKIP_EMPTY": "0",
+                                    "STRATA_HY4_FLASH_CPU_NATIVE_Q8K": "1"})
         runner = Runner(s, catalog=cat)
         with mock.patch.object(cat, "computer", return_value=h20_computer()), \
              mock.patch.object(hy4_flash, "mtp_weight_bytes", return_value=4 * 2**30), \
@@ -447,6 +448,7 @@ def test_runner_default_config_matches_plan_and_keeps_overrides():
             path = runner.build_config(runner.ensure_model())
             cfg = read_config(path)
         assert "--resident-experts" not in cfg["args"] and "--expert-host" not in cfg["args"]
+        assert cfg["env"]["STRATA_HY4_FLASH_CPU_NATIVE_Q8K"] == "1"
         assert plan["hy4_flash_runtime"] == {k: cfg["env"][k] for k in hy4_flash.RUNTIME_KEYS}
         assert cfg["env"]["STRATA_HY4_FLASH_WINDOW_SKIP_EMPTY"] == "0"
         assert all(cfg["env"][k] == "1" for k in hy4_flash.RUNTIME_KEYS if k != "STRATA_HY4_FLASH_WINDOW_SKIP_EMPTY")
@@ -495,11 +497,12 @@ def test_48g_4090_uses_three_drafts_with_cpu_windows_and_respects_explicit_width
             assert cfg["env"]["STRATA_HY4_FLASH_PREFILL_CHUNK"] == "512"
 
 
-def test_default_cpu_experts_use_every_slot_with_q8k_activations():
+def test_default_cpu_experts_use_every_slot_with_q81_activations():
     plain, draft = hy4_flash.serving_environment(False), hy4_flash.serving_environment(True)
     for env in (plain, draft):
         assert env["STRATA_HY4_FLASH_CPU_MISS_MAX"] == "16" and env["STRATA_HY4_FLASH_CPU_SPLIT"] == "auto"
-        assert env["STRATA_HY4_FLASH_CPU_NATIVE_Q8K"] == "1"
+        assert env["STRATA_HY4_FLASH_CPU_NATIVE_Q8K"] == "0"
+        assert env["STRATA_HY4_FLASH_CPU_Q81_ALIGNED"] == "1"
 
 
 @pytest.mark.parametrize("mtp", ["off", "on"])

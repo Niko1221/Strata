@@ -105,6 +105,8 @@ Use `--set KEY=VAL` to override the launcher's settings.
 | Setting | Default | Meaning |
 |---|---|---|
 | `STRATA_HY4_FLASH_CPU_WORKERS` | `32` | CPU expert worker threads. |
+| `STRATA_HY4_FLASH_CPU_NATIVE_Q8K` | `0` | Trunk CPU experts use Q8_1 activations. Set to `1` to use native Q8_K. |
+| `STRATA_HY4_FLASH_CPU_Q81_ALIGNED` | `1` | Use GPU-compatible rounding for supported Q8_1 CPU experts on Linux x86-64 builds with compiler support for AVX-512 VNNI and the glibc libmvec vector exp2f function. Other configurations use the compatible Q8_1 path. The aligned path generates a 96 MiB host table once per process and logs `HY4_FLASH_CPU_Q81_ALIGNED active=1`. |
 | `STRATA_HY4_FLASH_PREFILL_CHUNK` | Hardware-dependent | Tokens per prefill chunk, for example `512`, `1024`, `2048`, `4096` or `auto`. |
 | `STRATA_HY4_FLASH_PREFILL_BORROW` | Selected by the launcher | `1` allows prefill to borrow VRAM from the trunk expert pool. Use `0` to disable it. Split residency (`--resident-experts`) skips borrowing. |
 | `STRATA_HY4_FLASH_PREFILL_LAYER_MAJOR` | `1` | Process long prompts layer by layer. Can be disabled under a tight VRAM budget. |

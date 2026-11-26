@@ -1,6 +1,12 @@
 #include "strata/hy4flash_gguf/cpu_experts.hpp"
 #include "strata/hy4flash_gguf/cpu/pool.hpp"
 
+#ifdef STRATA_Q81_ALIGNED
+#include "cpu/q81_aligned.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
+#include <cstdlib>
+#endif
+
 #include <array>
 #include <cmath>
 #include <mutex>
@@ -31,7 +37,7 @@ CpuExperts::CpuExperts(int workers) {
 }
 CpuExperts::~CpuExperts() = default;
 
-bool CpuExperts::make_format(int gu_type, int down_type, int64_t dim, int64_t ff, float clamp,
+static bool make_base_format(int gu_type, int down_type, int64_t dim, int64_t ff, float clamp,
                              cpu::NativeFmt& out, std::string& err, bool gpu_compatible) {
     // Native Q4_K/Q6_K trunk rows, plus the Q8_0 rows the MTP draft block is stored in. Do not
     // silently select a different weight format. Q8_0 has no Q8_1-activation CPU dot (native_q81.cpp
@@ -60,9 +66,32 @@ bool CpuExperts::make_format(int gu_type, int down_type, int64_t dim, int64_t ff
     return true;
 }
 
+bool CpuExperts::make_format(int gu_type, int down_type, int64_t dim, int64_t ff, float clamp,
+                             cpu::NativeFmt& out, std::string& err, bool gpu_compatible) {
+    if (!make_base_format(gu_type, down_type, dim, ff, clamp, out, err, gpu_compatible)) return false;
+#ifdef STRATA_Q81_ALIGNED
+    const char* option = std::getenv("STRATA_HY4_FLASH_CPU_Q81_ALIGNED");
+    const char* reference = std::getenv("STRATA_HY4_FLASH_REFERENCE_OPS_LIBRARY");
+    const bool requested = option ? std::atoi(option) != 0 : reference && *reference;
+    if (requested && gpu_compatible && dim == 1536 && ff == 1536 && gu_type == 12 &&
+        (down_type == 12 || down_type == 14) && clamp == 10.f &&
+        strata::kernels::cpu::cpu_avx512_ok() && strata::kernels::cpu::cpu_avx2_ok() &&
+        __builtin_cpu_supports("avx512dq")) {
+        try {
+            out.q81_aligned_table = cpu::q81_aligned::device_tables();
+        } catch (const std::exception& ex) {
+            err = ex.what();
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
 static bool validate_layer(const cpu::NativeFmt& layer, cpu::NativeFmt& f, std::string& err) {
-    if (!CpuExperts::make_format(layer.gu_type, layer.d_type, layer.n_embd, layer.n_ff,
+    if (!make_base_format(layer.gu_type, layer.d_type, layer.n_embd, layer.n_ff,
                      layer.swiglu_clamp, f, err, layer.gpu_q8_1)) return false;
+    f.q81_aligned_table = layer.q81_aligned_table;
     // The adapter accepts the unrotated native hy4-flash layout, not a hidden Hadamard/scaled variant.
     if (layer.had_gu || layer.had_d || layer.tail_off != 0) {
         err = "hy4-flash CPU experts: rotated/scaled layouts are unsupported"; return false;

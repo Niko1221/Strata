@@ -14,6 +14,10 @@
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/tq_cpu.hpp"
 
+#ifdef STRATA_Q81_ALIGNED
+#include "q81_aligned.hpp"
+#endif
+
 #include "ggml.h"
 #include "ggml-cpu.h"
 
@@ -327,6 +331,12 @@ void act_dump_record(int layer, int kind, const float* v, int64_t n) {
 }  // namespace
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+#ifdef STRATA_Q81_ALIGNED
+    if (f.q81_aligned_table) {
+        q81_aligned::quantize(f.q81_aligned_table, x, dst, static_cast<int>(f.n_embd));
+        return;
+    }
+#endif
     if (f.gpu_q8_1) { native_quant_q81_compatible(x, dst, (int)f.n_embd); return; }
     if (f.had_gu) {   // Hadamard-folded gate/up: quantize H (s * x), never x itself (hadamard.hpp)
         thread_local std::vector<float> tmp;
@@ -341,6 +351,12 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+#ifdef STRATA_Q81_ALIGNED
+    if (f.q81_aligned_table) {
+        q81_aligned::quantize(f.q81_aligned_table, h, dst, static_cast<int>(f.n_ff));
+        return;
+    }
+#endif
     if (f.gpu_q8_1) { native_quant_q81_compatible(h, dst, (int)f.n_ff); return; }
     if (f.had_d) {
         thread_local std::vector<float> tmp;
@@ -380,6 +396,15 @@ void native_gu_rows_dot(const NativeFmt& f, const uint8_t* blob, const void* con
 template <NativeArithmetic Arithmetic>
 void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
+#ifdef STRATA_Q81_ALIGNED
+    if (f.q81_aligned_table) {
+        const auto* gate = (f.gate_data ? f.gate_data : blob) + r0 * f.gu_row;
+        const auto* up = (f.up_data ? f.up_data : blob + f.up_off) + r0 * f.gu_row;
+        for (int t = 0; t < nt; ++t)
+            q81_aligned::gate_up(f.q81_aligned_table, gate, up, static_cast<const uint8_t*>(act[t]), ff[t]+r0, r1-r0);
+        return;
+    }
+#endif
     // Route clamped layers through the implementation that clamps both inputs before SwiGLU.
     if (f.gpu_q8_1 || f.swiglu_clamp > 0.f || f.gate_data != nullptr || f.up_data != nullptr) {
         native_gu_rows_dot(f, blob, act, nt, ff, r0, r1);
@@ -560,6 +585,13 @@ template <NativeArithmetic Arithmetic>
 void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
     const uint8_t* const down = f.down_data != nullptr ? f.down_data : blob + f.down_off;
+#ifdef STRATA_Q81_ALIGNED
+    if (f.q81_aligned_table) {
+        for (int t = 0; t < nt; ++t)
+            q81_aligned::down(f.d_type, down + r0*f.d_row, static_cast<const uint8_t*>(hq[t]), out[t]+r0, r1-r0);
+        return;
+    }
+#endif
     if (f.gpu_q8_1) {
         for (int r = r0; r < r1; ++r)
             for (int t = 0; t < nt; ++t)
