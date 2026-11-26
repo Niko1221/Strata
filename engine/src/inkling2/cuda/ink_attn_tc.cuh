@@ -540,6 +540,19 @@ __global__ void __launch_bounds__(128) k_ink_tc_merge(
 // Runtime override (the KL harness of f-perflong-kl sets it): -1 = the part switch decides, 0 = old kernels, 1 = this kernel (when its buffers exist).
 inline int& force_ref() { static int v = -1; return v; }
 
+// the kernels of this file run only on sm_80 and newer (mma.m16n8k16)
+inline bool tc_attn_dev_ok() {
+    static int ok[16] = {};   // 0 = unknown, 1 = yes, 2 = no
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 16) return false;
+    if (ok[dev] == 0) {
+        int major = 0;
+        ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major >= 8) ? 1 : 2;
+    }
+    return ok[dev] == 1;
+}
+
 // Slices per KV head for the card in use: 8 heads x nsp blocks = two full waves of the resident blocks (2 per SM), so no wave is left part empty
 // (5090, 170 SMs: 85 slices = 680 blocks; 5070, 48 SMs: 24). STRATA_INK_TC_ATTN_SPLITS=<n> (16..96) overrides it for the A/B runs.
 inline int splits_dev(int dev) {
@@ -597,6 +610,7 @@ inline bool launch(cudaStream_t st, const float* q, const float* rel, const floa
                    const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int chain_k = 0, int flags = 0,
                    int nbuf = nbuf_cfg(), int depth = depth_cfg()) {
     if (kv.is_swa || (kv.kv_fmt != 0 && kv.kv_fmt != 1) || M < 1) return false;
+    if (!tc_attn_dev_ok()) return false;   // sm_80+ only (mma.m16n8k16): an older card keeps the old kernels even if the part is asked for by name
     const bool tree = (tk != nullptr);
     int nslab = 1, rows = 1;
     if (chain_k > 0) {   // batched drafting: M = slots x chain_k rows, one group per slot
