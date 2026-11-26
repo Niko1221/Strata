@@ -121,6 +121,9 @@ struct Sm120Row {
     // The compute capability minor of the card kind the row is for: 0 for the RTX 50 / RTX PRO Blackwell cards (cc 12.0), 1 for the DGX Spark GB10 (cc 12.1). A row never
     // matches a card of the other minor, so the 5090 row can not be taken by a GB10 and the GB10 row can not be taken by an RTX card.
     int cc_minor = 0;
+    // The architecture family the row belongs to: 120 (RTX 50), 89 (RTX 40 / Ada), 86 (RTX 30 / Ampere GA10x, RTX A-series). A row matches only a device of its family.
+    // The Ada / Ampere rows (NV-ADA-AMPERE lane) use only the parts whose kernels run on that family (see ink_sm120_arch_parts()).
+    int cc = 120;
 };
 
 // Default knobs shared by rows (the 5090 and the 5060 Ti rows are the measured ones; the others copy the family they belong to and stay unmeasured).
@@ -147,6 +150,14 @@ constexpr uint32_t kSm120SmallFast = P_COMPACT | P_TC_SMALLM | P_PLD | P_PACK | 
 // combined with the others) are out too. C64_SPEC + L2PF: tokens identical to off at 30, 9000 and 12000 (2 rounds each), speed equal to off. The speed-ups of the others are fast-only.
 // C64_SPEC is out of the exact set too: its multi-user memory plan (FP8 KV, host-resident SWA) assumes COMPACT; with exact (no compact) a 64-slot run on a 16 GB card died ("not enough free GPU memory for the working buffers", global KV all in host RAM). L2PF alone is bit-identical.
 constexpr uint32_t kSm120SmallExact = P_L2PF;
+
+// NV-ADA-AMPERE candidate sets (to be trimmed by the per-card A/B runs; see rel0223/nv-ada-ampere/RESULTS.md). The sm_120 FP4 kernels do not exist here, so no TC_SMALLM / PREFILL / L2PF.
+constexpr uint32_t kAdaBigFast    = P_PF_ATTN | P_FP8_TRUNK | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAmpereBigFast = P_PF_ATTN | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAdaSmallFast    = P_COMPACT | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAmpereSmallFast = P_COMPACT | P_PLD | P_PACK | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN;
+constexpr uint32_t kAdaExact = 0;
+#define STRATA_SM120_ADA_MOE { {1 << 30, 16, Sm120Tc::Base, Sm120Tc::Base, 0} }, 1
 
 // The table. Order matters: the first row that matches wins, so the more specific names come first (" Ti" before the plain name).
 // PLACEHOLDER rows (measured = false): 5070, 5050 (their numbers come from a rental later), and every other cc 12.0 card. They are listed so
@@ -220,6 +231,26 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 8.0f, 1.02f, 0.0f, false, 1},
+        // ---- NV-ADA-AMPERE lane: RTX 40 (cc 8.9) and RTX 30 / A-series (cc 8.6). Candidate sets until a card is measured (measured = false: old path unless STRATA_INK_SM120_ROW=<id>) ----
+#define STRATA_ADA_ROW(ID, NAME, SMLO, SMHI, GLO, GHI, NOTE, FAST, EXACT, FP8, C64, FAM)         {ID, NAME, SMLO, SMHI, GLO, GHI, false, NOTE, FAST, EXACT, FP8, C64, STRATA_SM120_ADA_MOE,          0, 0, 0, 0, 512, 768, 1536, 0, 1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false, (FAM) % 10, FAM}
+        STRATA_ADA_ROW("4090", "RTX 4090", 120, 136, 22, 26, "RTX 4090 24 GB", kAdaBigFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::Bspec, 89),
+        STRATA_ADA_ROW("4080", "RTX 4080", 74, 84, 15, 17, "RTX 4080 16 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4070tis", "RTX 4070 Ti SUPER", 64, 68, 15, 17, "RTX 4070 Ti SUPER 16 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4070ti", "RTX 4070 Ti", 58, 62, 11, 13, "RTX 4070 Ti 12 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4070", "RTX 4070", 44, 58, 11, 13, "RTX 4070 / 4070 SUPER 12 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4060ti-16", "RTX 4060 Ti", 32, 36, 15, 17, "RTX 4060 Ti 16 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4060ti-8", "RTX 4060 Ti", 32, 36, 7, 9, "RTX 4060 Ti 8 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("4060", "RTX 4060", 22, 26, 7, 9, "RTX 4060 8 GB", kAdaSmallFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::K8v4, 89),
+        STRATA_ADA_ROW("3090", "RTX 3090", 80, 86, 22, 26, "RTX 3090 / 3090 Ti 24 GB", kAmpereBigFast, kAdaExact, Sm120Fp8::None, Sm120C64::Bspec, 86),
+        STRATA_ADA_ROW("3080ti", "RTX 3080 Ti", 78, 82, 11, 13, "RTX 3080 Ti 12 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("3080", "RTX 3080", 66, 72, 9, 13, "RTX 3080 10 / 12 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("3070", "RTX 3070", 44, 50, 7, 9, "RTX 3070 / 3070 Ti 8 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("3060ti", "RTX 3060 Ti", 36, 40, 7, 9, "RTX 3060 Ti 8 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("3060", "RTX 3060", 26, 30, 11, 13, "RTX 3060 12 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("a4000", "RTX A4000", 44, 50, 15, 17, "RTX A4000 16 GB", kAmpereSmallFast, kAdaExact, Sm120Fp8::None, Sm120C64::K8v4, 86),
+        STRATA_ADA_ROW("a5000", "RTX A5000", 60, 66, 23, 25, "RTX A5000 24 GB", kAmpereBigFast, kAdaExact, Sm120Fp8::None, Sm120C64::Bspec, 86),
+        STRATA_ADA_ROW("a6000", "RTX A6000", 80, 86, 47, 49, "RTX A6000 48 GB", kAmpereBigFast, kAdaExact, Sm120Fp8::None, Sm120C64::Bspec, 86),
+#undef STRATA_ADA_ROW
     };
     if (n) *n = (int)(sizeof(rows) / sizeof(rows[0]));
     return rows;
@@ -238,17 +269,40 @@ inline bool ink_sm120_is_cc120(const Sm120Dev& d) { return d.cc_major == 12 && d
 // cc 12.0 or 12.1: the cards a table row can exist for. Which one a row is for is the row's cc_minor (the GB10 is its own row, never the RTX rows).
 inline bool ink_sm120_is_cc12x(const Sm120Dev& d) { return d.cc_major == 12 && (d.cc_minor == 0 || d.cc_minor == 1); }
 
+// The family a device belongs to for this table: 120, 89 (Ada), 86 (Ampere GA10x) or 0 (anything else: the table does nothing).
+inline int ink_sm120_family(const Sm120Dev& d) {
+    if (d.cc_major == 12 && (d.cc_minor == 0 || d.cc_minor == 1)) return 120;   // (a row's cc_minor says which: 0 the RTX 50 cards, 1 the GB10)
+    if (d.cc_major == 8 && d.cc_minor == 9) return 89;
+    if (d.cc_major == 8 && d.cc_minor == 6) return 86;
+    return 0;
+}
+
+// The parts whose kernels exist on a family. The sm_120 FP4 tensor-core kernels (NVFP4 mma: TC_SMALLM, the K256 / layer-major prefill, the L2 prefetch of those kernels) need
+// sm_120; the cublasLt FP8 trunk needs FP8 tensor cores (sm_89 and up); PDL (sm_90) is not a part. Everything else is plain mma.sync / dp4a code that runs from sm_80.
+constexpr uint32_t kSm120AllPartsMask = 0xFFFFFFFFu;
+constexpr uint32_t kSm120NoFp4Parts = P_TC_SMALLM | P_PREFILL | P_L2PF | P_FP8_INPLACE;
+inline uint32_t ink_sm120_arch_parts(int family) {
+    switch (family) {
+        case 120: return kSm120AllPartsMask;
+        case 89:  return ~kSm120NoFp4Parts;
+        case 86:  return ~(kSm120NoFp4Parts | P_FP8_TRUNK);
+        default:  return 0;
+    }
+}
+
 inline int ink_sm120_vram_gib(uint64_t bytes) { return (int)((bytes + (512ull << 20)) >> 30); }
 
 // The first row whose name, SM window and VRAM window all match. nullptr when no row matches (an unknown cc 12.0 card).
 inline const Sm120Row* ink_sm120_match(const Sm120Dev& d) {
-    if (!ink_sm120_is_cc12x(d)) return nullptr;
+    const int fam = ink_sm120_family(d);
+    if (fam == 0) return nullptr;
     int n = 0;
     const Sm120Row* rows = ink_sm120_rows(&n);
     const int gib = ink_sm120_vram_gib(d.vram_bytes);
     for (int i = 0; i < n; ++i) {
         const Sm120Row& r = rows[i];
         if (d.cc_minor != r.cc_minor) continue;
+        if (r.cc != fam) continue;
         if (d.name.find(r.name_has) == std::string::npos) continue;
         if (d.sm_count < r.sm_min || d.sm_count > r.sm_max) continue;
         if (gib < r.vram_gib_min || gib > r.vram_gib_max) continue;
@@ -360,7 +414,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     // card (placeholder rows: 5080, 5070 Ti, 5070, 5060 Ti 8 GB, 5060, 5050, RTX PRO; unknown cards; every non-RTX 50 card) keeps the old path and prints nothing.
     // A part switched OFF alone (STRATA_INK_SM120_<PART>=0) takes that part out of the default set.
     const Sm120Row* dflt_row = nullptr;
-    if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_is_cc12x(dev)) {
+    if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_family(dev) != 0) {
         dflt_row = ink_sm120_match(dev);
         if (dflt_row && !(dflt_row->measured && dflt_row->default_on)) dflt_row = nullptr;
     }
@@ -369,7 +423,9 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     if (!out.asked) return out;
 
     char buf[400];
-    if (!ink_sm120_is_cc12x(dev)) {
+    const int fam = ink_sm120_family(dev);
+    const char* fl = fam == 89 ? "RTX 40" : fam == 86 ? "RTX 30" : "RTX 50";   // the label in the lines below
+    if (fam == 0) {
         out.refused = true;
         std::snprintf(buf, sizeof(buf),
                       "[InkCUDA] RTX 50 switch ignored: GPU %d (%s, sm_%d%d) is not an sm_120 card; the default path runs",
@@ -394,32 +450,32 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
         // an unknown cc 12.0 card: the old path, except for parts an explicit =1 asked for (they run with the 5090 row's generic numbers)
         out.refused = (part_on == 0);
         std::snprintf(buf, sizeof(buf),
-                      "[InkCUDA] RTX 50 switch: no measured table row for GPU %d (%s, %d SMs, %d GiB); %s. Row ids: 5090, 5060ti-16 "
+                      "[InkCUDA] %s switch: no measured table row for GPU %d (%s, %d SMs, %d GiB); %s. Row ids: 5090, 5060ti-16 "
                       "(STRATA_INK_SM120_ROW=<id> uses one of them at your own risk)",
-                      dev.ordinal, dev.name.c_str(), dev.sm_count, ink_sm120_vram_gib(dev.vram_bytes),
+                      fl, dev.ordinal, dev.name.c_str(), dev.sm_count, ink_sm120_vram_gib(dev.vram_bytes),
                       part_on ? "only the parts you named run" : "the default path runs");
         out.note = buf;
         if (part_on == 0) return out;
         row = ink_sm120_row_by_id("5090");
         out.row = row;
         out.mode = Sm120Decision::Fast;
-        out.parts = ink_sm120_compact_subparts(part_on & ~part_off, part_on | part_off);
-        out.forced_on = part_on;
+        out.parts = ink_sm120_compact_subparts(part_on & ~part_off, part_on | part_off) & ink_sm120_arch_parts(ink_sm120_family(dev));
+        out.forced_on = part_on & ink_sm120_arch_parts(ink_sm120_family(dev));
         return out;
     }
     if (!row->measured && !out.forced_row && part_on == 0) {
         out.refused = true;
         std::snprintf(buf, sizeof(buf),
-                      "[InkCUDA] RTX 50 switch: GPU %d (%s, %d SMs, %d GiB) matches the table row '%s' but that row is a placeholder (not measured); "
-                      "the default path runs. STRATA_INK_SM120_ROW=<5090|5060ti-16> uses a measured row at your own risk",
-                      dev.ordinal, dev.name.c_str(), dev.sm_count, ink_sm120_vram_gib(dev.vram_bytes), row->id);
+                      "[InkCUDA] %s switch: GPU %d (%s, %d SMs, %d GiB) matches the table row '%s' but that row is a placeholder (not measured); "
+                      "the default path runs. STRATA_INK_SM120_ROW=<row id> uses a row at your own risk",
+                      fl, dev.ordinal, dev.name.c_str(), dev.sm_count, ink_sm120_vram_gib(dev.vram_bytes), row->id);
         out.note = buf;
         out.row = row;
         return out;
     }
     if (out.forced_row) {
-        std::snprintf(buf, sizeof(buf), "[InkCUDA] RTX 50 switch: GPU %d (%s) runs table row '%s' (%s) because STRATA_INK_SM120_ROW is set",
-                      dev.ordinal, dev.name.c_str(), row->id, row->measured ? "measured on another card of this kind" : "placeholder, not measured");
+        std::snprintf(buf, sizeof(buf), "[InkCUDA] %s switch: GPU %d (%s) runs table row '%s' (%s) because STRATA_INK_SM120_ROW is set",
+                      fl, dev.ordinal, dev.name.c_str(), row->id, row->measured ? "measured on another card of this kind" : "placeholder, not measured");
         out.note = buf;
     }
     out.row = row;
@@ -428,14 +484,22 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     out.default_on_applied = want_default;
     if (want_default) {
         std::snprintf(buf, sizeof(buf),
-                      "[InkCUDA] RTX 50 fast mode is the default on GPU %d (%s, table row '%s'): STRATA_INK_SM120=0 turns it off, STRATA_INK_SM120_EXACT=1 gives the bit-identical form",
-                      dev.ordinal, dev.name.c_str(), row->id);
+                      "[InkCUDA] %s fast mode is the default on GPU %d (%s, table row '%s'): STRATA_INK_SM120=0 turns it off, STRATA_INK_SM120_EXACT=1 gives the bit-identical form",
+                      fl, dev.ordinal, dev.name.c_str(), row->id);
         out.note = buf;
     }
     uint32_t base = want_exact ? row->exact_parts : row->fast_parts;
     if (master < 0 && exact < 0 && part_on != 0 && !want_default) base = 0;   // a part switch alone turns that part on, not the whole set
     out.parts = ink_sm120_compact_subparts((base | part_on) & ~part_off, part_on | part_off);
-    out.forced_on = part_on;
+    // the parts whose kernels do not exist on this family (the FP4 tensor-core kernels need sm_120, the cublasLt FP8 trunk needs sm_89) never run on it
+    const uint32_t avail = ink_sm120_arch_parts(ink_sm120_family(dev));
+    if ((part_on & ~avail) != 0 && out.note.empty()) {
+        std::snprintf(buf, sizeof(buf), "[InkCUDA] GPU %d (%s, sm_%d%d): the parts you named that need other silicon (mask 0x%x) are ignored",
+                      dev.ordinal, dev.name.c_str(), dev.cc_major, dev.cc_minor, (unsigned)(part_on & ~avail));
+        out.note = buf;
+    }
+    out.parts &= avail;
+    out.forced_on = part_on & avail;
     return out;
 }
 

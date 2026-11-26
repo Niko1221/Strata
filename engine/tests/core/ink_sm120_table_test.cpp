@@ -43,6 +43,7 @@ int main() {
     const Sm120Dev pro6000 = dev("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 12, 0, 188, 96);
     const Sm120Dev a4000 = dev("NVIDIA RTX A4000", 8, 6, 48, 16);
     const Sm120Dev rtx4090 = dev("NVIDIA GeForce RTX 4090", 8, 9, 128, 24);
+    const Sm120Dev turing = dev("NVIDIA GeForce RTX 2080 Ti", 7, 5, 68, 11);
     const Sm120Dev spark = dev("NVIDIA GB10", 12, 1, 48, 120);
     const Sm120Dev unknown = dev("NVIDIA Something Blackwell", 12, 0, 99, 40);
 
@@ -54,7 +55,10 @@ int main() {
     CHECK(ink_sm120_match(r5070ti) && std::string(ink_sm120_match(r5070ti)->id) == "5070ti");   // not the 5070 row: the name is a prefix of it
     CHECK(ink_sm120_match(r5080) && std::string(ink_sm120_match(r5080)->id) == "5080");
     CHECK(ink_sm120_match(pro6000) && std::string(ink_sm120_match(pro6000)->id) == "pro6000" && !ink_sm120_match(pro6000)->measured);
-    CHECK(!ink_sm120_match(a4000) && !ink_sm120_match(rtx4090));    // not cc 12.0
+    CHECK(ink_sm120_match(a4000) && std::string(ink_sm120_match(a4000)->id) == "a4000" && !ink_sm120_match(a4000)->measured);   // the Ada / Ampere rows (NV-ADA-AMPERE)
+    CHECK(ink_sm120_match(rtx4090) && std::string(ink_sm120_match(rtx4090)->id) == "4090" && ink_sm120_match(rtx4090)->cc == 89);
+    CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 4090", 12, 0, 128, 24)));   // a row matches only its own family
+    CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 8, 9, 170, 32)));
     CHECK(ink_sm120_match(spark) && std::string(ink_sm120_match(spark)->id) == "gb10" && !ink_sm120_match(spark)->measured && ink_sm120_match(spark)->cc_minor == 1);   // cc 12.1 is its own row
     CHECK(!ink_sm120_match(dev("NVIDIA GB10", 12, 0, 48, 120)) && !ink_sm120_match(dev("NVIDIA GB10", 12, 1, 170, 32)));   // the GB10 row needs cc 12.1 and its silicon
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 1, 170, 32)));                       // and an RTX name on cc 12.1 gets no row (the RTX rows are cc 12.0)
@@ -74,7 +78,7 @@ int main() {
 
     CHECK(kSm120FastDefault);   // the owner's 11-26 decision: fast mode is the default on the measured rows
     // ---- nothing set: the old path on every card without a measured row, and nothing printed ----
-    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5070, &r5080, &r5070ti, &r5060ti8, &pro6000}) {
+    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5070, &r5080, &r5070ti, &r5060ti8, &pro6000}) {   // (the Ada / Ampere rows are unmeasured too)
         const Sm120Decision x = decide(*d, {});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.note.empty() && !x.asked && !x.refused);
     }
@@ -151,7 +155,7 @@ int main() {
         CHECK(!(ex.parts & P_FP8_TRUNK) && !(ex.parts & P_COMPACT) && !(ex.parts & P_TC_SMALLM) && !(ex.parts & P_MOE_OPT) && !(ex.parts & P_PF_ATTN));
     }
     // ---- a switch on a card that is not sm_120 is refused with one line, the default path runs ----
-    for (const Sm120Dev* d : {&a4000, &rtx4090}) {
+    for (const Sm120Dev* d : {&turing}) {   // (a card of no table family; the Ada / Ampere cards have rows now)
         const Sm120Decision x = decide(*d, {{"STRATA_INK_RTX5060TI", "1"}});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.refused && !x.note.empty());
         CHECK(x.note.find("not an sm_120 card") != std::string::npos && x.note.find(d->name) != std::string::npos);
@@ -159,6 +163,18 @@ int main() {
         CHECK(y.parts == 0 && y.refused);
         const Sm120Decision z = decide(*d, {{"STRATA_INK_SM120", "0"}});             // an explicit 0 is silent
         CHECK(z.parts == 0 && z.note.empty());
+    }
+    // ---- Ada / Ampere: the unmeasured rows keep the old path with a note; ROW forces one; the parts that need sm_120 (FP4 kernels) or sm_89 (cublasLt FP8) are masked ----
+    {
+        const Sm120Decision x = decide(rtx4090, {{"STRATA_INK_SM120", "1"}});
+        CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.refused && x.note.find("RTX 40") != std::string::npos && x.note.find("placeholder") != std::string::npos);
+        const Sm120Decision y = decide(rtx4090, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "4090"}});
+        CHECK(y.mode == Sm120Decision::Fast && y.forced_row && (y.parts & P_FP8_TRUNK) && (y.parts & P_TC_ATTN) && !(y.parts & P_TC_SMALLM));
+        const Sm120Decision z = decide(a4000, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "5060ti-16"}});   // a 5060 Ti row on an A4000: no FP4 kernels, no FP8
+        CHECK(z.mode == Sm120Decision::Fast && (z.parts & P_COMPACT) && !(z.parts & P_TC_SMALLM) && !(z.parts & P_PREFILL) && !(z.parts & P_L2PF) && !(z.parts & P_FP8_TRUNK));
+        const Sm120Decision w = decide(a4000, {{"STRATA_INK_SM120_FP8_TRUNK", "1"}, {"STRATA_INK_SM120_ROW", "a4000"}});   // an explicit FP8 trunk on sm_86 is ignored, with a note
+        CHECK(!(w.parts & P_FP8_TRUNK) && !w.note.empty());
+        CHECK(ink_sm120_arch_parts(120) == kSm120AllPartsMask && !(ink_sm120_arch_parts(89) & P_TC_SMALLM) && (ink_sm120_arch_parts(89) & P_FP8_TRUNK) && !(ink_sm120_arch_parts(86) & P_FP8_TRUNK) && ink_sm120_arch_parts(70) == 0);
     }
     // ---- cc 12.0 cards without a measured row keep the old path, with a note; ROW forces a row at the user's risk ----
     for (const Sm120Dev* d : {&r5070, &r5080, &pro6000, &unknown, &r5060ti8}) {

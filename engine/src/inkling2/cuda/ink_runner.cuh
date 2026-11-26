@@ -352,7 +352,7 @@ struct InkCudaModel {
         size_t vfree_pre = 0, vtot_pre = 0;
         INK_CK(ink_cuda_mem_info(&vfree_pre, &vtot_pre));
         bool do_compact_vram = opt5060_ld.compact_vram && !ssd_experts && vram_experts_gb <= 0.0 &&
-                                     ram_experts_gb != 0.0 && sm_cc >= 120 &&
+                                     ram_experts_gb != 0.0 && sm_cc >= 80 &&
                                      ink_elastic_ram_cap_bytes() == 0 && vtot_pre <= ((size_t)std::max(1, sm120_cfg(primary_gpu).compact_max_vram_gib) << 30);   // the table row says how big a card "compact" is tried on
         if (do_compact_vram) {
             // COMPACT is the default on the 16 GB 5060 Ti, so it must refuse BEFORE it converts anything when the card cannot hold it (a desktop or another program on
