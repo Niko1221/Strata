@@ -271,11 +271,11 @@
     <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close" data-i18n-label="close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
-    <div class="st-field">
+    <div class="st-field" id="thinking-field">
       <label class="st-label" for="s-thinking"><span data-i18n="drawer.thinking">Thinking</span> <output id="o-thinking"></output></label>
       <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking" data-i18n-label="drawer.thinking">
         <button type="button" role="radio" data-v="none" data-i18n="drawer.off">Off</button><button type="button" role="radio" data-v="low" data-i18n="drawer.low">Low</button>
-        <button type="button" role="radio" data-v="medium" data-i18n="drawer.medium">Medium</button><button type="button" role="radio" data-v="high" data-i18n="drawer.high">High</button>
+        <button type="button" role="radio" data-v="medium" data-i18n="drawer.medium">Medium</button><button type="button" role="radio" data-v="high" data-i18n="drawer.high">High</button><button type="button" role="radio" data-v="max" data-i18n="drawer.max" hidden>Max</button>
       </div>
     </div>
     <div class="st-field">
@@ -299,7 +299,7 @@
       <label class="st-label" for="s-seed"><span data-i18n="drawer.seed">Seed</span> <output data-i18n="drawer.seedNote">empty = random</output></label>
       <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random" data-i18n-placeholder="drawer.random">
     </div>
-    <div class="toggle-row"><span><span data-i18n="drawer.showThinking">Show thinking</span><br><span class="muted small" data-i18n="drawer.showThinkingNote">expanded while it streams</span></span>
+    <div class="toggle-row" id="show-thinking-row"><span><span data-i18n="drawer.showThinking">Show thinking</span><br><span class="muted small" data-i18n="drawer.showThinkingNote">expanded while it streams</span></span>
       <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking" data-i18n-label="drawer.showThinking"></button></div>
     <div class="toggle-row"><span><span data-i18n="drawer.math">Render math</span><br><span class="muted small"
       data-i18n="drawer.mathNote">draw equations in answers as formulas (works offline)</span></span>

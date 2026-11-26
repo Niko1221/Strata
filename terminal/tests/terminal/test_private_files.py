@@ -211,7 +211,10 @@ finally:
     child.terminate()
     child.wait()
 '''
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=40)
+        term_root = str(Path(__file__).resolve().parents[2])
+        env = dict(os.environ)
+        env["PYTHONPATH"] = term_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=40, env=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_only_the_users_own_folders_are_ever_repaired(self):

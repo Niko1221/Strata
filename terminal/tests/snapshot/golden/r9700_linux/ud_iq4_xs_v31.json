@@ -59,6 +59,9 @@
     "log": "<REPO>/strata-unsloth-ud-iq4_xs-v31.log",
     "lib_dirs": [],
     "port": 8080,
+    "env": {
+     "STRATA_ROUTE_TAIL_SKIP": "0"
+    },
     "backend": "hip"
    },
    "engine": {
@@ -91,7 +94,8 @@
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": []
    },
@@ -144,7 +148,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -183,11 +188,13 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": []
    }
@@ -244,7 +251,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -287,11 +295,13 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": []
    }
@@ -348,7 +358,8 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -392,11 +403,13 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--prompt-cache-spread"
     ],
     "env_set": {
      "GGML_NO_BACKTRACE": "1",
-     "MALLOC_ARENA_MAX": "2"
+     "MALLOC_ARENA_MAX": "2",
+     "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": []
    }

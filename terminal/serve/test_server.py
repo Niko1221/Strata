@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
-                          StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
+                          StrataEngine, Vision, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
@@ -33,6 +33,44 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
 ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
 #                                                one token repeated, which the server ends at 256)
+
+
+class VisionDecode(unittest.TestCase):
+    def test_native_decoder_failure_uses_existing_normalization_once(self):
+        for reply, expected_calls in (("ERR cannot read the image crop\nOK 450\n", 2),
+                                      ("ERR the vision encoder failed\n", 1)):
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as temp:
+                vision = Vision.__new__(Vision)
+                vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+                vision.cache_batches = 0
+                vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(reply))
+                with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                        mock.patch.object(Vision, 'normalize', side_effect=lambda data, force=False:
+                                     b'converted' if force else data) as normalize:
+                    if expected_calls == 2:
+                        encoded, tokens = vision.encode('crop')
+                        encoded.write_bytes(b'fake encoder output')
+                        self.assertEqual(tokens, 450)
+                        self.assertEqual(vision.encode('crop')[1], 450)
+                        self.assertEqual(vision.proc.stdin.getvalue().count('ENC '), 2)
+                        self.assertEqual(normalize.call_args_list[1].kwargs, {'force': True})
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'vision encoder failed'):
+                            vision.encode('crop')
+                        self.assertEqual(normalize.call_count, 1)
+                self.assertFalse(list(Path(temp).glob('*.img')))
+
+    def test_failed_conversion_removes_temporary_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            vision = Vision.__new__(Vision)
+            vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+            vision.cache_batches = 0
+            vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO('ERR cannot read the image crop\n'))
+            with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                    mock.patch.object(Vision, 'normalize', side_effect=[b'original', ValueError('bad image')]):
+                with self.assertRaisesRegex(ValueError, 'bad image'):
+                    vision.encode('crop')
+            self.assertFalse(list(Path(temp).glob('*.img')))
 
 
 class RecordingEngine(MockEngine):
@@ -371,6 +409,8 @@ class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
     class FakeVision:
+        batch = staticmethod(contextlib.nullcontext)
+
         def __init__(self, d):
             self.dir = Path(d)
             self.rows = self.dir / "img.sve"
@@ -584,6 +624,7 @@ class VisionTempFiles(unittest.TestCase):
         pipe = Pipe()
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.cache_batches = 0
         v.proc = mock.Mock(stdin=pipe, stdout=mock.Mock(readline=lambda: "OK 7 1 1 1\n"))
         try:
             with mock.patch.object(Vision, "load", return_value=b""), \
@@ -632,6 +673,20 @@ class VisionTempFiles(unittest.TestCase):
         with mock.patch.object(subprocess, "Popen", side_effect=FileNotFoundError("gone")):
             with self.assertRaises(FileNotFoundError):
                 popen("x", ["x"])
+
+    def test_no_console_window_on_windows(self):
+        import subprocess
+        from serve.server import popen
+        with mock.patch.object(subprocess, "Popen") as p:
+            popen("the Strata engine", ["strata.exe"], stdin=subprocess.PIPE)
+        kw = p.call_args.kwargs
+        if os.name == "nt":
+            self.assertTrue(kw["creationflags"] & subprocess.CREATE_NO_WINDOW)   # others may be added (lifeline)
+        else:
+            self.assertNotIn("creationflags", kw)
+        with mock.patch.object(subprocess, "Popen") as p:          # a caller's own flags are kept
+            popen("x", ["x"], creationflags=0)
+        self.assertFalse(p.call_args.kwargs["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
 
 
 class ListenProblem(unittest.TestCase):
@@ -1210,6 +1265,16 @@ class ToolCallRecovery(unittest.TestCase):
             self.check(f"<function={name}>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
             self.check(f"<function={name}>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
 
+    def test_indented_bare_function_streams_as_it_parses_whole(self):
+        # an opener indented by a space or two is a call when parsed whole; streamed it leaked into the content
+        for indent in (" ", "  ", "\t"):
+            with self.subTest(indent=indent):
+                self.check(f"Ok.\n{indent}<function=write>\n{self.PARAMS}", [("write", self.CALL)], "Ok.")
+                self.check(f"<function=write>\n{self.PARAMS}\n{indent}<function=write>\n{self.PARAMS}",
+                           [("write", self.CALL), ("write", self.CALL)], "")
+        block = f"Example:\n\n    <function=write>\n{self.PARAMS}"      # an indented code block is a quote (#4703)
+        self.check(block, [], block)
+
     def test_two_calls_in_one_wrapper(self):
         # corpus 0912870b / 51b155c9: a batch inside one <tool_call> - the second call's parameters were merged into
         # the first (wrong arguments, one call); also with the second opened as <parameter=NAME> (03a8a851)
@@ -1367,6 +1432,28 @@ class UnfinishedToolCall(unittest.TestCase):
             httpd.server_close()
         return out
 
+    def test_schema_typed_arguments_over_both_apis(self):
+        self.PROPS = {"unlock": {"type": "boolean"}, "count": {"type": "integer"},
+                      "optional": {"type": ["boolean", "null"]}, "note": {"type": "string"},
+                      "level": {"enum": ["None", "Low", "High"]},
+                      "label": {"anyOf": [{"type": "string"}, {"type": "null"}]}}
+        script = ("</think><tool_call><function=write><parameter=unlock>False</parameter>"
+                  "<parameter=count>+10</parameter><parameter=optional>None</parameter>"
+                  "<parameter=note>False</parameter><parameter=level>None</parameter>"
+                  "<parameter=label>False</parameter></function></tool_call>")
+        expected = {"unlock": False, "count": 10, "optional": None, "note": "False",
+                    "level": "None", "label": "False"}
+        for (api, stream), (reason, arguments) in self.answers(script).items():
+            with self.subTest(api=api, stream=stream):
+                self.assertEqual(reason, "tool_calls" if api == "openai" else "tool_use")
+                if stream:
+                    actual = json.loads(arguments)
+                else:
+                    actual = json.loads(arguments[0]) if api == "openai" else arguments[0]
+                self.assertEqual(actual, expected)
+                self.assertIs(actual["unlock"], False)
+                self.assertIs(type(actual["count"]), int)
+
     def test_a_cut_call(self):
         cut = '{"path":"notes.txt","content":"first half of the fi'
         self.assertEqual(self.answers(self.CUT), {
@@ -1412,6 +1499,24 @@ class UnfinishedToolCall(unittest.TestCase):
                 self.assertEqual([c["id"] for c in msg["tool_calls"]], want)
         msg = openai_collect([chunk({"tool_calls": [cut]}), chunk({}, "stop")])["choices"][0]["message"]
         self.assertNotIn("tool_calls", msg)
+
+    def test_collect_content_is_null_only_beside_tool_calls(self):
+        from serve.server import openai_collect
+
+        def chunk(delta, finish=None):
+            return {"id": "c", "created": 1, "model": "m", "usage": {},
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        call = {"index": 0, "id": "a", "type": "function", "function": {"name": "f", "arguments": '{"x": 1}'}}
+        # Out of tokens while still thinking: no answer text, no call. A string, not null.
+        msg = openai_collect([chunk({"reasoning_content": "still thinking"}), chunk({}, "length")])["choices"][0]["message"]
+        self.assertEqual(msg["content"], "")
+        self.assertEqual(msg["reasoning_content"], "still thinking")
+        # A tool call with no text keeps null content, as OpenAI sends it.
+        msg = openai_collect([chunk({"tool_calls": [call]}), chunk({}, "tool_calls")])["choices"][0]["message"]
+        self.assertIsNone(msg["content"])
+        # Text is passed through unchanged.
+        msg = openai_collect([chunk({"content": "hi"}), chunk({}, "stop")])["choices"][0]["message"]
+        self.assertEqual(msg["content"], "hi")
 
     def test_a_whole_call(self):
         whole = {"path": "notes.txt", "content": "all of it"}
@@ -1773,6 +1878,70 @@ class SharedPrefix(unittest.TestCase):
         ids, _, _ = self.svc.prepare(self.MSGS, None, {}, 16, req=req)
         self.assertEqual(req, {"temperature": 0})
         self.assertEqual(ids, self.svc.prepare(self.MSGS, None, {}, 16)[0])
+
+    def test_inkling_auto_prefix_requires_opt_in_and_engine_capability(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": 1, "chunk": "8"}
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "0"}):
+            req = {}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}):
+            req = {}
+            first, _, _ = svc.prepare(self.MSGS, None, {}, 16, req=req)
+            n = req["strata_prefix"]["tokens"]
+            self.assertEqual(n % 8, 0)
+            self.assertIn(f"pin={n}", StrataEngine.sampling_keys(req, inkling=True).split())
+            self.assertNotIn(f"pin={n}", StrataEngine.sampling_keys(req, hy4=True).split())
+            exact = svc.resolve_prefix({"messages": 1}, self.MSGS, None, {}, first)["tokens"]
+            self.assertLess(exact - n, 8)
+            changed = [self.MSGS[0], {"role": "user", "content": "A different conversation"}]
+            second, _, _ = svc.prepare(changed, None, {}, 16, req={})
+            self.assertEqual(first[:n], second[:n])
+            svc.engine.info = {}
+            req = {}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+
+    def test_inkling_auto_prefix_preserves_explicit_boundary_and_skips_no_system(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": "1"}
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}):
+            req = {"strata_prefix": {"tokens": 5}}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {"tokens": 5})
+            self.assertIn("pin=5", StrataEngine.sampling_keys(req, inkling=True).split())
+            req = {}
+            svc.prepare(self.MSGS[1:], None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+            # Without shared_prefix=1, explicit strata_prefix drops cleanly instead of sending pin=.
+            svc.engine.info = {}
+            req = {"strata_prefix": {"tokens": 5}}
+            with contextlib.redirect_stdout(io.StringIO()):
+                svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {})
+            self.assertFalse([k for k in StrataEngine.sampling_keys(req, inkling=True).split() if k.startswith("pin=")])
+
+    def test_inkling_prefix_skipped_when_request_has_images(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": 1, "chunk": 8, "images": 1}
+        msgs = [self.MSGS[0], {"role": "user", "content": [
+            {"type": "image", "source": "fake.png"}, {"type": "text", "text": "describe"}]}]
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}), \
+                mock.patch("serve.server.inkling_kind.write_images", return_value=["/tmp/fake.png"]):
+            req = {}
+            svc.prepare(msgs, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+            req = {"strata_prefix": {"tokens": 5}}
+            with contextlib.redirect_stdout(io.StringIO()):
+                svc.prepare(msgs, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {})
 
 
 class GpuChoice(unittest.TestCase):
@@ -2582,6 +2751,19 @@ class PcieShare(unittest.TestCase):
         self.assertEqual([r["hit_rate"] for r in rows], [0.6, 0.6, 0.6])
         self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
+
+
+class PromptCacheSpread(unittest.TestCase):
+    def test_only_a_known_unsupported_engine_loses_the_cache_spread_flag(self):
+        cfg = {"backend": "sycl", "args": ["--native", "model.gguf", "--prompt-cache-spread"]}
+        with tempfile.TemporaryDirectory() as folder:
+            old = Path(folder) / "old-strata"
+            old.write_bytes(b"strata --native --serve")
+            new = Path(folder) / "new-strata"
+            new.write_bytes(b"strata --native --serve --prompt-cache-spread")
+            self.assertEqual(engine_args(cfg, str(old), announce=False), ["--native", "model.gguf"])
+            self.assertEqual(engine_args(cfg, str(new), announce=False), cfg["args"])
+            self.assertEqual(engine_args(cfg, announce=False), cfg["args"])
 
 
 class PeerDevice(unittest.TestCase):
@@ -3870,6 +4052,7 @@ class WebApp(unittest.TestCase):
                     self.assertEqual(model["id"], svc.model)
                     self.assertEqual(model["status"]["value"], "loaded")
                     self.assertEqual(model["meta"]["n_ctx"], 262144)
+                    self.assertEqual((model["max_model_len"], model["context_length"], model["max_context_length"]), (262144, 262144, 262144))
                     self.assertEqual(model["architecture"]["input_modalities"],
                                      ["text", "image"] if vision else ["text"])
                 code, _, body = self.get("/props?model=" + svc.model + "&autoload=false")
@@ -4731,6 +4914,41 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(code, 200, b)
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:10] + wrap)
 
+    def test_the_budget_alias_field_names(self):
+        """pi's thinkingTokenBudgetField can be thinking_token_budget (vLLM), thinking_budget (Qwen)
+        or thinking_budget_tokens (llama.cpp): all three are honoured like reasoning_budget_tokens."""
+        from serve.server import REASONING_WRAP_UP
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        for field in ("thinking_token_budget", "thinking_budget", "thinking_budget_tokens"):
+            code, b = self.openai(**{field: 20})
+            self.assertEqual(code, 200, (field, b))
+            msg = b["choices"][0]["message"]
+            self.assertEqual(msg["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap, field)
+            self.assertEqual(msg["content"], ThinkingEngine.ANSWER, field)
+            self.assertEqual(b["choices"][0]["finish_reason"], "stop", field)
+        self.assertEqual(len(self.engine.prompts), 6)   # the wrap-up continuation, once per alias
+
+    def test_the_request_s_own_budget_wins_over_the_aliases(self):
+        code, b = self.openai(reasoning_budget_tokens=10_000, thinking_token_budget=20,
+                              thinking_budget=20, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_the_alias_field_order_wins(self):
+        """Several aliases at once: the first of thinking_token_budget / thinking_budget /
+        thinking_budget_tokens does, so a client that sends a mix gets a deterministic budget."""
+        code, b = self.openai(thinking_budget=10_000, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_a_bad_alias_is_a_400(self):
+        for field in ("thinking_token_budget", "thinking_budget", "thinking_budget_tokens"):
+            for bad in (1.5, "20", True):
+                code, b = self.openai(**{field: bad})
+                self.assertEqual(code, 400, (field, bad, b))
+
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""
         code, b = self.openai(reasoning_budget_tokens=20, stop=["answer is"])
@@ -5142,7 +5360,7 @@ class ForcedToolChoice(unittest.TestCase):
 
     def test_any_model_name_on_the_anthropic_route_is_the_loaded_model(self):
         """#5312: Claude Desktop sends the model name `claude-5-5-sonnet` and cannot change it; the route serves the loaded model whatever
-        the request calls it, and answers with that model's name (the Desktop app's own gateway is a separate check in apps/host)."""
+        the request calls it, and answers with that model's name (the Desktop app's own gateway is a separate check in app/host)."""
         self.says("Hello there.")
         for name in ("claude-5-5-sonnet", "claude-opus-4-1", "gpt-4o", "nonsense"):
             for stream in (False, True):
@@ -5557,6 +5775,32 @@ class ModelAliases(unittest.TestCase):
         self.assertEqual(data[0]["aliases"], ["qwen", "local-model"])
         self.assertEqual(data[1]["alias_of"], "qwen3.8-flash-next-iq3_xxs")
         self.assertEqual(self.get("/props?model=local-model")["model_alias"], "qwen3.8-flash-next-iq3_xxs")
+
+    def test_model_retrieve_single_and_alias(self):
+        # #5460: GET /v1/models/{model_id} and GET /models/{model_id}
+        for prefix in ("/v1/models/", "/models/"):
+            m = self.get(prefix + "qwen3.8-flash-next-iq3_xxs")
+            self.assertEqual(m["id"], "qwen3.8-flash-next-iq3_xxs")
+            self.assertEqual(m["object"], "model")
+            self.assertEqual(m["status"]["value"], "loaded")
+
+            alias = self.get(prefix + "qwen")
+            self.assertEqual(alias["id"], "qwen")
+            self.assertEqual(alias["alias_of"], "qwen3.8-flash-next-iq3_xxs")
+
+    def test_model_retrieve_unknown_returns_404(self):
+        # #5460: unknown model returns OpenAI-style 404 with code model_not_found
+        for path in ("/v1/models/does-not-exist", "/models/does-not-exist"):
+            req = urllib.request.Request(self.base + path)
+            try:
+                urllib.request.urlopen(req)
+                self.fail(f"expected 404 on {path}")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 404)
+                err = json.loads(e.read().decode())["error"]
+                self.assertEqual(err["code"], "model_not_found")
+                self.assertEqual(err["param"], "model")
+                self.assertIn("does-not-exist", err["message"])
 
     def test_requests_are_answered_under_the_alias(self):
         msgs = [{"role": "user", "content": "hi"}]
@@ -6413,6 +6657,34 @@ class StopStrings(unittest.TestCase):
                     # the engine stopped at the stop string, it did not run to the end of the answer
                     self.assertLess(self.engine.yielded, len("</think>\n\n" + self.ANSWER))
 
+    def test_a_stop_string_that_ends_on_the_token_cap_is_a_stop(self):
+        """#4035: the stop string is the answer's last token and also the token that hits max_tokens: the answer ended at the stop string, so
+        finish_reason is "stop" (it said "length"); the Anthropic route says stop_sequence."""
+        for stop, upto, kept in (("END", "alpha END", "alpha "), ("\n", "alpha END beta STOP gamma\n", "alpha END beta STOP gamma")):
+            tok = ByteTokenizer()
+            engine = CountingEngine(tok, "</think>\n\n" + self.ANSWER + ("\nmore" if stop == "\n" else ""), max_context=CTX)
+            svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+            httpd = serve(svc, port=0)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            n = len("</think>\n\n" + upto)          # one token per byte: the cap falls on the last byte of the stop string
+            try:
+                for api in ("openai", "anthropic"):
+                    for stream in (False, True):
+                        with self.subTest(stop=stop, api=api, stream=stream):
+                            old, self.base = self.base, base
+                            try:
+                                code, text, finish, seq, _ = self.post(api, stream, max_tokens=n, **self.stop_field(api, [stop]))
+                            finally:
+                                self.base = old
+                            self.assertEqual((code, text), (200, kept))
+                            if api == "openai":
+                                self.assertEqual(finish, "stop")
+                            else:
+                                self.assertEqual((finish, seq), ("stop_sequence", stop))
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
     def test_the_first_of_several(self):
         for api in ("openai", "anthropic"):
             for stream in (False, True):
@@ -6623,7 +6895,7 @@ class VisionArgs(unittest.TestCase):
             seen.append(args)
             return Proc()
 
-        with mock.patch.object(server.subprocess, "Popen", popen):
+        with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server.lifeline, "_watch"):
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
         return seen[0]
 
@@ -6640,7 +6912,8 @@ class VisionCacheEviction(unittest.TestCase):
     def make(self, d):
         import serve.server as server
         v = server.Vision.__new__(server.Vision)
-        v.dir, v.cache, v.lock = d, {}, threading.Lock()
+        v.dir, v.cache, v.lock = d, {}, threading.RLock()
+        v.cache_batches = 0
         v.load = lambda src: src
 
         class Pipe:
@@ -6795,6 +7068,10 @@ class VisionShutdown(unittest.TestCase):
 
             class Proc:
                 stdin = io.StringIO()
+                stdout = None
+
+                def poll(self):
+                    return 0
 
                 def wait(self, timeout=None):
                     return 0
@@ -7319,3 +7596,316 @@ class ToolCallParameterCoercionAndDedup(unittest.TestCase):
             "</function>\n</tool_call>"
         )
         self.check(body, {})
+class ThinkingBlockValue(unittest.TestCase):
+    """An Anthropic thinking block whose "thinking" value is not a string ({"type": "thinking", "thinking": 5}) was
+    appended to the reasoning list and crashed "".join(reasoning) (frontend.py:710) with TypeError 'sequence item 0:
+    expected str instance, int found', caught only by the generic malformed-request handler: a 400 naming the exception,
+    with a traceback. As with a text part's "text" (#6098), a non-string thinking value is a 400 naming the field,
+    before anything is sent. A valid or absent thinking value is unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "ok", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, body):
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_non_string_thinking_is_a_400_naming_the_field(self):
+        for th in (5, 5.5, True, None, ["x"]):
+            with self.subTest(thinking=th):
+                status, b = self.post({"model": "x", "max_tokens": 8, "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "hi"}, {"type": "thinking", "thinking": th}]}]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("thinking", b["error"]["message"])
+                self.assertNotIn("TypeError", b["error"]["message"])
+        status, b = self.post({"model": "x", "max_tokens": 8,
+                               "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_valid_and_absent_thinking_unchanged(self):
+        for content in ([{"type": "text", "text": "hi"}, {"type": "thinking", "thinking": "reason"}],
+                        [{"type": "text", "text": "hi"}, {"type": "thinking"}],
+                        [{"type": "text", "text": "hi"}]):
+            with self.subTest(content=content):
+                status, b = self.post({"model": "x", "max_tokens": 8,
+                                       "messages": [{"role": "user", "content": content}]})
+                self.assertEqual(status, 200, b)
+
+
+class AnthropicNonObjectBlock(unittest.TestCase):
+    """A non-object content block in an Anthropic message (content: [5], ["x"], [None]) raised AttributeError
+    ('int'/'str'/'NoneType' object has no attribute 'get') in the block loop (frontend.py:688), caught only by the
+    generic malformed-request handler: a 400 naming the exception, with a traceback in the log. OpenAI skips such
+    parts leniently (_text_of) and _check_parts documents that a non-object part passes through unchanged; the
+    Anthropic reader now skips it the same way, so a valid text block beside it is still read and the request served."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "ok", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, body):
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_non_object_block_beside_text_is_served(self):
+        for content in ([5, {"type": "text", "text": "ok"}], [{"type": "text", "text": "ok"}, 5],
+                        ["x", {"type": "text", "text": "ok"}], [None, {"type": "text", "text": "ok"}]):
+            with self.subTest(content=content):
+                status, b = self.post({"model": "x", "max_tokens": 8,
+                                       "messages": [{"role": "user", "content": content}]})
+                self.assertEqual(status, 200, b)
+
+    def test_all_non_object_blocks_do_not_crash(self):
+        for content in ([5], ["x"], [None], [5, 6]):
+            with self.subTest(content=content):
+                status, b = self.post({"model": "x", "max_tokens": 8,
+                                       "messages": [{"role": "user", "content": content}]})
+                msg = (b.get("error", {}) or {}).get("message", "") if isinstance(b, dict) else ""
+                self.assertNotIn("AttributeError", msg)
+                self.assertNotIn("malformed", msg)
+                self.assertNotEqual(status, 500)
+
+    def test_valid_text_block_unchanged(self):
+        status, b = self.post({"model": "x", "max_tokens": 8,
+                               "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]})
+        self.assertEqual(status, 200, b)
+
+
+class ContentShape(unittest.TestCase):
+    """A message content / system that is not a string or an array of parts, or a text part whose "text" is not a
+    string, raised TypeError in _text_of ('int' object is not iterable / sequence item 0: expected str instance, int
+    found), caught only by the generic malformed-request handler: a 400 naming the exception type, with a traceback in
+    the log. As with messages (#460) and tools (#592), it is a 400 naming the field on both APIs, before anything is
+    sent. Lenient handling of unknown part types and non-object parts inside an array is unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "ok", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_scalar_content_is_a_400_naming_the_field(self):
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            for bad in (5, 5.5, True):
+                with self.subTest(path=path, content=bad):
+                    status, b = self.post(path, {"model": "x", "max_tokens": 8,
+                                                 "messages": [{"role": "user", "content": bad}]})
+                    self.assertEqual(status, 400, b)
+                    self.assertIn("content", b["error"]["message"])
+                    self.assertNotIn("TypeError", b["error"]["message"])
+        status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 8,
+                                                       "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_object_content_is_a_400_naming_the_field(self):
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            with self.subTest(path=path):
+                status, b = self.post(path, {"model": "x", "max_tokens": 8,
+                                             "messages": [{"role": "user", "content": {"a": 1}}]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("content", b["error"]["message"])
+
+    def test_scalar_system_is_a_400_naming_the_field(self):
+        for bad in (5, 5.5, True):
+            with self.subTest(system=bad):
+                status, b = self.post("/v1/messages", {"model": "x", "max_tokens": 8, "system": bad,
+                                                       "messages": [{"role": "user", "content": "hi"}]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("system", b["error"]["message"])
+                self.assertNotIn("TypeError", b["error"]["message"])
+
+    def test_non_string_text_part_is_a_400_naming_the_field(self):
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            with self.subTest(path=path):
+                status, b = self.post(path, {"model": "x", "max_tokens": 8,
+                                             "messages": [{"role": "user", "content": [{"type": "text", "text": 5}]}]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("text", b["error"]["message"])
+                self.assertNotIn("TypeError", b["error"]["message"])
+        status, b = self.post("/v1/messages", {"model": "x", "max_tokens": 8,
+                                               "system": [{"type": "text", "text": 5}],
+                                               "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 400, b)
+        self.assertIn("text", b["error"]["message"])
+
+    def test_lenient_shapes_unchanged(self):
+        for content in ([5], [{"type": "text"}], [{"type": "x"}], "plain", [{"type": "text", "text": "ok"}]):
+            with self.subTest(content=content):
+                status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 8,
+                                                               "messages": [{"role": "user", "content": content}]})
+                self.assertEqual(status, 200, b)
+        for system in ([5], "plain", [{"type": "text", "text": "ok"}], [{"type": 5}]):
+            with self.subTest(system=system):
+                status, b = self.post("/v1/messages", {"model": "x", "max_tokens": 8, "system": system,
+                                                       "messages": [{"role": "user", "content": "hi"}]})
+                self.assertEqual(status, 200, b)
+
+
+class ChatTemplateKwargsShape(unittest.TestCase):
+    """chat_template_kwargs is the vLLM / llama.cpp object convention. A truthy non-object value ("x", 5, [1])
+    used to raise AttributeError ('str'/'int' object has no attribute 'items') in openai_to_messages, caught only
+    by the generic malformed-request handler: a 400 naming the exception type, with a traceback in the log. As with
+    messages (#460) and tools (#592), a wrong-typed field is a 400 naming the field, before anything is sent."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "ok", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, body):
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_non_object_chat_template_kwargs_is_a_400_naming_the_field(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        for bad in ("x", 5, 5.5, True, [1], ["enable_thinking"]):
+            with self.subTest(chat_template_kwargs=bad):
+                status, b = self.post({"model": "x", "max_tokens": 8, "messages": msgs, "chat_template_kwargs": bad})
+                self.assertEqual(status, 400, b)
+                self.assertIn("chat_template_kwargs", b["error"]["message"])
+                self.assertNotIn("AttributeError", b["error"]["message"])
+        status, b = self.post({"model": "x", "max_tokens": 8, "messages": msgs})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_object_and_absent_chat_template_kwargs_still_work(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        for ctk in (None, {}, {"enable_thinking": False}, {"reasoning_effort": "low"}):
+            with self.subTest(chat_template_kwargs=ctk):
+                body = {"model": "x", "max_tokens": 8, "messages": msgs}
+                if ctk is not None:
+                    body["chat_template_kwargs"] = ctk
+                status, b = self.post(body)
+                self.assertEqual(status, 200, b)
+
+    def test_falsy_non_object_values_are_ignored_as_before(self):
+        # the `or {}` already skipped falsy values; that leniency is unchanged (only truthy non-objects crashed)
+        msgs = [{"role": "user", "content": "hi"}]
+        for ctk in ([], "", 0, False):
+            with self.subTest(chat_template_kwargs=ctk):
+                status, b = self.post({"model": "x", "max_tokens": 8, "messages": msgs, "chat_template_kwargs": ctk})
+                self.assertEqual(status, 200, b)
+
+
+class OpenAIModelOutputLimit(unittest.TestCase):
+    """#6402: /v1/models publishes the answer cap next to the context window.
+
+    Clients that size a request from the model list (OpenCode reads llama-swap's `meta.llamaswap.max_output_tokens`,
+    OpenAI-shaped ones read `limit.output`) had nothing to read here and fell back to their own guess."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), model_name="qwen3.8-flash-next-iq3_xxs")
+        cls.svc.set_aliases(["qwen"])
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=30) as r:
+            return json.loads(r.read())
+
+    def tearDown(self):
+        self.svc.shared = {}                # POST /settings would set this; every test starts without it
+
+    def test_output_cap_is_the_context_less_the_engine_margin(self):
+        # the server never lets one answer run past ctx - CTX_SLACK (the same margin prepare() enforces), and a
+        # request with no max_tokens gets that whole room, so it is the largest answer this model can produce
+        m = self.get("/v1/models")["data"][0]
+        self.assertEqual(m["limit"]["context"], CTX)
+        self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["llamaswap"]["max_output_tokens"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["n_ctx"], CTX)                       # the existing key stays
+
+    def test_aliases_report_the_same_limit(self):
+        data = self.get("/v1/models")["data"]
+        self.assertEqual([m["limit"] for m in data], [{"context": CTX, "output": CTX - CTX_SLACK}] * 2)
+        self.assertEqual([m["meta"]["llamaswap"]["max_output_tokens"] for m in data], [CTX - CTX_SLACK] * 2)
+
+    def test_model_retrieve_carries_it_too(self):
+        for path in ("/v1/models/qwen", "/models/qwen"):
+            m = self.get(path)
+            self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_chat_settings_max_tokens_lowers_it(self):
+        # POST /settings {"max_tokens": 512} caps every request that sends none (see the /v1/messages path), so the
+        # published cap has to follow it down; a setting above the context room cannot raise it
+        self.svc.shared = {"max_tokens": 512}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], 512)
+        self.svc.shared = {"max_tokens": 100000}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_it_follows_the_engine_context(self):
+        self.svc.engine.max_context = 8192
+        try:
+            m = self.get("/v1/models")["data"][0]
+            self.assertEqual((m["limit"]["context"], m["limit"]["output"]), (8192, 8192 - CTX_SLACK))
+        finally:
+            self.svc.engine.max_context = CTX

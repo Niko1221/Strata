@@ -1,13 +1,25 @@
 #include "gguf.hpp"
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <malloc.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -95,6 +107,15 @@ int64_t read_int(Cur& c, uint32_t t) {
 }
 }  // namespace
 
+// Threads for the load-time conversion: STRATA_CONVERT_THREADS (1 = the single-threaded loop), else the machine's threads up to 8 (each holds one tensor as
+// floats, 2 GB for the embedding table), never more than there are tensors to convert.
+static int convert_threads(int jobs) {
+    int n = 0;
+    if (const char* v = std::getenv("STRATA_CONVERT_THREADS")) n = std::atoi(v);
+    if (n <= 0) n = (int) std::min(8u, std::max(1u, std::thread::hardware_concurrency()));
+    return std::max(1, std::min(n, jobs));
+}
+
 Gguf::Gguf(const std::string& first) {
     std::smatch m;
     static const std::regex split(R"((.*-)(\d{5})(-of-)(\d{5})(\.gguf)$)");
@@ -121,33 +142,100 @@ void Gguf::convert_small_tensors() {
         mixed |= kv.second.type == T_IQ2_S || kv.second.type == T_IQ3_XXS || kv.second.type == T_IQ3_S || kv.second.type == T_Q2_0;
     iq_experts_ = mixed;
     if (!mixed) return;
+    // #5800: every tensor is converted on its own (its own input, its own output vector), so the conversions run on several threads: one thread took 62 s of
+    // a 122 s cold load of the ISTA IQ3_S set on a 12-core Xeon.  The jobs and their output slots are made in the map's order first, so owned_ holds
+    // the same vectors in the same order as before and the bytes do not depend on the thread count.  STRATA_CONVERT_THREADS=1 is the old single-threaded loop.
+    struct Job {
+        Tensor* t;
+        uint32_t want;   // the type to convert to
+        bool repack;     // the routed Q2_0 -> Q4_0 repack instead (F32 is type 0: it cannot mark it)
+        std::vector<uint8_t>* out;
+    };
+    std::vector<Job> jobs;
     for (auto& kv : tensors_) {
         Tensor& t = kv.second;
         if (t.type == T_Q2_0) {   // the routed down experts of some layers: the same values as Q4_0 blocks
             owned_.emplace_back();
-            conv::repack_q2_0_to_q4_0(t, owned_.back());
-            ++converted_;
+            jobs.push_back({&t, 0, true, &owned_.back()});
             continue;
         }
         const uint32_t want = conv::wanted_type(t.name);
         if (want == 0xFFFFFFFFu || want == t.type) continue;
         owned_.emplace_back();
-        conv::convert(t, want, owned_.back());
-        ++converted_;
+        jobs.push_back({&t, want, false, &owned_.back()});
     }
+    const int n_threads = convert_threads((int) jobs.size());
+    std::atomic<size_t> next{0};
+    std::exception_ptr failed;
+    std::mutex failed_mu;
+    auto work = [&] {
+        for (;;) {
+            const size_t i = next.fetch_add(1);
+            if (i >= jobs.size()) return;
+            try {
+                const Job& j = jobs[i];
+                if (j.repack) conv::repack_q2_0_to_q4_0(*j.t, *j.out);
+                else conv::convert(*j.t, j.want, *j.out);
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(failed_mu);
+                if (!failed) failed = std::current_exception();
+                next.store(jobs.size());   // the others stop at their next tensor
+                return;
+            }
+        }
+    };
+    if (n_threads <= 1) {
+        work();
+    } else {
+        std::vector<std::thread> pool;
+        for (int k = 0; k < n_threads; ++k) pool.emplace_back(work);
+        for (std::thread& th : pool) th.join();
+    }
+    if (failed) std::rethrow_exception(failed);
+    converted_ = (int) jobs.size();
     std::fprintf(stderr, "gguf: %d dense/small tensors converted to Q8_0/F32 at load (the file's routed experts keep their types)\n", converted_);
 }
 
 Gguf::~Gguf() {
     for (Map& mp : maps_) {
+#ifdef _WIN32
+        if (mp.base) UnmapViewOfFile(mp.base);
+        if (mp.hmap) CloseHandle((HANDLE) mp.hmap);
+        if (mp.hfile && mp.hfile != INVALID_HANDLE_VALUE) CloseHandle((HANDLE) mp.hfile);
+#else
         if (mp.base) munmap(mp.base, mp.size);
         if (mp.fd >= 0) close(mp.fd);
+#endif
     }
 }
 
 void Gguf::load_shard(const std::string& path, bool meta) {
     Map mp;
     mp.path = path;
+#ifdef _WIN32
+    HANDLE hf = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) throw std::runtime_error("gguf: cannot open " + path);
+    LARGE_INTEGER fsz{};
+    if (!GetFileSizeEx(hf, &fsz) || fsz.QuadPart <= 0) {
+        CloseHandle(hf);
+        throw std::runtime_error("gguf: cannot stat " + path);
+    }
+    HANDLE hm = CreateFileMappingA(hf, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!hm) {
+        CloseHandle(hf);
+        throw std::runtime_error("gguf: CreateFileMapping failed for " + path);
+    }
+    void* base = MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
+    if (!base) {
+        CloseHandle(hm);
+        CloseHandle(hf);
+        throw std::runtime_error("gguf: MapViewOfFile failed for " + path);
+    }
+    mp.hfile = (void*) hf;
+    mp.hmap = (void*) hm;
+    mp.size = (size_t) fsz.QuadPart;
+    mp.base = base;
+#else
     mp.fd = open(path.c_str(), O_RDONLY);
     if (mp.fd < 0) throw std::runtime_error("gguf: cannot open " + path);
     struct stat st;
@@ -155,6 +243,7 @@ void Gguf::load_shard(const std::string& path, bool meta) {
     mp.size = (size_t) st.st_size;
     mp.base = mmap(nullptr, mp.size, PROT_READ, MAP_SHARED, mp.fd, 0);
     if (mp.base == MAP_FAILED) throw std::runtime_error("gguf: mmap failed for " + path);
+#endif
     maps_.push_back(mp);
     Cur c{(const uint8_t*) mp.base, (const uint8_t*) mp.base + mp.size};
     if (c.get<uint32_t>() != 0x46554747u) throw std::runtime_error("gguf: bad magic in " + path);
@@ -296,6 +385,17 @@ constexpr uint64_t MERGE_GAP = 1ull << 20;   // tensors closer than this in a fi
 
 Stager::Stager(const Gguf& g, std::vector<Group> groups, int consumers, int ahead) : g_(g), consumers_(consumers), ahead_(ahead) {
     if (consumers < 1 || ahead < 1) throw std::runtime_error("stager: needs a consumer and a group ahead");
+#ifdef _WIN32
+    for (int s = 0; s < g.shards(); ++s) {
+        HANDLE hf = CreateFileA(g.shard_path(s).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf == INVALID_HANDLE_VALUE) {
+            for (void* h : plain_handle_) CloseHandle((HANDLE) h);
+            plain_handle_.clear();
+            throw std::runtime_error("stager: cannot open " + g.shard_path(s));
+        }
+        plain_handle_.push_back((void*) hf);
+    }
+#else
     bool no_direct = false;
     for (int s = 0; s < g.shards(); ++s) {
         const int pf = ::open(g.shard_path(s).c_str(), O_RDONLY);
@@ -308,6 +408,7 @@ Stager::Stager(const Gguf& g, std::vector<Group> groups, int consumers, int ahea
         direct_fd_.push_back(df);
     }
     if (no_direct) std::fprintf(stderr, "gguf: the model's file system refuses O_DIRECT: read through the page cache\n");
+#endif
     groups_.resize(groups.size());
     for (size_t i = 0; i < groups.size(); ++i) {
         G& gr = groups_[i];
@@ -359,11 +460,17 @@ Stager::~Stager() {
     }
     cv_.notify_all();
     reader_.join();
+#ifdef _WIN32
+    for (G& gr : groups_) if (gr.buf) _aligned_free(gr.buf);
+    for (uint8_t* b : free_) if (b) _aligned_free(b);
+    for (void* h : plain_handle_) CloseHandle((HANDLE) h);
+#else
     for (G& gr : groups_) std::free(gr.buf);
     for (uint8_t* b : free_) std::free(b);
     for (int fd : plain_fd_) ::close(fd);
     for (int fd : direct_fd_)
         if (fd >= 0) ::close(fd);
+#endif
 }
 
 void Stager::run() {
@@ -378,9 +485,15 @@ void Stager::run() {
         }
         try {
             if (!buf) {
+#ifdef _WIN32
+                void* p = _aligned_malloc(std::max(buf_bytes_, PAGE), PAGE);
+                if (!p)
+                    throw std::runtime_error("stager: " + std::to_string(buf_bytes_ >> 20) + " MiB for a group's buffer");
+#else
                 void* p = nullptr;
                 if (posix_memalign(&p, PAGE, std::max(buf_bytes_, PAGE)))
                     throw std::runtime_error("stager: " + std::to_string(buf_bytes_ >> 20) + " MiB for a group's buffer");
+#endif
                 buf = (uint8_t*) p;
             }
             gr.buf = buf;
@@ -411,12 +524,31 @@ void Stager::read_group(G& gr) {
     std::vector<std::thread> th;
     for (int r = 0; r < READERS; ++r)
         th.emplace_back([&, r] {
+#ifndef _WIN32
             std::vector<unsigned char> inc(PIECE / PAGE);
+#endif
             try {
                 for (size_t i; (i = next.fetch_add(1)) < pieces.size();) {
                     const Span& s = *pieces[i].s;
                     const uint64_t fo = s.off + pieces[i].k, n = std::min(PIECE, s.len - pieces[i].k);
                     const uint64_t file = g_.shard_size(s.shard), valid = std::min(n, file - fo);   // the span's last page may pass the end
+                    uint8_t* dst = gr.buf + s.at + pieces[i].k;
+#ifdef _WIN32
+                    HANDLE hf = (HANDLE) plain_handle_[(size_t) s.shard];
+                    uint64_t got = 0;
+                    while (got < valid) {
+                        OVERLAPPED ov{};
+                        const uint64_t pos = fo + got;
+                        ov.Offset = (DWORD) (pos & 0xffffffffull);
+                        ov.OffsetHigh = (DWORD) (pos >> 32);
+                        const DWORD want = (DWORD) std::min<uint64_t>(valid - got, 16ull << 20);
+                        DWORD rd = 0;
+                        if (!ReadFile(hf, dst + got, want, &rd, &ov) || rd == 0)
+                            throw std::runtime_error("stager: read of " + g_.shard_path(s.shard) + " at " + std::to_string(pos));
+                        got += rd;
+                    }
+                    disk_bytes_ += valid;
+#else
                     if (mincore((void*) (g_.shard_base(s.shard) + fo), valid, inc.data()) != 0)
                         throw std::runtime_error(std::string("stager: mincore: ") + std::strerror(errno));
                     bool cached = gr.spec.cached;
@@ -425,7 +557,6 @@ void Stager::read_group(G& gr) {
                         for (uint64_t p = 0; p < (valid + PAGE - 1) / PAGE; ++p) cached &= inc[p] & 1;
                     }
                     const int fd = cached || direct_fd_[(size_t) s.shard] < 0 ? plain_fd_[(size_t) s.shard] : direct_fd_[(size_t) s.shard];
-                    uint8_t* dst = gr.buf + s.at + pieces[i].k;
                     uint64_t got = 0;
                     while (got < valid) {
                         // O_DIRECT reads whole pages: the last piece of a file asks past its end and gets what is there
@@ -437,6 +568,7 @@ void Stager::read_group(G& gr) {
                         got += (uint64_t) k;
                     }
                     (cached ? cache_bytes_ : disk_bytes_) += valid;
+#endif
                 }
             } catch (const std::exception& e) {
                 errs[(size_t) r] = e.what();

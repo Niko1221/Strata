@@ -116,6 +116,26 @@ class FetchDrafter(unittest.TestCase):
         self.assertNotIn("GB", out.getvalue())
         self.assertNotIn("0.00", out.getvalue())
 
+    def test_a_shorter_line_leaves_no_tail_of_the_longer_one(self):
+        # 0.2.17 item 18 (p1004): "The DFlash2 drafter is ready. 1.21 of 1.21 GB.21 of 1.21 GB": the \r rewrite of a longer line was not cleared.
+        def steps(data, progress=None, **_):
+            progress("Downloading the DFlash2 drafter (1.2 GB, once)", 1_210_000_000, 1_210_000_000)
+            progress("Packing the DFlash2 drafter for the engine", 1_210_000_000, 1_210_000_000)
+            progress("Ready.", 1_210_000_000, 1_210_000_000)
+            return Path("pack")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            got, _ = self.call(side_effect=steps)
+        self.assertTrue(got)
+        parts = out.getvalue().split("\r")[1:]
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(len({len(p) for p in parts}), 1, "every rewrite is as long as the longest line so far")
+        # what the screen shows (a terminal overwrites from the left and keeps the rest of the old line)
+        screen = ""
+        for p in parts:
+            screen = p + screen[len(p):]
+        self.assertEqual(screen.rstrip(), "  Ready. 1.21 of 1.21 GB")
+
     def test_a_real_download_still_shows_its_sizes(self):
         def download(data, progress=None, **_):
             progress("Downloading the DFlash2 drafter", 340_000_000, 522_000_000)
@@ -130,7 +150,7 @@ class FetchDrafter(unittest.TestCase):
 class Wiring(unittest.TestCase):
     def test_step_6_drops_to_the_mtp_layer_when_the_drafter_cannot_be_had(self):
         text = (ROOT / "setup.py").read_text(encoding="utf-8")
-        auto = text.index("auto_drafter(a, family, fam, model, hip, gpu, mtp_have)")
+        auto = text.index("auto_drafter(a, family, fam, model, hip, gpu, mtp_have, canonical=q2_avx)")
         self.assertLess(text.index("mtp_have = find_in(roots"), auto)
         self.assertLess(auto, text.index("mtp_fetch = 5.2 if"))                                      # before the disk-room estimate
         fetch = text.index("fetch_dflash2_drafter(data, fam, model, hip, gpu)")

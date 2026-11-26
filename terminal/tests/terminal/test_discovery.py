@@ -349,6 +349,16 @@ class NestedModelsDirs(unittest.TestCase):
     def test_data_dir_of_resolves_to_the_outer_data_folder(self):
         self.assertEqual(discovery.data_dir_of(discovery.Footprint(weights=[self.gguf])), self.data)
 
+    def test_a_ready_made_pack_under_models_resolves_to_the_data_folder(self):
+        pack = self.data / "models" / "Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata" / "pack"
+        pack.mkdir(parents=True)
+        self.assertEqual(discovery.data_dir_of(discovery.Footprint(pack=pack)), self.data)
+
+    def test_a_pack_in_packs_keeps_its_data_folder(self):
+        pack = self.data / "packs" / "coder-IQ1_M"
+        pack.mkdir(parents=True)
+        self.assertEqual(discovery.data_dir_of(discovery.Footprint(pack=pack)), self.data)
+
     def test_a_deep_nest_is_one_level(self):
         deep = self.data / "models" / "models" / "models" / "models" / "t"
         deep.mkdir(parents=True)
@@ -400,6 +410,46 @@ class NestedModelsDirs(unittest.TestCase):
         self.assertEqual(out["pack"], self.data / "packs" / "coder-iq1_m")
         self.assertEqual(out["mtp"], self.data / "mtp" / "rt")
         self.assertEqual(out["mmproj"], self.data / "models" / "mmproj-7b.gguf")
+
+
+class ComponentStoreLookup(unittest.TestCase):
+    """#6732: `strata launch --model` run by a component install must read the model's settings from that store's own
+    install folder, not from a dev checkout listed earlier in the settings file's ``installs`` — the launch then re-derived
+    the profile's engine fields onto the checkout and served that build's older engine while the active component was newer."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="strata-discovery-6732-")
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.env = {"LOCALAPPDATA": str(base / "local"), "APPDATA": str(base / "roaming")}
+        self.store = base / "local" / "Strata"
+        self.control = self.store / "components" / "control" / "0.1.66-windows-x86_64-cuda-cuda13"     # the running package's folder
+        self.control.mkdir(parents=True)
+        self.own = self.store / "install"
+        self.own.mkdir(parents=True)
+        self.checkout = base / "repos" / "Strata" / "terminal"                                        # an older dev setup, remembered first
+        self.checkout.mkdir(parents=True)
+        (self.own / "strata-iq3_s.json").write_text(json.dumps({"exe": "component:strata-engine", "args": []}), encoding="utf-8")
+        (self.checkout / "strata-iq3_s.json").write_text(json.dumps({"exe": str(self.checkout / "engine" / "strata.exe"), "args": []}),
+                                                          encoding="utf-8")
+        settings = Path(self.env["APPDATA"]) / "Strata"
+        settings.mkdir(parents=True)
+        (settings / "settings.json").write_text(json.dumps({"installs": [str(self.checkout), str(self.own)]}), encoding="utf-8")
+
+    def test_the_running_component_owns_the_place_list(self):
+        found = discovery.places(here=self.control, environ=self.env, windows=True)
+        self.assertEqual([p.source for p in found], ["here", "remembered"], "the store beside the running control comes before a remembered checkout")
+        self.assertEqual(found[0].path, self.store / "install")
+
+    def test_the_main_install_is_the_running_component_store(self):
+        path, source = discovery.find_install(here=self.control, environ=self.env, windows=True)
+        self.assertEqual((os.path.normcase(str(path)), source), (os.path.normcase(str(self.store / "install")), "here"))
+
+    def test_a_plain_terminal_folder_keeps_the_old_order(self):
+        found = discovery.places(here=self.checkout, environ=self.env, windows=True)
+        self.assertEqual([p.source for p in found], ["here", "remembered"])
+        self.assertEqual(found[0].path, self.checkout)                                                # an old-style Terminal still leads with its own folder
+        self.assertEqual(os.path.normcase(str(found[1].path)), os.path.normcase(str(self.own.resolve())))
 
 
 if __name__ == "__main__":

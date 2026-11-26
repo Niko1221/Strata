@@ -36,15 +36,15 @@ Comments are for this document only; actual feed files must be strict JSON.
   "sequence": 12,                           // goes up with every feed; an older one than the last accepted is refused
   "generated_at": "2026-10-20T10:00:00Z", "expires_at": "2027-10-20T10:00:00Z",   // expires_at may be null
   "app": {                                  // exactly Tauri's static updater JSON, plus sha256/size per platform
-    "version": "0.2.16", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
-    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.16-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
+    "version": "0.2.22", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
+    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.22-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
-  "control": {"version": "0.1.62", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
+  "control": {"version": "0.1.69", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
   "engine": {"packages": [{
-    "version": "0.1.62", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
+    "version": "0.1.69", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
     "archs": ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"], "min_driver": {"nvidia": "580.65"}, "min_runtime": null,
-    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.62-linux-x86_64-cuda-cuda13.tar.gz",
+    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.69-linux-x86_64-cuda-cuda13.tar.gz",
     "size": 505568970,                      // bytes of the archive
     "sha256": "...",                        // of the archive
     "manifest_sha256": "...",               // of the package's engine-component.json (it holds every file's hash)
@@ -63,7 +63,7 @@ separate component, picked by the model, and never in place of the Strata engine
 
 ```jsonc
 "shape_engines": {"packages": [{            // the same entry as "engine" (pack-engine writes it), plus the shape = the geometry's name the engine was compiled for
-  "shape": "q4_lite", "version": "0.1.62", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13", "archs": ["sm_120"], "min_driver": {"nvidia": "580.65"},
+  "shape": "q4_lite", "version": "0.1.69", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13", "archs": ["sm_120"], "min_driver": {"nvidia": "580.65"},
   "min_runtime": "0.1.58", "build_id": "...", "format": "tar.gz", "url": "strata-q4-lite-0.1.58-linux-x86_64-cuda-cuda13.tar.gz", "size": 0, "sha256": "...", "manifest_sha256": "...", "installed_bytes": 0}]},
 "models": {"packages": [{"id": "qwen4-lite", "family": "qwen4exp_q4_lite", ...}]}     // the family names the shape: qwen4exp_<shape>
 ```
@@ -178,7 +178,7 @@ Back both up (a lost feed key means every installed PC needs a build with a new 
 Then, in git, once, in the commit that ships the first signed release (the release key id is `5d1bc23abbeffd0d`):
 
 * the `keys` entry from `feed-key.pub.json` into `strata_control/update_keys.json`;
-* the Tauri public key into `apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and into `update_keys.json` as `app_minisign_public`
+* the Tauri public key into `app/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and into `update_keys.json` as `app_minisign_public`
   (the Terminal verifies the app installer with it).
 
 Only release keys live in `update_keys.json`. A tester or local-test key is never added there: it is passed with `STRATA_UPDATE_TRUSTED_KEYS`
@@ -195,8 +195,8 @@ All signing happens on the release PC, on the finished files.
 
 **What is built (per OS)**
 
-* *The installer*, one per OS (0.2.16). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
-  Windows: `Strata-0.2.16-windows-x64-setup.exe`; Linux: `Strata-0.2.16-linux-x86_64.AppImage`; Mac: `Strata-0.2.16-macos-arm64.dmg` for people and
+* *The installer*, one per OS (0.2.22). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
+  Windows: `Strata-0.2.22-windows-x64-setup.exe`; Linux: `Strata-0.2.22-linux-x86_64.AppImage`; Mac: `Strata-0.2.22-macos-arm64.dmg` for people and
   `Strata.app.tar.gz` as the updater archive (the updater cannot install from a dmg). The Windows and Linux files are both the first download and the
   file `latest.json` names; the first start of the app downloads the engine for the card (the first-run card), or installs a file the person already has.
   Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
@@ -206,22 +206,42 @@ All signing happens on the release PC, on the finished files.
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
-    python packaging/feed_tool.py pack-control <control folder> --version 0.1.62 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
+    python packaging/feed_tool.py pack-control <control folder> --version 0.1.69 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
-    # (0.1.62), not the app version: a Control package newer than the installed one is installed by `strata update`.
+    # (0.1.69), not the app version: a Control package newer than the installed one is installed by `strata update`.
     # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
-    cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows installer (no engine inside)
+    cd app/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows installer (no engine inside)
     # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
     # on the release PC, per updater artifact (Windows setup .exe, Linux .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.16 --archive Strata-0.2.16-windows-x64-setup.exe --sig Strata-0.2.16-windows-x64-setup.exe.sig --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.16 --archive Strata-0.2.16-linux-x86_64.AppImage --sig Strata-0.2.16-linux-x86_64.AppImage.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.16 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.22 --archive Strata-0.2.22-windows-x64-setup.exe --sig Strata-0.2.22-windows-x64-setup.exe.sig --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.22 --archive Strata-0.2.22-linux-x86_64.AppImage --sig Strata-0.2.22-linux-x86_64.AppImage.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.22 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json (--carry-dsv41 <the last strata-feed.json> --carry-dsv41-base https://github.com/Niko1221/Strata/releases/download/<DSV41-TAG>/ | --no-dsv41-carry) [--shapes RELEASE/shapes] [--drafters RELEASE/drafters]
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
 `set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
 signing, stops the release. The Mac dmg is not in `latest.json` (the updater uses `Strata.app.tar.gz`) and needs no Tauri signature; it is downloaded by hand.
+
+### Symbols (kept from 0.2.22; owner decision 2026-11-25)
+
+Every engine package of a release keeps a **symbol file**: what turns an address from a crash report or a minidump of the user's engine back into a source line.
+The symbol files are never part of a package and never a release asset; they live on the release PC in `C:\r0222\symbols\<package name>\` (one folder per package,
+named like the package folder: `strata-engine-0.1.69-windows-x86_64-cuda-cuda13`, `strata-inkling-0.1.69-linux-x86_64-cuda-cuda13`) and are kept for good.
+
+* The build scripts do it: they configure with `-DSTRATA_KEEP_SYMBOLS=ON` (`engine/cmake/strata_symbols.cmake`: host code only, `-g`, or `/Z7` + `/DEBUG /OPT:REF /OPT:ICF` and no build path in the exe on
+  Windows; nvcc `-G` and device debug are never used, so the machine code is the code of a build without it) and call `tools/packaging/keep_symbols.py` on the file that is about to be packaged.
+  `STRATA_KEEP_SYMBOLS=0` builds without (a test build); a release build whose binary has no debug information stops. `SYMBOLS_DIR` names where the folders are written (default `<repo>/symbols`).
+  * Windows (`build_cuda_windows.py`, and the Windows scripts of a release for HIP and Inkling): `keep_symbols.py pe` copies `<exe>.pdb` after checking its GUID against the exe's CodeView record.
+  * Linux (`build_cuda_linux.sh`, `build_cuda_linux_aarch64.sh`, `build_sycl_linux.sh`, `build_hip_linux.sh`): `keep_symbols.py elf` writes `<binary>.debug` (`objcopy --only-keep-debug`), strips the debug
+    information from the stage copy (`--strip-debug`: the function symbols stay, as before) and links the two with `.gnu_debuglink`; it checks that `.text` and `.nv_fatbin` are byte-equal before and after.
+  * Mac (`tools/packaging/mac/build_engine.sh`): `keep_symbols.py macho` makes `<binary>.dSYM` with `dsymutil`, then `strip -S` (before the owner signs).
+  Each folder has a `symbols.json`: file, kind, the id the symbol file must match (ELF build-id, PE GUID and age, Mach-O UUID), sha256 of the shipped binary, the symbol file and its sha256.
+* Checklist step, after the packages are built and before the cleanup of a build folder: copy every `symbols/<package name>/` to `C:\r0222\symbols\` (keep the file names), check that each package
+  folder shipped has one with an entry for every exe and dll of the package that we built (`keep_symbols.py show <binary>` prints the id to find it by), and write the sha256 of the folder's files into the
+  release's `SHA256SUMS-symbols.txt` there. A package that is carried over from an earlier release (the same file, an absolute url in the feed) keeps the symbols of the release that built it.
+* The `.text` check of a new toolchain or flag: build the same commit with and without `STRATA_KEEP_SYMBOLS` (one architecture is enough) and run `keep_symbols.py check <with> <without>`: it compares `.text`
+  and the CUDA fatbin section; both must be equal.
 
 ### The Mac app
 
@@ -262,7 +282,7 @@ Publish as a normal release (latest): a pre-release is not found by `latest/down
 
 Everything above runs against a folder or a loopback server: `tests/terminal/test_update_feed.py` (signatures, hashes, downgrades, selection),
 `tests/terminal/test_updater.py` (end to end against a loopback HTTP feed with stub engines: update, test-start, switch; a failing test start
-keeps the old engine; an interrupted download resumes; rollback; Control; the app installer's minisign check), `apps/host/tests/component-updates.test.mjs`
+keeps the old engine; an interrupted download resumes; rollback; Control; the app installer's minisign check), `app/host/tests/component-updates.test.mjs`
 (the Settings buttons). For a real engine on a box, build a package with `packaging/package_engine.py`, serve it from a local feed made by `packaging/make_local_feed.py`, and run `strata update --feed` against it.
 
 ### Release gate: a feed model installed from a real file

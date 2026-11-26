@@ -47,3 +47,20 @@ export async function setChatFolder(chatId: string, path: string | null) {
   const result = await api.post<{ folder: unknown }>('/api/chat/folder', { sessionId: chatId, path });
   put(chatId, readFolder(result.folder));
 }
+
+const copies = new Map<string, Promise<void>>();
+/**
+ * A copy of a chat (Branch from here, Edit, Ask again: the host keeps the folder by chat id, and the copy has a new id) starts in the folder of the chat it came from (#7101).
+ * Never throws: when the folder cannot be set the copy keeps the default folder, which its folder chip shows.
+ */
+export function copyChatFolder(fromId: string, toId: string): Promise<void> {
+  const done = (async () => {
+    if (!folderOf(fromId)) await loadFolder(fromId);
+    const folder = folderOf(fromId);
+    if (folder) { try { await setChatFolder(toId, folder.path); } catch { /* the copy keeps the default folder */ } }
+  })().finally(() => { if (copies.get(toId) === done) copies.delete(toId); });
+  copies.set(toId, done);
+  return done;
+}
+/** Resolves when the folder of a copy is set (at once when none is being copied): "Ask again" sends the question right after the copy is made. */
+export const folderCopied = (chatId: string | null | undefined): Promise<void> => (chatId ? copies.get(chatId) ?? Promise.resolve() : Promise.resolve());

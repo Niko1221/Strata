@@ -13,6 +13,7 @@ BUILD_SH = ROOT.parent / "engine" / "sycl" / "tools" / "build.sh"
 BASH = shutil.which("bash")
 
 
+@unittest.skipIf(os.name == "nt", "POSIX build.sh test requires a POSIX shell")
 @unittest.skipUnless(BASH, "needs bash")
 class BuildGuard(unittest.TestCase):
     def setUp(self):

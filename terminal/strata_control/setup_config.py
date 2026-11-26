@@ -124,6 +124,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     fam = inp.fam
     family = inp.family
     gpu = inp.gpu
+    gpu_uma = bool((gpu or {}).get("uma"))
     hip = inp.hip
     in_budget = inp.in_budget
     lib_dirs = inp.lib_dirs
@@ -220,21 +221,26 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
-    if ctx > 8192:
+    if ctx > 8192 or (kv and kv != "fp16"):
         args += ["--kv", kv]
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
         resident = False                               # an engine from before --resident-experts would refuse it
         ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "
            "the OS file cache (run setup again after the next engine update)")
+    work_budget, work_asked = None, None               # the app's "Leave 20% for my work" number (the old rule), written beside the budget (setup.work_budget_key)
     if low_ram and ready:
         # NVFP4 (68 GB of experts) on a PC whose RAM does not hold them: the RAM-budget mode, as Unsloth's files - the
-        # most-used experts outside VRAM pinned within RAM less 24 GB, the rest read from experts.bin.  Mapped
-        # (--mmap-experts) on a 64 GB Windows PC, the experts it read stayed in the engine's working set: free RAM
-        # fell to 0.6 GB on the RTX 5070 PC (2026-10-13), where the budget mode kept 22 GB free
-        rb = resident_budget_gib(model, ram)
-        args += ["--resident-budget-gib", str(rb)]
-        ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
-           "experts.bin on the SSD as needed")
+        # most-used experts outside VRAM pinned within RAM less 17 GB (24 on a unified-memory GPU), the rest read from experts.bin.
+        # When host RAM is very small (rb <= 0), switch cleanly to GPU+SSD Only (--ssd-experts: bounded 1-2 GiB DMA ring, 0 swap).
+        rb = resident_budget_gib(model, ram, uma=gpu_uma)
+        if rb <= 0:
+            args += ["--ssd-experts"]
+            ok(f"GPU+SSD streaming mode: {model}'s cold experts stream directly from SSD through a bounded pinned DMA ring (0 swap)")
+        else:
+            args += ["--resident-budget-gib", str(rb)]
+            work_budget = resident_budget_gib(model, ram, uma=gpu_uma, work=True)
+            ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
+               "experts.bin on the SSD as needed")
     elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
     elif is_gb10(gpu):
@@ -313,11 +319,11 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
         if q4_split:                                   # #498: no budget to take it out of
             pass
         elif budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget
-            budget = resident_budget_gib(model, ram, kv_ram_gb)
+            budget = resident_budget_gib(model, ram, kv_ram_gb, gpu_uma)
             ok(f"RAM budget: {budget} GiB (less the KV cache's RAM)")
-        elif budget is not None and budget > resident_budget_gib(model, ram, kv_ram_gb):
+        elif budget is not None and budget > resident_budget_gib(model, ram, kv_ram_gb, gpu_uma):
             warn(f"the KV cache's {kv_ram_gb:.1f} GB of RAM come on top of your {budget:g} GiB RAM budget (setup "
-                 f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb)} GiB); kept as you chose")
+                 f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb, gpu_uma)} GiB); kept as you chose")
     elif ctx >= 65536:   # #620: say why, so a regenerated config that lost --kv-resident is not a surprise
         ok(f"KV streaming off: it needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them "
            f"and the {kv_ram_gb:.1f} GB cache), and this PC has {ram:.0f}; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on "
@@ -326,6 +332,8 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
         warn("--kv-streaming on: a context under 64K is not streamed (the attention's window holds all of it): off")
     if budget is not None and not q4_split:   # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N
         args += ["--resident-budget-gib", f"{budget:g}"]   # GiB kept in RAM (#498: a layer split had no budget)
+        work_budget = resident_budget_gib(model, ram, kv_ram_gb if "--kv-resident" in args else 0.0, gpu_uma, work=True)
+        work_asked = a.resident_budget_gib
         if gpu.get("uma") and "--expert-cache" in args:
             # #1715: the cache and the budget draw on the same RAM: a number that leaves the OS its room, not `auto`
             slots = uma_expert_cache(model, ram, budget, kv_ram_gb if "--kv-resident" in args else 0.0)
@@ -358,7 +366,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
-    elif hip and WIN and gpu.get("uma") and gfx_arch_is(gpu.get("arch"), "gfx1151") and not multi and "--vram-reserve-mib" not in args:
+    elif hip and WIN and gpu.get("uma") and any(gfx_arch_is(gpu.get("arch"), a) for a in ("gfx1151", "gfx1150", "gfx1103")) and not multi and "--vram-reserve-mib" not in args:
         # G16 (Q4-P8, 2026-11-08): a Windows Strix Halo config with no reserve at all (pictures off, or a model with no picture reader) never started
         # UD-Q4_K_XL: with no --vram-reserve-mib the engine puts its Windows floor of 2560 MiB on any card of 15 GiB or more (made for a 20 GB discrete
         # card that paged, #1376), and on this shared pool that room is taken straight back by the RAM budget's page-locked complement, so the prompt
@@ -427,6 +435,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
            "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
+    lib.work_budget_key(cfg, work_budget, work_asked)  # "ui_budget_work_gib": the number "Leave 20% for my work" swaps in for args' budget (none: the app leaves the budget alone)
     if (uenv := unsloth_default_env(family, model, hip, in_budget, str(gpu.get("arch") or ""))):
         cfg["env"] = uenv
     if hip:
@@ -439,7 +448,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
         else:
             table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"), [eng / "tuning"])
             if table:
-                cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
+                cfg.setdefault("env", {})["STRATA_HIPBLASLT_TUNING"] = str(table)
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
@@ -448,6 +457,8 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             # them and turning the opt-in off takes them out again.
             cfg.setdefault("env", {}).update(GFX1103_SWITCHES)
         if GFX1150_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1150"):
+            if not WIN:
+                cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
             # the exact gfx1151 speed switches measured on this chip (GFX1150_SWITCHES): the engine has no arch defaults
             # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
             # them and turning the opt-in off takes them out again.

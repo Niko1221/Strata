@@ -50,6 +50,17 @@ test('every key setup itself writes into a run config is a known key, so a fresh
   for (const key of [...keys, 'user_args']) assert.ok(KNOWN_KEYS.has(key), `${key} is written by setup/the app but the settings check calls it unknown`);
   const text = JSON.stringify({ exe: 'e', args: ['--native', 'm'], args_written: ['--native', 'm'], user_args: ['--pool-workers', '8'], port: 8080 });
   assert.deepEqual(checkRunConfig(text), { ok: true, issues: [] });
+  const hy4Text = JSON.stringify({
+    exe: 'component:strata-hy4',
+    shape_title: 'Tencent Hy4-Flash',
+    arch: 'hy4flash',
+    model_name: 'hy4-flash-sq-64',
+    drafting: 'dfly2',
+    args: ['--native', '/m/Hy4-Flash-SQ-64.strata', '--engram', '/m/Hy4-Flash-Engram-Q8.strata', '--max-context', '131072'],
+    args_written: ['--native', '/m/Hy4-Flash-SQ-64.strata', '--engram', '/m/Hy4-Flash-Engram-Q8.strata', '--max-context', '131072'],
+    port: 8080,
+  });
+  assert.deepEqual(checkRunConfig(hy4Text), { ok: true, issues: [] });
 });
 
 test('broken JSON is reported with its line, in plain words', () => {
@@ -147,4 +158,22 @@ test('every issue sentence exists in all nine languages and keeps its slots', as
 
 test('the notes the app itself writes into the file (ui_resource_baseline, ui_vision_device, ...) are not reported', () => {
   assert.deepEqual(checkRunConfig('{"ui_resource_baseline": {"parallel": 2}, "ui_vision_device": "cpu", "ui_resource_profile": "work"}'), { ok: true, issues: [] });
+});
+
+test('inkling_thinking_budget (Inkling-2-Mini default thinking budget, 0.2.21) is a known key with a number from 0 up, not flagged', () => {
+  assert.ok(KNOWN_KEYS.has('inkling_thinking_budget'));
+  const text = JSON.stringify({ exe: 'component:strata-inkling', arch: 'inkling2_loop', args: ['--native', 'Inkling-2-Mini-SQ-10.strata'], inkling_thinking_budget: 400 });
+  const ok = checkRunConfig(text);
+  assert.equal(ok.ok, true, JSON.stringify(ok.issues));
+  assert.equal(ok.issues.filter(i => i.key === 'inkling_thinking_budget').length, 0);
+  const bad = checkRunConfig(JSON.stringify({ exe: 'x', args: [], inkling_thinking_budget: -5 }));
+  assert.ok(bad.issues.some(i => i.key === 'inkling_thinking_budget'), 'a negative budget is reported');
+});
+
+test('inkling_budget_cap (#7133: false keeps a client\'s full thinking budget) is a known key and must be true or false', () => {
+  assert.ok(KNOWN_KEYS.has('inkling_budget_cap'));
+  const ok = checkRunConfig(JSON.stringify({ exe: 'component:strata-inkling', arch: 'inkling2_loop', args: ['--native', 'Inkling-2-Mini-SQ-10.strata'], inkling_budget_cap: false }));
+  assert.equal(ok.issues.filter(i => i.key === 'inkling_budget_cap').length, 0, JSON.stringify(ok.issues));
+  const bad = checkRunConfig(JSON.stringify({ exe: 'x', args: [], inkling_budget_cap: 'no' }));
+  assert.ok(bad.issues.some(i => i.key === 'inkling_budget_cap'), 'a string is reported');
 });

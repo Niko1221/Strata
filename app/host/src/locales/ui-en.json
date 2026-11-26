@@ -22,9 +22,9 @@
  "ui21": "What Enter does when you send a message while the assistant is still answering.",
  "ui22": "Wait for the answer",
  "ui23": "Send after the answer",
- "ui24": "Interrupt the answer",
+ "ui24": "Send a live message",
  "ui25": "Enter sends it when the answer is done.",
- "ui26": "Enter stops the answer here and sends it now.",
+ "ui26": "Enter sends it at the next step, or after the answer if needed.",
  "ui27": "Waiting to send",
  "ui28": "Take back",
  "ui29": "Quote",
@@ -39,5 +39,13 @@
  "ui38": "Type your own answer",
  "ui39": "Send answer",
  "ui40": "Questions for you",
- "ui41": "Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision."
+ "ui41": "Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision.",
+ "ui42": "Select all that apply",
+ "ui43": "Choose one",
+ "ui44": "Add a note or extra detail (optional)",
+ "ui45": "Stop the assistant now",
+ "ui46": "Skip this question and let the assistant continue",
+ "ui47": "Skipping…",
+ "ui48": "Sending…",
+ "ui49": "Answer the question above to continue…"
 }

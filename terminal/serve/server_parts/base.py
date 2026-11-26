@@ -101,6 +101,17 @@ ANSWER_ROOM_MIN_CAP = 1024    # 0.1.45: from this max_tokens on, thinking withou
 ANSWER_RESERVE_MIN = 512     # #984: the tokens kept for the answer when a thinking budget is cut down to fit max_tokens
 
 
+# Inkling-2-Mini's default thinking budget (tokens) at each thinking level, when neither the request nor the config names one.  One number for all
+# levels: STRATA_INKLING_THINKING_BUDGET (config: inkling_thinking_budget), 0 = none.  Chosen from the study in
+# phaseA-tests/rel0221/RESULTS-0221-THINKING.md.
+INKLING_BUDGET_BY_EFFORT = {"none": 1024, "minimal": 1024, "low": 2048, "medium": 4096, "high": 8192, "xhigh": 16384, "max": 16384}
+INKLING_ROOM_MIN_CAP = 16    # from this max_tokens on an Inkling reply keeps its share for the answer (the other families: ANSWER_ROOM_MIN_CAP)
+# What an Inkling reply says when truly nothing visible could be produced (never an empty string; finish_reason stays "length" / "stop").
+NO_ANSWER_LENGTH = ("[No answer: the model used all of the reply's token limit while thinking. Ask again with a higher max_tokens or a lower "
+                    "thinking budget (reasoning_budget_tokens).]")
+NO_ANSWER_STOP = "[No answer: the model ended its reply without writing one. Ask again, or rephrase.]"
+
+
 FIT_MIN_ROOM = 1024          # #5924: fit_max_tokens never shortens max_tokens below this (a 400 instead; see fit_floor)
 
 
@@ -124,6 +135,7 @@ REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my 
 # continues from the live session.  Without it the engine ran a window or two past the cut, and the next pass read the
 # whole reasoning again from the checkpoint before it.  The server's own key in `sampling`, never a client's.
 HOLD_KEY = "_strata_hold"
+KEEP_CKPT_KEY = "_strata_keep_ckpt"     # Inkling: a later pass of one request - the engine keeps the slot's prompt-end checkpoint (ckpt=0; the server sets it)
 
 
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
