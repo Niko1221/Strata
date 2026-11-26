@@ -653,6 +653,10 @@ __global__ void native_q4_k_mmvq_kernel(const Q4KBlock* __restrict__ w,
     }
 }
 
+// P2: __vsubss4(x, 0x20202020) for bytes of x in [0, 63] (Q6_K's codes, so nothing saturates): x | 0x80 is x + 0x80 per
+// byte, minus 0x20 never borrows (0x60..0x9f), and the xor takes the 0x80 back: the same int8 bytes, 2 instructions
+// instead of ptxas's 8 for the saturating subtract sm_80 lacks
+__device__ __forceinline__ int sub32_bytes(int x) { return (x + 0x60606060) ^ 0x80808080; }
 // Exact pinned vec_dot_q6_K_q8_1: keep signed per-16-element scales,
 // signed-byte subtraction, DP4A order, and the float accumulation sequence.
 __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __restrict__ u,
@@ -664,7 +668,11 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
         const int sc = scales[4 * i];
         const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+#if defined(STRATA_HIP_GFX906)
+        const int vi = sub32_bytes(vil | vih);
+#else
         const int vi = __vsubss4(vil | vih, 0x20202020);
+#endif
         sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
     }
     return d * sumf;
@@ -680,7 +688,11 @@ __device__ __forceinline__ float q6_q8_dot_sc(int vl, int vh, const int* __restr
         const int sc = scs[i];
         const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+#if defined(STRATA_HIP_GFX906)
+        const int vi = sub32_bytes(vil | vih);
+#else
         const int vi = __vsubss4(vil | vih, 0x20202020);
+#endif
         sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
     }
     return d * sumf;
@@ -709,10 +721,6 @@ __device__ __forceinline__ const void* madw(const void* base, int k, int stride)
 // conversion's, +0 included
 __device__ __forceinline__ float i2f_small(int p_plus_magic) { return __int_as_float(p_plus_magic) - 12582912.0f; }
 constexpr int kI2fMagic = 0x4B400000;
-// P2: __vsubss4(x, 0x20202020) for bytes of x in [0, 63] (Q6_K's codes, so nothing saturates): x | 0x80 is x + 0x80 per
-// byte, minus 0x20 never borrows (0x60..0x9f), and the xor takes the 0x80 back: the same int8 bytes, 2 instructions
-// instead of ptxas's 8 for the saturating subtract sm_80 lacks
-__device__ __forceinline__ int sub32_bytes(int x) { return (x + 0x60606060) ^ 0x80808080; }
 // q6_q8_dot_sc with P2's integer forms: the dp4a inputs are the same 32-bit values, (dp * sc) the same int, and
 // i2f_small its exact float (|dp * sc| <= 4 * 32 * 127 * 128 = 2.1M < 2^22), so every FFMA sees the bits q6_q8_dot_impl's does
 __device__ __forceinline__ float q6_q8_dot_fast(int vl, int vh, const int* __restrict__ u, int sc0, int sc1, float d,
@@ -1061,6 +1069,33 @@ struct Q6KTraits {
     [[maybe_unused]] static constexpr int TYPE = 14;   // ggml type
     static constexpr int DIV = 256, T = 32, KBY = 8, BPI = WARPS * WARP / 32;
     __device__ static int kqs(int tid) { return tid % 32; }
+#if defined(STRATA_HIP_GFX906)
+    struct W { int vl, vh, vi0, vi1, sc0, sc1; float d; int bq8_offset; };
+    __device__ static W load(const Block* __restrict__ w, int iqs) {
+        W r;
+        r.bq8_offset = 4 * (iqs / 16) + (iqs % 16) / 8;
+        const int scale_offset = 8 * (iqs / 16) + (iqs % 16) / 4;
+        const int vh_shift = 2 * ((iqs % 16) / 8);
+        r.vl = load_int_b2(w->ql, iqs);
+        r.vh = load_int_b2(w->qh, 8 * (iqs / 16) + iqs % 8) >> vh_shift;
+        r.vi0 = sub32_bytes(((r.vl >> 0) & 0x0f0f0f0f) | (((r.vh >> 0) << 4) & 0x30303030));
+        r.vi1 = sub32_bytes(((r.vl >> 4) & 0x0f0f0f0f) | (((r.vh >> 4) << 4) & 0x30303030));
+        r.sc0 = w->scales[scale_offset];
+        r.sc1 = w->scales[scale_offset + 4];
+        r.d = w->d;
+        return r;
+    }
+    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
+        const int u0 = reinterpret_cast<const int*>(x[r.bq8_offset + 0].qs)[iqs % 8];
+        const int u1 = reinterpret_cast<const int*>(x[r.bq8_offset + 2].qs)[iqs % 8];
+        const float d8_0 = __low2float(x[r.bq8_offset + 0].ds);
+        const float d8_1 = __low2float(x[r.bq8_offset + 2].ds);
+        float sumf = 0.0f;
+        sumf += d8_0 * (STRATA_DP4A(r.vi0, u0, 0) * r.sc0);
+        sumf += d8_1 * (STRATA_DP4A(r.vi1, u1, 0) * r.sc1);
+        return r.d * sumf;
+    }
+#else
     struct W { int vl, vh, sc0, sc1; float d; int bq8_offset; };
     __device__ static W load(const Block* __restrict__ w, int iqs) {
         W r;
@@ -1084,19 +1119,21 @@ struct Q6KTraits {
         }
         return q6_q8_dot_sc(r.vl, r.vh, u, r.sc0, r.sc1, r.d, d8);
     }
+#endif
 };
 struct IQ4XSTraits {
     using Block = IQ4XSBlock;
     [[maybe_unused]] static constexpr int TYPE = 23;   // ggml type
     static constexpr int DIV = 256, T = 8, KBY = 8, BPI = 4 * WARPS * WARP / 32;
     __device__ static int kqs(int tid) { return 4 * (tid % 8); }
-    struct W { int2 v[4]; int ls; float dw; };
+    struct W { int2 v[4]; int ls; float dw; float d; };
     __device__ static W load(const Block* __restrict__ w, int iqs) {
         W r;
 #pragma unroll
         for (int j = 0; j < 4; ++j) r.v[j] = iq4_table_lookup(reinterpret_cast<const int*>(w->qs)[iqs + j]);
         r.ls = ((w->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0f) | (((w->scales_h >> (iqs / 2)) & 0x03) << 4);
         r.dw = __half2float(w->d);
+        r.d = r.dw * (r.ls - 32);
         return r;
     }
     __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
@@ -1108,8 +1145,7 @@ struct IQ4XSTraits {
             sumi = STRATA_DP4A(r.v[j].x, u0, sumi);
             sumi = STRATA_DP4A(r.v[j].y, u1, sumi);
         }
-        sumi *= r.ls - 32;
-        const float d = r.dw * __low2float(x[iqs / 4].ds);
+        const float d = r.d * __low2float(x[iqs / 4].ds);
         return d * sumi;
     }
 };
@@ -2541,9 +2577,32 @@ template<typename F, int NCOLS>
 void wave_launch_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    constexpr int R = 1;
-    const unsigned blocks = unsigned((std::size_t(n_out) + 4 * R - 1) / (4 * R));
-    native_mmvq_wave_kernel<F, NCOLS, R><<<blocks, 256, 0, s>>>(w, x, y, n_in, n_out);
+    // R rows a wavefront (S30 experiment, gfx906): the per-row arithmetic and its k order do not depend on R, so
+    // every row's sum is bitwise the R=1 output (mmvq_multi_parity).  R > 1 cuts the wave count and lets a wave
+    // keep several rows' weight loads in flight; the q8_1 activation words are then read once per row (L1 hits).
+    // STRATA_MMVQ_WAVE_R=2 or 4 (default 1) applies where the row count pays (n_out >= 2560; the test
+    // hook STRATA_MMVQ_WAVE_R_MINOUT=<n>, default 2560, lets mmvq_multi_parity exercise the wide shapes too).
+    static const int g_wave_r = [] {
+        const char* v = std::getenv("STRATA_MMVQ_WAVE_R");
+        const int r = v != nullptr ? std::atoi(v) : 1;
+        return (r == 2 || r == 4) ? r : 1;
+    }();
+    static const int g_wave_r_minout = [] {
+        const char* v = std::getenv("STRATA_MMVQ_WAVE_R_MINOUT");
+        const int n = v != nullptr ? std::atoi(v) : 2560;
+        return n > 0 ? n : 1;
+    }();
+    const int rows = (g_wave_r > 1 && n_out >= g_wave_r_minout) ? g_wave_r : 1;
+    if (rows == 4) {
+        const unsigned blocks = unsigned((std::size_t(n_out) + 4 * 4 - 1) / (4 * 4));
+        native_mmvq_wave_kernel<F, NCOLS, 4><<<blocks, 256, 0, s>>>(w, x, y, n_in, n_out);
+    } else if (rows == 2) {
+        const unsigned blocks = unsigned((std::size_t(n_out) + 4 * 2 - 1) / (4 * 2));
+        native_mmvq_wave_kernel<F, NCOLS, 2><<<blocks, 256, 0, s>>>(w, x, y, n_in, n_out);
+    } else {
+        const unsigned blocks = unsigned((std::size_t(n_out) + 4 - 1) / 4);
+        native_mmvq_wave_kernel<F, NCOLS, 1><<<blocks, 256, 0, s>>>(w, x, y, n_in, n_out);
+    }
 }
 template<typename F>
 void wave_launch(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
