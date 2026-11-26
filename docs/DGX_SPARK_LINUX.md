@@ -140,6 +140,16 @@ With `"parallel": 4` (the default) the original four-switch set adds up: 32 clie
 and 35.7 with all four off. The side mixer was not part of that check. At `"parallel": 8` the two original decode switches cost about 3.5%
 each; set `STRATA_HC_UPMIX=0 STRATA_SPEC_COST=0` there.
 
+## Inkling cold prompt reads on CUDA
+
+Set `STRATA_INK_PREFILL_REUSE_KV=1` before starting the Inkling CUDA engine to
+pack each complete 2048-token tile of global K/V history once per chunk and
+share it across that chunk's query blocks. The option takes effect on the
+tiled tensor-core attention path when the chunk has more than 256 queries
+and at least 2048 earlier positions. It uses the existing controller scratch
+space. The default is off. Measure cold prompt reads at the context lengths
+and concurrency used by your application.
+
 ## Hy4-Flash across two Spark hosts
 
 Hy4-Flash can split its routed experts between two Spark GPUs. The coordinator reads

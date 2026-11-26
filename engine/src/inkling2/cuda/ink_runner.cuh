@@ -2032,6 +2032,7 @@ struct InkCudaRunner {
     };
     std::vector<GraphEntry> graph_cache;
     bool use_cuda_graph = true;
+    bool reuse_prefill_kv = false;
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
@@ -2092,7 +2093,10 @@ struct InkCudaRunner {
         return (size_t)kInkKVDim * 2u + (size_t)(2 * kInkKVHeads * 4);  // FP8 or K8V8
     }
 
-    InkCudaRunner(InkCudaModel& model) : m(model) {}
+    InkCudaRunner(InkCudaModel& model) : m(model) {
+        const char* opt = std::getenv("STRATA_INK_PREFILL_REUSE_KV");
+        reuse_prefill_kv = opt && std::strcmp(opt, "1") == 0;
+    }
 
     void bind_stage(int s) {
         if (!m.ls_active || s == cur_stage) return;
@@ -3477,41 +3481,77 @@ struct InkCudaRunner {
                         k_ink_pf_unpack_o_gate<<<dim3(kInkHeads, C), 128, 0, st>>>(d_pf_o, d_gate_attn, d_attn_out, q0, C);
                     }
                 } else {
-                    // Long-context KV-Tiled Online-Softmax TC Attention (K_len > 2048 -> O(1) 114 MiB VRAM forever!)
-                    float* d_alpha_tmp = d_ctrl_gain;  // [max_batch * 2304] >> 24 * 256 floats!
+                    // Full global-history tiles have identical bounds for every query block.
+                    const int shared_end = reuse_prefill_kv && !is_swa && M > Q_CH
+                        ? (p0_val / kInkPfKvTile) * kInkPfKvTile : 0;
+                    auto pack_tile = [&](int kt, int K_t) {
+                        if (use_fp16_pf) k_ink_pf_pack_kv<true><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
+                        else             k_ink_pf_pack_kv<false><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
+                    };
+                    auto apply_tile = [&](int q0, int C, int kt, int K_t, bool is_last,
+                                          float* m_acc, float* l_acc, float* o_acc) {
+                        INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
+                            cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                            K_t, C, kInkHeadDim, &sc_qk,
+                            d_pf_k, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
+                            d_pf_q + (size_t)q0 * kInkHeadDim, pf_dt, kInkHeadDim, (long long)M * kInkHeadDim,
+                            &zero, d_pf_s, CUDA_R_32F, K_t, (long long)C * K_t,
+                            kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
+                        if (use_fp16_pf) {
+                            k_ink_pf_softmax_tile_online<true><<<dim3(C, kInkHeads), 256, 0, st>>>(
+                                d_pf_s, d_rel_table, d_pf_p, m_acc, l_acc, d_ctrl_gain, q0, C, kt, K_t, p0_val, is_swa);
+                        } else {
+                            k_ink_pf_softmax_tile_online<false><<<dim3(C, kInkHeads), 256, 0, st>>>(
+                                d_pf_s, d_rel_table, d_pf_p, m_acc, l_acc, d_ctrl_gain, q0, C, kt, K_t, p0_val, is_swa);
+                        }
+                        INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
+                            cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                            kInkHeadDim, C, K_t, &one,
+                            d_pf_v, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
+                            d_pf_p, pf_dt, K_t, (long long)C * K_t,
+                            &zero, d_pf_ot, CUDA_R_32F, kInkHeadDim, (long long)C * kInkHeadDim,
+                            kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
+                        k_ink_pf_accum_tile<<<dim3(kInkHeads, C), 128, 0, st>>>(
+                            d_pf_ot, d_ctrl_gain, l_acc, o_acc, d_gate_attn, d_attn_out, q0, C, is_last);
+                    };
+                    // bind_stage selects each stage's d_ctrl_cat, stream and cuBLAS handle together. On controller layers
+                    // the Q/K/V controllers consume this scratch before attention and the MLP controller refills it afterward.
+                    static_assert(kInkQDim + 2 * kInkHeads <= 6 * kInkHidden);
+                    float* history_out = d_ctrl_cat;
+                    float* history_max = history_out + (size_t)M * kInkQDim;
+                    float* history_sum = history_max + (size_t)M * kInkHeads;
+                    if (shared_end) {
+                        for (int q0 = 0; q0 < M; q0 += Q_CH) {
+                            const int C = std::min(Q_CH, M - q0);
+                            const size_t h = (size_t)q0 * kInkHeads;
+                            k_ink_pf_online_init<<<dim3(kInkHeads, C), 128, 0, st>>>(
+                                d_sinks, history_max + h, history_sum + h, history_out + h * kInkHeadDim, q0, C);
+                        }
+                        for (int kt = 0; kt < shared_end; kt += kInkPfKvTile) {
+                            pack_tile(kt, kInkPfKvTile);
+                            for (int q0 = 0; q0 < M; q0 += Q_CH) {
+                                const int C = std::min(Q_CH, M - q0);
+                                const size_t h = (size_t)q0 * kInkHeads;
+                                apply_tile(q0, C, kt, kInkPfKvTile, false,
+                                           history_max + h, history_sum + h, history_out + h * kInkHeadDim);
+                            }
+                        }
+                    }
                     for (int q0 = 0; q0 < M; q0 += Q_CH) {
                         const int C = std::min(Q_CH, M - q0);
-                        const int k_sub_beg = is_swa ? std::max(k_start, p0_val + q0 - kInkSwaWin + 1) : k_start;
-                        const int k_sub_end = p0_val + q0 + C;
-                        k_ink_pf_online_init<<<dim3(kInkHeads, C), 128, 0, st>>>(d_sinks, d_pf_m, d_pf_l, d_pf_o, q0, C);
-                        for (int kt = k_sub_beg; kt < k_sub_end; kt += kInkPfKvTile) {
-                            const int K_t = std::min(kInkPfKvTile, k_sub_end - kt);
-                            const bool is_last = (kt + K_t >= k_sub_end);
-                            if (use_fp16_pf) k_ink_pf_pack_kv<true><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
-                            else             k_ink_pf_pack_kv<false><<<dim3(kInkKVHeads, K_t), 128, 0, st>>>(kv_desc[visit], slot0, kt, K_t, d_pf_k, d_pf_v);
-                            INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
-                                cublas, CUBLAS_OP_T, CUBLAS_OP_N,
-                                K_t, C, kInkHeadDim, &sc_qk,
-                                d_pf_k, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
-                                d_pf_q + (size_t)q0 * kInkHeadDim, pf_dt, kInkHeadDim, (long long)M * kInkHeadDim,
-                                &zero, d_pf_s, CUDA_R_32F, K_t, (long long)C * K_t,
-                                kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
-                            if (use_fp16_pf) {
-                                k_ink_pf_softmax_tile_online<true><<<dim3(C, kInkHeads), 256, 0, st>>>(
-                                    d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
-                            } else {
-                                k_ink_pf_softmax_tile_online<false><<<dim3(C, kInkHeads), 256, 0, st>>>(
-                                    d_pf_s, d_rel_table, d_pf_p, d_pf_m, d_pf_l, d_alpha_tmp, q0, C, kt, K_t, p0_val, is_swa);
-                            }
-                            INK_CUBLAS_CK(cublasGemmStridedBatchedEx(
-                                cublas, CUBLAS_OP_N, CUBLAS_OP_N,
-                                kInkHeadDim, C, K_t, &one,
-                                d_pf_v, pf_dt, kInkHeadDim, (long long)K_t * kInkHeadDim,
-                                d_pf_p, pf_dt, K_t, (long long)C * K_t,
-                                &zero, d_pf_ot, CUDA_R_32F, kInkHeadDim, (long long)C * kInkHeadDim,
-                                kInkHeads, CUBLAS_COMPUTE_32F, pf_algo));
-                            k_ink_pf_accum_tile<<<dim3(kInkHeads, C), 128, 0, st>>>(
-                                d_pf_ot, d_alpha_tmp, d_pf_l, d_pf_o, d_gate_attn, d_attn_out, q0, C, is_last);
+                        const size_t h = (size_t)q0 * kInkHeads;
+                        float* m_acc = shared_end ? history_max + h : d_pf_m;
+                        float* l_acc = shared_end ? history_sum + h : d_pf_l;
+                        float* o_acc = shared_end ? history_out + h * kInkHeadDim : d_pf_o;
+                        if (!shared_end)
+                            k_ink_pf_online_init<<<dim3(kInkHeads, C), 128, 0, st>>>(
+                                d_sinks, m_acc, l_acc, o_acc, q0, C);
+                        const int first = is_swa ? std::max(k_start, p0_val + q0 - kInkSwaWin + 1) : shared_end;
+                        const int end = p0_val + q0 + C;
+                        for (int kt = first; kt < end; kt += kInkPfKvTile) {
+                            const int K_t = std::min(kInkPfKvTile, end - kt);
+                            pack_tile(kt, K_t);
+                            apply_tile(q0, C, kt, K_t, kt + K_t == end, m_acc, l_acc, o_acc);
                         }
                     }
                 }
