@@ -1906,6 +1906,14 @@ struct InkDSpark {
         for (int il = 0; il < 3; ++il) {
             if (m.man.c.dspark_is_swa[il] != 0) continue;
             if (target <= ctx_cap[il]) continue;
+            if (ctx_is_host[il]) {
+                // the COMPACT drafter keeps this layer's context in mapped host memory with a fixed capacity: it cannot grow (the code below would cudaFree a mapped
+                // device pointer), so the drafter stops here, as it does when the card is tight
+                std::fprintf(stderr, "[InkDSpark] global ctx %d is fixed at %d tokens on mapped host memory, the prompt needs %d; disabling DSpark gracefully\n",
+                             il, ctx_cap[il], target);
+                ready = false;
+                return false;
+            }
             INK_CK(cudaStreamSynchronize(r.st));
             const size_t new_elems = (size_t)target * kInkKVHeads * kInkHeadDim;
             const size_t old_bytes = (size_t)ctx_cap[il] * kInkKVHeads * kInkHeadDim * sizeof(__half);
