@@ -209,7 +209,8 @@ inline bool vision_probe(const std::string& path, VisionShardInfo& vi, std::stri
 
     strata::artifact::StrataFileReader rd;
     if (!rd.open(path, err)) return false;
-    if (rd.header().profile != strata::artifact::StrataProfile::VisionShard) {
+    // header profile VisionShard, or a manifest that says arch = inkling2_vision (the 16 KiB-aligned shard)
+    if (!rd.is_vision_shard()) {
         err = "not a Vision shard (profile " + std::to_string(static_cast<int>(rd.header().profile)) + ")";
         return false;
     }

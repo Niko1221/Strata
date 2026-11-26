@@ -23,6 +23,7 @@
 #include "hy4_json.h"
 #include "mtl_rt.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/artifact/strata_layout.hpp"
 #ifdef INK_METAL_WITH_MODEL_FILE
 #include "../ink_gguf_transcode.h"
 #endif
@@ -377,25 +378,13 @@ struct InkMetalModel {
             err = "short read on 4 KiB header frame";
             return false;
         }
-        static const uint8_t kMagic[8] = {'S', 'T', 'R', 'A', 'T', 'A', 0x00, 0x01};
-        if (std::memcmp(frame, kMagic, 8) != 0) {
-            err = "bad .strata magic";
+        // magic, 6 sections, and which header layout (4 KiB or 16 KiB aligned) this file has: strata_layout.hpp
+        strata::artifact::StrataHeader shdr;
+        if (!strata::artifact::strata_parse_header_frame(frame, 4096, (uint64_t)fsize, shdr, err)) {
             return false;
         }
-        uint32_t hdr_flags = 0;
-        uint16_t prof = 0, nsec = 0;
-        std::memcpy(&hdr_flags, frame + 8, 4);
-        std::memcpy(&prof, frame + 12, 2);
-        std::memcpy(&nsec, frame + 14, 2);
-        format_minor = (uint8_t)(hdr_flags & 0xFFu);
-        if (nsec != 6) {
-            err = "expected 6 sections in .strata header";
-            return false;
-        }
-        strata::artifact::StrataSectionEntry secs[6]{};
-        for (int i = 0; i < 6; ++i) {
-            std::memcpy(&secs[i], frame + 0x10 + i * 64, 64);
-        }
+        format_minor = (uint8_t)(shdr.flags & 0xFFu);
+        const strata::artifact::StrataSectionEntry* secs = shdr.sections;
         sec1_off = secs[1].file_offset;
         sec1_bytes = secs[1].byte_length;
         sec4_off = secs[4].file_offset;
@@ -422,7 +411,12 @@ struct InkMetalModel {
                 return false;
             }
             const bool has_order = (secs[3].flags & 1u) != 0;
-            const size_t n_ent = has_order ? (s3.size() / 34) : (s3.size() / 32);
+            // the 16 KiB layout pads Section 3: the entry count is then the manifest's (layers x experts), not length / 34
+            size_t n_ent = 0;
+            if (!strata::artifact::strata_section3_entry_count(shdr, s3.size(), has_order,
+                                                               shdr.layout == strata::artifact::StrataLayout::Page16K ? n_total : 0, n_ent, err)) {
+                return false;
+            }
             const size_t dir_bytes = n_ent * 32;
             const auto* ents = reinterpret_cast<const strata::artifact::StrataExpertEntry*>(s3.data());
             for (size_t i = 0; i < std::min(n_ent, n_total); ++i) {

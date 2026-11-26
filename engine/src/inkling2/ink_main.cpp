@@ -66,7 +66,7 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
             fprintf(stderr, "open: %s\n", err.c_str());
             return 1;
         }
-        if (rd.header().profile == strata::artifact::StrataProfile::VisionShard) {
+        if (rd.is_vision_shard()) {
             rd.close();
             VisionShardInfo vi;
             if (!vision_probe(file, vi, err)) {

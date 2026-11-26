@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "hy4_io.h"
+#include "strata/artifact/strata_layout.hpp"
 #include "strata/core/moe_wave_plan.hpp"
 #include "strata/core/ssd_stream_scheduler.hpp"
 #include "strata/platform/cgroup_mem.hpp"
@@ -1670,18 +1671,25 @@ static bool read_dir(const std::string& path, std::vector<DirE>& dir, uint64_t& 
         err = "not a .strata file: " + path;
         return false;
     }
-    auto sec = [&](int i, uint64_t& off, uint64_t& len) {
-        std::memcpy(&off, frame + 0x10 + i * 64, 8);
-        std::memcpy(&len, frame + 0x10 + i * 64 + 8, 8);
-    };
-    uint64_t s3_off, s3_len;
-    sec(3, s3_off, s3_len);
-    sec(4, s4_off, s4_len);
+    // either header layout (4 KiB or 16 KiB aligned): strata_layout.hpp
+    strata::artifact::StrataHeader shdr;
+    if (!strata::artifact::strata_parse_header_frame(frame, 4096, strata::artifact::strata_file_size(fp), shdr, err)) {
+        std::fclose(fp);
+        err += ": " + path;
+        return false;
+    }
+    const uint64_t s3_off = shdr.sections[3].file_offset, s3_len = shdr.sections[3].byte_length;
+    s4_off = shdr.sections[4].file_offset;
+    s4_len = shdr.sections[4].byte_length;
     if (s3_len == 0 || s3_len % 32 != 0 || s4_len == 0) { std::fclose(fp); err = "no expert directory / Section 4"; return false; }
     std::vector<uint8_t> raw(s3_len);
     if (!seek(s3_off) || std::fread(raw.data(), 1, raw.size(), fp) != raw.size()) { std::fclose(fp); err = "short read of Section 3"; return false; }
     std::fclose(fp);
-    const size_t ndir = raw.size() / 32;
+    size_t ndir = raw.size() / 32;
+    if (shdr.layout == strata::artifact::StrataLayout::Page16K) {  // Section 3 is padded to 16 KiB: the zero entries at the tail are padding, a real entry has a body
+        static const uint8_t kZero[32] = {};
+        while (ndir > 0 && std::memcmp(raw.data() + (ndir - 1) * 32, kZero, 32) == 0) --ndir;
+    }
     if ((ndir % E) != 0 || ndir == 0) { err = "expert directory is not layers x 512"; return false; }
     dir.resize(ndir);
     for (size_t i = 0; i < ndir; ++i) {
