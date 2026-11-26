@@ -28,6 +28,34 @@
 
 namespace strata::ink {
 
+// Host buffers of the prompt checkpoints (PREFILL lane): page-locked, so the device-to-host copies of save_checkpoint are real DMA copies (the ~85 MB of SWA windows
+// of a long prompt took ~24 ms through pageable memory: staged copies, a zero-fill of the vectors and page faults, in the time to the first token). Falls back to
+// ordinary memory when the page-locked allocation fails. The allocator default-initialises (no zero-fill on resize): every byte is written by a copy before it is read.
+template <class T>
+struct PinnedAlloc {
+    using value_type = T;
+    PinnedAlloc() = default;
+    template <class U> PinnedAlloc(const PinnedAlloc<U>&) noexcept {}
+    T* allocate(size_t n) {
+        void* p = nullptr;
+        if (n == 0) return nullptr;
+        if (cudaHostAlloc(&p, n * sizeof(T), cudaHostAllocPortable) != cudaSuccess) {
+            cudaGetLastError();
+            p = ::operator new(n * sizeof(T));
+        }
+        return static_cast<T*>(p);
+    }
+    void deallocate(T* p, size_t) noexcept {
+        if (!p) return;
+        if (cudaFreeHost(p) != cudaSuccess) { cudaGetLastError(); ::operator delete(p); }
+    }
+    template <class U> void construct(U*) noexcept {}
+    template <class U, class... A> void construct(U* p, A&&... a) { ::new (static_cast<void*>(p)) U(std::forward<A>(a)...); }
+    template <class U> bool operator==(const PinnedAlloc<U>&) const noexcept { return true; }
+    template <class U> bool operator!=(const PinnedAlloc<U>&) const noexcept { return false; }
+};
+template <class T> using PinnedVec = std::vector<T, PinnedAlloc<T>>;
+
 // Copy 1 slot's 48-visit ShortConv state [48 x 3 x 6656] <-> snapshot buffer (2.5 us on GDDR7!)
 __global__ void __launch_bounds__(256) k_ink_sconv_slot_copy(
     float* const* __restrict__ sconv_pools,  // [48]
@@ -613,6 +641,24 @@ public:
         ck.swa_start = start_pos;
         ck.swa_len = n_pos;
         ck.swa_k.clear(); ck.swa_v.clear(); ck.swa_ksc.clear(); ck.swa_vsc.clear();
+        {   // one allocation per array (the copies below are asynchronous into page-locked memory: the vectors must not move while they run)
+            size_t nk = 0, nv = 0, nks = 0, nvs = 0;
+            for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+                const auto& kv = runner_->kv_desc[v];
+                if (!kv.is_swa) continue;
+                if (kv.kv_fmt == 0) {
+                    nk += (size_t)n_pos * strata::ink::kInkKVDim * sizeof(__half);
+                    nv += (size_t)n_pos * strata::ink::kInkKVDim * sizeof(__half);
+                } else {
+                    const size_t v_stride = (kv.kv_fmt == 3) ? (strata::ink::kInkKVDim / 2) : strata::ink::kInkKVDim;
+                    nk += (size_t)n_pos * strata::ink::kInkKVDim;
+                    nv += (size_t)n_pos * v_stride;
+                    nks += (size_t)n_pos * strata::ink::kInkKVHeads * sizeof(float);
+                    nvs += (size_t)n_pos * strata::ink::kInkKVHeads * sizeof(float);
+                }
+            }
+            ck.swa_k.reserve(nk); ck.swa_v.reserve(nv); ck.swa_ksc.reserve(nks); ck.swa_vsc.reserve(nvs);
+        }
         for (int v = 0; v < strata::ink::kInkVisits; ++v) {
             const auto& kv = runner_->kv_desc[v];
             if (!kv.is_swa) continue;
@@ -622,7 +668,7 @@ public:
             const int seg1 = std::min(n_pos, cap - p0);
             const int seg2 = n_pos - seg1;
             const size_t slot_base = (size_t)slot * cap;
-            auto copy_d2h = [&](const void* base, size_t elem_b, size_t stride_elems, std::vector<uint8_t>& dst) {
+            auto copy_d2h = [&](const void* base, size_t elem_b, size_t stride_elems, strata::ink::PinnedVec<uint8_t>& dst) {
                 const size_t off = dst.size();
                 dst.resize(off + (size_t)n_pos * stride_elems * elem_b);
                 const uint8_t* bp = reinterpret_cast<const uint8_t*>(base);
@@ -649,6 +695,14 @@ public:
         ck.has_dspark = false;
         if (slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0) {
             ck.dspark_k.clear(); ck.dspark_v.clear();
+            {
+                size_t nd = 0;
+                for (int il = 0; il < 3; ++il) {
+                    if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                    nd += (size_t)(seq_len - std::max(0, seq_len - model_.man.c.dspark_swa_win)) * strata::ink::kInkKVDim * sizeof(__half);
+                }
+                ck.dspark_k.reserve(nd); ck.dspark_v.reserve(nd);
+            }
             for (int il = 0; il < 3; ++il) {
                 if (model_.man.c.dspark_is_swa[il] == 0) continue;
                 const int cap = dspark_->ctx_cap[il];
@@ -657,7 +711,7 @@ public:
                 const int p0 = s0 % cap;
                 const int seg1 = std::min(np, cap - p0);
                 const int seg2 = np - seg1;
-                auto copy_ds = [&](const __half* src, std::vector<uint8_t>& dst) {
+                auto copy_ds = [&](const __half* src, strata::ink::PinnedVec<uint8_t>& dst) {
                     const size_t row_b = (size_t)strata::ink::kInkKVDim * sizeof(__half);
                     const size_t off = dst.size();
                     dst.resize(off + (size_t)np * row_b);
@@ -712,7 +766,7 @@ public:
             const int seg1 = std::min(n_pos, cap - p0);
             const int seg2 = n_pos - seg1;
             const size_t slot_base = (size_t)slot * cap;
-            auto copy_h2d = [&](void* base, size_t elem_b, size_t stride_elems, const std::vector<uint8_t>& src, size_t& off) {
+            auto copy_h2d = [&](void* base, size_t elem_b, size_t stride_elems, const strata::ink::PinnedVec<uint8_t>& src, size_t& off) {
                 uint8_t* bp = reinterpret_cast<uint8_t*>(base);
                 INK_CK(cudaMemcpyAsync(bp + (slot_base + p0) * stride_elems * elem_b, src.data() + off,
                                        (size_t)seg1 * stride_elems * elem_b, cudaMemcpyHostToDevice, vs));
@@ -745,7 +799,7 @@ public:
                 const int p0 = s0 % cap;
                 const int seg1 = std::min(np, cap - p0);
                 const int seg2 = np - seg1;
-                auto copy_ds_h2d = [&](__half* dst, const std::vector<uint8_t>& src, size_t& off) {
+                auto copy_ds_h2d = [&](__half* dst, const strata::ink::PinnedVec<uint8_t>& src, size_t& off) {
                     const size_t row_b = (size_t)strata::ink::kInkKVDim * sizeof(__half);
                     uint8_t* bp = reinterpret_cast<uint8_t*>(dst);
                     INK_CK(cudaMemcpyAsync(bp + (size_t)p0 * row_b, src.data() + off, (size_t)seg1 * row_b, cudaMemcpyHostToDevice, runner_->st));
@@ -2066,10 +2120,10 @@ private:
         int seq_len = 0;
         int swa_start = 0;
         int swa_len = 0;
-        std::vector<float> sconv;
-        std::vector<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
-        std::vector<uint8_t> dspark_k, dspark_v;
-        std::vector<float> dspark_frnn;
+        strata::ink::PinnedVec<float> sconv;
+        strata::ink::PinnedVec<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
+        strata::ink::PinnedVec<uint8_t> dspark_k, dspark_v;
+        strata::ink::PinnedVec<float> dspark_frnn;
     };
 
     bool initialized_ = false;

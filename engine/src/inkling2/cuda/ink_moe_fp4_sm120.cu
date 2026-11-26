@@ -4057,12 +4057,18 @@ void moe_mx8_dn_tc_eloop(const uint8_t* sec4_base, const InkExpertDev* experts, 
 }
 
 // The K256 TR=128 SF4 expert kernel (k_moe_sf4_tc_tr128_q, bit-identical to k_moe_sf4_tc_tr128): STRATA_INK_SM120_PFQ=0 runs the shipped kernel (default: on).
+int& pfq_override() {
+    static int v = -1;
+    return v;
+}
+
 static bool pfq_on() {
-    static const bool v = [] {
+    static const bool env_on = [] {
         const char* e = std::getenv("STRATA_INK_SM120_PFQ");
         return !(e && e[0] == '0');
     }();
-    return v;
+    const int ov = pfq_override();
+    return ov >= 0 ? ov > 0 : env_on;
 }
 
 template <bool GU>

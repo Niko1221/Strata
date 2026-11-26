@@ -52,6 +52,9 @@ namespace sm120 {
 /// True when binary includes sm_120a / sm_121a mxf4nvf4 / mxf8f6f4 kernels and active GPU is sm_120 / sm_121.
 bool available();
 
+/// -1 = follow STRATA_INK_SM120_PFQ (default: on), 0 = the shipped TR=128 SF4 expert kernels, 1 = the K256 kernels (test hook for the teacher-forced KL harness; not an end-user switch).
+int& pfq_override();
+
 /// Quantize FP32 [rows, cols] (cols % 64 == 0) -> packed SF4 activation slots (40 B per 64 values: 32B E2M1x2 + 4B UE4M3 + 4B g_blk).
 /// Note: uses 48-byte stride per 64 values (16-byte aligned for cp.async!).
 /// per_row = true writes the per-row global-scale slots the BK=128 / direct-MMA / TR=128 variants read (Sm120MoeSel::row_quant).
