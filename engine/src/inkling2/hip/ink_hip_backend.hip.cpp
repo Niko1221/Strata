@@ -1050,9 +1050,14 @@ public:
             bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
             bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
             hip_eff_chunk_ = 0;
+            if (model.m.embed_host_tail) {
+                std::fprintf(stderr, "[ink-hip] compact GGUF trunk: embedding in pinned host RAM, trunk in the card %.0f MiB\n", static_cast<double>(trunk_now) / 1048576.0);
+            }
             if (model.m.embed_host_tail && !mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL && opts.chunk_auto &&
                 !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0')) {
                 hip_eff_chunk_ = 256;
+                std::fprintf(stderr, "[ink-hip] compact GGUF on a card of %.1f GiB: prefill chunk 256 (STRATA_INK_GGUF_CHUNK256=0 or --chunk N overrides)\n",
+                             static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0);
             }
             const int plan_chunk_cap = hip_eff_chunk_ > 0 ? hip_eff_chunk_ : 512;
             const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, plan_chunk_cap)));
