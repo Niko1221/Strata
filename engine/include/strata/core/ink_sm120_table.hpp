@@ -293,17 +293,19 @@ inline uint32_t ink_sm120_compact_subparts(uint32_t parts, uint32_t named) {
 }
 
 template <class Getenv>
-inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
+inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     Sm120Decision out;
     int tri = -1;
     // master and exact, new name first, the two old names as aliases
     int master = -1, exact = -1;
     {
-        int t = -1;
-        if (ink_sm120_flag(get, "STRATA_INK_SM120", nullptr, &t)) master = t;
-        else if (ink_sm120_flag(get, "STRATA_INK_RTX5090", "STRATA_INK_RTX5060TI", &t)) master = t;
-        if (ink_sm120_flag(get, "STRATA_INK_SM120_EXACT", nullptr, &t)) exact = t;
-        else if (ink_sm120_flag(get, "STRATA_INK_RTX5090_EXACT", "STRATA_INK_RTX5060TI_EXACT", &t)) exact = t;
+        // the names are read with env_get("STRATA_...") calls so that tools/settings_register.py finds them (the register lists every setting the engine reads)
+        auto flag_of = [](const char* a, const char* b, const char* c) -> int {
+            const char* v = (a && *a) ? a : ((b && *b) ? b : ((c && *c) ? c : nullptr));
+            return v ? ((v[0] == '0') ? 0 : 1) : -1;
+        };
+        master = flag_of(env_get("STRATA_INK_SM120"), env_get("STRATA_INK_RTX5090"), env_get("STRATA_INK_RTX5060TI"));
+        exact = flag_of(env_get("STRATA_INK_SM120_EXACT"), env_get("STRATA_INK_RTX5090_EXACT"), env_get("STRATA_INK_RTX5060TI_EXACT"));
     }
     // part switches
     uint32_t part_on = 0, part_off = 0;
@@ -312,7 +314,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
         const Sm120PartName* names = ink_sm120_part_names(&n);
         for (int i = 0; i < n; ++i) {
             std::string nm = std::string("STRATA_INK_SM120_") + names[i].name;
-            if (ink_sm120_flag(get, nm.c_str(), names[i].alias, &tri)) {
+            if (ink_sm120_flag(env_get, nm.c_str(), names[i].alias, &tri)) {
                 if (tri == 1) part_on |= names[i].bit; else part_off |= names[i].bit;
             }
         }
@@ -341,7 +343,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
         return out;
     }
     const Sm120Row* row = ink_sm120_match(dev);
-    const char* forced_id = get("STRATA_INK_SM120_ROW");
+    const char* forced_id = env_get("STRATA_INK_SM120_ROW");
     if (forced_id && *forced_id) {
         const Sm120Row* fr = ink_sm120_row_by_id(forced_id);
         if (!fr) {

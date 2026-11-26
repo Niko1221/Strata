@@ -1,20 +1,36 @@
 # Inkling 2 on RTX 50 cards (sm_120): the switch set and the card table
 
-The CUDA engine has one opt-in speed mode for the RTX 50 family and the RTX PRO Blackwell cards (compute capability 12.0). It is **off by default**.
+The CUDA engine has one speed mode for the RTX 50 family and the RTX PRO Blackwell cards (compute capability 12.0). **It is the default on the two cards that have a measured table row:
+the RTX 5090 and the RTX 5060 Ti 16 GB.** Every other card (the 8 GB 5060 Ti, 5080, 5070 Ti, 5070, 5060, 5050, RTX PRO, and every non-RTX 50 card) runs the old path until its own row is measured.
 The code is in `engine/src/inkling2/cuda` (`ink_sm120_cfg.cuh`, `ink_rtx5090_*`, `ink_rtx5060ti_opt.cuh`, `ink_5060ti_fp8.cuh`, `ink_moe_fp4_sm120.cu`);
 the switches and the per-card table are in `engine/include/strata/core/ink_sm120_table.hpp` (no CUDA dependency, unit test `ink_sm120_table_test`).
+
+## What the default is, per card
+
+| Card (matched by name, SM count, VRAM) | Default | Fast set of the row |
+|---|---|---|
+| RTX 5090 (32 GB) | fast mode | FP8 trunk (cublasLt, a separate FP8 copy of the attention and controller weights, +641 MiB; it does not start when there is no room for the copy), NVFP4 tensor-core MoE with the MX8 to SF4 transcode of the four single-pass layers, FP16-accumulate prefill attention, fused dense path, deep verify tree, multi-user drafting |
+| RTX 5060 Ti 16 GB | fast mode | COMPACT (all 3,072 SQ-20 experts in VRAM: MX8 to SF4 transcode of layers 20-23, FP8 KV cache, single slab; attention weights and LM head Q8_ROW, embedding in mapped host memory), TC small-M MoE, layer packing, layer-major prefill, C1 core graph, prompt-lookup drafting, multi-user drafting, L2 prefetch. No FP8 trunk. |
+| RTX 5060 Ti 8 GB, 5080, 5070 Ti, 5070, 5060, 5050, RTX PRO, any other card | old path | none (placeholder rows, no measurement yet) |
+
+When the default applies, one line is printed (`RTX 50 fast mode is the default on GPU 0 (...): STRATA_INK_SM120=0 turns it off ...`). The default is one constant, `kSm120FastDefault` in the table header, and only a card
+with a measured row ever gets it.
+
+**Falling back.** The 5060 Ti COMPACT default refuses before it converts anything when the card cannot hold it (a desktop or another program on the card, the Windows WDDM reserve, a smaller card of the
+same name, a model with expert formats other than SF4/MX8): one line `COMPACT refused: ...` and the whole device runs the old path, exactly as with `STRATA_INK_SM120=0`. The 5090's FP8 cache checks its own room the
+same way and runs the BF16 / Q8_ROW GEMMs when it has none.
 
 ## Switches (environment, read once per card)
 
 | Variable | Effect |
 |---|---|
-| `STRATA_INK_SM120=1` | fast mode: FP8 trunk, MX8 to SF4 transcode of the four single-pass layers, FP16 sums in attention prefill, NVFP4 tensor-core MoE, deeper drafting, multi-user drafting. The answers differ slightly from the default path. |
-| `STRATA_INK_SM120_EXACT=1` | the form that must give the same tokens as the default path: only the parts that do not change an answer. With `STRATA_INK_SM120=1` or alone. |
-| `STRATA_INK_SM120=0` | the default path, always. |
-| not set | the default path today. The default is one constant (`kSm120FastDefault` in the table header); it is flipped when the owner decides that fast mode is the default on the measured cards. |
-| `STRATA_INK_SM120_<PART>=0|1` | one part on or off: `PF_ATTN FP8_TRUNK MOE_OPT DENSE_OPT DSPARK_OPT C64_SPEC COMPACT COMPACT_XCODE COMPACT_KV TC_SMALLM PLD PACK PREFILL CORE_GRAPH L2PF`. An explicit `=1` turns that part on on any cc 12.0 card. |
+| `STRATA_INK_SM120=0` | the old path, always (this also turns the default off). The old names `STRATA_INK_RTX5090=0` and `STRATA_INK_RTX5060TI=0` do the same. |
+| `STRATA_INK_SM120=1` | fast mode on a card that has a table row, also on a card where it is not the default. |
+| `STRATA_INK_SM120_EXACT=1` | the form that gives the same tokens as the old path: only the parts that do not change an answer (5090: the deep verify tree; 5060 Ti 16 GB: multi-user drafting and L2 prefetch). With `STRATA_INK_SM120=1` or alone. |
+| not set | the default of the table above. |
+| `STRATA_INK_SM120_<PART>=0|1` | one part on or off: `PF_ATTN FP8_TRUNK MOE_OPT DENSE_OPT DSPARK_OPT C64_SPEC COMPACT COMPACT_XCODE COMPACT_KV FP8_INPLACE TC_SMALLM PLD PACK PREFILL CORE_GRAPH L2PF`. `=0` takes the part out of the default set; an explicit `=1` turns it on on any cc 12.0 card. |
 | `FP8_TRUNK`, `FP8_INPLACE` | `FP8_TRUNK` is ONE implementation on every card: the 5090's cublasLt FP8 with a separate FP8 copy of the attention and loop-controller weights (+641 MiB); it does not start when the card has no room for the copy, and the BF16 / Q8_ROW GEMMs run. The 5060 Ti hand-over's in-place conversion (no copy kept) failed FASTQ on 2026-11-26 (tool calls 6/26 against 23/26 off, 24/26 with FP8_TRUNK=0) and is reachable only as `STRATA_INK_SM120_FP8_INPLACE=1`; it is in no fast set. |
-| `COMPACT`, `COMPACT_XCODE`, `COMPACT_KV` | `COMPACT` (all 3,072 SQ-20 experts in VRAM on a 16 GB card) is **not** in the 5060 Ti fast set: FASTQ on 2026-11-26 failed with it on (tool calls 6/26 vs 23/26, MATH 27/50 vs 46/50). Ask for it by name. It bundles lossy steps, two of which can be named apart: `COMPACT_XCODE=0` keeps the MX8 experts of layers 20-23 as MX8 (SQ-20 then does not fit and the loader falls back), `COMPACT_KV=0` keeps the KV cache FP16 instead of FP8 E4M3. Both are on whenever `COMPACT=1` and not named. What cannot be split off: the attention weights and the LM head become Q8_ROW, the embedding is mapped host memory. |
+| `COMPACT`, `COMPACT_XCODE`, `COMPACT_KV` | `COMPACT` (all 3,072 SQ-20 experts in VRAM on a 16 GB card) is the heart of the 5060 Ti 16 GB default. FASTQ on 2026-11-26: with the in-place FP8 trunk on it failed (tool calls 6/26 vs 23/26), with attention in Q8_ROW (the default set) it is at or above the old path on every suite. It bundles lossy steps, two of which can be named apart: `COMPACT_XCODE=0` keeps the MX8 experts of layers 20-23 as MX8 (SQ-20 then does not fit and the loader falls back), `COMPACT_KV=0` keeps the KV cache FP16 instead of FP8 E4M3. Both are on whenever `COMPACT=1` and not named. What cannot be split off: the attention weights and the LM head become Q8_ROW, the embedding is mapped host memory. |
 | `STRATA_INK_SM120_ROW=<id>` | use the row `<id>` (`5090`, `5060ti-16`, ...) on a card without a measured row, at your own risk. |
 | `STRATA_INK_SM120_MOE_FORCE=<sf4>[,<mx8>]` | force a MoE kernel variant (`base bk128 direct tr128 tr128s tr128bk`) for A/B runs. |
 | `STRATA_INK_ELASTIC_1M=1` | the 3-tier elastic K/V cache (VRAM, host RAM, SSD) for 64K to 1M tokens. A separate feature: it is not part of the fast mode. |
