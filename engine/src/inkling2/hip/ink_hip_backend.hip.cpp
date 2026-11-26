@@ -1905,6 +1905,8 @@ public:
                 }
             }
             (void)hipStreamSynchronize(stream_);
+        }
+
         // Strix Halo opt-in init-time resources (ONLY when halo_ != nullptr -> ZERO allocs when OFF!)
         if (halo_) {
             if (halo_->cfg.pld) halo_->pld.resize(max_slots_);
@@ -2024,6 +2026,9 @@ public:
                     size_t sf4_bytes_tot = 0;
                     bool all_layers_sf4_trunk = true;
                     for (int il = 0; il < c_.n_phys; ++il) {
+                        // The drafter taps the hidden states after layers 5, 11, 17 and 23 (visits 5, 23, 41 and the last): 4-bit weights there cut its acceptance
+                        // (TRUNK4, 45% -> 32% with 4-bit everywhere, 46% with these layers kept). They stay in their shipped format.
+                        if (halo_sf4_keeps_layer(il)) continue;
                         if (trunk_qkvrg_[il].dev_ptr && trunk_qkvrg_[il].bytes == static_cast<size_t>(tot_qkvrg) * D * sizeof(uint16_t)) {
                             auto& sm = halo_->sf4_qkvrg[il];
                             if (alloc_gpu_buffer(sm.d_p, static_cast<size_t>(tot_qkvrg) * (D >> 1), mem_info_.is_uma) == hipSuccess &&
@@ -2083,6 +2088,7 @@ public:
                     if (alloc_gpu_buffer(d_max_bits, sizeof(uint32_t), mem_info_.is_uma) == hipSuccess) {
                         for (int il = 0; il < c_.n_phys; ++il) {
                             if (!layer_all_gpu_[il] || (layer_gu_class_[il] != 2 && layer_dn_class_[il] != 2)) continue;
+                            if (halo_sf4_keeps_layer(il)) continue;   // layer 23 ends the last drafter tap: its experts stay MX8
                             GpuBuffer lbuf;
                             if (alloc_gpu_buffer(lbuf, static_cast<size_t>(c_.n_experts) * sf4_body_b, mem_info_.is_uma) != hipSuccess) {
                                 (void)hipGetLastError();
@@ -3767,7 +3773,7 @@ public:
             }
         }
         std::vector<int32_t> h_vargmax(B_tot, 0);
-        if (!forward_batch_chunk(vbatch, nullptr, nullptr, err, h_vargmax.data())) return -1;
+        if (!forward_batch_chunk(vbatch, nullptr, nullptr, err, nullptr, h_vargmax.data())) return -1;
 
         // ---- STAGE 3: Exact Greedy Walk per Slot + Rollback Rejected Suffixes! ----
         int tot_emit = 0;
@@ -9508,6 +9514,13 @@ private:
         graph_scratch_B_ = 0;
         if (r9700_) r9700_->invalidate_graphs();
         if (halo_) halo_->invalidate_graphs();
+    }
+
+    // Strix Halo SF4 trunk / Coda transcode: true for the layers whose output the drafter taps (5, 11, 17, 23). They keep their shipped format.
+    // STRATA_INK_STRIXHALO_SF4_TAPS=1 puts them in 4-bit too (the owner's first version; measurement only).
+    static bool halo_sf4_keeps_layer(int il) {
+        static const bool taps_4bit = [] { const char* e = std::getenv("STRATA_INK_STRIXHALO_SF4_TAPS"); return e && e[0] == '1'; }();
+        return !taps_4bit && (il == 5 || il == 11 || il == 17 || il == 23);
     }
 
     void cleanup() {
