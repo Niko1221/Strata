@@ -48,8 +48,14 @@ enum Sm120Part : uint32_t {
     P_PREFILL    = 1u << 10,  // layer-major single-sweep prefill / macro prefill
     P_CORE_GRAPH = 1u << 11,  // C1 prefix+core CUDA graph and calibrated verify tree sizing
     P_L2PF       = 1u << 12,  // L2 prefetch hints in the NVFP4 MoE kernels
+    // The two lossy halves of COMPACT, switchable apart (FASTQ on the 5060 Ti failed with COMPACT on, passed with it off). They act only while
+    // P_COMPACT is on; naming COMPACT=1 without naming them turns both on (the hand-over behaviour). COMPACT also always turns the attention weights
+    // and the LM head into Q8_ROW / FP8 and the embedding into mapped host memory: that part cannot be split off (it is what makes room).
+    P_COMPACT_XCODE = 1u << 13,  // compact: MX8 experts of layers 20-23 are transcoded to SF4 on load (without it SQ-20 does not fit and compact falls back)
+    P_COMPACT_KV    = 1u << 14,  // compact: FP8 (E4M3) KV cache on a one-slot run
 };
-constexpr uint32_t kSm120AllParts = (1u << 13) - 1u;
+constexpr uint32_t kSm120AllParts = (1u << 15) - 1u;
+constexpr uint32_t kSm120CompactSubParts = P_COMPACT_XCODE | P_COMPACT_KV;
 
 enum class Sm120Fp8 : uint8_t { None, Cache, InPlace };   // Cache: +641 MiB copy next to the BF16 trunk (5090); InPlace: converted in place (16 GB cards)
 enum class Sm120C64  : uint8_t { None, Bspec, K8v4 };     // Bspec: mode-3 batched spec with staging (5090); K8v4: K8V4 multi-slot DSpark chain verify (5060 Ti)
@@ -113,7 +119,9 @@ struct Sm120Row {
 
 constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;
 constexpr uint32_t kSm120BigExact = P_DSPARK_OPT;
-constexpr uint32_t kSm120SmallFast = P_COMPACT | P_FP8_TRUNK | P_TC_SMALLM | P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
+// COMPACT is NOT in the 5060 Ti fast set: FASTQ (2026-11-26) lost 17 of 26 tool calls, 4 of 6 memory chats, 6 of 11 coding tasks with it on. It comes back
+// into this set only after a FASTQ run passes. Until then STRATA_INK_SM120_COMPACT=1 asks for it by name (the hand-over speed numbers need it).
+constexpr uint32_t kSm120SmallFast = P_FP8_TRUNK | P_TC_SMALLM | P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
 constexpr uint32_t kSm120SmallExact = P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
 
 // The table. Order matters: the first row that matches wins, so the more specific names come first (" Ti" before the plain name).
@@ -255,6 +263,8 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
         {P_DSPARK_OPT, "DSPARK_OPT", nullptr},
         {P_C64_SPEC, "C64_SPEC", "STRATA_INK_5060TI_C64_SPEC"},
         {P_COMPACT, "COMPACT", "STRATA_INK_5060TI_COMPACT"},
+        {P_COMPACT_XCODE, "COMPACT_XCODE", nullptr},
+        {P_COMPACT_KV, "COMPACT_KV", nullptr},
         {P_TC_SMALLM, "TC_SMALLM", "STRATA_INK_5060TI_TC_SMALLM"},
         {P_PLD, "PLD", "STRATA_INK_5060TI_PLD"},
         {P_PACK, "PACK", "STRATA_INK_5060TI_PACK"},
@@ -264,6 +274,13 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
     };
     if (n) *n = (int)(sizeof(t) / sizeof(t[0]));
     return t;
+}
+
+// COMPACT's two sub-parts: with COMPACT on and the sub-part not named in any switch, it is on; with COMPACT off, both are off.
+inline uint32_t ink_sm120_compact_subparts(uint32_t parts, uint32_t named) {
+    if (parts & P_COMPACT) parts |= (kSm120CompactSubParts & ~named);
+    else parts &= ~kSm120CompactSubParts;
+    return parts;
 }
 
 template <class Getenv>
@@ -332,7 +349,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
         row = ink_sm120_row_by_id("5090");
         out.row = row;
         out.mode = Sm120Decision::Fast;
-        out.parts = part_on & ~part_off;
+        out.parts = ink_sm120_compact_subparts(part_on & ~part_off, part_on | part_off);
         out.forced_on = part_on;
         return out;
     }
@@ -357,7 +374,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
     out.default_on_applied = want_default;
     uint32_t base = want_exact ? row->exact_parts : row->fast_parts;
     if (master < 0 && exact < 0 && part_on != 0 && !want_default) base = 0;   // a part switch alone turns that part on, not the whole set
-    out.parts = (base | part_on) & ~part_off;
+    out.parts = ink_sm120_compact_subparts((base | part_on) & ~part_off, part_on | part_off);
     out.forced_on = part_on;
     return out;
 }

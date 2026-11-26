@@ -713,7 +713,7 @@ struct InkCudaModel {
                 if (e.gu_code_id == FMT_SF4 && e.dn_code_id == FMT_SF4) {
                     compact_sec4_bytes += e.body_bytes;
                 } else if (e.gu_code_id == FMT_MX8 && e.dn_code_id == FMT_MX8) {
-                    compact_sec4_bytes += sf4_body_c;
+                    compact_sec4_bytes += opt5060_ld.compact_xcode ? sf4_body_c : e.body_bytes;   // COMPACT_XCODE=0: MX8 experts stay MX8 (bigger)
                 } else {
                     all_sf4_or_mx8 = false;
                     break;
@@ -742,7 +742,7 @@ struct InkCudaModel {
                         cudaFreeHost(h_stg); cudaFree(d_mx8_tmp); cudaFree(d_amax_u32);
                         return false;
                     }
-                    if (e.gu_code_id == FMT_MX8 && e.dn_code_id == FMT_MX8) {
+                    if (opt5060_ld.compact_xcode && e.gu_code_id == FMT_MX8 && e.dn_code_id == FMT_MX8) {
                         INK_CK(cudaMemcpy(d_mx8_tmp, h_stg, e.body_bytes, cudaMemcpyHostToDevice));
                         uint8_t* dst = d_sec4 + v_cur;
                         float* dst_hdr = reinterpret_cast<float*>(dst);

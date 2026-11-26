@@ -131,7 +131,7 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     }
     if (opt5060.c64_spec && in.max_slots >= 16 && opts.kv_dtype_auto) {
         p.kv_dtype = KvDtype::FP8_E4M3;
-    } else if (opt5060.compact_vram && in.max_slots == 1 && opts.kv_dtype_auto && strata::ink::ink_elastic_ram_cap_bytes() == 0) {
+    } else if (opt5060.compact_vram && opt5060.compact_kv && in.max_slots == 1 && opts.kv_dtype_auto && strata::ink::ink_elastic_ram_cap_bytes() == 0) {
         p.kv_dtype = KvDtype::FP8_E4M3;
     } else if (strata::ink::ink_elastic_1m_enabled(in.gpu_id) && opts.kv_dtype_auto) {
         auto dt = strata::ink::ink_elastic_select_kv_dtype(

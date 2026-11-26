@@ -40,6 +40,7 @@ struct Sm120Cfg {
     // parts
     bool pf_attn = false, fp8_cache = false, fp8_inplace = false, moe_opt = false, dense_opt = false, dspark_opt = false;
     bool c64_bspec = false, c64_k8v4 = false;
+    bool compact_xcode = false, compact_kv = false;   // the two lossy halves of compact, each on only while compact is on
     bool compact = false, tc_smallm = false, pld = false, pack = false, prefill = false, core_graph = false, l2pf = false;
     bool sf4_trunk = false;        // experimental SF4 dense trunk (never on by default)
     bool deep_tree = false;        // the 32 x 32 ancestor table and the deep verify kernel: dspark_opt, pld or core_graph need it
@@ -93,6 +94,8 @@ inline void fill(Sm120Cfg& c, const strata::core::Sm120Decision& d) {
     c.c64_bspec = (p & P_C64_SPEC) != 0 && r && r->c64_mode == Sm120C64::Bspec;
     c.c64_k8v4 = (p & P_C64_SPEC) != 0 && r && r->c64_mode == Sm120C64::K8v4;
     c.compact = (p & P_COMPACT) != 0;
+    c.compact_xcode = c.compact && (p & P_COMPACT_XCODE) != 0;
+    c.compact_kv = c.compact && (p & P_COMPACT_KV) != 0;
     c.tc_smallm = (p & P_TC_SMALLM) != 0;
     c.pld = (p & P_PLD) != 0;
     c.pack = (p & P_PACK) != 0;
@@ -235,6 +238,8 @@ inline bool deep_tree_on() { return sm120_cfg_current().deep_tree; }
 struct InkRtx5060TiCfg {
     bool enabled         = false;  // any 5060 Ti-family part is on
     bool compact_vram    = false;
+    bool compact_xcode   = false;  // compact: MX8 -> SF4 transcode of layers 20-23 (SQ-20 needs it to fit)
+    bool compact_kv      = false;  // compact: FP8 KV cache on a one-slot run
     bool fp8_trunk       = false;
     bool sf4_trunk       = false;
     bool sm120_tc_smallm = false;
@@ -266,6 +271,8 @@ inline const InkRtx5060TiCfg& ink_rtx5060ti_cfg(int dev = 0) noexcept {
     const Sm120Cfg& s = sm120_cfg(d);
     InkRtx5060TiCfg c{};
     c.compact_vram = s.compact;
+    c.compact_xcode = s.compact_xcode;
+    c.compact_kv = s.compact_kv;
     c.fp8_trunk = s.fp8_inplace;
     c.sf4_trunk = s.sf4_trunk;
     c.sm120_tc_smallm = s.tc_smallm;
