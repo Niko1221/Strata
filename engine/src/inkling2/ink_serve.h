@@ -476,7 +476,8 @@ struct ActiveReq {
     std::vector<int32_t> shared_prefix;
     int pin = 0;
     bool shared_pending = false;
-    bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
+    bool ckpt_pending = false;                // true while prefilling up to ckpt_at to save the prompt checkpoint
+    int ckpt_at = 0;                          // where that checkpoint is taken: prompt_len - 1, or one token before the trailing level turn (--tail-role-token)
     double t_start = 0.0;
     double prompt_ms = 0.0;
     double decode_t0 = 0.0;
@@ -500,8 +501,25 @@ struct ServeConfig {
     std::string draft_mode = "auto";  // auto | dspark | off
     bool force_cpu = false;
     bool anti_loop = true;
+    // --tail-role-token ID (#7241, opt-in, -1 = off): the id of the token that opens a system turn (<|message_system|>).  A prompt that ends with a
+    // short turn of that role (the thinking-effort turn Control puts at the END of the prompt, effort_position "end") has its prompt checkpoint one
+    // token in front of that turn instead of at the end of the prompt, so a request that changes only the level reads only the tail.
+    int64_t tail_role_token = -1;
     std::string version = "0.1.69";
 };
+
+/// Where the prompt checkpoint of `ids` goes: prompt_len - 1 (the end of the prompt; the default), or with tail_role_token >= 0 and a system turn
+/// that starts within the last kTailTurnMaxTokens tokens: one token in front of that turn (the checkpoint then holds the conversation, whichever
+/// level the next request asks for).  The turn must start after the first 16 tokens (the head's own level / tool turns are not a tail).
+constexpr int kTailTurnMaxTokens = 64;
+inline int prompt_ckpt_position(const std::vector<int32_t>& ids, int64_t tail_role_token) {
+    const int n = static_cast<int>(ids.size());
+    int at = n - 1;
+    if (tail_role_token < 0) return at;
+    for (int i = n - 1; i > 16 && n - i <= kTailTurnMaxTokens; --i)
+        if (ids[i] == tail_role_token) return std::min(at, i - 1);
+    return at;
+}
 
 inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& backend) {
     const InkCfg& c = mf.m.c;
@@ -738,7 +756,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.reused_tokens = reuse;
         // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
         // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
-        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        rq.ckpt_at = pg.images.empty() ? prompt_ckpt_position(rq.prompt_ids, cfg.tail_role_token) : rq.prompt_len - 1;
+        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.ckpt_at);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
@@ -1132,8 +1151,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
                     int take = std::min(rem, token_budget);
-                    if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
-                        take = (rq.prompt_len - 1) - rq.prefill_pos;
+                    if (rq.ckpt_pending && rq.prefill_pos < rq.ckpt_at && rq.prefill_pos + take > rq.ckpt_at) {
+                        take = rq.ckpt_at - rq.prefill_pos;
                     }
                     if (rq.shared_pending && rq.prefill_pos < rq.pin) {
                         take = std::min(take, rq.pin - rq.prefill_pos);
@@ -1157,8 +1176,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         const int rem = rq.prompt_len - rq.prefill_pos;
                         int take = std::min(rem, per_slot);
                         // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
-                        if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
-                            take = (rq.prompt_len - 1) - rq.prefill_pos;
+                        if (rq.ckpt_pending && rq.prefill_pos < rq.ckpt_at && rq.prefill_pos + take > rq.ckpt_at) {
+                            take = rq.ckpt_at - rq.prefill_pos;
                         }
                         if (rq.shared_pending && rq.prefill_pos < rq.pin) {
                             take = std::min(take, rq.pin - rq.prefill_pos);
@@ -1237,7 +1256,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         rq.shared_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.pin);
                     }
                 }
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                if (rq.ckpt_pending && rq.prefill_pos == rq.ckpt_at) {
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
                         rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);

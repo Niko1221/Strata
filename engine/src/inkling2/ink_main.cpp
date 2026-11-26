@@ -989,6 +989,9 @@ int main(int argc, char** argv) {
             cfg.bopts.max_ctx = std::atoi(next().c_str());
         } else if (a == "--parallel" || a == "--batch" || a == "--slots") {
             cfg.bopts.parallel = std::max(1, std::min(kMaxParallelSlots, std::atoi(next().c_str())));
+        } else if (a == "--tail-role-token") {
+            // #7241 (opt-in): the id of <|message_system|>; with --serve, the prompt checkpoint goes in front of a trailing level turn (ink_serve.h)
+            cfg.tail_role_token = std::atoll(next().c_str());
         } else if (a == "--chunk") {
             cfg.bopts.chunk = std::max(1, std::atoi(next().c_str()));
             cfg.bopts.chunk_auto = false;

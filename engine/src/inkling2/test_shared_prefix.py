@@ -12,10 +12,12 @@ B = PREFIX + [31, 32, 33, 34]
 
 
 class Engine:
-    def __init__(self, no_checkpoint=False):
+    def __init__(self, no_checkpoint=False, tail_role=None):
         env = dict(os.environ)
         if no_checkpoint:
             env["INK_TEST_NO_CHECKPOINT"] = "1"
+        if tail_role is not None:
+            env["INK_TEST_TAIL_ROLE"] = str(tail_role)
         self.p = subprocess.Popen([ENGINE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, env=env)
         self.info = {}
@@ -214,6 +216,62 @@ class SharedPrefix(unittest.TestCase):
         tokens, reuse = self.engine.request(B)
         self.assertEqual(reuse, 20)
         self.assertEqual(tokens, self.cold(B))
+
+
+class TailLevel(unittest.TestCase):
+    """#7241 (--tail-role-token ROLE): the thinking level at the END of the prompt.  A prompt is the conversation HISTORY, then (for a level other
+    than the default) a short system turn that starts with the ROLE token, then the model's turn.  With the switch on, the prompt checkpoint is one
+    token in front of that turn, so a request that changes only the level reads one token plus the tail; with it off (the default) the checkpoint
+    is at the end of the prompt and a changed tail reads everything again.  The tokens never change."""
+    ROLE = 5
+    HIST = list(range(10, 40))                        # 30 tokens of conversation
+    HIST2 = HIST + list(range(40, 46)) + [47, 48]     # the next turn of the same chat
+    TAIL_MED = [5, 6, 7, 8]
+    TAIL_LOW = [5, 6, 9, 8]
+
+    def chain(self):
+        return (("med", self.HIST + self.TAIL_MED), ("low", self.HIST + self.TAIL_LOW), ("default", self.HIST),
+                ("med_again", self.HIST + self.TAIL_MED), ("next_med", self.HIST2 + self.TAIL_MED), ("next_default", self.HIST2))
+
+    def run_chain(self, role):
+        e = Engine(tail_role=role)
+        try:
+            return {name: e.request(ids, pin=None) for name, ids in self.chain()}
+        finally:
+            e.close()
+
+    def test_a_level_switch_reads_only_the_tail_when_the_switch_is_on(self):
+        on = self.run_chain(self.ROLE)
+        n, n2 = len(self.HIST), len(self.HIST2)
+        self.assertEqual(on["med"][1], 0)
+        self.assertEqual(on["low"][1], n - 1)             # another level, same conversation: the checkpoint in front of the tail
+        self.assertEqual(on["default"][1], n - 1)         # no tail at all
+        self.assertEqual(on["med_again"][1], n - 1)
+        self.assertEqual(on["next_med"][1], n - 1)        # the chat moved on: its history still starts with the checkpoint's tokens
+        self.assertEqual(on["next_default"][1], n2 - 1)   # and the new checkpoint (one token in front of the new tail) serves the next level switch
+
+    def test_without_the_switch_a_changed_tail_reads_everything_again(self):
+        off = self.run_chain(None)
+        self.assertEqual(off["low"][1], 0)                # 0.2.22 / default: the checkpoint sat at the end of the first prompt
+
+    def test_the_tokens_are_the_same_on_and_off_and_cold(self):
+        on, off = self.run_chain(self.ROLE), self.run_chain(None)
+        for name, ids in self.chain():
+            self.assertEqual(on[name][0], off[name][0], name)
+            cold = Engine()                                # a fresh engine reads the whole prompt: the reference
+            try:
+                self.assertEqual(on[name][0], cold.request(ids, pin=None)[0], name)
+            finally:
+                cold.close()
+
+    def test_a_system_turn_at_the_start_is_not_a_tail(self):
+        head = [5, 6, 7, 8] + list(range(10, 40))         # the head's own level turn, 34 tokens, no tail
+        e = Engine(tail_role=self.ROLE)
+        try:
+            e.request(head, pin=None)
+            self.assertEqual(e.request(head + [41], pin=None)[1], len(head) - 1)    # the ordinary end-of-prompt checkpoint
+        finally:
+            e.close()
 
 
 class QuitShutdown(unittest.TestCase):

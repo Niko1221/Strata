@@ -91,6 +91,7 @@ int main() {
     cfg.bopts.chunk = 64;
     cfg.bopts.max_ctx = 32768;
     cfg.draft_mode = "off";
+    if (const char* t = std::getenv("INK_TEST_TAIL_ROLE")) cfg.tail_role_token = std::atoll(t);   // --tail-role-token
     int rc;
     {
         MockBackend backend;
