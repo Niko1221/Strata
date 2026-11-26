@@ -21,6 +21,16 @@ macro(strata_hip_gfx906_toolchain)
   include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/platform/hip_compat)
   add_compile_definitions(STRATA_HIP_GFX906=1)
   message(STATUS "Strata: HIP (gfx906 compat) enabled, arch ${CMAKE_HIP_ARCHITECTURES}")
+  # Windows HIP 5.x (the runtime that still lists gfx906 there): amd_hip_bf16.h ships non-inline host functions, so every object
+  # that includes it defines them and the link fails with duplicate symbols. The copies are identical: let the linker keep one.
+  # HIP 6 and later fixed the header; nothing changes there.
+  if(WIN32 AND hip_VERSION VERSION_LESS 6)
+    add_link_options(LINKER:/FORCE:MULTIPLE)
+    # With the new launch API (clang's default) the HIP 5.x runtime on Windows crashes inside hipLaunchKernel (0xC0000005) for some
+    # kernels. The old launch API (hipConfigureCall / hipSetupArgument / hipLaunchByPtr) does not crash. Only this build.
+    add_compile_options($<$<COMPILE_LANGUAGE:HIP>:-fno-hip-new-launch-api>)
+    message(STATUS "Strata: HIP ${hip_VERSION} on Windows, linking with /FORCE:MULTIPLE (amd_hip_bf16.h duplicates)")
+  endif()
   set(_strata_gpu_runtime_target CUDA::cudart)
   set(_strata_gpu_blas_target CUDA::cublas)
   set(_strata_gpu_include_directories ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

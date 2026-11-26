@@ -61,7 +61,7 @@ struct On {
 /// or stall at ~98 ms per copy. Skipping P2P upfront avoids poisoning the device and uses fast portable host staging.
 bool p2p_topology_safe(int dev0, int dev1) {
     if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && np[0] != '\0' && std::atoi(np) == 0) return true;
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)   // strata-mi50: the gfx906 HIP 5 build has no such attribute either
     int atomic_ok = 0;
     if (cudaDeviceGetP2PAttribute(&atomic_ok, cudaDevP2PAttrNativeAtomicSupported, dev0, dev1) == cudaSuccess && atomic_ok) {
         return true;   // NVLink or true hardware P2P switch with native atomics
