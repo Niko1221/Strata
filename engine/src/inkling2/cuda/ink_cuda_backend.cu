@@ -16,6 +16,7 @@
 #include "ink_vision_policy.h"
 #include "strata/core/arch_probe.hpp"
 #include "strata/core/ink_chunk.hpp"
+#include "strata/core/ink_draft_rule.hpp"
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
@@ -504,7 +505,46 @@ public:
         plan_in.compact_gguf = mf.m.embed_host_tail && !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0');
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
-        const VramPlan plan = plan_vram_reserve(plan_in);
+        // RESIDENCY FIRST (strata/core/ink_draft_rule.hpp): DFlash 2 as the DEFAULT drafter is not loaded when its weights and rings would move the model from full residency to a hybrid
+        // load, or cut the expert tier by 10% or more. The two plans (with and without the drafter) are compared against the free VRAM, the trunk and the expert section the loader will see.
+        // `--draft on`, STRATA_INK_DFLASH2_FORCE=1 and STRATA_INK_DRAFTER=dflash2 ask for it by name and are never vetoed. The COMPACT path has its own accounting (its precheck) and is skipped.
+        auto plan_for = [&](bool veto) {
+            strata::ink::df2_residency_veto() = veto;
+            plan_in.build_screen = (opts.enable_dspark && (mf.m.dspark.present || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);
+            return plan_vram_reserve(plan_in);
+        };
+        draft_forced_ = opts.draft_forced || strata::ink::df2_forced_by_env();
+        VramPlan plan = plan_for(false);
+        if (!draft_forced_ && opts.enable_dspark && strata::ink::df2_drafter_env().empty() && mf.kind == ModelSourceKind::Strata && !plan_in.sm120->compact &&
+            strata::ink::df2_replaces_dspark(mf.path)) {
+            const VramPlan plan_no = plan_for(true);
+            size_t vf = 0, vt = 0;
+            if (cudaMemGetInfo(&vf, &vt) == cudaSuccess && vt > 0) {
+                const size_t trunk = (size_t)mf.rd.header().sections[1].byte_length, sec4 = (size_t)mf.rd.header().sections[4].byte_length;
+                const size_t wf = strata::ink::InkCudaModel::wddm_safety_floor(vt);
+                auto reserve_of = [&](const VramPlan& p) {
+                    const size_t base = ((vt >= (20ull << 30)) ? (1600ull << 20) : (vt <= (13ull << 30)) ? (960ull << 20) : (1280ull << 20)) + (wf > (512ull << 20) ? (wf - (512ull << 20)) : 0ull);
+                    return std::max(base, p.min_reserve_bytes + wf);
+                };
+                const size_t r_with = reserve_of(plan), r_no = reserve_of(plan_no);
+                const size_t avail_no = (vf > trunk + r_no) ? (vf - trunk - r_no) : 0u, avail_with = (vf > trunk + r_with) ? (vf - trunk - r_with) : 0u;
+                strata::core::InkDraftLoadIn li;
+                li.full_without = avail_no >= sec4;
+                li.full_with = avail_with >= sec4;
+                li.tier_budget_mib = (double)avail_no / 1048576.0;
+                li.drafter_mib = (double)(r_with > r_no ? r_with - r_no : 0) / 1048576.0;
+                const strata::core::InkDraftLoadOut lo = strata::core::ink_draft_load_rule(li);
+                if (lo.residency_veto) {
+                    std::fprintf(stderr, "%s\n", strata::core::ink_draft_veto_line("[InkCUDA]", "DFlash 2", (double)sec4 / 1073741824.0, (double)avail_with / 1073741824.0, li.drafter_mib,
+                                                                                    (double)avail_no / 1073741824.0).c_str());
+                    plan = plan_no;                      // the veto stays set: no drafter pad in the reserve below
+                } else {
+                    plan = plan_for(false);
+                }
+            } else {
+                plan = plan_for(false);
+            }
+        }
         kv_dtype_ = plan.kv_dtype;
         const auto cuda_kvd = plan.cuda_kvd;
         const bool build_screen = plan_in.build_screen;
@@ -1586,6 +1626,9 @@ public:
         int* out_drafted,
         std::string& /*err*/) override {
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
+        // the ONE drafter rule, principle 2 (strata/core/ink_draft_rule.hpp): on a hybrid card (experts in host memory) a step from kDraftPlainCtxHybrid tokens of context on is a plain step.
+        // Per step, so it follows every request; `--draft on` turns it off; with all experts in VRAM the window governor decides alone.
+        if (strata::core::ink_draft_plain_step(model_.n_host_experts > 0, anchor_pos, draft_forced_)) return 0;
         const bool dspark_opt = strata::ink::rtx5090::dspark_opt_on() && (runner_->d_tree_anc32 != nullptr);
         const bool deep_tree = (runner_->d_tree_anc32 != nullptr);   // deep verify tree allocated (5090 builder or the 5060 Ti PLD graft)
         const int want_cap = (deep_tree && anchor_pos + 24 < eff_max_ctx_ && anchor_pos + 24 < dspark_->max_ctx)
@@ -2385,6 +2428,7 @@ private:
     bool track_pld90_ = false;       // sm_120 table: the 5090-family deep-tree drafting part is on for this card
     std::vector<int32_t> pld_hist_;  // Slot-0 token history for zero-cost PLD suffix lookup (5090-family drafting switch)
     std::vector<int32_t> slot0_hist_;
+    bool draft_forced_ = false;   // --draft on / STRATA_INK_DFLASH2_FORCE=1: the residency-first rule never vetoes the drafter (strata/core/ink_draft_rule.hpp)
     std::vector<std::vector<int32_t>> slot_hists_;
     int    c64_gov_steps_    = 0;
     double c64_gov_emit_sum_ = 0.0;

@@ -1,0 +1,59 @@
+// Unit test of the ONE drafter on/off rule (strata/core/ink_draft_rule.hpp): residency first at load time, plain steps by context on hybrid cards.
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+#include "strata/core/ink_draft_rule.hpp"
+
+using namespace strata::core;
+
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+
+int main() {
+    // full residency without the drafter, hybrid with it: vetoed (the RX 7900 XT case: 536 MiB)
+    {
+        InkDraftLoadIn in; in.full_without = true; in.full_with = false; in.drafter_mib = 536; in.tier_budget_mib = 0;
+        const InkDraftLoadOut o = ink_draft_load_rule(in);
+        CHECK(!o.load && o.residency_veto && o.to_hybrid);
+        // asked for by name: loaded
+        in.user_on = true;
+        const InkDraftLoadOut f = ink_draft_load_rule(in);
+        CHECK(f.load && !f.residency_veto);
+        // --draft off always wins
+        in.user_on = false; in.user_off = true;
+        CHECK(!ink_draft_load_rule(in).load && !ink_draft_load_rule(in).residency_veto);
+    }
+    // full residency with the drafter as well: loaded
+    {
+        InkDraftLoadIn in; in.full_without = true; in.full_with = true; in.drafter_mib = 432;
+        const InkDraftLoadOut o = ink_draft_load_rule(in);
+        CHECK(o.load && !o.residency_veto);
+    }
+    // hybrid card: a small tier cut is accepted, a cut of 10% or more is vetoed
+    {
+        InkDraftLoadIn in; in.full_without = false; in.full_with = false; in.tier_budget_mib = 6000; in.drafter_mib = 432;   // 7.2%
+        CHECK(ink_draft_load_rule(in).load);
+        in.tier_budget_mib = 3000;                                                                                           // 14.4%
+        const InkDraftLoadOut o = ink_draft_load_rule(in);
+        CHECK(!o.load && o.residency_veto && !o.to_hybrid && o.tier_cut > 0.14 && o.tier_cut < 0.15);
+        in.user_on = true;
+        CHECK(ink_draft_load_rule(in).load);
+    }
+    // the printed line: the same sentence start on every backend, the override named
+    {
+        const std::string s = ink_draft_veto_line("[InkCUDA]", "DFlash 2", 19.3, 14.2, 536, 14.7);
+        CHECK(s.find("DFlash 2 not loaded: it would move part of the model off the card") != std::string::npos);
+        CHECK(s.find("`--draft on` loads it anyway.") != std::string::npos);
+        CHECK(s.find("536 MiB") != std::string::npos);
+    }
+    // plain steps by context: only on hybrid cards, only from the limit on, never with --draft on
+    {
+        CHECK(!ink_draft_plain_step(false, 100000, false));                 // fully resident: the window governor decides alone
+        CHECK(!ink_draft_plain_step(true, kDraftPlainCtxHybrid - 1, false));
+        CHECK(ink_draft_plain_step(true, kDraftPlainCtxHybrid, false));
+        CHECK(ink_draft_plain_step(true, 32768, false));
+        CHECK(!ink_draft_plain_step(true, 32768, true));
+    }
+    std::printf("ink_draft_rule_test: ok\n");
+    return 0;
+}

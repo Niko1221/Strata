@@ -45,10 +45,23 @@ inline bool& df2_f32_path() {
 // STRATA_INK_DRAFTER=dspark: the dormant DSpark drafter is asked for by name
 inline bool df2_dspark_selected() { return df2_drafter_env() == "dspark"; }
 
+// The residency-first rule (strata/core/ink_draft_rule.hpp): set once by the backend before anything loads when DFlash 2 as the DEFAULT drafter would move the model from full residency to a
+// hybrid load (or cut the expert tier noticeably). It never applies when the drafter was asked for by name (STRATA_INK_DRAFTER=dflash2, `--draft on`, STRATA_INK_DFLASH2_FORCE=1).
+inline bool& df2_residency_veto() {
+    static bool v = false;
+    return v;
+}
+
+inline bool df2_forced_by_env() {
+    const char* e = std::getenv("STRATA_INK_DFLASH2_FORCE");
+    return e && e[0] == '1';
+}
+
 inline bool df2_requested() {
     const std::string s = df2_drafter_env();
-    if (s.empty()) return kDflash2Default;
-    return s == "dflash2";
+    if (s == "dflash2") return true;
+    if (s.empty()) return kDflash2Default && !df2_residency_veto();
+    return false;
 }
 
 
