@@ -136,7 +136,8 @@ static void ref_row(int t, const uint8_t* src, int K, const Tabs& T, double* y) 
     }
 }
 
-template <int MAXM>
+// KK > 0: K is a compile-time constant, as in the engine's kernels (k_ink_moe_gu_gguf_dp4a passes kInkHidden); KK == 0: K is the run-time argument
+template <int MAXM, int KK = 0>
 __global__ void k_row_dot_test(int type, const uint8_t* rows, size_t rb, const InkQ8_1_G32* xq, int nbx, int K, int n_e, float* out, int N) {
     const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
     const int lane = threadIdx.x & 31;
@@ -145,7 +146,7 @@ __global__ void k_row_dot_test(int type, const uint8_t* rows, size_t rb, const I
     const float* xf[MAXM];
     for (int m = 0; m < MAXM; ++m) { xp[m] = xq + (size_t)m * nbx; xf[m] = nullptr; }
     float acc[MAXM] = {};
-    ink_gguf_row_dot_multi<MAXM>((uint32_t)type, rows + (size_t)row * rb, xp, xf, n_e, K, lane, acc);
+    ink_gguf_row_dot_multi<MAXM>((uint32_t)type, rows + (size_t)row * rb, xp, xf, n_e, KK > 0 ? KK : K, lane, acc);
     if (lane == 0) for (int m = 0; m < MAXM; ++m) if (m < n_e) out[(size_t)m * N + row] = acc[m];
 }
 
@@ -222,10 +223,64 @@ static int run_type(int t, int K, const Tabs& T, std::mt19937& rng) {
     return fails;
 }
 
-int main() {
+// ./ink_gguf_types_test bench: time of the row-dot kernel per type on a weight block larger than the L2, for 1 token (decode) and 16 tokens (prefill group).
+static size_t bench_rb(int t, int K) {
+    switch (t) {
+        case 12: return (size_t)(K / 256) * 144; case 14: return (size_t)(K / 256) * 210; case 8: return (size_t)(K / 32) * 34;
+        case 23: return (size_t)(K / 256) * 136; default: return (size_t)(K / blk_elems(t)) * blk_bytes(t);
+    }
+}
+static void bench_all() {
+    const int types[] = {16, 17, 22, 21, 19, 18, 42, 20, 23, 12, 14, 8};
+    const int N = 147456;
+    for (int t : types) {
+        const int K = (t == 42 || t == 20) ? 1152 : 2304;
+        const size_t rb = bench_rb(t, K);
+        std::vector<uint8_t> w(rb * (size_t)N);
+        std::mt19937 rng(1);
+        for (auto& b : w) b = (uint8_t)(rng() & 255);
+        uint8_t* d_w = dalloc<uint8_t>(w.size());
+        INK_CK(cudaMemcpy(d_w, w.data(), w.size(), cudaMemcpyHostToDevice));
+        const int M = 16, nbx = K / 32;
+        std::vector<float> x((size_t)M * K);
+        std::normal_distribution<float> dn(0.0f, 1.0f);
+        for (auto& v : x) v = dn(rng);
+        float* d_x = dalloc<float>(x.size());
+        INK_CK(cudaMemcpy(d_x, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
+        InkQ8_1_G32* d_xq = dalloc<InkQ8_1_G32>((size_t)M * nbx);
+        k_ink_quant_q8_1_g32<<<(M * nbx + 7) / 8, 256>>>(d_x, d_xq, M, K);
+        float* d_out = dalloc<float>((size_t)M * N);
+        cudaEvent_t e0, e1;
+        cudaEventCreate(&e0); cudaEventCreate(&e1);
+        for (int variant = 0; variant < 2; ++variant) {
+            const int n_e = variant == 0 ? 1 : 16;
+            auto launch = [&]() {
+                if (K == 2304) {
+                    if (variant == 0) k_row_dot_test<1, 2304><<<(N + 3) / 4, 128>>>(t, d_w, rb, d_xq, nbx, K, n_e, d_out, N);
+                    else              k_row_dot_test<16, 2304><<<(N + 3) / 4, 128>>>(t, d_w, rb, d_xq, nbx, K, n_e, d_out, N);
+                } else {
+                    if (variant == 0) k_row_dot_test<1, 1152><<<(N + 3) / 4, 128>>>(t, d_w, rb, d_xq, nbx, K, n_e, d_out, N);
+                    else              k_row_dot_test<16, 1152><<<(N + 3) / 4, 128>>>(t, d_w, rb, d_xq, nbx, K, n_e, d_out, N);
+                }
+            };
+            launch(); INK_CK(cudaDeviceSynchronize());
+            cudaEventRecord(e0);
+            for (int i = 0; i < 10; ++i) launch();
+            cudaEventRecord(e1); INK_CK(cudaEventSynchronize(e1));
+            float ms = 0; cudaEventElapsedTime(&ms, e0, e1); ms /= 10;
+            std::printf("type %2d K=%4d %2d tokens: %7.3f ms  %7.1f GB/s of weights  %6.2f Gdot-elem/s/token-row\n", t, K, n_e, ms, (double)w.size() / (ms * 1e-3) / 1e9,
+                        (double)N * K * n_e / (ms * 1e-3) / 1e9);
+        }
+        cudaFree(d_w); cudaFree(d_x); cudaFree(d_xq); cudaFree(d_out);
+        cudaEventDestroy(e0); cudaEventDestroy(e1);
+    }
+}
+
+int main(int argc, char** argv) {
     cudaDeviceProp p{};
     INK_CK(cudaGetDeviceProperties(&p, 0));
     std::printf("Device: %s (sm_%d%d)\n", p.name, p.major, p.minor);
+    if (argc > 1 && std::strcmp(argv[1], "bench") == 0) { bench_all(); return 0; }
     Tabs T;
     FROM_SYM(T.kmask, kInkKmaskIq2, 8);
     FROM_SYM(T.ksigns, kInkKsignsIq2, 128);

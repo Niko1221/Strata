@@ -456,7 +456,7 @@ __device__ __constant__ int8_t kInkIq4NlLut[16] = {
 };
 
 // Exact IQ3_XXS 256-entry 4-magnitude codebook (1 KB in constant cache -> 1-cycle hit!)
-__device__ __constant__ uint32_t kInkIq3XxsGrid[256] = {
+static __device__ const uint32_t kInkIq3XxsGrid[256] = {   // global (cached), not __constant__: the lanes of a warp index it with different values
     0x04040404u, 0x04040414u, 0x04040424u, 0x04040c0cu, 0x04040c1cu, 0x04040c3eu, 0x04041404u, 0x04041414u,
     0x04041c0cu, 0x04042414u, 0x04043e1cu, 0x04043e2cu, 0x040c040cu, 0x040c041cu, 0x040c0c04u, 0x040c0c14u,
     0x040c140cu, 0x040c142cu, 0x040c1c04u, 0x040c1c14u, 0x040c240cu, 0x040c2c24u, 0x040c3e04u, 0x04140404u,
@@ -526,6 +526,20 @@ __device__ __forceinline__ uint32_t ink_apply_signs4(uint32_t g, uint32_t nib) {
     const uint32_t e = (nib & 1u) | ((nib & 2u) << 7) | ((nib & 4u) << 14) | ((nib & 8u) << 21);   // 0x01 in the bytes to negate
     const uint32_t m = e * 0xFFu;                                                                // 0xFF there
     return __vsub4(g ^ m, m);
+}
+
+// IQ4_NL / IQ4_XS values of four 4-bit codes (one per byte, 0..15): the 16-entry table lives in four registers and is read with two byte permutes
+// and a select (a __constant__ table read with a different index in every lane is serialised 8 to 16 ways: 54 GB/s against 380 for Q4_K on an A4000).
+__device__ __forceinline__ uint32_t ink_iq4nl_lut4(uint32_t b) {
+    constexpr uint32_t L0 = 0xBFAD9881u, L1 = 0xF6EADDCFu;   // entries 0..3, 4..7   (-127 -104 -83 -65 | -49 -35 -22 -10)
+    constexpr uint32_t H0 = 0x26190D01u, H1 = 0x71594535u;   // entries 8..11, 12..15 (1 13 25 38 | 53 69 89 113)
+    const uint32_t t = b & 0x07070707u;
+    const uint32_t u = t | (t >> 4);
+    const uint32_t s = (u & 0x000000FFu) | ((u >> 8) & 0x0000FF00u);   // the four 3-bit selectors as nibbles
+    const uint32_t lo = __byte_perm(L0, L1, s);
+    const uint32_t hi = __byte_perm(H0, H1, s);
+    const uint32_t m = __vcmpgtu4(b, 0x07070707u);                       // 0xFF in the bytes whose code is 8 or more
+    return lo ^ ((lo ^ hi) & m);
 }
 
 // Vectorized DP4A multi-token GGUF row dot product: reads & unpacks each weight superblock ONCE across up to MAX_M tokens!
@@ -799,12 +813,11 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     w1 = gguf_pack4_i8(wv[4], wv[5], wv[6], wv[7]);
                 } else if (ggml_type == 20) {
                     const uint8_t* qp = blk + 2 + (l4 & 1) * 8;
-                    const int hi = l4 >> 1;
-                    int8_t wv[8];
-#pragma unroll
-                    for (int k = 0; k < 8; ++k) wv[k] = kInkIq4NlLut[hi ? (qp[k] >> 4) : (qp[k] & 0xFu)];
-                    w0 = gguf_pack4_i8(wv[0], wv[1], wv[2], wv[3]);
-                    w1 = gguf_pack4_i8(wv[4], wv[5], wv[6], wv[7]);
+                    const int sh = (l4 >> 1) * 4;
+                    const uint32_t p0 = (ld32_u(qp) >> sh) & 0x0F0F0F0Fu;
+                    const uint32_t p1 = (ld32_u(qp + 4) >> sh) & 0x0F0F0F0Fu;
+                    w0 = ink_iq4nl_lut4(p0);
+                    w1 = ink_iq4nl_lut4(p1);
                 } else {  // Q5_0 (6)
                     const uint32_t qh = ld32_u(blk + 2);
                     const uint8_t* qp = blk + 6 + (l4 & 1) * 8;
@@ -856,9 +869,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
                     const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                     int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
-                    if (l4 == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                    acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);   // every lane adds its own part; the final warp_sum adds the lanes
                 }
             }
         }
@@ -879,8 +890,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
                     const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                     int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);   // two scales per sub-block: lanes (0,1) and (2,3)
-                    if ((l4 & 1) == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                    acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);   // every lane adds its own part; the final warp_sum adds the lanes
                 }
             }
         }
@@ -902,8 +912,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
                     const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                     int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
-                    if ((l4 & 1) == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                    acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);   // every lane adds its own part; the final warp_sum adds the lanes
                 }
             }
         }
@@ -925,9 +934,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
                     const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                     int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
-                    if (l4 == 0) acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);
+                    acc[m] = fmaf(dl * xb.d, (float)isum, acc[m]);   // every lane adds its own part; the final warp_sum adds the lanes
                 }
             }
         }
@@ -946,9 +953,8 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                     const InkQ8_1_G32& xb = xq_ptrs[m][b * 8 + sub];
                     const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                     int32_t isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
-                    if (l4 == 0) acc[m] = fmaf(dl, fmaf(delta, xb.s, xb.d * (float)isum), acc[m]);   // xb.s = d * sum(q)
+                    const int32_t xsum = dp4a_i8(0x01010101u, x2.y, dp4a_i8(0x01010101u, x2.x, 0));   // sum of this lane's 8 activation codes
+                    acc[m] = fmaf(dl * xb.d, fmaf(delta, (float)xsum, (float)isum), acc[m]);
                 }
             }
         }
@@ -980,9 +986,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
                         const uint2 x2 = *reinterpret_cast<const uint2*>(xb.qs + in32);
                         isum = dp4a_i8(w1, x2.y, dp4a_i8(w0, x2.x, 0));
                     }
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 2);
-                    isum += __shfl_xor_sync(0xFFFFFFFFu, isum, 1);
-                    if (l4 == 0 && valid) acc[m] = fmaf(dl * xd, (float)isum, acc[m]);
+                    acc[m] = fmaf(dl * xd, (float)isum, acc[m]);   // an invalid lane has dl = 0 and isum = 0
                 }
             }
         }
