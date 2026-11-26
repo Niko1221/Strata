@@ -67,6 +67,15 @@ int main() {
         CHECK(ink_draft_plain_step(true, kDraftPlainCtxHybrid, false));
         CHECK(ink_draft_plain_step(true, 32768, false));
         CHECK(!ink_draft_plain_step(true, 32768, true));
+        // the measured cases: a 62-token prompt keeps drafting on a hybrid card, a 4K document does not (RTX 5070 12 GB: 34.5 against 59.2 tok/s)
+        CHECK(!ink_draft_plain_step(true, 62, false));
+        CHECK(ink_draft_plain_step(true, 4094, false));
+        // an emulated-draft architecture (sm < 80) that is fully resident: plain from kDraftPlainCtxSlowArch; sm_80 and newer resident: never
+        CHECK(!ink_draft_plain_step(false, kDraftPlainCtxSlowArch - 1, false, 70));
+        CHECK(ink_draft_plain_step(false, kDraftPlainCtxSlowArch, false, 70));
+        CHECK(!ink_draft_plain_step(false, 100000, false, 80));
+        CHECK(!ink_draft_plain_step(false, 100000, false, 120));
+        CHECK(!ink_draft_plain_step(false, 100000, true, 70));              // --draft on
     }
     std::printf("ink_draft_rule_test: ok\n");
     return 0;

@@ -475,6 +475,7 @@ public:
             return false;
         }
         const int sm_cc = prop.major * 10 + prop.minor;
+        dev_cc_ = sm_cc;
         if (sm_cc < 80) strata::ink::df2_f32_path() = true;   // NV-OLDER: DFlash 2 runs its FP32 / dp4a form below sm_80 (sizing below needs to know)
 
         // A binary built without code for this card (the CUDA 13 packages hold sm_75 and newer) loads fine, then every kernel launch
@@ -1642,7 +1643,7 @@ public:
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
         // the ONE drafter rule, principle 2 (strata/core/ink_draft_rule.hpp): on a hybrid card (experts in host memory) a step from kDraftPlainCtxHybrid tokens of context on is a plain step.
         // Per step, so it follows every request; `--draft on` turns it off; with all experts in VRAM the window governor decides alone.
-        if (strata::core::ink_draft_plain_step(model_.n_host_experts > 0, anchor_pos, draft_forced_)) return 0;
+        if (strata::core::ink_draft_plain_step(model_.n_host_experts > 0, anchor_pos, draft_forced_, dev_cc_)) return 0;
         const bool dspark_opt = strata::ink::rtx5090::dspark_opt_on() && (runner_->d_tree_anc32 != nullptr);
         const bool deep_tree = (runner_->d_tree_anc32 != nullptr);   // deep verify tree allocated (5090 builder or the 5060 Ti PLD graft)
         const int want_cap = (deep_tree && anchor_pos + 24 < eff_max_ctx_ && anchor_pos + 24 < dspark_->max_ctx)
@@ -2442,6 +2443,7 @@ private:
     bool track_pld90_ = false;       // sm_120 table: the 5090-family deep-tree drafting part is on for this card
     std::vector<int32_t> pld_hist_;  // Slot-0 token history for zero-cost PLD suffix lookup (5090-family drafting switch)
     std::vector<int32_t> slot0_hist_;
+    int dev_cc_ = 90;             // compute capability of the device (the drafter rule: emulated draft steps below sm_80)
     bool draft_forced_ = false;   // --draft on / STRATA_INK_DFLASH2_FORCE=1: the residency-first rule never vetoes the drafter (strata/core/ink_draft_rule.hpp)
     std::vector<std::vector<int32_t>> slot_hists_;
     int    c64_gov_steps_    = 0;
