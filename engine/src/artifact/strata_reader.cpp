@@ -1,5 +1,7 @@
 // src/artifact/strata_reader.cpp - Native .strata v1.0 container reader (docs/FORMAT-SPEC.md §2)
+// Reads both header layouts (4 KiB and 16 KiB aligned): strata_layout.hpp.
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/artifact/strata_layout.hpp"
 
 #include <zstd.h>
 
@@ -7,8 +9,6 @@
 
 namespace strata::artifact {
 namespace {
-
-constexpr uint8_t kStrataMagic[8] = {'S', 'T', 'R', 'A', 'T', 'A', 0x00, 0x01};
 
 bool seek_abs(std::FILE* fp, uint64_t off) noexcept {
 #if defined(_WIN32)
@@ -25,9 +25,27 @@ void StrataFileReader::close() {
         std::fclose(fp_);
         fp_ = nullptr;
     }
+    file_size_ = 0;
     manifest_json_.clear();
     experts_.clear();
     vram_load_order_.clear();
+}
+
+bool StrataFileReader::manifest_top_string(const char* key, std::string& out) const {
+    return strata_manifest_top_value(manifest_json_, key, true, out);
+}
+
+bool StrataFileReader::manifest_top_uint(const char* key, uint64_t& out) const {
+    std::string t;
+    if (!strata_manifest_top_value(manifest_json_, key, false, t)) return false;
+    out = std::strtoull(t.c_str(), nullptr, 10);
+    return true;
+}
+
+bool StrataFileReader::is_vision_shard() const {
+    if (hdr_.profile == StrataProfile::VisionShard) return true;
+    std::string arch;
+    return manifest_top_string("arch", arch) && arch == "inkling2_vision";
 }
 
 bool StrataFileReader::open(const std::string& path, std::string& err) {
@@ -43,30 +61,11 @@ bool StrataFileReader::open(const std::string& path, std::string& err) {
         close();
         return false;
     }
-    if (std::memcmp(frame, kStrataMagic, 8) != 0) {
-        err = "Invalid .strata magic (expected STRATA\\x00\\x01)";
+    file_size_ = strata_file_size(fp_);
+    if (!strata_parse_header_frame(frame, STRATA_PAGE_SIZE, file_size_, hdr_, err)) {
         close();
         return false;
     }
-    std::memcpy(&hdr_.flags, frame + 8, 4);
-    uint16_t prof = 0;
-    std::memcpy(&prof, frame + 12, 2);
-    hdr_.profile = static_cast<StrataProfile>(prof);
-    std::memcpy(&hdr_.num_sections, frame + 14, 2);
-    if (hdr_.num_sections != STRATA_NUM_SECTIONS) {
-        err = "Unexpected .strata num_sections: " + std::to_string(hdr_.num_sections);
-        close();
-        return false;
-    }
-    for (int i = 0; i < STRATA_NUM_SECTIONS; ++i) {
-        std::memcpy(&hdr_.sections[i], frame + 0x10 + i * sizeof(StrataSectionEntry), sizeof(StrataSectionEntry));
-        if (hdr_.sections[i].byte_length > 0 && (hdr_.sections[i].file_offset % STRATA_PAGE_SIZE) != 0) {
-            err = "Section " + std::to_string(i) + " is not 4 KiB aligned";
-            close();
-            return false;
-        }
-    }
-    std::memcpy(hdr_.engram_shard_sha256, frame + 0x190, 32);
 
     // Decompress ZSTD Section 0 manifest
     std::vector<uint8_t> s0;
@@ -118,28 +117,28 @@ bool StrataFileReader::open(const std::string& path, std::string& err) {
             return false;
         }
         const bool has_vram_order = ((hdr_.sections[3].flags & 1u) != 0);
+        // 4 KiB layout: the length is exact.  16 KiB layout: it is padded, the manifest says how many entries there are.
+        const uint64_t manifest_n = (hdr_.layout == StrataLayout::Page16K) ? strata_manifest_expert_count(manifest_json_) : 0;
+        size_t n = 0;
+        if (!strata_section3_entry_count(hdr_, s3.size(), has_vram_order, manifest_n, n, err)) {
+            close();
+            return false;
+        }
         if (has_vram_order) {
-            constexpr size_t kEntryPlusOrder = sizeof(StrataExpertEntry) + sizeof(uint16_t);
-            if (s3.size() % kEntryPlusOrder != 0) {
-                err = "Section 3 v1.1 byte_length not a multiple of 34 B (32 B entry + 2 B vram_load_order)";
-                close();
-                return false;
-            }
-            const size_t n = s3.size() / kEntryPlusOrder;
             experts_.resize(n);
             vram_load_order_.resize(n);
             const size_t dir_bytes = n * sizeof(StrataExpertEntry);
             std::memcpy(experts_.data(), s3.data(), dir_bytes);
             std::memcpy(vram_load_order_.data(), s3.data() + dir_bytes, n * sizeof(uint16_t));
         } else {
-            if (s3.size() % sizeof(StrataExpertEntry) != 0) {
-                err = "Section 3 byte_length not a multiple of 32 B StrataExpertEntry";
-                close();
-                return false;
+            // padded 16 KiB Section 3 of a manifest without a count (Hy4): the zero entries at its tail are padding, a real
+            // entry always has a body
+            if (hdr_.layout == StrataLayout::Page16K && manifest_n == 0) {
+                static const uint8_t kZero[sizeof(StrataExpertEntry)] = {};
+                while (n > 0 && std::memcmp(s3.data() + (n - 1) * sizeof(StrataExpertEntry), kZero, sizeof(kZero)) == 0) --n;
             }
-            const size_t n = s3.size() / sizeof(StrataExpertEntry);
             experts_.resize(n);
-            std::memcpy(experts_.data(), s3.data(), s3.size());
+            if (n) std::memcpy(experts_.data(), s3.data(), n * sizeof(StrataExpertEntry));
         }
     }
 
@@ -168,6 +167,11 @@ bool StrataFileReader::read_section(uint32_t section_id, std::vector<uint8_t>& o
         return false;
     }
     const auto& sec = hdr_.sections[section_id];
+    // a header whose lengths run past the file would ask for an allocation of that size: say so instead
+    if (file_size_ != 0 && (sec.file_offset > file_size_ || sec.byte_length > file_size_ - sec.file_offset) && sec.byte_length != 0) {
+        err = "Section " + std::to_string(section_id) + " extends past the end of the file (truncated file?)";
+        return false;
+    }
     out.resize(static_cast<size_t>(sec.byte_length));
     if (sec.byte_length == 0) return true;
     return read_at(sec.file_offset, out.data(), out.size(), err);

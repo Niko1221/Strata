@@ -113,38 +113,70 @@ class StrataExpertEntry:
         return cls(*vals)
 
 
+TABLE_OFFSET_4K = 0x10     # section table of the 4 KiB layout (every file up to 0.2.22; what the writer below makes)
+TABLE_OFFSET_16K = 0x20    # section table of the 16 KiB layout (the re-adjusted Inkling SQ-20 and Vision): a u16 tile_layout_id sits at 0x10
+PAGE_SIZE_16K = 16384
+
+
 def build_header_frame(
     profile: int,
     sections: List[StrataSectionEntry],
     engram_shard_sha256: bytes = b"\x00" * 32,
     flags: int = 0,
+    layout_16k: bool = False,
+    tile_layout_id: int = 0,
 ) -> bytes:
+    """The 4 KiB header frame. layout_16k writes the 16 KiB layout's header (table at 0x20, tile_layout_id at 0x10); the sections
+    are then the caller's to place on 16 KiB boundaries."""
     assert len(sections) == NUM_SECTIONS
     assert len(engram_shard_sha256) == 32
     frame = bytearray(PAGE_SIZE)
     frame[0:8] = MAGIC
     struct.pack_into("<IHH", frame, 8, flags, profile, NUM_SECTIONS)
-    pos = 0x10
+    pos = TABLE_OFFSET_16K if layout_16k else TABLE_OFFSET_4K
+    if layout_16k:
+        struct.pack_into("<H", frame, 0x10, tile_layout_id)
     for sec in sections:
         frame[pos : pos + SECTION_ENTRY_SIZE] = sec.pack()
         pos += SECTION_ENTRY_SIZE
-    assert pos == 0x190
-    frame[0x190:0x1B0] = engram_shard_sha256
+    assert pos == (0x1A0 if layout_16k else 0x190)
+    frame[pos : pos + 32] = engram_shard_sha256
     return bytes(frame)
 
 
-def parse_header_frame(frame: bytes) -> Tuple[int, int, List[StrataSectionEntry], bytes]:
+def _probe_table(frame: bytes, base: int, page: int, file_size: int):
+    secs = [StrataSectionEntry.unpack(frame[base + i * SECTION_ENTRY_SIZE : base + (i + 1) * SECTION_ENTRY_SIZE]) for i in range(NUM_SECTIONS)]
+    live = sorted((s.file_offset, s.file_offset + s.byte_length, i) for i, s in enumerate(secs) if s.byte_length)
+    ids = all(s.section_id == i for i, s in enumerate(secs))
+    aligned = all(lo % page == 0 for lo, _, _ in live)
+    ranges = all(lo >= PAGE_SIZE and (not file_size or hi <= file_size) for lo, hi, _ in live) and all(y[0] >= x[1] for x, y in zip(live, live[1:]))
+    return secs, bool(live) and ids and aligned and ranges
+
+
+def detect_layout(frame: bytes, file_size: int = 0) -> int:
+    """The section-table offset of a header frame: 0x20 (the 16 KiB layout) only when that table is valid (every section_id its
+    index, sections 16 KiB aligned, inside the file, not overlapping) and the 4 KiB table at 0x10 is not; otherwise 0x10, read as it
+    always was.  Both valid raises ValueError (ambiguous). file_size 0 = unknown (the inside-the-file test is skipped).
+    The same rule as the engine's reader, engine/include/strata/artifact/strata_layout.hpp."""
+    _, a_ok = _probe_table(frame, TABLE_OFFSET_4K, PAGE_SIZE, file_size)
+    _, b_ok = _probe_table(frame, TABLE_OFFSET_16K, PAGE_SIZE_16K, file_size)
+    if a_ok and b_ok:
+        raise ValueError("Ambiguous .strata header: the section table reads as both the 4 KiB layout (at 0x10) and the 16 KiB layout (at 0x20)")
+    return TABLE_OFFSET_16K if b_ok else TABLE_OFFSET_4K
+
+
+def parse_header_frame(frame: bytes, file_size: int = 0) -> Tuple[int, int, List[StrataSectionEntry], bytes]:
     assert len(frame) >= PAGE_SIZE
     if frame[0:8] != MAGIC:
         raise ValueError(f"Bad .strata magic: {frame[0:8]!r}")
     flags, profile, num_sec = struct.unpack_from("<IHH", frame, 8)
     assert num_sec == NUM_SECTIONS, f"Unexpected num_sections={num_sec}"
     sections = []
-    pos = 0x10
+    pos = detect_layout(frame, file_size)
     for _ in range(NUM_SECTIONS):
         sections.append(StrataSectionEntry.unpack(frame[pos : pos + SECTION_ENTRY_SIZE]))
         pos += SECTION_ENTRY_SIZE
-    engram_sha = bytes(frame[0x190:0x1B0])
+    engram_sha = bytes(frame[pos : pos + 32])
     return flags, profile, sections, engram_sha
 
 
@@ -274,10 +306,10 @@ class _StreamingSection:
 
 
 def verify_strata_file(path: str, verify_hashes: bool = True) -> Dict[str, Any]:
-    """Verify a .strata v1.0 file's header, 4 KiB section alignment, SHA-256 digests, and manifest."""
+    """Verify a .strata v1.0 file's header (4 KiB or 16 KiB layout), 4 KiB section alignment (a 16 KiB-aligned section passes too), SHA-256 digests, and manifest."""
     with open(path, "rb") as f:
         frame = f.read(PAGE_SIZE)
-        flags, profile, sections, engram_sha = parse_header_frame(frame)
+        flags, profile, sections, engram_sha = parse_header_frame(frame, os.path.getsize(path))
         for sec in sections:
             if sec.byte_length == 0:
                 continue

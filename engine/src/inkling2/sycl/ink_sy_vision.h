@@ -53,8 +53,12 @@ struct InkSyVision {
         if (!fp) { err = "cannot open vision shard: " + path; return false; }
         uint8_t frame[4096];
         if (std::fread(frame, 1, 4096, fp) != 4096) { std::fclose(fp); err = "short read vision header"; return false; }
-        strata::artifact::StrataSectionEntry secs[6]{};
-        for (int i = 0; i < 6; ++i) std::memcpy(&secs[i], frame + 0x10 + i * 64, 64);
+        strata::artifact::StrataHeader shdr;  // either header layout (4 KiB or 16 KiB aligned): strata_layout.hpp
+        if (!strata::artifact::strata_parse_header_frame(frame, 4096, strata::artifact::strata_file_size(fp), shdr, err)) {
+            std::fclose(fp);
+            return false;
+        }
+        const strata::artifact::StrataSectionEntry* secs = shdr.sections;
 
         std::string mjson;
         if (!read_section0_zstd(fp, secs[0].file_offset, secs[0].byte_length, mjson, err)) { std::fclose(fp); return false; }
