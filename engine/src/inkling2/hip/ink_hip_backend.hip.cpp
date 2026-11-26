@@ -19,6 +19,7 @@
 #include "ink_hip_tree.hip.h"
 #include "ink_hip_blaslt.hpp"
 #include "ink_hip_hybrid.hpp"
+#include "ink_hip_df2.hip.h"
 #include "strata/hip_uma_guard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
@@ -513,7 +514,7 @@ public:
 
     int effective_max_ctx() const override { return max_ctx_; }
 
-    bool dspark_ready() const override { return has_dspark_; }
+    bool dspark_ready() const override { return has_dspark_ || has_df2_; }
 
     // Opt-in router tail skip (cuda/ink_tail_skip.cuh): the HIP router reads the process-wide setting at every launch; the direct MoE path applies it.
     bool set_tail_skip(const std::string& spec, std::string& err) override {
@@ -976,6 +977,9 @@ public:
                 }
             }
         }
+
+        // 2b. DFlash 2, the Inkling drafter on every backend (ink_hip_df2.hip.h): its sidecar next to the model; loaded before the experts so the arena plan sees its VRAM
+        df2_try_init(model, opts);
 
         // 3. Load Section 4 experts in 3x loop-weighted vram_load_order priority!
         // Uses strata::hip_uma::alloc_gpu_buffer so 780M (gfx1103) & 890M (gfx1150) with small 512M-4G BIOS carveout
@@ -1553,6 +1557,7 @@ public:
         }
         auto& sl = slots_[slot];
         sl.release();
+        if (has_df2_) df2_->reset_slot(slot, 0);
         sl.allocated = true;
         sl.max_ctx = max_ctx;
         sl.seq_len = 0;
@@ -1571,6 +1576,7 @@ public:
     void reset_slot(int slot) override {
         if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return;
         auto& sl = slots_[slot];
+        if (has_df2_) df2_->reset_slot(slot, 0);
         sl.seq_len = 0;
         sl.dspark_len = 0;
         sl.has_snap = false;
@@ -1626,6 +1632,7 @@ public:
         auto& sl = slots_[slot];
         sl.seq_len = keep_len;
         sl.dspark_len = std::min(sl.dspark_len, keep_len);
+        if (has_df2_) df2_->rollback(slot, keep_len);   // the rows of rejected draft tokens were ingested with the verify batch: only [0, keep_len) is context
         if (sl.has_snap) {
             const int keep_steps = keep_len - sl.snap_seq_len;
             if (sl.dspark_last_draft > 0 && keep_steps >= 1) {
@@ -1810,6 +1817,7 @@ public:
         auto& sl = slots_[slot];
         sl.seq_len = seq_len;  // forward_batch only raises seq_len (std::max), so set it back here
         sl.dspark_len = std::min(sl.dspark_len, ck.dspark_len);
+        if (has_df2_) df2_->reset_slot(slot, seq_len);   // a restored conversation starts with an empty drafter ring and drafts from the first ingest on
         sl.has_snap = false;
         sl.sconv_rec_n = 0;
         // DSpark's adaptive draft state restarts as for a fresh prompt (as in reset_slot)
@@ -1896,7 +1904,120 @@ public:
         return fb_ok;
     }
 
+    // ---- DFlash 2 (ink_hip_df2.hip.h): the glue to this backend ----
+    // Loads the sidecar (dflash2.safetensors beside the model, or STRATA_INK_DFLASH2) when DFlash 2 is the drafter. Silent when it is not wanted; one line when it cannot start.
+    void df2_try_init(const InkModelFile& model, const BackendOpts& opts) {
+        using namespace strata::ink;
+        has_df2_ = false;
+        if (!opts.enable_dspark || ink2::dormant_dspark_allowed() || !df2_requested()) return;
+        df2_model_path() = model.path;
+        const std::string path = df2_resolve_path(model.path);
+        if (path.empty()) {
+            std::fprintf(stderr, "[ink-hip] DFlash 2: no dflash2.safetensors next to the model: no drafter\n");
+            return;
+        }
+        int wsz = 32;
+        (void)hipDeviceGetAttribute(&wsz, hipDeviceAttributeWarpSize, gpu0_id_);
+        if (wsz != 32) {
+            std::fprintf(stderr, "[ink-hip] DFlash 2: needs a wave32 GPU (RDNA): no drafter\n");
+            return;
+        }
+        const auto it = packed_trunk_.find("model.llm.unembed.weight");
+        const auto ie = packed_trunk_.find("model.llm.embed.weight");
+        if (it == packed_trunk_.end() || ie == packed_trunk_.end() || c_.hidden != 2304) return;
+        const int fmt = it->second.info.fmt;
+        if (!(fmt == 100 || fmt == 101 || fmt == 102 || sk_sb_bytes(fmt) > 0)) {
+            std::fprintf(stderr, "[ink-hip] DFlash 2: the unembed format %d is not supported by the HIP drafter: no drafter\n", fmt);
+            return;
+        }
+        auto d = std::make_unique<InkHipDFlash2>();
+        d->max_slots = max_slots_;
+        d->h.stream = stream_;
+        d->h.gemm = [this](const uint16_t* W, const float* X, float* Y, int M, int N, int K) { launch_bf16_opt(W, X, nullptr, Y, M, N, K); };
+        d->h.embed = [this](const int32_t* d_tok, float* out, int n) {
+            const auto& emb_pk = packed_trunk_.at("model.llm.embed.weight");
+            k_embed_lookup<<<n, 256, 0, stream_>>>(emb_pk.buf.dev_ptr, emb_pk.info.fmt, static_cast<int>(emb_pk.info.rows()),
+                                                   f32_ptr("model.llm.embed_norm.weight"), d_tok, nullptr, nullptr, out, n, c_.hidden, c_.rms_eps);
+        };
+        d->h.unemb = it->second.buf.dev_ptr;
+        d->h.unemb_fmt = fmt;
+        d->h.unemb_rows = static_cast<int>(it->second.info.rows());
+        d->h.vocab = c_.vocab_unpadded;
+        d->h.softcap = c_.logit_softcap;
+        d->h.small_vram = !mem_info_.is_uma && mem_info_.effective_total_bytes < (24ull << 30);
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_RATIO"); e && *e && std::atof(e) > 0.0) df2_ratio_ = std::atof(e);
+        else if (opts.spec_cost > 0.0) df2_ratio_ = opts.spec_cost;
+        if (opts.spec_plain > 0.0) df2_plain_ = opts.spec_plain;
+        size_t f0 = 0, t0 = 0, f1 = 0, t1 = 0;
+        (void)hipMemGetInfo(&f0, &t0);
+        std::string e2;
+        if (!d->load(path, e2)) {
+            std::fprintf(stderr, "[ink-hip] DFlash 2 could not start (%s): no drafter\n", e2.c_str());
+            d->free_all();
+            return;
+        }
+        (void)hipMemGetInfo(&f1, &t1);
+        std::fprintf(stderr, "[ink-hip] DFlash 2 drafter: %s (weights %.0f MiB, scratch %.0f MiB, %.0f MiB of the card; block weights %s, codebooks %s, window ratio %.2f)\n", path.c_str(),
+                     d->bytes_weights / 1048576.0, d->bytes_scratch / 1048576.0, (f0 > f1 ? f0 - f1 : 0) / 1048576.0,
+                     d->var.attn == 0 ? "bf16" : (d->var.attn == 2 ? "4-bit" : "Q8"), d->host_codebooks ? "host (mapped)" : "GPU", df2_ratio_);
+        // the drafter reads the target's taps after visits 5, 23, 41 and the final normed state; a model file without an embedded DSpark does not name them
+        if (dspark_cfg_.target_visits.size() < 4) dspark_cfg_.target_visits = {5, 23, 41, c_.n_visits};
+        df2_ = std::move(d);
+        has_df2_ = true;
+    }
+
+    // before a forward: the rings of the batch's slots exist (a graph capture must not allocate) and the host knows which rows are ingested
+    bool df2_prepare(const StepBatch& batch, std::string& err) {
+        const int B = batch.n_tokens;
+        for (int b = 0; b < B; ++b) {
+            const int s = batch.slot_ids[b];
+            if (s >= 0 && s < max_slots_ && !df2_->ensure_slot(s)) { /* that slot has no drafts; its rows are skipped by the ring kernel (null ring) */ }
+        }
+        df2_->note_ingest(batch.slot_ids.data(), batch.pos.data(), B);
+        (void)err;
+        return true;
+    }
+
+    void df2_ingest(int B) {
+        df2_->ingest_dev(reinterpret_cast<const float*>(sc_taps_[0].dev_ptr), reinterpret_cast<const float*>(sc_taps_[1].dev_ptr),
+                         reinterpret_cast<const float*>(sc_taps_[2].dev_ptr), reinterpret_cast<const float*>(sc_taps_[3].dev_ptr),
+                         reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), reinterpret_cast<const int32_t*>(sc_pos_.dev_ptr), B);
+    }
+
+    // One linear chain of up to max_draft tokens. The window follows the expected-tokens-per-cost rule of the CUDA backend: the chain's cumulative confidences are the
+    // prefix probabilities, a verify row costs 1 - (15/16)^rows of the MoE share (ratio). Returns the number of draft tokens (0 = a plain step).
+    int df2_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) {
+        if (max_draft <= 0 || slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return 0;
+        if (anchor_pos < 1 || df2_->hi[slot] < anchor_pos) return 0;   // no context ingested up to the anchor yet
+        int32_t ids[7] = {};
+        float conf[7] = {};
+        if (!df2_->draft(slot, anchor_tok, anchor_pos, ids, conf, err)) return 0;
+        double pref_p[9];
+        pref_p[0] = 1.0;
+        double cum = 1.0;
+        for (int i = 0; i < 7; ++i) {
+            const double c = std::pow(std::max(0.0, std::min(1.0, (double)conf[i])), df2_->conf_pow);
+            cum *= c;
+            pref_p[i + 1] = pref_p[i] + cum;
+        }
+        const int want = std::min(8, max_draft + 1);   // nodes: the anchor and the drafts
+        int best_m = std::min(3, want);
+        double best_rate = -1.0;
+        for (int mb = 1; mb <= want; ++mb) {
+            if (mb < 3 && df2_plain_ <= 0.0) continue;
+            const double e_tok = pref_p[mb - 1];
+            const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)mb);
+            double rate = e_tok / (1.0 + df2_ratio_ * exp_frac);
+            if (mb < 3) rate *= df2_plain_;
+            if (rate > best_rate) { best_rate = rate; best_m = mb; }
+        }
+        const int nd = best_m - 1;
+        for (int i = 0; i < nd; ++i) out_ids[i] = ids[i];
+        return nd;
+    }
+
     int dspark_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) override {
+        if (has_df2_) return df2_draft(slot, anchor_tok, anchor_pos, max_draft, out_ids, err);
         if (!has_dspark_ || max_draft <= 0) return 0;
         if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) {
             err = "hip dspark: invalid slot";
@@ -3572,6 +3693,8 @@ private:
         };
 
         // Pre-prepare DSpark context buffers/ptrs BEFORE HIP Graph capture so update_dspark_ctx_gpu runs 100% INSIDE the graph!
+        const bool do_df2_ctx = has_df2_ && batch.capture_taps;
+        if (do_df2_ctx && !df2_prepare(batch, err)) return false;
         const bool do_dspark_ctx = has_dspark_ && batch.capture_taps && h_dspark_fuse_.size() >= 16;
         if (do_dspark_ctx) {
             if (!prepare_dspark_ctx_ptrs(batch, err)) return false;
@@ -3582,7 +3705,7 @@ private:
         for (bool ok_l : layer_all_gpu_) if (!ok_l) { all_gpu_layers = false; break; }
         bool all_want_logits = (logits_out != nullptr);
         for (int b = 0; b < B && all_want_logits; ++b) if (!batch.want_logits[b]) all_want_logits = false;
-        const bool need_taps = (taps_out != nullptr) || (has_dspark_ && batch.capture_taps);
+        const bool need_taps = (taps_out != nullptr) || ((has_dspark_ || has_df2_) && batch.capture_taps);
 
         uint64_t kv_gen_sum = dspark_ptr_gen_;
         for (const auto& p : swa_pools_) kv_gen_sum += p.pool_gen;
@@ -4853,6 +4976,7 @@ private:
             if (do_dspark_ctx) {
                 launch_dspark_ctx_kernels(B);
             }
+            if (do_df2_ctx) df2_ingest(B);
             const int V = c_.vocab_unpadded;
             const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
             k_unembed_softcap<<<dim3((V + 7) / 8, (B + 15) / 16), 256, 0, stream_>>>(
@@ -4895,6 +5019,7 @@ private:
             auto& sl = slots_[batch.slot_ids[b]];
             sl.seq_len = std::max(sl.seq_len, batch.pos[b] + 1);
         }
+        if (do_df2_ctx) df2_ingest(B);
         if (do_dspark_ctx) {
             launch_dspark_ctx_kernels(B);
             for (int b = 0; b < B; ++b) {
@@ -5692,6 +5817,8 @@ private:
 
     void cleanup() {
         invalidate_graph();
+        if (df2_) { df2_->free_all(); df2_.reset(); }
+        has_df2_ = false;
         hybrid_.release();
         blaslt_.release();
         if (peer_stream_ || ev_g1_done_ || peer_expert_gpu_arena_.dev_ptr || !peer_d_layer_exps_.empty() || peer_scratch_B_ > 0) {
@@ -5872,6 +5999,10 @@ private:
     bool use_i8_moe_wmma_ = true;
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;
+    bool has_df2_ = false;                                   // DFlash 2 is the drafter (ink_hip_df2.hip.h)
+    std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
+    double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
+    double df2_plain_ = 0.0;                                 // > 0: a plain step is allowed when the window does not pay (--draft-plain)
     int max_slots_ = 1;
     int max_ctx_ = 32768;
     int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)
