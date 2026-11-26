@@ -125,8 +125,13 @@ static inline bool tkl_run_seq(InkBackend& be, const TailKlSeq& s, int chunk, st
     const int n = (int)s.ids.size();
     StepBatch batch;
     size_t r0 = 0;
-    for (int i0 = 0; i0 < n; i0 += chunk) {
-        const int i1 = std::min(n, i0 + chunk);
+    // a small chunk (one-token decode steps, verify-window sized chunks) is only used from the first scored row on; the prompt before it goes in
+    // 2048-token chunks, as a real run prefills its prompt before it decodes
+    const int first_row = s.rows.empty() ? n : s.rows.front();
+    for (int i0 = 0, i1 = 0; i0 < n; i0 = i1) {
+        const bool bulk = chunk < 64 && i0 < first_row;
+        i1 = std::min(n, i0 + (bulk ? 2048 : chunk));
+        if (bulk) i1 = std::min(i1, first_row);
         batch.clear();
         size_t r1 = r0;
         for (int i = i0; i < i1; ++i) {
