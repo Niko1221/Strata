@@ -1,0 +1,14 @@
+Microsoft Visual C++ runtime libraries: VCOMP140.DLL, VCRUNTIME140.dll, VCRUNTIME140_1.dll, MSVCP140.dll and the others listed below
+
+This engine package carries unmodified copies of the Microsoft Visual C++ runtime libraries from the build machine, next to the program that
+imports them. strata-inkling.exe, the Inkling-2 runner, uses the OpenMP runtime VCOMP140.DLL for its CPU expert kernels; the C and C++
+runtime DLLs (VCRUNTIME140, VCRUNTIME140_1, MSVCP140 ...) are what every program built with Visual C++ needs, and a clean Windows PC has
+no guarantee of having the matching Visual C++ Redistributable.
+
+License: these files are "distributable code" of Microsoft Visual Studio (the Visual C++ Redistributable): Microsoft allows an application
+to redistribute them with itself, unmodified, under the Microsoft Software License Terms of the Visual Studio edition they come from
+(the list of redistributable files is that edition's REDIST.TXT). They are Microsoft's software and are not covered by the license of
+Strata. The terms are at https://visualstudio.microsoft.com/license-terms/.
+Copyright: Microsoft Corporation. All rights reserved.
+
+The libraries of this package are listed below.

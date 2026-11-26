@@ -19,6 +19,9 @@ with --bundle-system): libatomic.so.1, which TheRock's librocm_sysdeps_numa.so.1
 could not start the AMD engine (boxia, 2026-11-15). libgomp.so.1 likewise: the Inkling-2 runner strata-inkling is linked against
 OpenMP and binary_deps.py no longer counts libgomp as a base system library, so a container with no libgomp1 package could not
 start it (the source Docker build stopped at "strata-inkling needs libgomp.so.1", 2026-11-25). Its notice goes into licenses/ (packaging/notices/).
+Libraries copied from an Intel oneAPI folder (libiomp5, libsycl, the Unified Runtime, oneMKL ...) get licenses/intel-oneapi.txt, with the installation's own
+license and third-party files beside it (copy_vendor_notices); a Windows package with Visual C++ runtime DLLs gets licenses/microsoft-vc-runtime.txt from
+package_engine.py.
 Nothing is downloaded; this only reads files on the build machine.
 """
 
@@ -102,6 +105,52 @@ def copy_notice(name: str, out: Path, origin: str = "") -> None:
         _copy(Path(f"/usr/share/doc/{owner[0]}/copyright"), folder / f"{stem}-copyright.txt")
     if Path("/usr/share/common-licenses/GPL-3").is_file():
         _copy(Path("/usr/share/common-licenses/GPL-3"), folder / "GPL-3.txt")
+
+
+def oneapi_root(path: str) -> Path | None:
+    """The Intel oneAPI installation folder a library was copied from (…/oneapi, e.g. /opt/intel/oneapi), or None."""
+    parts = Path(path).parts
+    for i, part in enumerate(parts):
+        if part.lower() == "oneapi" and i + 1 < len(parts):
+            return Path(*parts[:i + 1])
+    return None
+
+
+def copy_vendor_notices(copied: dict[str, str], out: Path) -> list[str]:
+    """licenses/intel-oneapi.txt for the Intel oneAPI runtime libraries that were bundled (libiomp5, libsycl, the Unified Runtime, oneMKL, Intel's
+    math and runtime support libraries: all come from the oneAPI folder of the build machine), followed by their names and where they were copied
+    from, and the installation's own license and third-party-notices files (<oneapi>/licensing/<version>/*.txt) when it has them.  Returns the
+    names of the libraries covered.  No library from a oneAPI folder, no notice."""
+    intel = {name: path for name, path in copied.items() if oneapi_root(path) is not None}
+    if not intel:
+        return []
+    source = NOTICES / "intel-oneapi.txt"
+    if not source.is_file():
+        print("WARNING: oneAPI libraries are bundled but packaging/notices/intel-oneapi.txt does not exist", file=sys.stderr)
+        return []
+    folder = out / "licenses"
+    folder.mkdir(parents=True, exist_ok=True)
+    text = source.read_text(encoding="utf-8") + "\n" + "".join(f"  {name} <- {path}\n" for name, path in sorted(intel.items()))
+    (folder / source.name).write_text(text, encoding="utf-8")
+    roots = sorted({str(oneapi_root(p)) for p in intel.values()})
+    wanted = (("intel-oneapi-license.txt", ("license.txt", "license")), ("intel-oneapi-third-party-programs.txt", ("third-party-programs.txt", "third-party-programs")))
+    found = set()
+    for root in roots:
+        lic = Path(root) / "licensing"
+        if not lic.is_dir():
+            continue
+        for version in sorted((d for d in lic.iterdir() if d.is_dir()), key=lambda d: d.name, reverse=True):     # latest first
+            for dest, names in wanted:
+                if dest in found:
+                    continue
+                hit = next((f for f in sorted(version.iterdir()) if f.is_file() and f.name.lower() in names), None)
+                if hit is not None:
+                    _copy(hit, folder / dest)
+                    found.add(dest)
+    for dest, _names in wanted:
+        if dest not in found:
+            print(f"WARNING: {dest} not found under {roots}/licensing; the notice names it, so copy it into licenses/ by hand", file=sys.stderr)
+    return sorted(intel)
 
 
 def is_driver(name: str) -> bool:
@@ -232,6 +281,9 @@ def main(argv=None) -> int:
                 target = a.out / dest / path.relative_to(src)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _copy(path.resolve(), target)
+    covered = copy_vendor_notices(copied, a.out)
+    if covered:
+        print(f"licenses/intel-oneapi.txt: notice for {len(covered)} Intel oneAPI libraries")
     (a.out / "SYSTEM-LIBS.txt").write_text("\n".join(sorted(system)) + "\n", encoding="utf-8")
     total = sum(p.stat().st_size for p in a.out.rglob("*") if p.is_file())
     print(f"copied {len(copied)} libraries ({total / (1 << 20):.1f} MiB incl. data) to {a.out}; {len(system)} system libraries left to the OS")
