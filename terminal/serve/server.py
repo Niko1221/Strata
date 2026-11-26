@@ -2663,8 +2663,10 @@ class StrataEngine:
     OWN_SLOT_WAIT_S = 5.0     # Inkling: a pass that continues a slot's request (a thinking budget's second pass) waits this long for that slot to be released
 
     def drafter_in_slot_zero(self) -> bool:
-        """Inkling-2-Mini started with its DSpark drafter (Qwen and every other engine: never; their slot choice is untouched)."""
-        return bool(getattr(self, "inkling_engine", False) and (getattr(self, "info", None) or {}).get("drafting") == "dspark")
+        """Inkling-2-Mini started with its DSpark or DFlash 2 drafter (Qwen and every other engine: never; their slot choice is untouched).
+        Both run through the engine's one drafter path, which exists only in slot 0; since the 0.2.23 lineup Control names the default one
+        "dflash2" (drafting.engine_info), and the check for "dspark" alone silently turned the slot-0 preference off."""
+        return bool(getattr(self, "inkling_engine", False) and (getattr(self, "info", None) or {}).get("drafting") in ("dspark", "dflash2"))
 
     def pick_slot(self, prompt: list[int], patience_until: float | None = None) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
