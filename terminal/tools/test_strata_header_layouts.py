@@ -169,6 +169,63 @@ class ReadManifestTests(unittest.TestCase):
             self.assertEqual(IT.read_manifest(p), HT.read_manifest(p))
 
 
+class SectionZeroTests(unittest.TestCase):
+    """_section0 on synthetic files: needs no zstd module, so it runs everywhere (ReadManifestTests above need one to decode the manifest)."""
+
+    def locate(self, data: bytes):
+        r = []
+        for mod in (IT, HT):
+            r.append(mod._section0(data[:4096], len(data)))
+        self.assertEqual(r[0], r[1])
+        return r[0]
+
+    def test_4k_file(self):
+        data = synthetic(False, MANIFEST)
+        off, ln = self.locate(data)
+        self.assertEqual(off % 4096, 0)
+        self.assertEqual(data[off: off + 4], struct.pack("<I", 0xFD2FB528))
+
+    def test_16k_file(self):
+        data = synthetic(True, MANIFEST, profile=1)
+        off, ln = self.locate(data)
+        self.assertEqual(off % 16384, 0)
+        self.assertEqual(data[off: off + 4], struct.pack("<I", 0xFD2FB528))
+        self.assertEqual(ln, len(zstd_raw_frame(json.dumps(MANIFEST).encode())))
+
+    def test_16k_header_with_an_old_looking_u64_at_0x10_is_still_16k(self):
+        data = bytearray(synthetic(True, MANIFEST))
+        struct.pack_into("<QQ", data, 0x10, 1 << 20, 4096)
+        off, ln = self.locate(bytes(data))
+        self.assertEqual(data[off: off + 4], struct.pack("<I", 0xFD2FB528))
+
+    def test_refusals(self):
+        good = synthetic(True, MANIFEST)
+        bad_id = bytearray(good)
+        bad_id[0x20 + 64 + 48: 0x20 + 64 + 52] = struct.pack("<I", 9)
+        z = bytearray(good)
+        z[0x10: 0x1C0] = bytes(0x1B0)
+        for label, data in (("bad section_id", bytes(bad_id)), ("cut file", good[: len(good) - 20000]), ("empty table", bytes(z))):
+            for mod in (IT, HT):
+                with self.subTest(label, reader=mod.__name__):
+                    with self.assertRaises(ValueError):
+                        mod._section0(data[:4096], len(data))
+
+    def test_ambiguous(self):
+        f = bytearray(1 << 20)
+        f[0:8] = b"STRATA\x00\x01"
+        for i in range(6):
+            struct.pack_into("<I", f, 0x10 + i * 64 + 48, i)
+            struct.pack_into("<I", f, 0x20 + i * 64 + 48, i)
+        for i in range(1, 6):
+            struct.pack_into("<I", f, 0x10 + i * 64, i - 1)
+        struct.pack_into("<QQ", f, 0x10, 65536, 100)
+        struct.pack_into("<QQ", f, 0x20, 16384, 100)
+        for mod in (IT, HT):
+            with self.subTest(mod.__name__):
+                with self.assertRaisesRegex(ValueError, "ambiguous"):
+                    mod._section0(bytes(f[:4096]), len(f))
+
+
 class GoldenHeaderTests(unittest.TestCase):
     """The real headers (448 bytes each), padded to 4 KiB; the file sizes are the real ones."""
 

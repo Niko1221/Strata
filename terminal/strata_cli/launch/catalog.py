@@ -125,6 +125,9 @@ class ModelRow:
     disk_free_gb: float | None = None   # ... and what is free in the data folder's drive
     mem_verdict: str = ""         # verdict "disk": the memory verdict it replaced (fits / tight / slower), "" when the disk mark is not set
     mem_words: str = ""
+    offered: bool = True          # False: a quant 0.2.23 no longer offers (Inkling-2-Mini); it is listed only because it is installed, never recommended, never downloaded
+    update: bool = False          # installed, and the installed file is an older one than the one offered now (SQ-20 of 0.2.22 against SQv2-20): never deleted, offered on request
+    credit: str = ""              # the line of credit shown with the model (GSQ-RCO: "GSQ + RCO by IST Austria DASLab, Apache-2.0")
 
     @property
     def title(self) -> str:
@@ -485,7 +488,8 @@ class Catalog:
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
                     installed=self.installed_with_files(str(size["id"])), mem_total=bool(size.get("mem_total")),
                     memory_gb=float(size.get("memory_gb") or 0), fit_gb=float(size.get("fit_gb") or size.get("memory_gb") or 0),
-                    recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
+                    recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"]),
+                    offered=size.get("offered", True) is not False, credit=str(size.get("credit") or ""), update=bool(size.get("update_available"))))
         self.apply_disk(out, hw, own)
         return out
 
@@ -523,7 +527,7 @@ class Catalog:
                     elif r.family == "inkling-2-mini":
                         from strata_control import inkling_family
                         got = sum(f.stat().st_size for f in folder.glob("*.strata")
-                                  if f.name in inkling_family.FILES) / 1e9
+                                  if f.name in inkling_family.ALL_FILES) / 1e9
                     else:
                         got = sum(f.stat().st_size for f in folder.glob("*.gguf")
                                   if not f.name.lower().startswith("mmproj")) / 1e9

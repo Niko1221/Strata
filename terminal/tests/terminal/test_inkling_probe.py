@@ -131,7 +131,7 @@ class Driver(unittest.TestCase):
         res, started = self.run_probe()
         self.assertEqual(len(started), 2)
         self.assertEqual(started[0][-2:], ["--draft", "off"])
-        self.assertEqual(started[1][-5:], ["--draft", "dspark", "--draft-beam", "1", "--draft-adapt"])
+        self.assertEqual(started[1][-5:], ["--draft", "dflash2", "--draft-beam", "1", "--draft-adapt"])       # 0.2.23: DFlash 2 is the one drafter
         self.assertEqual(res["decision"], "on")
         self.assertAlmostEqual(res["gains"]["code"], 2.0, places=2)
         self.assertAlmostEqual(res["gains"]["chat"], 1.1, places=2)
@@ -165,6 +165,12 @@ class Driver(unittest.TestCase):
 class RunConfig(unittest.TestCase):
     CFG = {"arch": "inkling2_loop", "backend": "cuda", "args": ["--native", "m.strata", "--max-context", "32768"], "parallel": 1}
 
+    def setUp(self):
+        # the DFlash 2 file is beside the model (0.2.23: without it there is no drafter, no probe and `--draft off`; tests/terminal/test_inkling_lineup.py)
+        p = mock.patch.object(inkling_family, "dflash2_sidecar", return_value=Path("dflash2.safetensors"))
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_auto_follows_the_probe_on_every_backend(self):
         for backend in ("cuda", "hip", "sycl", "metal"):
             cfg = dict(self.CFG, backend=backend)            # nothing chosen = auto
@@ -191,7 +197,7 @@ class RunConfig(unittest.TestCase):
                 with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark", "spec_opts": "1"}):
                     args = inkling_kind.engine_args(dict(effective), "/e/strata-inkling", announce=False)
                 self.assertIn("--parallel", args)
-                self.assertEqual(args[args.index("--draft") + 1], "dspark", (backend, slots))
+                self.assertEqual(args[args.index("--draft") + 1], "dflash2", (backend, slots))
             off = dict(file_cfg)
             P.record(off, {"decision": "off", "key": P.placement_key(off), "gains": {"code": 0.9, "chat": 0.8}})
             with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark"}):

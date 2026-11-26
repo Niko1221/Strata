@@ -826,11 +826,20 @@ HY4_FAMILIES = {
 INKLING_FAMILIES = {
     inkling_family.FAMILY: {
         "title": inkling_family.TITLE, "by": inkling_family.BY, "tag": inkling_family.TAG, "name": inkling_family.FAMILY, "arch": inkling_family.ARCH, "inkling": True, "vision": inkling_family.DEFAULT_VISION,
-        "about": "a fast 26.4B-A3.4B (5.4B looped-active) multimodal reasoning & agentic MoE with embedded DSpark drafter and 1..64 concurrent slots",
+        "about": "a fast 26.4B-A3.4B (5.4B looped-active) multimodal reasoning & agentic MoE with the DFlash 2 drafter and 1..64 concurrent slots",
         "license": "Thinking Machines Inkling-2-Mini: https://huggingface.co/thinkingmachines/Inkling-2-Mini",
-        "models": {b: {"about": inkling_family.BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)), "format": inkling_fit.BUILDS[b].get("format", "strata")} for b in inkling_fit.ORDER},
+        # what is OFFERED, in display order (inkling_fit.ORDER): the Strata packs, then GSQ-RCO IQ3_S, then Unsloth's UD-Q4_K_XL
+        "models": {b: {"about": inkling_family.BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)), "format": inkling_fit.BUILDS[b].get("format", "strata"),
+                      "credit": inkling_family.BUILD_CREDIT.get(b)} for b in inkling_fit.ORDER},
+        # the Unsloth quants 0.2.22 offered: never listed for download, kept working for an install that has one (shown as installed, "no longer offered")
+        "legacy_models": {b: {"about": inkling_family.LEGACY_BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)), "format": "gguf"} for b in inkling_fit.LEGACY_ORDER},
     }
 }
+
+def sizes_of_family(d: dict) -> dict:
+    """Every size name a family table knows: the offered ones, then (Inkling-2-Mini) the quants that are no longer offered but still run when an install has them."""
+    return {**d["models"], **d.get("legacy_models", {})}
+
 
 # Inkling-2-Mini custom/community local-file & Hugging Face import sources (official HF safetensors + Unsloth GGUFs).
 # Native `.strata` v1.1 (SQ-20, SQ-15, SQ-10 + Vision) remains the flagship recommended default; `strata-inkling` also
@@ -842,29 +851,36 @@ INKLING_COMMUNITY_SOURCES = {
         "format": "safetensors",
         "files": ("model-00001-of-00001.safetensors", "model.safetensors.index.json", "config.json",
                   "tokenizer.json", "chat_template.jinja"),
-        "dspark": "mtp.safetensors",
         "arch": "inkling2_loop",
         "exe": "component:strata-inkling",
         "recommended_default": False,
     },
-    "gguf": {
-        "title": "Inkling-2-Mini (Community / Unsloth GGUF)",
-        "repo": "unsloth/Inkling-2-Mini-GGUF",
+    "gsq": {
+        "title": "Inkling-2-Mini (GSQ-RCO IQ3_S GGUF, ISTA-DASLab)",
+        "repo": inkling_family.GSQ_REPO,
         "format": "gguf",
         "arch": "inkling2_loop",
         "exe": "component:strata-inkling",
         "recommended_default": False,
-        "models": {
-            b: {
-                "file": inkling_fit.BUILDS[b]["file"],
-                "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)),
-                "about": inkling_family.BUILD_ABOUT[b],
-            }
-            for b in inkling_fit.GGUF_ORDER
-        },
-        "sha256": dict(inkling_family.UNSLOTH_GGUF_FILES),
-        "dspark": inkling_family.DSPARK_GGUF_FILE,
-        "mmproj": inkling_family.MMPROJ_BF16_FILE,
+        "credit": inkling_family.BUILD_CREDIT["GSQ-RCO-IQ3_S"],
+        "models": {"GSQ-RCO-IQ3_S": {"file": inkling_fit.BUILDS["GSQ-RCO-IQ3_S"]["file"], "ram_gb": int(-(-inkling_fit.BUILDS["GSQ-RCO-IQ3_S"]["footprint_gb"] // 1)),
+                                      "about": inkling_family.BUILD_ABOUT["GSQ-RCO-IQ3_S"]}},
+        "sha256": {inkling_family.GSQ_IQ3S_FILE: inkling_family.GSQ_IQ3S_PIN},
+        "dflash2": inkling_family.DFLASH2_FILE,                 # the one drafter: fetched beside the model (no DSpark file, no mtp.safetensors)
+    },
+    "gguf": {
+        "title": "Inkling-2-Mini (Unsloth UD-Q4_K_XL GGUF)",
+        "repo": inkling_family.UNSLOTH_REPO,
+        "format": "gguf",
+        "arch": "inkling2_loop",
+        "exe": "component:strata-inkling",
+        "recommended_default": False,
+        "credit": inkling_family.BUILD_CREDIT["UD-Q4_K_XL"],
+        # only UD-Q4_K_XL is offered; the other Unsloth quants are recognised when an install already has one (inkling_family.UNSLOTH_GGUF_FILES), never fetched
+        "models": {"UD-Q4_K_XL": {"file": inkling_fit.BUILDS["UD-Q4_K_XL"]["file"], "ram_gb": int(-(-inkling_fit.BUILDS["UD-Q4_K_XL"]["footprint_gb"] // 1)),
+                                  "about": inkling_family.BUILD_ABOUT["UD-Q4_K_XL"]}},
+        "sha256": {inkling_family.UNSLOTH_OFFERED_FILE: inkling_family.UNSLOTH_OFFERED_PIN},
+        "dflash2": inkling_family.DFLASH2_FILE,
     },
 }
 
@@ -7805,7 +7821,7 @@ def choices_from_config(cfg_path: Path) -> dict:
     own = next((f for f, d in special_fams.items() if tag.startswith(d["tag"])), None)
     if own is not None:                                # Qwen3.6 / Hy4-Flash / Inkling-2-Mini: own sizes; no Flash-Next KV / projection settings
         d = special_fams[own]
-        size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
+        size = next((m for m in sizes_of_family(d) if m.lower() == tag[len(d["tag"]):].lower()), None)
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         vis = cfg.get("vision")
@@ -8519,6 +8535,7 @@ def update_install(have: list, a) -> int:
             refresh_shared_draft_vocab(cfg, mtp_done)
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
+        inkling_dflash2_for_config(a, cfg)                  # the DFlash 2 drafter beside an Inkling .strata model (an update brings it to an install that predates it)
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
     ver = config_engine_version(json.loads(have[0].read_text(encoding="utf-8-sig")))
     say()
@@ -10470,8 +10487,8 @@ def inkling_local_source(a, model: str | None = None) -> tuple[Path, Path, bool]
     if not raw.is_dir():
         return None
     if model and model in inkling_fit.BUILDS:
-        pinned = raw / inkling_family.build_file(model)
-        if pinned.is_file():
+        pinned = inkling_family.model_file_in(raw, model)           # the current name, else the one an older Strata wrote (SQ-20 of 0.2.22)
+        if pinned is not None:
             return pinned, raw, pinned.suffix.lower() == ".gguf"
     if (raw / "config.json").is_file() and any(
             p.is_file() and p.name.lower() != "mtp.safetensors" for p in raw.glob("*.safetensors")):
@@ -10491,10 +10508,7 @@ def inkling_find_local_vision(folder: Path, data: Path, is_gguf: bool) -> Path |
     """Find a local Inkling-2-Mini picture reader beside a local model: the Vision shard (.strata). An `mmproj*.gguf` beside an Unsloth GGUF is NOT one: it is
     llama.cpp's projector (architecture "clip"), which strata-inkling cannot read (`--info mmproj-BF16.gguf` says "GGUF architecture is 'clip', expected
     'inkling2'"); handing it over as --vision left the engine without a reader and images failed with "does not read images yet" (0221 APPTUI, GRID report)."""
-    for cand in (folder / inkling_family.VISION_FILE, data / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE):
-        if cand.is_file():
-            return cand
-    return None
+    return inkling_family.vision_in(folder, data / "models" / inkling_family.FAMILY)
 
 
 def inkling_fetch_local_vision(a, folder: Path, data: Path) -> Path | None:
@@ -10515,20 +10529,6 @@ def inkling_fetch_local_vision(a, folder: Path, data: Path) -> Path | None:
         return None
     ok(f"images: on ({got.name})")
     return got
-
-
-def inkling_find_local_dspark(folder: Path, reads_mtp: bool = True) -> Path | None:
-    """Find an optional local DSpark drafter file (dspark*.gguf or mtp.safetensors) beside an Inkling GGUF."""
-    for base in (folder, folder / "dspark"):
-        if not base.is_dir():
-            continue
-        mtp = base / "mtp.safetensors"                  # the original checkpoint first: a dspark*.gguf may be Unsloth's newer layout, which this engine cannot read
-        if mtp.is_file() and reads_mtp:                 # (an engine that does not list dspark_f32_widen=1 drafts nothing from it)
-            return mtp
-        ggufs = sorted(p for p in base.glob("dspark*.gguf") if p.is_file())
-        if ggufs:
-            return ggufs[0]
-    return None
 
 
 def inkling_offered(a=None) -> bool:
@@ -10695,48 +10695,60 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
     fail(f"no source lists {name}")
 
 
-def inkling_engine_reads_mtp(engine_program, model_file, lib_dirs=()) -> bool:
-    """Whether the installed engine can use the original mtp.safetensors: it says so on its --info line (dspark_f32_widen=1). The flag, not the
-    version, decides, so older, newer and custom builds are told apart by what they report; an engine that is missing, does not run or says nothing
-    counts as one that cannot (Unsloth's Q8_0 file is used then)."""
-    if engine_program is None or model_file is None:
-        return False
-    from serve import inkling_kind
-    info = inkling_kind.probe(str(engine_program), ["--native", str(model_file)], {"lib_dirs": [str(d) for d in (lib_dirs or ())]})
-    return inkling_family.engine_reads_mtp(info)
-
-
-def inkling_fetch_drafter(a, folder: Path, own: bool, reads_mtp: bool = True) -> Path | None:
-    """The DSpark drafter of a downloaded GGUF build, chosen by what the installed engine can read (reads_mtp: see inkling_engine_reads_mtp).
-    An engine that reads it: the original checkpoint of Thinking Machines (mtp.safetensors, BF16, 636 MB, pinned commit + SHA-256), or the file an
-    install already has; when the original cannot be fetched or does not check out, Unsloth's pinned Q8_0 file (402 MB, the same weights).
-    An engine that does not: Unsloth's pinned Q8_0 file only; an mtp.safetensors on disk stays there and is not passed. Both take the same memory
-    on the card (measured: DSpark took 416 MiB with either; the engine holds the matrices as BF16 in both cases)."""
-    names = [inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE] if reads_mtp else [inkling_family.DSPARK_GGUF_FILE]
-    for n in names:
-        if inkling_have(a, folder / n):
-            ok(f"drafter: DSpark ({n}) already downloaded")
-            inkling_verify(folder / n, n, own)
-            return folder / n
-    what = {inkling_family.MTP_FILE: "the original checkpoint (BF16, from Thinking Machines' repository)",
-            inkling_family.DSPARK_GGUF_FILE: "Unsloth's Q8_0 copy of the same checkpoint" + ("" if reads_mtp else " (this engine cannot read the original file)")}
-    say(f"  drafter: DSpark, {what[names[0]]}: {names[0]} ({inkling_family.size_of(names[0]) / 1e6:.0f} MB)")
-    if len(names) == 1:
-        return inkling_fetch(a, names[0], folder, own)
+def inkling_fetch_dflash2(a, folder: Path, own: bool) -> Path | None:
+    """The DFlash 2 drafter's weights (dflash2.safetensors) beside an Inkling model (a .strata pack or a GGUF): DFlash 2 is the only drafter of every Inkling build, and without
+    this file the model runs with no drafter. A file that is there and checks out is kept. A folder the person owns (--gguf-dir) is never written to. A download that fails or does
+    not check out (size, SHA-256) leaves no file behind and returns None: the model runs without a drafter, and the next setup / update tries again. The size is shown before the download."""
+    name = inkling_family.DFLASH2_FILE
+    dst = folder / name
+    if inkling_have(a, dst):
+        try:
+            inkling_verify(dst, name, own)
+        except SystemExit:
+            warn(f"{name} does not check out; the model runs without a drafter")
+            return None
+        ok(f"drafter: DFlash 2 ({name}) already downloaded")
+        return dst
+    if own:
+        return None
+    say(f"  drafter: DFlash 2 ({name}, {inkling_family.size_of(name) / 1e6:.0f} MB): the one drafter of every Inkling-2-Mini build; without it the model runs with no drafter")
     global fail
     real_fail = fail
 
-    def soft_fail(msg, hint=None, **detail):                  # a failed first try is not the end of setup: no "Setup stopped", no error event
+    def soft_fail(msg, hint=None, **detail):                  # a failed download is not the end of setup: no "Setup stopped", no error event
         warn(f"{msg}" + (f" ({hint})" if hint else ""))
         sys.exit(1)
     fail = soft_fail
     try:
-        return inkling_fetch(a, names[0], folder, own)
+        return inkling_fetch(a, name, folder, own)
     except SystemExit:
-        warn(f"{names[0]} could not be fetched; using {what[names[1]]}: {names[1]} ({inkling_family.size_of(names[1]) / 1e6:.0f} MB)")
+        warn(f"{name} could not be fetched; the model runs without a drafter (setup and update try again)")
+        for junk in (dst, dst.with_name(dst.name + ".part")):
+            try:
+                junk.unlink()
+            except OSError:
+                pass
+        return None
     finally:
         fail = real_fail
-    return inkling_fetch(a, names[1], folder, own)
+
+
+def inkling_dflash2_for_config(a, cfg: dict) -> Path | None:
+    """update_install: the DFlash 2 sidecar for one installed Inkling model, a .strata pack or a GGUF (one that Strata downloaded: its folder is the models folder). A quant that
+    is no longer offered gets it too: it is the one drafter of every Inkling build."""
+    if cfg.get("arch") != inkling_family.ARCH:
+        return None
+    args = [str(x) for x in cfg.get("args") or []]
+    if "--native" not in args[:-1]:
+        return None
+    model = Path(args[args.index("--native") + 1])
+    if model.suffix.lower() not in (".strata", ".gguf") or not model.parent.is_dir():
+        return None
+    try:
+        own = model.parent.resolve() != inkling_folder(a).resolve()
+    except OSError:
+        own = True
+    return inkling_fetch_dflash2(a, model.parent, own)
 
 
 def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool, *, data: Path | None = None) -> Path | None:
@@ -10811,7 +10823,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model: {fam['title']}")
     say(f"  Its license: {fam['license']}")
     names = list(fam["models"])
-    if a.model and a.model not in names:
+    if a.model and a.model not in names and a.model not in fam.get("legacy_models", {}):
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
     vram_gib, ram_gib, unified, igpu, arch = inkling_pc(gpu, ram)
     multi_cards = _multi_gpu_cards(multi, gpu, hip, amd) if not unified else []
@@ -10824,7 +10836,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         mode_desc = "pipeline layer-split" if use_ink_ls else "dual-GPU expert parallelism"
         ok("GPUs: " + " + ".join(gpu_name(c) for c in ink_gpus) + f" ({mode_desc})")
         if use_ink_ls and is_cuda_ink and str(getattr(a, "drafter", None) or "").strip().lower() != "off":
-            warn("DSpark drafting does not run yet when the layers are split across several NVIDIA cards, so it decodes without it (#6741). "
+            warn("Drafting does not run yet when the layers are split across several NVIDIA cards, so it decodes without it (#6741). "
                  "On one card with the rest of the experts in RAM it does: add --gpu N to use one card")
     vision = a.vision not in ("no", "none")
     want_ctx = a.context or inkling_family.DEFAULT_CONTEXT
@@ -10862,9 +10874,12 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     data, _ = data_folder_for(a)
     vision_path: Path | None = None
     fetch_vision = False
-    dspark_path: Path | None = None
+    sidecar: Path | None = None
     drafter_asked = str(getattr(a, "drafter", None) or "").strip().lower()
-    want_dspark = drafter_asked != "off"
+    want_drafter = drafter_asked != "off"                          # DFlash 2 is the only drafter (--drafter dflash2 / dspark / none of them all mean "on")
+    if model in fam.get("legacy_models", {}) and not (own and local_src) and inkling_family.model_file_in(folder, model) is None:
+        fail(f"{model} is no longer offered for download",
+             "choose one of: " + ", ".join(names) + f" (a {model} file that is already in {folder} still works)")
     if local_src:
         if vision:
             vision_path = inkling_find_local_vision(folder, data, is_gguf)
@@ -10875,12 +10890,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         else:
             ok("images: off")
     else:
-        ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
-        files = inkling_family.files_of(model, vision, dspark=False)
+        ok("images: " + (f"on ({inkling_family.VISION_FILE}, 0.64 GB lossless BF16)" if vision else "off"))
+        files = inkling_family.files_of(model, vision)
         left = 0.0
-        drafter = []
-        if is_gguf and want_dspark and not any(inkling_have(a, folder / d) for d in (inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE)):
-            drafter = [inkling_family.MTP_FILE]
+        drafter = [inkling_family.DFLASH2_FILE] if want_drafter else []      # the DFlash 2 sidecar of every build (setup fetches it after the model; a failed fetch is not an error)
         for n in files + drafter:
             p = folder / n
             if not inkling_have(a, p):
@@ -10910,20 +10923,18 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             vision_path = inkling_fetch_local_vision(a, folder, data)
             if vision_path is None:
                 vision = False
-        if is_gguf and want_dspark:                     # after the engine step: which file it can read decides
-            dspark_path = inkling_find_local_dspark(folder, inkling_engine_reads_mtp(engine_program, model_file, lib_dirs))
-            if dspark_path is not None:
-                ok(f"drafter: DSpark ({dspark_path.name})")
+        if want_drafter:                                # the person's own folder is never written to: a DFlash 2 file they put there is used
+            sidecar = inkling_fetch_dflash2(a, folder, own)
+            if sidecar is None:
+                warn(f"no {inkling_family.DFLASH2_FILE} beside the model: it runs without a drafter. Put the file (989,975,616 bytes) next to the model to turn drafting on")
     else:
         step(5, f"downloading {fam['title']} {model}")
-        files = inkling_family.files_of(model, vision, dspark=False)
+        files = inkling_family.files_of(model, vision)
         paths = {n: inkling_fetch(a, n, folder, own) for n in files}
         model_file = paths[files[0]]
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
-        reads_mtp = inkling_engine_reads_mtp(engine_program, model_file, lib_dirs) if (is_gguf and want_dspark) else True
-        dspark_path = inkling_fetch_drafter(a, folder, own, reads_mtp) if (is_gguf and want_dspark) else None
-        if dspark_path is not None:
-            ok(f"drafter: DSpark ({dspark_path.name})")
+        if want_drafter:
+            sidecar = inkling_fetch_dflash2(a, folder, own)
         ok(f"model file: {model_file}")
 
     step(6, "preparing the model for Strata")
@@ -10936,10 +10947,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     ink_backend = "hip" if hip else ("metal" if sys.platform == "darwin" else ("sycl" if getattr(a, "backend", None) == "sycl" else "cuda"))
-    # Drafting follows a measured probe at the first start of this placement ("auto", inkling_probe.py) unless the person asked (--drafter dspark / off)
-    # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
-    drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
-        inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
+    # Drafting is DFlash 2 and nothing else, and needs its file beside the model (no file = no drafter). It follows a measured probe at the first start of this placement
+    # ("auto", inkling_probe.py) unless the person asked (--drafter dflash2 / off). A slightly different answer is accepted, a loss in speed is not (owner, 11-23).
+    drafting_mode = "off" if (not want_drafter or sidecar is None) else (
+        inkling_family.DEFAULT_DRAFTER if drafter_asked in ("dflash2", "dspark") else inkling_family.default_drafting(ink_backend))
     placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
@@ -10952,8 +10963,6 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         args += ["--draft", "off"]
     if vision and vision_path is not None:
         args += ["--vision", str(vision_path)]
-    if dspark_path is not None and drafting_mode != "off":
-        args += ["--dspark", str(dspark_path)]
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
@@ -11485,12 +11494,12 @@ def main() -> int:
         say("  " + retired.NOT_OFFERED)                # DeepSeek: no longer offered (strata_control/retired.py)
         return 2
     _hy4_ask = _peek("--family") in HY4_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in HY4_FAMILIES["hy4-flash"]["models"])
-    _ink_ask = _peek("--family") in INKLING_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in INKLING_FAMILIES["inkling-2-mini"]["models"])
+    _ink_ask = _peek("--family") in INKLING_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in sizes_of_family(INKLING_FAMILIES["inkling-2-mini"]))
     if sys.platform == "darwin" and not CONTROL and not _hy4_ask and not _ink_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode), Hy4-Flash and Inkling-2-Mini go on below.
         return mac_setup(sys.argv[1:])                 # (after the retired names above, so a Mac gets the same sentence and exit 2, M1 11-16)
     if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}) \
             or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
-                and not any(model_alias(_peek("--model")) in f["models"] for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}.values())):
+                and not any(model_alias(_peek("--model")) in sizes_of_family(f) for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}.values())):
         feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
         if _peek("--family") in FEED_UNAVAILABLE:
             fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
@@ -11498,10 +11507,10 @@ def main() -> int:
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES) + list(INKLING_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
                          "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
-                         "inkling-2-mini = Thinking Machines Inkling-2-Mini (SQ-20 / SQ-15 / SQ-10)")
+                         "inkling-2-mini = Thinking Machines Inkling-2-Mini (SQ-20 / SQ-15 / SQ-10 / GSQ-RCO-IQ3_S / UD-Q4_K_XL)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),
-                                                                       *(m for f in INKLING_FAMILIES.values() for m in f["models"])])))
+                                                                       *(m for f in INKLING_FAMILIES.values() for m in sizes_of_family(f))])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -11671,7 +11680,7 @@ def main() -> int:
         return 2
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in HY4_FAMILIES and a.family not in INKLING_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}.items()
-                                                              if a.model in d["models"]))
+                                                              if a.model in sizes_of_family(d)))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.prepare_pack:                                 # an Intel Arc card: the model's pack, nothing else (no engine, no download of the model)
@@ -11681,7 +11690,7 @@ def main() -> int:
     if sys.platform == "darwin":
         if a.family in HY4_FAMILIES or (not a.family and a.model in HY4_FAMILIES["hy4-flash"]["models"]):
             return mac_hy4_setup(a)
-        if a.family in INKLING_FAMILIES or (not a.family and a.model in INKLING_FAMILIES["inkling-2-mini"]["models"]):
+        if a.family in INKLING_FAMILIES or (not a.family and a.model in sizes_of_family(INKLING_FAMILIES["inkling-2-mini"])):
             return mac_inkling_setup(a)
         if CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
             return mac_control_setup(a)

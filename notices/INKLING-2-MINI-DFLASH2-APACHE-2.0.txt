@@ -1,0 +1,22 @@
+Inkling-2-Mini-DFlash2 drafter weights (Apache License 2.0)
+===========================================================
+
+Strata's DFlash 2 drafter reads the weights of `incoai/Inkling-2-Mini-DFlash2` (https://huggingface.co/incoai/Inkling-2-Mini-DFlash2), a DFlash 2 block-diffusion
+draft model for thinkingmachines/Inkling-2-Mini by Inco AI / z-lab (https://inco.ai/blog/dflash2/, https://github.com/z-lab/dflash).
+
+  File:      model.safetensors   (stored beside the model as dflash2.safetensors)
+  Size:      989,975,616 bytes
+  SHA-256:   217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee
+  Revision:  4f9088ea66c21f2b99ed657d1941c306b03e84d2
+  Licence:   Apache License 2.0, as stated on the model card (not gated)
+
+The original file is downloaded from the original repository and used as it is (the engine quantizes the large matrices in memory at load time).
+
+Strata's pre-quantized copy (a smaller dflash2.safetensors with the same name, format "strata-dflash2-q1", variant "mix") is a modified version of these weights:
+the attention matrices (q_proj, o_proj) are stored as 8-bit integers with one fp32 scale per row, the feed-forward matrices (gate_proj, up_proj, down_proj) as 4-bit
+SF4 (E2M1 values, UE4M3 scale per 16, one fp32 scale per tensor); all other tensors (fc, K/V and convolution projections, selector, codebooks, norms) are unchanged
+values (norms as float32). Size 551,600,700 bytes, SHA-256 cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387. It is made by the engine itself
+(STRATA_INK_DFLASH2_DUMP) from the original file above, on 2026-11-26. It carries this notice and the licence below.
+
+The licence text is at https://www.apache.org/licenses/LICENSE-2.0.txt; it applies to the weights (original and modified) under its terms (attribution, a copy of
+the licence, a statement of changes, no warranty).

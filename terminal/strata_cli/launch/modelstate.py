@@ -329,7 +329,13 @@ def reader_present(catalog, family: str | None, data_folders, own: Path | None =
             except OSError:
                 pass
         return False
-    name = mmproj_name(catalog, family)
+    if family == "inkling-2-mini":                          # 0.2.23's Vision file, or 0.2.22's (the same weights): either one is a reader
+        from strata_control import inkling_family
+        return any(_reader_present_named(catalog, family, data_folders, own, n) for n in inkling_family.VISION_FILES)
+    return _reader_present_named(catalog, family, data_folders, own, mmproj_name(catalog, family))
+
+
+def _reader_present_named(catalog, family: str | None, data_folders, own: Path | None, name: str) -> bool:
     for base in data_folders:
         if not base:
             continue

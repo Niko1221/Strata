@@ -496,7 +496,7 @@ class ModelScreen(Base):
     def build_menu(self, initial: bool = False) -> None:
         s = self.ctx.settings
         if not (s.family and s.model) and not s.model_path:
-            rec = next((r for r in self.rows if r.recommended), None) or next((r for r in self.rows if r.verdict == "fits"), None)
+            rec = next((r for r in self.rows if r.recommended), None) or next((r for r in self.rows if r.verdict == "fits" and r.offered), None)
             if rec is not None:
                 s.family, s.model = rec.family, rec.model
         items: list[Item] = []
@@ -506,7 +506,7 @@ class ModelScreen(Base):
         room = (m.size.width or self.width()) - 2 - sum(w for _t, w in cols[:-1])     # what is left of the line for the verdict (a scrollbar takes two cells: S2)
         for i, r in enumerate(self.rows):
             col = {"fits": "", "slower": WARN, "tight": WARN, "no": BAD, "disk": WARN}[r.verdict]
-            tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
+            tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "") + ("" if r.offered else " [no longer offered]") + (" [update available]" if r.update else "")
             need = f"{r.fit_gb:.0f} GB" if r.fit_gb else "-"
             verdict = r.words + tag
             if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
@@ -547,6 +547,10 @@ class ModelScreen(Base):
             r = next((x for x in self.rows if (x.family, x.model) == cur.key), None)
             if r:
                 out.append(f"{r.title}: {r.about}.\n", style=FG)
+                if r.credit:
+                    out.append(f"{r.credit}.\n", style=MUTE)
+                if r.update:
+                    out.append("A newer file of this model is available (re-run setup for it); the one you have keeps working and is not deleted.\n", style=MUTE)
                 if r.verdict != "fits":
                     out.append(f"{r.sentence}. ", style=BAD if r.verdict == "no" else WARN)
         # At 80 x 24 the box holds four lines: with a verdict sentence (three lines for a model that does not fit) this last, general sentence was cut
@@ -1188,7 +1192,8 @@ class PicturesScreen(Base):
             return Text("Pictures are on by default. They add a 0.9 GB vision shard (Hy4-Flash-Vision.strata, if it is not on this computer yet), "
                         "built directly into strata-hy4. Say No if you only chat in text.", style=MUTE)
         if self.is_inkling():
-            return Text("Pictures are on by default. They add a 0.6 GB lossless BF16 vision shard (Inkling-2-Mini-Vision.strata, if it is not on this computer yet), "
+            from strata_control import inkling_family
+            return Text(f"Pictures are on by default. They add a 0.6 GB lossless BF16 vision shard ({inkling_family.VISION_FILE}, if it is not on this computer yet), "
                         "built directly into strata-inkling. Say No if you only chat in text.", style=MUTE)
         amd = any(str(g.get("vendor")) == "amd" for g in self.ctx.computer.usable_gpus)
         on_card = self.ctx.catalog.picture_default(True) == "gpu"
@@ -1250,7 +1255,7 @@ class DraftingScreen(Base):
     help_text = "Drafting is how the model guesses the next words ahead to make answers faster. One drafter runs at a time."
 
     CHOICES = (("auto", "Auto (recommended)"), ("mtp", "MTP"), ("dflash2", "DFlash2"), ("off", "Off"))
-    INKLING_CHOICES = (("auto", "DSpark Block-8 (recommended)"), ("off", "Off"))
+    INKLING_CHOICES = (("auto", "DFlash 2 (recommended)"), ("off", "Off"))
 
     def body(self) -> ComposeResult:
         yield Static(Text("How should the model guess ahead?", style=f"bold {ACCENT}"), markup=False)
@@ -1259,7 +1264,7 @@ class DraftingScreen(Base):
     def on_mount(self) -> None:
         s = self.ctx.settings
         if s.family == "inkling-2-mini":
-            items = [Item([label, Cell("DSpark" if key == "auto" else "no drafter", MUTE)], key=key)
+            items = [Item([label, Cell("DFlash 2" if key == "auto" else "no drafter", MUTE)], key=key)
                      for key, label in self.INKLING_CHOICES]
             shown = "off" if s.drafting == "off" else "auto"
             sel = [key for key, _ in self.INKLING_CHOICES].index(shown)
@@ -1278,7 +1283,7 @@ class DraftingScreen(Base):
 
     def explain(self) -> Text:
         if self.ctx.settings.family == "inkling-2-mini":
-            return Text("DSpark is Inkling-2-Mini's built-in block drafter. Choose Off to pass --draft off (uses less VRAM and skips speculative drafting).", style=MUTE)
+            return Text("DFlash 2 is the one drafter of every Inkling-2-Mini build: a 1 GB file (dflash2.safetensors) that setup downloads beside the model; without it the model runs with no drafter. Choose Off to pass --draft off (uses less VRAM and skips speculative drafting).", style=MUTE)
         return Text("")
 
     def commit(self) -> None:
@@ -1975,7 +1980,7 @@ class SaveScreen(Base):
                  ("Context", S.context_label(s.context) + ctx_kv),
                  ("Pictures", "on" if s.vision not in ("off", "no") else "off"),
                  *([("Drafting", "off" if s.drafting == "off" else "DFly2 (built-in)")] if is_hy4 else
-                   [("Drafting", "off" if s.drafting == "off" else "DSpark Block-8 (built-in)")] if is_inkling else
+                   [("Drafting", "off" if s.drafting == "off" else "DFlash 2")] if is_inkling else
                    [("Drafting", dict(DraftingScreen.CHOICES).get(s.drafting or ("off" if modelstate.layer_off_without_choice(self.ctx.base_config()) else "auto"), "Auto (recommended)"))] if drafting_choice_available(self.ctx) else []),
                  *([("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({8 if (self.ctx.computer.main_vram_gb or 0) >= 22 else 4 if (self.ctx.computer.main_vram_gb or 0) >= 15 else 1})")] if is_inkling else
                    [] if is_hy4 else [
@@ -2035,7 +2040,8 @@ class SaveScreen(Base):
         if kind == "mmproj" and self.ctx.settings.family == "hy4-flash":
             return "put Hy4-Flash-Vision.strata in the hy4-flash models folder, or choose No pictures"
         if kind == "mmproj" and self.ctx.settings.family == "inkling-2-mini":
-            return "put Inkling-2-Mini-Vision.strata in the inkling-2-mini models folder, or choose No pictures"
+            from strata_control import inkling_family
+            return f"put {inkling_family.VISION_FILE} in the inkling-2-mini models folder, or choose No pictures"
         if kind == "dflash2":
             from strata_control import drafting_fetch
             return (f"copy {drafting_fetch.offline_files_phrase(tuned=bool(part.get('tuned')), variant=part.get('variant'), engine_reads_q4=part.get('reads_q4', True))} "
@@ -2105,7 +2111,7 @@ class SaveScreen(Base):
             elif s.family == "inkling-2-mini":
                 model = dict(lines)["Model"]
                 rows = [f"{model} \u00b7 {S.context_label(s.context)}",
-                        f"Pictures {'on' if s.vision not in ('off', 'no') else 'off'} \u00b7 Parallel {s.parallel or 'auto'} \u00b7 Drafting {'off' if s.drafting == 'off' else 'DSpark'}",
+                        f"Pictures {'on' if s.vision not in ('off', 'no') else 'off'} \u00b7 Parallel {s.parallel or 'auto'} \u00b7 Drafting {'off' if s.drafting == 'off' else 'DFlash 2'}",
                         *self.compact_download_rows(),
                         f"Access {s.access}, port {s.port}"]
             else:
