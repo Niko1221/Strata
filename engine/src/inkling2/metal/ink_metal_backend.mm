@@ -110,6 +110,7 @@ public:
         snaps_.resize((size_t)par);
         frnn_snaps_.resize((size_t)par);
         ckpts_.assign((size_t)par, PromptCkpt{});
+        shared_ckpts_.assign((size_t)par, PromptCkpt{});
         slot_used_.assign((size_t)par, 0);
         slot_beam_depth_.assign((size_t)par, runner_.is_apple10 ? 5 : 4);
         slot_ema_gain_.assign((size_t)par, 1.15);
@@ -204,11 +205,17 @@ public:
     // state that generation overwrites is kept: the SWA rings (40 visits + DSpark context layers 0 and 2), the ShortConv histories and
     // the drafter's latest f_rnn. Without it a chat that ends in hidden thinking / a tool call never matches the whole-stream prefix
     // and every turn reads its whole history again.
-    bool save_prompt_checkpoint(int slot, int seq_len) override {
+    bool save_prompt_checkpoint(int slot, int seq_len) override { return save_ckpt_impl(slot, seq_len, false); }
+    bool restore_prompt_checkpoint(int slot, int seq_len) override { return restore_ckpt_impl(slot, seq_len, false); }
+    bool supports_shared_checkpoint() const override { return runner_.max_slots <= 8; }
+    bool save_shared_checkpoint(int slot, int seq_len) override { return save_ckpt_impl(slot, seq_len, true); }
+    bool restore_shared_checkpoint(int slot, int seq_len) override { return restore_ckpt_impl(slot, seq_len, true); }
+
+    bool save_ckpt_impl(int slot, int seq_len, bool shared) {
         if (slot < 0 || slot >= (int)ckpts_.size() || seq_len <= 0 || seq_len > runner_.max_ctx) return false;
         const auto& c = mod_.man.c;
         const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
-        PromptCkpt& ck = ckpts_[slot];
+        PromptCkpt& ck = (shared ? shared_ckpts_ : ckpts_)[slot];
         ck.valid = false;
         runner_.snapshot_slot(slot, ck.sconv);
         ck.swa_k.resize((size_t)c.n_visits);
@@ -243,9 +250,10 @@ public:
         return true;
     }
 
-    bool restore_prompt_checkpoint(int slot, int seq_len) override {
-        if (slot < 0 || slot >= (int)ckpts_.size()) return false;
-        PromptCkpt& ck = ckpts_[slot];
+    bool restore_ckpt_impl(int slot, int seq_len, bool shared) {
+        auto& ckpts = shared ? shared_ckpts_ : ckpts_;
+        if (slot < 0 || slot >= (int)ckpts.size()) return false;
+        PromptCkpt& ck = ckpts[slot];
         if (!ck.valid || ck.seq_len != seq_len) return false;
         const auto& c = mod_.man.c;
         const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
@@ -608,8 +616,10 @@ private:
     };
     void drop_ckpt(int slot) {
         if (slot >= 0 && slot < (int)ckpts_.size()) ckpts_[slot].valid = false;
+        if (slot >= 0 && slot < (int)shared_ckpts_.size()) shared_ckpts_[slot].valid = false;
     }
     std::vector<PromptCkpt> ckpts_;
+    std::vector<PromptCkpt> shared_ckpts_;
     mtl::Context cx_;
     ink_metal::InkMetalModel mod_;
     ink_metal::InkMetalRunner runner_;
