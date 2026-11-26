@@ -86,6 +86,16 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[0]["base"], "https://example.org/d")
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[-1]["base"], F.MTP_BASE)
 
+    def test_the_dflash2_drafter_is_pinned_by_commit(self):
+        # incoai/Inkling-2-Mini-DFlash2 (Apache-2.0, not gated), stored beside the model as dflash2.safetensors; the repository calls it model.safetensors
+        self.assertEqual(F.DRAFTER_FILES[F.DFLASH2_FILE], (989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"))
+        self.assertEqual(F.pins_for(F.DFLASH2_FILE), [F.DRAFTER_FILES[F.DFLASH2_FILE]])
+        src = F.sources_for(F.DFLASH2_FILE, env={})
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0]),
+                         ["https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/4f9088ea66c21f2b99ed657d1941c306b03e84d2/model.safetensors"])
+        env = {F.DFLASH2_SOURCE_ENV: "https://example.org/d"}
+        self.assertEqual(F.sources_for(F.DFLASH2_FILE, env=env)[0]["base"], "https://example.org/d")
+
     def _drafter(self, have=(), failing=(), reads_mtp=True):
         import tempfile
         from unittest import mock

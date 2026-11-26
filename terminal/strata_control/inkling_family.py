@@ -91,8 +91,15 @@ def engine_reads_mtp(info: dict | None) -> bool:
     return str((info or {}).get(ENGINE_MTP_FLAG)) == "1"
 
 
+#: The opt-in DFlash 2 drafter (STRATA_INK_DRAFTER=dflash2): incoai/Inkling-2-Mini-DFlash2 (Apache-2.0, not gated, anonymous download), pinned to a commit. The engine
+#: reads it from a file beside the model named dflash2.safetensors (the repository calls it model.safetensors). BF16, 989,975,616 bytes. See notices/.
+DFLASH2_FILE = "dflash2.safetensors"
+DFLASH2_COMMIT = "4f9088ea66c21f2b99ed657d1941c306b03e84d2"
+DFLASH2_URL = f"https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/{DFLASH2_COMMIT}/model.safetensors"
+DFLASH2_SOURCE_ENV = "STRATA_INKLING_DFLASH2_SOURCE"
 DRAFTER_FILES = {
     MTP_FILE: (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"),
+    DFLASH2_FILE: (989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"),
 }
 #: Auxiliary tokenizer files hosted beside the `.strata` weights (Section 0 embeds chat_template + config; tokenizer.json holds the 200K o200k BPE vocab/merges).
 TOKENIZER_FILES = {
@@ -234,6 +241,10 @@ def drafter_sources(env: dict | None = None, cfg: dict | None = None) -> list[di
 
 def sources_for(name: str, env: dict | None = None, cfg: dict | None = None, shipped: Path | None = None) -> list[dict]:
     """Return the prioritized download sources for `name` (Unsloth GGUF repo for GGUF files, Strata repo for .strata/tokenizer)."""
+    if name == DFLASH2_FILE:
+        env = os.environ if env is None else env
+        mirror = _normalise(env.get(DFLASH2_SOURCE_ENV)) if env.get(DFLASH2_SOURCE_ENV) else []
+        return mirror + [{"kind": "http", "base": DFLASH2_URL.rsplit("/", 1)[0], "files": {DFLASH2_FILE: DFLASH2_URL}}]
     if name in DRAFTER_FILES:
         return drafter_sources(env=env, cfg=cfg)
     if name in UNSLOTH_GGUF_FILES or str(name).lower().endswith(".gguf"):
