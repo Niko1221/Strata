@@ -1393,7 +1393,7 @@ struct InkHipDFlash2 {
     bool prof_stages = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_PROF"); return e && e[0] == '2'; }();
     hipEvent_t pev[8] = {};
     double pst[8] = {};
-    int head_blocks_n = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_HEAD_BLOCKS"); return e && std::atoi(e) > 0 ? std::atoi(e) : 384; }();
+    int head_blocks_n = [] { const char* e = std::getenv("STRATA_INK_DFLASH2_HEAD_BLOCKS"); return e && std::atoi(e) > 0 ? std::atoi(e) : 768; }();
     void mark(int i, hipStream_t st) {
         if (!prof_stages) return;
         if (!pev[i]) (void)hipEventCreate(&pev[i]);

@@ -6012,7 +6012,7 @@ private:
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
     double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
     bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
-    double df2_plain_ = 0.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain)
+    double df2_plain_ = 1.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain, STRATA_INK_DFLASH2_PLAIN=0 turns it off)
     int max_slots_ = 1;
     int max_ctx_ = 32768;
     int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)
