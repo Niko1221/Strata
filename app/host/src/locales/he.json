@@ -3644,5 +3644,9 @@
   "clusterHealthy": "תקין",
   "clusterOffline": "לא מקוון",
   "clusterLaunch": "הפעלה באשכול",
-  "clusterEmptyHint": "צור אשכול כדי לראות את משאביו"
+  "clusterEmptyHint": "צור אשכול כדי לראות את משאביו",
+  "clusterRefresh": "רענן",
+  "clusterOS": "מערכת הפעלה",
+  "clusterLastSeen": "נצפה לאחרונה",
+  "clusterUnreachable": "לא ניתן להגיע"
 }

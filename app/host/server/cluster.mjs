@@ -77,14 +77,54 @@ export function validateNode(raw) {
   return { id, address, port, backend, gpu: String(raw.gpu ?? '').slice(0, 80), vram_gib: Number(raw.vram_gib) || 0, ram_gib: Number(raw.ram_gib) || 0, expert_slots: Number(raw.expert_slots) || 0, role: 'worker', token_env: 'STRATA_CLUSTER_TOKEN', status: 'unknown', last_seen: '' };
 }
 
+function clusterToken() {
+  return process.env.STRATA_CLUSTER_TOKEN || '';
+}
+
+async function probe(node) {
+  const token = clusterToken();
+  try {
+    const response = await fetch(`http://${node.address}:${node.port}/cluster/info`, {
+      headers: token ? { 'X-Cluster-Token': token } : {},
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return { ...node, status: 'offline', error: `HTTP ${response.status}` };
+    const info = await response.json();
+    return {
+      ...node,
+      backend: info.backend || node.backend,
+      gpu: info.gpu || '',
+      vram_gib: Number(info.vram_gib) || 0,
+      ram_gib: Number(info.ram_gib) || 0,
+      cpu_cores: Number(info.cpu_cores) || 0,
+      hostname: info.hostname || '',
+      os: info.os || '',
+      status: info.ok ? 'healthy' : 'degraded',
+      last_seen: new Date().toISOString(),
+      error: '',
+    };
+  } catch (error) {
+    return { ...node, status: 'offline', error: error.message || 'unreachable' };
+  }
+}
+
 export async function addNode(name, raw) {
   const node = validateNode(raw);
   const cluster = await read(name);
   if (cluster.nodes?.[node.id]) throw new Error('That node is already registered.');
   cluster.nodes = cluster.nodes || {};
-  cluster.nodes[node.id] = node;
+  cluster.nodes[node.id] = await probe(node);
   await write(cluster.name, cluster);
-  return node;
+  return cluster.nodes[node.id];
+}
+
+export async function refreshCluster(name) {
+  const cluster = await read(name);
+  const entries = Object.entries(cluster.nodes || {});
+  const probed = await Promise.all(entries.map(async ([id, node]) => [id, await probe(node)]));
+  cluster.nodes = Object.fromEntries(probed);
+  await write(cluster.name, cluster);
+  return cluster;
 }
 
 export async function removeNode(name, nodeId) {

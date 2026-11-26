@@ -3644,5 +3644,9 @@
   "clusterHealthy": "Исправно",
   "clusterOffline": "Не в сети",
   "clusterLaunch": "Запустить в кластере",
-  "clusterEmptyHint": "Создайте кластер, чтобы увидеть его ресурсы"
+  "clusterEmptyHint": "Создайте кластер, чтобы увидеть его ресурсы",
+  "clusterRefresh": "Обновить",
+  "clusterOS": "ОС",
+  "clusterLastSeen": "Последний раз",
+  "clusterUnreachable": "Недоступно"
 }

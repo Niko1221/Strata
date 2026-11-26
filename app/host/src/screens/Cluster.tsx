@@ -4,9 +4,16 @@ import { tr } from '../lib/i18n';
 import { Screen } from '../components/layout';
 import { Btn, Empty, ErrorNotice, Panel, PanelHead } from '../components/ui';
 
-type Node = { id: string; address: string; port: number; backend: string; gpu?: string;
-  vram_gib?: number; ram_gib?: number; status?: string };
+type Node = {
+  id: string; address: string; port: number; backend: string; gpu?: string;
+  vram_gib?: number; ram_gib?: number; cpu_cores?: number; hostname?: string;
+  os?: string; status?: string; last_seen?: string; error?: string;
+};
 type Cluster = { name: string; model?: string; tls?: boolean; nodes?: Record<string, Node> };
+
+const statusText = (status?: string) => status === 'healthy' ? tr('Healthy')
+  : status === 'degraded' ? tr('Degraded')
+  : tr('Not reachable');
 
 export function ClusterScreen() {
   const [clusters, setClusters] = useState<Cluster[]>([]);
@@ -45,7 +52,8 @@ export function ClusterScreen() {
   const totals = nodes.reduce((acc, n) => ({
     vram: acc.vram + (Number(n.vram_gib) || 0),
     ram: acc.ram + (Number(n.ram_gib) || 0),
-  }), { vram: 0, ram: 0 });
+    healthy: acc.healthy + (n.status === 'healthy' ? 1 : 0),
+  }), { vram: 0, ram: 0, healthy: 0 });
 
   return <Screen title={tr('Cluster')} sub={tr('Create a cluster to see its resources')}>
     <div className="stack">
@@ -67,6 +75,8 @@ export function ClusterScreen() {
           <div className="row wrap">
             {clusters.map(c => <button key={c.name} type="button" className="st-btn"
               aria-pressed={current?.name === c.name} onClick={() => setSelected(c.name)}>{c.name}</button>)}
+            {current ? <Btn disabled={pending} onClick={() => action(() => api.post(
+              `/api/cluster/${encodeURIComponent(current.name)}/refresh`, {}))}>{tr('Refresh')}</Btn> : null}
           </div>
           <Panel><PanelHead title={tr('Add node')}/>
             <div className="row wrap">
@@ -82,23 +92,30 @@ export function ClusterScreen() {
                   port: Number(port), backend,
                 }))}>{tr('Add node')}</Btn>
             </div>
+            <p className="small muted">Run the cluster agent on each machine with STRATA_CLUSTER_TOKEN set:
+              <code> python -m strata_control.cluster.agent --port {port} </code></p>
           </Panel>
           <Panel><PanelHead title={tr('Resources')}/>
             <div className="summary-list">
               <div><span>{tr('Nodes')}</span><strong>{nodes.length}</strong></div>
               <div><span>VRAM</span><strong>{totals.vram} GB</strong></div>
               <div><span>RAM</span><strong>{totals.ram} GB</strong></div>
+              <div><span>{tr('Connected')}</span><strong>{totals.healthy}</strong></div>
             </div>
             <div className="st-tablewrap"><table className="st-table">
-              <thead><tr><th>{tr('Name')}</th><th>{tr('Address')}</th><th>{tr('Backend')}</th><th>VRAM</th><th>RAM</th><th>{tr('Resources')}</th></tr></thead>
+              <thead><tr><th>{tr('Name')}</th><th>{tr('Address')}</th><th>{tr('OS')}</th>
+                <th>CPU</th><th>GPU</th><th>VRAM</th><th>RAM</th>
+                <th>{tr('Resources')}</th><th>{tr('Last seen')}</th></tr></thead>
               <tbody>{nodes.map(n => <tr key={n.id}>
-                <td>{n.id}</td><td>{n.address}:{n.port}</td><td>{n.backend}</td>
-                <td>{n.vram_gib ?? 0}</td><td>{n.ram_gib ?? 0}</td>
-                <td>{tr(n.status === 'healthy' ? 'clusterHealthy' : n.status === 'degraded' ? 'clusterDegraded' : 'clusterOffline')}</td>
+                <td>{n.hostname || n.id}</td><td>{n.address}:{n.port}</td><td>{n.os || '—'}</td>
+                <td>{n.cpu_cores || '—'}</td><td>{n.gpu || '—'}</td>
+                <td>{n.vram_gib || 0}</td><td>{n.ram_gib || 0}</td>
+                <td title={n.error || ''}>{statusText(n.status)}</td>
+                <td>{n.last_seen ? new Date(n.last_seen).toLocaleString() : '—'}</td>
               </tr>)}</tbody>
             </table></div>
           </Panel>
-          <Btn disabled={pending || nodes.length === 0} onClick={() => setError(tr('Launch on cluster'))}>{tr('Launch on cluster')}</Btn>
+          <Btn disabled={pending || totals.healthy === 0} onClick={() => setError(tr('Launch on cluster'))}>{tr('Launch on cluster')}</Btn>
         </>}
     </div>
   </Screen>;

@@ -3644,5 +3644,9 @@
   "clusterHealthy": "Saudável",
   "clusterOffline": "Offline",
   "clusterLaunch": "Iniciar no cluster",
-  "clusterEmptyHint": "Crie um cluster para ver seus recursos"
+  "clusterEmptyHint": "Crie um cluster para ver seus recursos",
+  "clusterRefresh": "Atualizar",
+  "clusterOS": "Sistema operativo",
+  "clusterLastSeen": "Visto por último",
+  "clusterUnreachable": "Inalcançável"
 }

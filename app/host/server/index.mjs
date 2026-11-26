@@ -12,7 +12,7 @@ import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.m
 import { createLocalShare } from './local-share.mjs';
 import { workspaceBases } from './model-directory-default.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
-import { listClusters, createCluster, addNode, removeNode, deleteCluster } from './cluster.mjs';
+import { listClusters, createCluster, addNode, removeNode, deleteCluster, refreshCluster } from './cluster.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
@@ -1387,6 +1387,11 @@ async function api(req, res, path, method, url) {
   if (path === '/api/cluster/node' && method === 'POST') {
     const body = await readBody(req);
     try { return json(res, 201, await addNode(body.cluster, body)); }
+    catch (e) { return error(res, 400, e.message); }
+  }
+  if (path.startsWith('/api/cluster/') && path.endsWith('/refresh') && method === 'POST') {
+    const parts = path.split('/').filter(Boolean);
+    try { return json(res, 200, await refreshCluster(parts[2])); }
     catch (e) { return error(res, 400, e.message); }
   }
   if (path.startsWith('/api/cluster/node/') && method === 'DELETE') {

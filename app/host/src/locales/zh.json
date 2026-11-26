@@ -3644,5 +3644,9 @@
   "clusterHealthy": "正常",
   "clusterOffline": "离线",
   "clusterLaunch": "在集群上运行",
-  "clusterEmptyHint": "创建集群以查看其资源"
+  "clusterEmptyHint": "创建集群以查看其资源",
+  "clusterRefresh": "刷新",
+  "clusterOS": "操作系统",
+  "clusterLastSeen": "最后可见",
+  "clusterUnreachable": "无法连接"
 }

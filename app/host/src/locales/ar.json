@@ -3644,5 +3644,9 @@
   "clusterHealthy": "سليم",
   "clusterOffline": "غير متصل",
   "clusterLaunch": "التشغيل على المجموعة",
-  "clusterEmptyHint": "أنشئ مجموعة لعرض مواردها"
+  "clusterEmptyHint": "أنشئ مجموعة لعرض مواردها",
+  "clusterRefresh": "تحديث",
+  "clusterOS": "النظام",
+  "clusterLastSeen": "آخر ظهور",
+  "clusterUnreachable": "لا يمكن الوصول"
 }

@@ -25,6 +25,23 @@ class ClusterAgent(unittest.TestCase):
         finally:
             agent.stop()
 
+    def test_info_reports_real_local_resources(self):
+        agent = Agent("token")
+        port = agent.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/cluster/info",
+                                             headers={"X-Cluster-Token": "token"})
+            with urllib.request.urlopen(request, timeout=2) as response:
+                info = json.loads(response.read())
+            self.assertTrue(info["ok"])
+            self.assertTrue(info["hostname"])
+            self.assertTrue(info["os"])
+            self.assertGreaterEqual(info["ram_gib"], 0)
+            self.assertGreaterEqual(info["cpu_cores"], 1)
+            self.assertIn(info["status"], ("healthy", "degraded"))
+        finally:
+            agent.stop()
+
     def test_unknown_path_is_not_found(self):
         agent = Agent("token")
         port = agent.start()

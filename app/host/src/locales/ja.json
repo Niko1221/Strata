@@ -3644,5 +3644,9 @@
   "clusterHealthy": "正常",
   "clusterOffline": "オフライン",
   "clusterLaunch": "クラスタで起動",
-  "clusterEmptyHint": "リソースを見るにはクラスターを作成します"
+  "clusterEmptyHint": "リソースを見るにはクラスターを作成します",
+  "clusterRefresh": "更新",
+  "clusterOS": "OS",
+  "clusterLastSeen": "最終確認",
+  "clusterUnreachable": "到達できません"
 }

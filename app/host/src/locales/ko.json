@@ -3644,5 +3644,9 @@
   "clusterHealthy": "정상",
   "clusterOffline": "오프라인",
   "clusterLaunch": "클러스터에서 실행",
-  "clusterEmptyHint": "리소스를 보려면 클러스터를 만드세요"
+  "clusterEmptyHint": "리소스를 보려면 클러스터를 만드세요",
+  "clusterRefresh": "새로고침",
+  "clusterOS": "운영 체제",
+  "clusterLastSeen": "마지막 확인",
+  "clusterUnreachable": "연결할 수 없음"
 }
