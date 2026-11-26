@@ -28,7 +28,8 @@
 namespace strata::ink {
 
 constexpr int kInkTailVisits = 48;
-constexpr int kInkTailStatW = 10;   // per visit: [0] token-visits seen, [1..8] dropped slots by rank 1..8, [9] dropped share * 1e6
+constexpr int kInkTailStatW = 12;   // per visit: [0] token-visits seen, [2..8] dropped slots by rank 2..8, [9] dropped share * 1e6,
+                                     // [10] sum over MoE calls of the experts the exact router would have read, [11] of the experts read with the skip
 
 struct InkTailCfg {
     bool on = false;

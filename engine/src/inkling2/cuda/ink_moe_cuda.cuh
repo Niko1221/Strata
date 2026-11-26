@@ -301,7 +301,7 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
     if (lane < kInkTopK) {
         const float inv = route_scale / (kept_psum + 1e-20f);
         if (ta.on && (drop_mask & (1u << lane))) {
-            topk_idx[(size_t)tok * kInkTopK + lane] = -1;
+            topk_idx[(size_t)tok * kInkTopK + lane] = ta.cnt ? -(best_id[lane] + 2) : -1;   // with the counters on the id stays readable: -(id + 2)
             topk_w[(size_t)tok * kInkTopK + lane] = 0.0f;
         } else {
             topk_idx[(size_t)tok * kInkTopK + lane] = best_id[lane];
@@ -323,18 +323,26 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     const int32_t* __restrict__ topk_idx,
     int M,
     int tile_rows,
-    InkMoeTables tb) {
+    InkMoeTables tb,
+    unsigned long long* tail_cnt = nullptr,   // opt-in tail-skip counters (nullptr = off)
+    int tail_visit = 0) {
     __shared__ int s_cnt[128], s_off[128], s_act[128], s_fill[128], s_tcnt[128];
+    __shared__ int s_pre[128];
     const int t = threadIdx.x;
     const int P = M * kInkTopK;
 
     s_cnt[t] = 0;
     s_fill[t] = 0;
+    s_pre[t] = 0;
     __syncthreads();
 
     for (int i = t; i < P; i += 128) {
         const int e = topk_idx[i];
-        if (e < 0) continue;   // a slot dropped by the opt-in tail skip (ink_tail_skip.cuh)
+        if (e < 0) {   // a slot dropped by the opt-in tail skip (ink_tail_skip.cuh); with the counters on the id is -(id + 2)
+            if (tail_cnt && e <= -2 && ex[-e - 2].tier <= 1) s_pre[-e - 2] = 1;
+            continue;
+        }
+        if (tail_cnt && ex[e].tier <= 1) s_pre[e] = 1;
         if (ex[e].tier <= 1) atomicAdd(&s_cnt[e], 1);  // tier 0=VRAM, 1=pinned host GPU-readable, 2=CPU hybrid
     }
     __syncthreads();
@@ -362,6 +370,13 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     const int off_e = s_off[t] - cv;
     tb.cnt[t] = cv;
     tb.off[t] = off_e;
+    if (tail_cnt) {
+        // experts the exact router would have read (kept + dropped) against the experts read now, per visit
+        const int pre = (s_pre[t] || cv > 0) ? 1 : 0;
+        const unsigned pre_ballot = __ballot_sync(0xFFFFFFFFu, pre);
+        if ((t & 31) == 0) atomicAdd(tail_cnt + (size_t)tail_visit * kInkTailStatW + 10, (unsigned long long)__popc(pre_ballot));
+        if (t == 127) atomicAdd(tail_cnt + (size_t)tail_visit * kInkTailStatW + 11, (unsigned long long)s_act[127]);
+    }
     if (t == 127) {
         tb.off[128] = s_off[127];
         *tb.nact = s_act[127];
@@ -3745,7 +3760,12 @@ inline void launch_ink_moe_dispatch_only(
     const int tile_rows = use_pf_tile ? kInkPrefillTileRows
                         : use_wmma_tc ? ((M <= 128) ? 16 : 64)
                                       : ((M <= 128 || use_fp16_tc) ? 16 : 64);
-    k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb);
+    {
+        const InkTailCfg& tcb = ink_tail_cfg();
+        const int tvb = ink_tail_cur_visit();
+        unsigned long long* tcnt = (tcb.on && tcb.stats && tvb >= 0 && tvb < kInkTailVisits) ? ink_tail_cnt_dev() : nullptr;
+        k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb, tcnt, tvb);
+    }
     ink_moe_mark(1);
 
     const int P = M * kInkTopK;
