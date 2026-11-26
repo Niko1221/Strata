@@ -120,15 +120,22 @@ struct InkDFlash2 {
     static std::string resolve_path(const std::string& model_path) { return df2_resolve_path(model_path); }
 
     // ---- weights ----------------------------------------------------------------------------------------------------------
+    // every device buffer of the drafter, so that free_all() gives ALL of it back when the drafter cannot start (11-26: a bf16 start on a 16 GB card that then could not take its rings
+    // left 21 MiB free and the engine died at the first request instead of running without a drafter)
+    std::vector<void*> owned;
     template <typename T>
     T* wal(size_t n) {
         bytes_weights += n * sizeof(T);
-        return dalloc<T>(n);
+        T* p = dalloc<T>(n);
+        owned.push_back((void*)p);
+        return p;
     }
     template <typename T>
     T* sal(size_t n) {
         bytes_scratch += n * sizeof(T);
-        return dalloc<T>(n);
+        T* p = dalloc<T>(n);
+        owned.push_back((void*)p);
+        return p;
     }
 
     bool load(const std::string& path, int slots, std::string& err) {
@@ -419,9 +426,10 @@ struct InkDFlash2 {
         d_aq = sal<int8_t>((size_t)R * kFF);
         d_xb = sal<__nv_bfloat16>((size_t)R * kFF);
         d_as = sal<float>((size_t)R * (kFF / 32));
-        p_m = sal<float>((size_t)8 * 24 * 32 + 64);
-        p_l = sal<float>((size_t)8 * 24 * 32 + 64);
-        p_o = sal<float>((size_t)8 * 24 * 32 * kHeadDim + 64);
+        const size_t bsplit = (size_t)std::max(24, B);   // B x split of the attention partials: split_for(B) is 1 above 24 slots, so it is B there (32 slots overran the old 24)
+        p_m = sal<float>((size_t)8 * bsplit * 32 + 64);
+        p_l = sal<float>((size_t)8 * bsplit * 32 + 64);
+        p_o = sal<float>((size_t)8 * bsplit * 32 * kHeadDim + 64);
         d_hd = sal<float>((size_t)R * kHidden);
         d_hd_bf = sal<__nv_bfloat16>((size_t)R * kHidden);
         d_gsel = sal<float>((size_t)R * kRank);
@@ -475,7 +483,14 @@ struct InkDFlash2 {
         if (ring_k_h[s]) return true;
         const size_t one = (size_t)df2::kLayers * df2::kRingCap * df2::kKV * sizeof(__half);
         __half *k = nullptr, *v = nullptr;
-        if (cudaMalloc(&k, one) != cudaSuccess || cudaMalloc(&v, one) != cudaSuccess) {
+        // The first 8 slots' rings are inside the start-up reserve. A later slot takes its ring only while 1 GiB stays free for the rest of the engine (the multi-slot paths allocate
+        // working buffers lazily: at 64 slots on a 32 GB card the rings took everything and the engine died, 11-26); a slot that cannot has no drafts and decodes plainly.
+        bool room = true;
+        if (s >= 8) {
+            size_t vf = 0, vt = 0;
+            room = ink_cuda_mem_info(&vf, &vt) == cudaSuccess && vf > 2 * one + (1024ull << 20);
+        }
+        if (!room || cudaMalloc(&k, one) != cudaSuccess || cudaMalloc(&v, one) != cudaSuccess) {
             (void)cudaGetLastError();
             if (k) cudaFree(k);
             slot_dead[s] = 1;
@@ -703,6 +718,9 @@ struct InkDFlash2 {
         ring_v_h.clear();
         if (d_rk_tab) cudaFree(d_rk_tab);
         d_rk_tab = d_rv_tab = nullptr;
+        for (void* p : owned) cudaFree(p);
+        owned.clear();
+        if (d_amax) { cudaFree(d_amax); d_amax = nullptr; }
         if (pred_raw) { cudaFreeHost(pred_raw); pred_raw = nullptr; }
         if (succ_raw) { cudaFreeHost(succ_raw); succ_raw = nullptr; }
         ready = false;
