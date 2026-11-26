@@ -71,6 +71,10 @@ int main() {
         int n = 0, measured = 0;
         const Sm120Row* rows = ink_sm120_rows(&n);
         for (int i = 0; i < n; ++i) if (rows[i].measured) ++measured;
+        // 11-26 (coordinator, Spark proof): no row's EXACT set holds a part that changes the drafting policy or the tokens (DSPARK_OPT swaps the window numbers and the verify tree;
+        // exact without it equals off on every C1 prompt with DFlash 2)
+        const uint32_t kNotInExact = P_DSPARK_OPT | P_PLD | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN | P_SPEC_ADAPT | P_COMPACT | P_PACK | P_PREFILL | P_MOE_OPT | P_DENSE_OPT | P_PF_ATTN | P_FP8_TRUNK;
+        for (int i = 0; i < n; ++i) CHECK((rows[i].exact_parts & kNotInExact) == 0);
         CHECK(measured == 10);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26)
         // the placeholders for the cards still to rent are in the table
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));

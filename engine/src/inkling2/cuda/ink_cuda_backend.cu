@@ -457,7 +457,7 @@ public:
             // the card's table row (RTX 50 fast mode); every flag is false and every number the shipped one when no switch is set
             const auto& s120 = strata::ink::sm120_cfg(gpu_id_);
             track_pld90_ = s120.dspark_opt;
-            if (s120.dspark_opt) {
+            if (s120.dspark_opt && !s120.exact) {   // the row's drafting numbers (beam, cost, plain margin) are FAST mode only: the exact form keeps off's drafting policy
                 if (!std::getenv("STRATA_INK_SPEC_BEAM") && opts.spec_beam <= 0) spec_cfg_.beam = s120.spec_beam;
                 if (!std::getenv("STRATA_INK_SPEC_COST") && opts.spec_cost <= 0.0) spec_cfg_.cost = s120.spec_cost;
                 if (!std::getenv("STRATA_INK_SPEC_PLAIN") && opts.spec_plain < 0.0) spec_cfg_.plain = s120.spec_plain;
