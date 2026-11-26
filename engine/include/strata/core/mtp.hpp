@@ -124,7 +124,7 @@ public:
     /// the token at position cell+1).  Runs in batches of up to max_t rows.  `sync` false: returns without waiting
     /// for the drafter's stream (the caller orders on it: `stream()`).
     bool prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err,
-                 bool sync = true);
+                 bool sync = true, int64_t metal_retain_at = 0);
     /// --pipeline-windows: capture the prefill graphs and size its input records for windows of up to max_t rows now,
     /// so a later prefill(sync = false) of a window neither captures nor allocates (both wait for the device).
     bool prepare_prefill(std::string& err);

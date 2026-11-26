@@ -14535,6 +14535,14 @@ int main(int argc, char** argv) {
             }
         };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
+#if defined(STRATA_GPU_METAL)
+        int64_t pp_cut_ckpt = 0;
+        const char* skip_draft_rows = std::getenv("STRATA_METAL_MTP_SKIP");
+        const bool compact_draft_prefill = use_mtp && o.batch <= 1 && skip_draft_rows &&
+                                          std::string(skip_draft_rows) == "1";
+#else
+        constexpr bool compact_draft_prefill = false;
+#endif
         int64_t pp_check_anchor = 0;   // #6052: where the request resumed: the periodic checkpoints sit on its grid
         bool pp_tail_saved = false;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
@@ -14795,7 +14803,20 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (!e.empty() || (use_mtp && !batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e))) return false;
+#if defined(STRATA_GPU_METAL)
+            // Periodic checkpoints are saved at or after their threshold. Explicit cuts are exact.
+            int64_t retain_at = pp_total;
+            if (pp_cut_ckpt > p0) retain_at = std::min(retain_at, pp_cut_ckpt);
+            if (o.prompt_cache_every > 0 && pp_next_check < pp_total)
+                retain_at = std::min(retain_at, pp_next_check);
+            // A near-tail checkpoint can be saved up to one chunk before the end.
+            if (o.prompt_cache_tail && !pp_tail_saved)
+                retain_at = std::min(retain_at, pp_total - std::max<int64_t>(T, o.prefill_chunk));
+            retain_at = compact_draft_prefill ? std::max<int64_t>(0, retain_at) : 0;
+#else
+            constexpr int64_t retain_at = 0;
+#endif
+            if (!e.empty() || (use_mtp && !batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e, true, retain_at))) return false;
 #if defined(STRATA_HAVE_DFLASH2)
             if (use_df2) {
                 std::vector<int32_t> tk((size_t) T);
@@ -20204,6 +20225,9 @@ int main(int argc, char** argv) {
             }
             conversations.limit_reuse(read_from);
             pp_total = n;
+#if defined(STRATA_GPU_METAL)
+            pp_cut_ckpt = 0;
+#endif
             pp_from = read_from;
             pp_reached = read_from;
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
@@ -21550,6 +21574,9 @@ int main(int argc, char** argv) {
             };
             for (const int64_t to : cuts) {
                 if (to <= at) continue;
+#if defined(STRATA_GPU_METAL)
+                pp_cut_ckpt = (to == turn_at || to == root_at || to == message_at || to == pin_at) ? to : 0;
+#endif
                 err.clear();
                 const bool win = windows_ok(at, to);
                 if (win && !refill(err)) {
@@ -23390,6 +23417,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (drive.d.fs) std::fprintf(stderr, "strata serve: %s\n", drive.d.fs->report().c_str());
+            const bool partial_draft_is_reusable = !compact_draft_prefill || pp_reached <= pp_from;
             if (!cancelled) {
                 // a prompt stopped halfway leaves the session somewhere between two chunks: nothing to continue from
                 // (the checkpoints taken while reading it are still good)
@@ -23397,7 +23425,7 @@ int main(int argc, char** argv) {
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
-            } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
+            } else if (partial_draft_is_reusable && !nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {
                 // #1620: stopped between two windows (or before the first token was read): the session is exactly at
                 // pp_reached, so it stays the live conversation - the next request continues from it or parks it.
@@ -23407,6 +23435,9 @@ int main(int argc, char** argv) {
                 live_ok = true;
                 std::fprintf(stderr, "strata serve: cancelled request keeps its conversation: %lld tokens live\n",
                              (long long) pp_reached);
+            } else if (!partial_draft_is_reusable) {
+                // A cancelled read can stop before the next retained draft window. The saved checkpoints stay usable.
+                live_ok = false;
             }
             if (nib::config().recheck && nib::any_on() && !cancelled) {
                 // STRATA_EXPERT_NIBBLE_RECHECK=1 (debug): every converted slot's hash again on its own device, against the
