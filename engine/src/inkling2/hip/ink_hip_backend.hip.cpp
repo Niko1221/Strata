@@ -513,6 +513,9 @@ public:
     const char* backend_name() const noexcept override { return ep2_active_ ? "hip-ep2" : "hip"; }
 
     int effective_max_ctx() const override { return max_ctx_; }
+    // compact GGUF (GSQ-RCO) on a card of 13 GB or less runs 256-token prefill chunks so that every expert fits in the card (STRATA_INK_GGUF_CHUNK256=0 turns it off)
+    int effective_chunk() const override { return hip_eff_chunk_; }
+    int hip_eff_chunk_ = 0;
 
     bool dspark_ready() const override { return has_dspark_ || has_df2_; }
 
@@ -794,7 +797,11 @@ public:
             if (name == embed_k || name == unemb_k) {
                 GpuPackedTensor pt;
                 pt.info = ti;
-                if (!upload_raw(pt.buf, sec1.data() + ti.off, ti.bytes, err)) return false;
+                if (name == embed_k && model.m.embed_host_tail && ti.bytes > 0) {
+                    // compact GGUF trunk (GSQ-RCO files): the 0.9 GB embedding table stays in pinned mapped host RAM, a lookup reads one 4.6 KB row over PCIe
+                    if (!hip_ok(alloc_gpu_buffer(pt.buf, ti.bytes, true, true), "alloc host embed", err)) return false;
+                    std::memcpy(pt.buf.host_ptr, sec1.data() + ti.off, ti.bytes);
+                } else if (!upload_raw(pt.buf, sec1.data() + ti.off, ti.bytes, err)) return false;
                 packed_trunk_[name] = pt;
             } else if (is_large_2d_matmul(name, ti)) {
                 auto f32 = decode_sec1_f32(sec1.data(), ti);
@@ -1046,7 +1053,18 @@ public:
             ink2::BatchGeom bg;
             bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
             bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
-            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, 512)));
+            hip_eff_chunk_ = 0;
+            if (model.m.embed_host_tail) {
+                std::fprintf(stderr, "[ink-hip] compact GGUF trunk: embedding in pinned host RAM, trunk in the card %.0f MiB\n", static_cast<double>(trunk_now) / 1048576.0);
+            }
+            if (model.m.embed_host_tail && !mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL && opts.chunk_auto &&
+                !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0')) {
+                hip_eff_chunk_ = 256;
+                std::fprintf(stderr, "[ink-hip] compact GGUF on a card of %.1f GiB: prefill chunk 256 (STRATA_INK_GGUF_CHUNK256=0 or --chunk N overrides)\n",
+                             static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0);
+            }
+            const int plan_chunk_cap = hip_eff_chunk_ > 0 ? hip_eff_chunk_ : 512;
+            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, plan_chunk_cap)));
             vram_budget = plan_expert_vram_budget(mem_info_.effective_total_bytes, mem_info_.reserve_bytes, trunk_now, kv_est, scratch_est, 768ULL << 20);
             // #6711: the budget above is the card's TOTAL minus what this engine holds. The desktop, the browser and other programs hold VRAM too (3 GB on the
             // reporter's R9700 with 29 GB free), so the single arena allocation failed "out of memory" before any model line. What is free NOW (the trunk is
@@ -3243,7 +3261,7 @@ private:
         for (const auto& b : trunk_qkvrg_) tot += b.bytes;
         for (const auto& kv : trunk_bf16_) tot += kv.second.bytes;
         for (const auto& kv : trunk_f32_) tot += kv.second.bytes;
-        for (const auto& kv : packed_trunk_) tot += kv.second.buf.bytes;
+        for (const auto& kv : packed_trunk_) tot += (model_ && model_->m.embed_host_tail && kv.second.buf.host_mapped) ? 0u : kv.second.buf.bytes;
         for (const auto& kv : static_sconv_) tot += kv.second.bytes;
         for (const auto& b : d_msg_queries_) tot += b.bytes;
         for (const auto& kv : dspark_bf16_) tot += kv.second.bytes;

@@ -1167,6 +1167,12 @@ int main(int argc, char** argv) {
         ink2::gguf_detail::compact_trunk_allowed() = true;
     }
 #endif
+#if defined(INKLING_ENABLE_HIP) && !defined(INKLING_ENABLE_CUDA)
+    // One HIP GPU: a GSQ-RCO file may compact its trunk (Q8_ROW unembed, embedding in pinned host RAM; the loader decides per file, STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty()) {
+        ink2::gguf_detail::compact_trunk_allowed() = true;
+    }
+#endif
 
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);

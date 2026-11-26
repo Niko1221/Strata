@@ -11,6 +11,7 @@
 #pragma once
 
 #include "ink_hip_common.hip.h"
+#include "ink_hip_iq_codecs.hip.h"
 
 namespace strata::inkling2::hip {
 
@@ -45,6 +46,7 @@ __host__ __device__ inline bool gguf_type_has_hip_kernel(uint32_t t) noexcept {
         case 0: case 1: case 2: case 8:
         case 10: case 11: case 12: case 13: case 14:
         case 18: case 20: case 23: case 30: case 39:
+        case 16: case 17: case 19: case 21: case 22: case 42:   // GSQ-RCO types (ink_hip_iq_codecs.hip.h)
             return true;
         default:
             return false;
@@ -67,6 +69,7 @@ __host__ __device__ inline size_t hip_gguf_row_bytes(uint32_t t, int K) noexcept
         case 1:
         case 30: return static_cast<size_t>(K) * 2u;
         case 0:  return static_cast<size_t>(K) * 4u;
+        case 16: case 17: case 19: case 21: case 22: case 42: return hip_iq_row_bytes(t, K);
         default: return 0u;
     }
 }
@@ -313,8 +316,10 @@ __device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t
         const float* wp = reinterpret_cast<const float*>(row + static_cast<size_t>(col) * 4u);
 #pragma unroll
         for (int k = 0; k < 8; ++k) w[k] = wp[k] * ext_scale;
+    } else {
+        (void)hip_iq_decode_8(t, row, col, ext_scale, w);   // IQ3_S / IQ2_XXS / IQ2_XS / IQ2_S / IQ1_S / Q2_0
     }
-    return make_uint4(h2_pack(w[0], w[1]), h2_pack(w[2], w[3]), h2_pack(w[4], w[5]), h2_pack(w[6], w[7]));
+    return make_uint4(h2_pack(w[0], w[1]),h2_pack(w[2], w[3]), h2_pack(w[4], w[5]), h2_pack(w[6], w[7]));
 }
 
 // Fast GGUF_RAW -> FP16 unpack kernel (for hipBLASLt L3-resident expert GEMM)
