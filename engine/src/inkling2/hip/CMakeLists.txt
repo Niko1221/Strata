@@ -93,6 +93,11 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_r9700_fp8.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_r9700_spec.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_r9700_state.hpp"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_cfg.hpp"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_uma.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_prefill.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_decode.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_strixhalo_megakernel.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/../../../include/strata/hip_uma_guard.hpp"
   COMMENT "Compiling strata-inkling multi-gen HIP backend (${STRATA_HIP_ARCHS})"
   VERBATIM
