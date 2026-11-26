@@ -7,7 +7,7 @@
 //   STRATA_INK_SM120=1          fast mode on (changes answers slightly: FP8 trunk, MX8 -> SF4 transcode, FP16 sums). 0 = the old path, always.
 //   STRATA_INK_SM120_EXACT=1    "exact" form: only the parts that do not change a single bit of the answer (to be proven by the gates); with
 //                               STRATA_INK_SM120 unset it is the same as =1 with the lossless set.
-//   unset                       kSm120FastDefault below (false today). It becomes true after the FASTQ quality lane passes: one constant.
+//   unset                       the default: kSm120FastDefault below (true since 11-26): a card with a MEASURED row (RTX 5090, RTX 5060 Ti 16 GB) runs its row's fast set, every other card the old path.
 //   STRATA_INK_SM120_<PART>=0|1 one part on or off (PF_ATTN FP8_TRUNK MOE_OPT DENSE_OPT DSPARK_OPT C64_SPEC COMPACT TC_SMALLM PLD PACK PREFILL
 //                               CORE_GRAPH L2PF); an explicit 1 turns the part on on any sm_120 card, an explicit 0 turns it off.
 //   STRATA_INK_SM120_ROW=<id>   use the table row <id> although the card has no measured row of its own (own risk, a note is printed).
@@ -32,7 +32,7 @@ namespace strata::core {
 // THE default. Flip this one constant when the owner decides that fast mode is the default on the measured RTX 50 cards (after FASTQ passed).
 // Only a card with a measured row ever gets it; every other card keeps the old path. STRATA_INK_SM120=0 always gives the old path.
 // ------------------------------------------------------------------------------------------------------------------------------------------
-constexpr bool kSm120FastDefault = false;
+constexpr bool kSm120FastDefault = true;   // owner 11-26 after FASTQ: fast mode is the default on the two measured rows; STRATA_INK_SM120=0 is the old path
 
 enum Sm120Part : uint32_t {
     P_PF_ATTN    = 1u << 0,   // pipelined FP16-accumulate tensor-core FlashAttention prefill (5090 kernels)
@@ -123,9 +123,10 @@ struct Sm120Row {
 
 constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;
 constexpr uint32_t kSm120BigExact = P_DSPARK_OPT;
-// COMPACT is NOT in the 5060 Ti fast set: FASTQ (2026-11-26) lost 17 of 26 tool calls, 4 of 6 memory chats, 6 of 11 coding tasks with it on. It comes back
-// into this set only after a FASTQ run passes. Until then STRATA_INK_SM120_COMPACT=1 asks for it by name (the hand-over speed numbers need it).
-constexpr uint32_t kSm120SmallFast = P_FP8_TRUNK | P_TC_SMALLM | P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
+// The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
+// trunk on, fast mode lost 17 of 26 tool calls; with FP8_TRUNK=0 (attention in Q8_ROW) it is at or above off on every suite (report-5060ti-fp8t0.md). The in-place FP8 trunk is
+// explicit-only (STRATA_INK_SM120_FP8_INPLACE=1); FP8_TRUNK (the 5090 cache engine) cannot start next to compact (no room), so it is not in this set either.
+constexpr uint32_t kSm120SmallFast = P_COMPACT | P_TC_SMALLM | P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
 // Exact set of the small cards, trimmed by measurement (5060 Ti, new SQ-20 hybrid load, 2026-11-26): PACK (moves experts between the CPU and the GPU lane: rounding differs)
 // and PREFILL (layer-major prefill: tokens differ from gen:9000 on) are out. Then PLD (tokens differ at gen:9000, 2 of 2 runs) and CORE_GRAPH (differ at gen:30 from token 67 when
 // combined with the others) are out too. C64_SPEC + L2PF: tokens identical to off at 30, 9000 and 12000 (2 rounds each), speed equal to off. The speed-ups of the others are fast-only.
@@ -317,9 +318,17 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
         }
     }
     const bool asked_switch = (master == 1) || (exact == 1) || (part_on != 0);
-    const bool want_default = (master < 0 && exact < 0 && part_on == 0 && kSm120FastDefault);
-    out.asked = asked_switch || want_default;
     if (master == 0) { out.mode = Sm120Decision::Off; return out; }   // "=0" is always the old path
+    // THE DEFAULT (owner, 11-26, after FASTQ): with no switch set, a cc 12.0 card that has a MEASURED table row runs that row's fast set, silently. Every other
+    // card (placeholder rows: 5080, 5070 Ti, 5070, 5060 Ti 8 GB, 5060, 5050, RTX PRO; unknown cards; every non-RTX 50 card) keeps the old path and prints nothing.
+    // A part switched OFF alone (STRATA_INK_SM120_<PART>=0) takes that part out of the default set.
+    const Sm120Row* dflt_row = nullptr;
+    if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_is_cc120(dev)) {
+        dflt_row = ink_sm120_match(dev);
+        if (dflt_row && !dflt_row->measured) dflt_row = nullptr;
+    }
+    const bool want_default = (dflt_row != nullptr);
+    out.asked = asked_switch || want_default;
     if (!out.asked) return out;
 
     char buf[400];
@@ -380,6 +389,12 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& get) {
     const bool want_exact = (exact == 1);
     out.mode = want_exact ? Sm120Decision::Exact : Sm120Decision::Fast;
     out.default_on_applied = want_default;
+    if (want_default) {
+        std::snprintf(buf, sizeof(buf),
+                      "[InkCUDA] RTX 50 fast mode is the default on GPU %d (%s, table row '%s'): STRATA_INK_SM120=0 turns it off, STRATA_INK_SM120_EXACT=1 gives the bit-identical form",
+                      dev.ordinal, dev.name.c_str(), row->id);
+        out.note = buf;
+    }
     uint32_t base = want_exact ? row->exact_parts : row->fast_parts;
     if (master < 0 && exact < 0 && part_on != 0 && !want_default) base = 0;   // a part switch alone turns that part on, not the whole set
     out.parts = ink_sm120_compact_subparts((base | part_on) & ~part_off, part_on | part_off);

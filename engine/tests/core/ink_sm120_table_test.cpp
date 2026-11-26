@@ -70,12 +70,34 @@ int main() {
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));
     }
 
-    // ---- nothing set: the old path on every card, and nothing printed ----
-    for (const Sm120Dev* d : {&r5090, &r5060ti, &a4000, &spark, &unknown}) {
+    CHECK(kSm120FastDefault);   // the owner's 11-26 decision: fast mode is the default on the measured rows
+    // ---- nothing set: the old path on every card without a measured row, and nothing printed ----
+    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5070, &r5080, &r5070ti, &r5060ti8, &pro6000}) {
         const Sm120Decision x = decide(*d, {});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.note.empty() && !x.asked && !x.refused);
     }
-    CHECK(!kSm120FastDefault);   // today's default; the one constant the owner flips after FASTQ
+    // ---- nothing set on the two measured rows: their fast set is the default, with one line saying so ----
+    {
+        const Sm120Decision a = decide(r5090, {});
+        CHECK(a.mode == Sm120Decision::Fast && a.default_on_applied && a.asked && a.row && std::string(a.row->id) == "5090" && !a.note.empty());
+        CHECK((a.parts & P_FP8_TRUNK) && (a.parts & P_MOE_OPT) && (a.parts & P_PF_ATTN) && (a.parts & P_DSPARK_OPT) && !(a.parts & P_COMPACT));
+        const Sm120Decision b = decide(r5060ti, {});
+        CHECK(b.mode == Sm120Decision::Fast && b.default_on_applied && b.row && std::string(b.row->id) == "5060ti-16");
+        CHECK((b.parts & P_COMPACT) && (b.parts & P_COMPACT_XCODE) && (b.parts & P_COMPACT_KV) && !(b.parts & P_FP8_TRUNK) && !(b.parts & P_FP8_INPLACE));
+        // =0 is the old path, silently; a part off alone edits the default set; exact is the bit-identical set; ROW alone changes nothing
+        const Sm120Decision c = decide(r5060ti, {{"STRATA_INK_SM120", "0"}});
+        CHECK(c.mode == Sm120Decision::Off && c.parts == 0 && c.note.empty());
+        const Sm120Decision c2 = decide(r5060ti, {{"STRATA_INK_RTX5060TI", "0"}});   // the old name works as an alias
+        CHECK(c2.mode == Sm120Decision::Off && c2.parts == 0);
+        const Sm120Decision d1 = decide(r5060ti, {{"STRATA_INK_SM120_COMPACT", "0"}});
+        CHECK(d1.mode == Sm120Decision::Fast && !(d1.parts & P_COMPACT) && !(d1.parts & kSm120CompactSubParts) && (d1.parts & P_TC_SMALLM));
+        const Sm120Decision e1 = decide(r5060ti, {{"STRATA_INK_SM120_EXACT", "1"}});
+        CHECK(e1.mode == Sm120Decision::Exact && e1.parts == (P_C64_SPEC | P_L2PF));
+        const Sm120Decision e2 = decide(r5090, {{"STRATA_INK_RTX5090_EXACT", "1"}});
+        CHECK(e2.mode == Sm120Decision::Exact && e2.parts == P_DSPARK_OPT);
+        const Sm120Decision f1 = decide(r5070, {{"STRATA_INK_SM120_ROW", "5060ti-16"}});   // a row id alone does not turn anything on for a placeholder card
+        CHECK(f1.mode == Sm120Decision::Off && f1.parts == 0);
+    }
 
     // ---- fast mode on the measured cards ----
     {
@@ -84,8 +106,8 @@ int main() {
         CHECK((x.parts & P_FP8_TRUNK) && (x.parts & P_MOE_OPT) && (x.parts & P_DSPARK_OPT) && !(x.parts & P_COMPACT) && !(x.parts & P_PLD));
         const Sm120Decision y = decide(r5060ti, {{"STRATA_INK_SM120", "1"}});
         CHECK(y.mode == Sm120Decision::Fast && y.row && std::string(y.row->id) == "5060ti-16");
-        // COMPACT is not in the 5060 Ti fast set (FASTQ failed with it on); the 5090 never had it
-        CHECK(!(y.parts & P_COMPACT) && !(y.parts & kSm120CompactSubParts) && (y.parts & P_FP8_TRUNK) && (y.parts & P_C64_SPEC) && !(y.parts & P_MOE_OPT) && !(y.parts & P_PF_ATTN));
+        // the 5060 Ti fast set = COMPACT (both halves) without any FP8 trunk (FASTQ: FP8_TRUNK=0 passes); the 5090 never had COMPACT
+        CHECK((y.parts & P_COMPACT) && (y.parts & kSm120CompactSubParts) == kSm120CompactSubParts && !(y.parts & P_FP8_TRUNK) && (y.parts & P_C64_SPEC) && !(y.parts & P_MOE_OPT) && !(y.parts & P_PF_ATTN));
         // asking for COMPACT by name turns on both halves; each half can be named off apart
         const Sm120Decision c1 = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_COMPACT", "1"}});
         CHECK((c1.parts & P_COMPACT) && (c1.parts & P_COMPACT_XCODE) && (c1.parts & P_COMPACT_KV));
@@ -93,12 +115,12 @@ int main() {
         CHECK((c2.parts & P_COMPACT) && (c2.parts & P_COMPACT_XCODE) && !(c2.parts & P_COMPACT_KV));
         const Sm120Decision c3 = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_5060TI_COMPACT", "1"}, {"STRATA_INK_SM120_COMPACT_XCODE", "0"}});
         CHECK((c3.parts & P_COMPACT) && !(c3.parts & P_COMPACT_XCODE) && (c3.parts & P_COMPACT_KV));
-        const Sm120Decision c4 = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_COMPACT_KV", "1"}});   // a half without COMPACT does nothing
+        const Sm120Decision c4 = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_COMPACT", "0"}, {"STRATA_INK_SM120_COMPACT_KV", "1"}});   // a half without COMPACT does nothing
         CHECK(!(c4.parts & P_COMPACT) && !(c4.parts & P_COMPACT_KV));
         CHECK(y.row->fp8_mode == Sm120Fp8::Cache && x.row->fp8_mode == Sm120Fp8::Cache);   // one FP8 trunk (the 5090's) on every card
         CHECK(!(y.parts & P_FP8_INPLACE) && !(x.parts & P_FP8_INPLACE));                    // the in-place one is explicit-only
         const Sm120Decision ip = decide(r5060ti, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_FP8_INPLACE", "1"}});
-        CHECK((ip.parts & P_FP8_INPLACE) && (ip.parts & P_FP8_TRUNK));
+        CHECK(ip.parts & P_FP8_INPLACE);
         CHECK(y.row->c64_mode == Sm120C64::K8v4 && x.row->c64_mode == Sm120C64::Bspec);
     }
     // ---- the old switch names are aliases; the new name wins ----
