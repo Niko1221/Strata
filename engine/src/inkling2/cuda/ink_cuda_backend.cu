@@ -77,6 +77,150 @@ __global__ void k_ink_arch_probe(int* p) {
 
 namespace ink2 {
 
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// VRAM sizing, in ONE place.
+//   plan_vram_reserve()   before a single expert is placed: the K/V type, and how much of the card is set aside for the K/V, the ShortConv state and
+//                         the workspaces (min_reserve_bytes, handed to the model loader that then places the experts around it);
+//   plan_prefill_chunk()  once the experts are in: the prefill chunk, from the memory that is left.
+// Nothing else in this file sizes memory. The long-context lane (LCTX: "K/V before experts") changes the placement order by changing these two
+// functions and nothing else. With every RTX 50 switch off both return the shipped numbers, bit for bit (the 5060 Ti hand-over's changes to them
+// moved the K/V split on a 16 GB sm_86 card: review finding B1; they apply only through the table row now).
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+struct VramPlanIn {
+    const BackendOpts* opts = nullptr;
+    int gpu_id = 0;
+    int sm_cc = 0;
+    size_t total_vram = 0;
+    int max_slots = 1;
+    int kv_offload_mode = 0;    // 1 on, -1 off, 0 auto
+    bool build_screen = false;  // the DSpark drafter will be built
+    const strata::ink::Sm120Cfg* sm120 = nullptr;
+    const strata::ink::InkRtx5060TiCfg* c5060 = nullptr;
+};
+
+struct VramPlan {
+    KvDtype kv_dtype = KvDtype::FP16;
+    strata::ink::InkKvDtype cuda_kvd = strata::ink::InkKvDtype::FP16;
+    int eff_chunk = 64;
+    size_t swa_r = 0;
+    size_t per_visit_pos = 0;
+    bool c64_host_kv = false;
+    int init_glob = 0;
+    size_t min_kv_bytes = 0;
+    size_t dspark_pad = 0;
+    size_t ws_pad = 0;
+    size_t min_reserve_bytes = 0;
+};
+
+static VramPlan plan_vram_reserve(const VramPlanIn& in) {
+    const BackendOpts& opts = *in.opts;
+    const auto& opt5060 = *in.c5060;
+    VramPlan p;
+    // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
+    p.kv_dtype = opts.kv_dtype;
+    if (opts.kv_dtype_auto) {
+        if (in.max_slots >= 16) {
+            p.kv_dtype = KvDtype::FP8_E4M3;
+        } else if (in.kv_offload_mode < 0) {
+            if (in.total_vram <= (13ull << 30)) {
+                p.kv_dtype = KvDtype::FP8_E4M3;
+            } else if (in.sm_cc >= 89 && opts.max_ctx > 16384 && in.total_vram < (40ull << 30)) {
+                p.kv_dtype = KvDtype::FP8_E4M3;
+            }
+        }
+    }
+    if (opt5060.c64_spec && in.max_slots >= 16 && opts.kv_dtype_auto) {
+        p.kv_dtype = KvDtype::FP8_E4M3;
+    } else if (opt5060.compact_vram && in.max_slots == 1 && opts.kv_dtype_auto && strata::ink::ink_elastic_ram_cap_bytes() == 0) {
+        p.kv_dtype = KvDtype::FP8_E4M3;
+    } else if (strata::ink::ink_elastic_1m_enabled(in.gpu_id) && opts.kv_dtype_auto) {
+        auto dt = strata::ink::ink_elastic_select_kv_dtype(
+            p.kv_dtype == KvDtype::FP8_E4M3 ? strata::ink::InkKvDtype::FP8 : strata::ink::InkKvDtype::FP16,
+            true, opts.max_ctx, in.max_slots, strata::ink::ink_ram_available_bytes(), in.gpu_id);
+        if (dt == strata::ink::InkKvDtype::FP8) p.kv_dtype = KvDtype::FP8_E4M3;
+        else if (dt == strata::ink::InkKvDtype::K8V4) p.kv_dtype = KvDtype::K8V4;
+    }
+    auto map_kvd = [](KvDtype d) -> strata::ink::InkKvDtype {
+        if (d == KvDtype::FP8_E4M3) return strata::ink::InkKvDtype::FP8;
+        if (d == KvDtype::K8V8)     return strata::ink::InkKvDtype::K8V8;
+        if (d == KvDtype::K8V4)     return strata::ink::InkKvDtype::K8V4;
+        return strata::ink::InkKvDtype::FP16;
+    };
+    p.cuda_kvd = map_kvd(p.kv_dtype);
+
+    p.eff_chunk = (opt5060.prefill_lm && in.max_slots == 1 && opts.chunk_auto) ? 256 : std::max(64, opts.chunk);
+    p.swa_r = (in.max_slots >= 16) ? (size_t)(strata::ink::kInkSwaWin + 32)
+                                   : (size_t)(strata::ink::kInkSwaWin + std::max(p.eff_chunk, 64));
+    p.per_visit_pos = strata::ink::InkCudaRunner::kv_bytes_per_visit_pos(p.cuda_kvd);
+    p.c64_host_kv = (opt5060.c64_spec && in.max_slots >= 16);
+    p.init_glob = (in.kv_offload_mode == 1 || p.c64_host_kv)
+        ? 0
+        : (opt5060.pack && in.max_slots == 1)
+            ? std::min(std::max(256, opts.max_ctx), 2048)
+            : ((in.kv_offload_mode == 0 && in.total_vram <= (13ull << 30))
+                ? std::min(std::max(256, opts.max_ctx), 2048)
+                : std::max(256, std::min(std::max(256, opts.max_ctx), (in.max_slots == 1) ? 8192 : 4096)));
+    p.min_kv_bytes = (p.c64_host_kv ? 0ull : (size_t)40 * in.max_slots * p.swa_r * p.per_visit_pos)
+                   + (size_t)strata::ink::kInkVisits * in.max_slots * 3 * strata::ink::kInkSconvCh * 4
+                   + (size_t)8 * in.max_slots * p.init_glob * p.per_visit_pos;
+    // Include O(1) prefill ws (~114 MiB) + DSpark (~224 MiB when enabled) + activation ws (WDDM floor added inside loader!)
+    // Note: unembed_screen (441 MiB) is allocated INSIDE load_from_model_file BEFORE expert packing.
+    p.dspark_pad = in.build_screen ? (opt5060.pack ? (540ull << 20) : (224ull << 20)) : 0ull;
+    p.ws_pad = opt5060.pack
+        ? ((in.max_slots >= 16 ? (700ull << 20) : (420ull << 20)) + p.dspark_pad)
+        : (((in.max_slots >= 8) ? (1280ull << 20)
+           : ((in.total_vram >= (20ull << 30)) ? (960ull << 20)
+            : (in.total_vram <= (13ull << 30)) ? (512ull << 20)
+                                               : (832ull << 20))) + p.dspark_pad);
+    p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
+    if (opts.vram_reserve_mib >= 0) {
+        p.min_reserve_bytes = std::max(p.min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
+    }
+    return p;
+}
+
+// The prefill chunk once the experts are placed. `led_loaded` = free MiB after load. Prints the "[InkCUDA] prefill chunk" line when it was decided
+// from the free memory (as the shipped code did).
+static int plan_prefill_chunk(const VramPlanIn& in, const VramPlan& p, bool all_sf4_vram, bool ls_active, double led_loaded) {
+    const BackendOpts& opts = *in.opts;
+    const auto& opt5060 = *in.c5060;
+    int chunk_try = std::max(64, opts.chunk);
+    if (opt5060.compact_vram && all_sf4_vram && opts.chunk_auto) {
+        if (in.max_slots == 1) {
+            chunk_try = 256;
+            if (const char* ec = strata::ink::sm120_cfg_detail::env2("STRATA_INK_SM120_CHUNK", "STRATA_INK_5060TI_CHUNK")) {
+                const int v = std::atoi(ec);
+                if (v >= 64 && v <= 4096) chunk_try = v;
+            }
+        } else if (in.max_slots >= 16) {
+            chunk_try = std::min(512, std::max(192, in.max_slots * (opt5060.c64_draft_k + 1)));
+            if (const char* ec = strata::ink::sm120_cfg_detail::env2("STRATA_INK_SM120_CHUNK", "STRATA_INK_5060TI_CHUNK")) {
+                const int v = std::atoi(ec);
+                if (v >= 64 && v <= 4096) chunk_try = v;
+            }
+        }
+    } else if (opt5060.prefill_lm && !all_sf4_vram && in.max_slots == 1 && opts.chunk_auto) {
+        chunk_try = 256;
+    }
+    // No --chunk: the memory left after the experts decides (strata/core/ink_chunk.hpp); STRATA_INK_CHUNK_AUTO=0 keeps the old 512.
+    if (opts.chunk_auto && !ls_active && !opt5060.prefill_lm) {
+        const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
+        if (!(auto_env && std::atoi(auto_env) == 0)) {
+            // the K/V still to be allocated for every slot to reach the context stays free of the chunk's working memory (kv offload on: it is host RAM)
+            const double kv_grow_mib = (in.kv_offload_mode == 1) ? 0.0
+                : (double)8 * in.max_slots * std::max(0, std::max(256, opts.max_ctx) - p.init_glob) * (double)p.per_visit_pos / 1048576.0;
+            chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, in.max_slots, kv_grow_mib));
+            const auto& s120 = *in.sm120;
+            if (s120.fast && s120.c1_chunk_big > 0 && in.max_slots == 1 && (led_loaded - kv_grow_mib) >= (double)s120.c1_chunk_big_headroom_mib) {
+                chunk_try = std::max(chunk_try, s120.c1_chunk_big);
+            }
+            std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB of K/V still to grow, %d slot(s); --chunk N sets it)\n",
+                         chunk_try, led_loaded, kv_grow_mib, in.max_slots);
+        }
+    }
+    return chunk_try;
+}
+
 class InkCudaBackend final : public InkBackend {
 public:
     ~InkCudaBackend() override { cleanup(); }
@@ -157,10 +301,15 @@ public:
             err = std::string("cudaSetDevice failed: ") + cudaGetErrorString(ce);
             return false;
         }
-        if (strata::ink::rtx5090::dspark_opt_on()) {
-            if (!std::getenv("STRATA_INK_SPEC_BEAM") && opts.spec_beam <= 0) spec_cfg_.beam = 4;
-            if (!std::getenv("STRATA_INK_SPEC_COST") && opts.spec_cost <= 0.0) spec_cfg_.cost = 12.0f;
-            if (!std::getenv("STRATA_INK_SPEC_PLAIN") && opts.spec_plain < 0.0) spec_cfg_.plain = 1.02f;
+        {
+            // the card's table row (RTX 50 fast mode); every flag is false and every number the shipped one when no switch is set
+            const auto& s120 = strata::ink::sm120_cfg(gpu_id_);
+            track_pld90_ = s120.dspark_opt;
+            if (s120.dspark_opt) {
+                if (!std::getenv("STRATA_INK_SPEC_BEAM") && opts.spec_beam <= 0) spec_cfg_.beam = s120.spec_beam;
+                if (!std::getenv("STRATA_INK_SPEC_COST") && opts.spec_cost <= 0.0) spec_cfg_.cost = s120.spec_cost;
+                if (!std::getenv("STRATA_INK_SPEC_PLAIN") && opts.spec_plain < 0.0) spec_cfg_.plain = s120.spec_plain;
+            }
         }
         cudaDeviceProp prop{};
         ce = cudaGetDeviceProperties(&prop, gpu_id_);
@@ -186,56 +335,23 @@ public:
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         const int kv_offload_mode = (opts.kv_offload == "on") ? 1 : ((opts.kv_offload == "off") ? -1 : 0);
-        kv_dtype_ = opts.kv_dtype;
-        if (opts.kv_dtype_auto) {
-            if (max_slots_ >= 16) {
-                kv_dtype_ = KvDtype::FP8_E4M3;
-            } else if (kv_offload_mode < 0) {
-                if (prop.totalGlobalMem <= (13ull << 30)) {
-                    kv_dtype_ = KvDtype::FP8_E4M3;
-                } else if (sm_cc >= 89 && opts.max_ctx > 16384 && prop.totalGlobalMem < (40ull << 30)) {
-                    kv_dtype_ = KvDtype::FP8_E4M3;
-                }
-            }
-        }
-        if (strata::ink::ink_elastic_1m_enabled(gpu_id_) && opts.kv_dtype_auto) {
-            auto dt = strata::ink::ink_elastic_select_kv_dtype(
-                kv_dtype_ == KvDtype::FP8_E4M3 ? strata::ink::InkKvDtype::FP8 : strata::ink::InkKvDtype::FP16,
-                true, opts.max_ctx, max_slots_, strata::ink::ink_ram_available_bytes(), gpu_id_);
-            if (dt == strata::ink::InkKvDtype::FP8) kv_dtype_ = KvDtype::FP8_E4M3;
-            else if (dt == strata::ink::InkKvDtype::K8V4) kv_dtype_ = KvDtype::K8V4;
-        }
-        auto map_kvd = [](KvDtype d) -> strata::ink::InkKvDtype {
-            if (d == KvDtype::FP8_E4M3) return strata::ink::InkKvDtype::FP8;
-            if (d == KvDtype::K8V8)     return strata::ink::InkKvDtype::K8V8;
-            if (d == KvDtype::K8V4)     return strata::ink::InkKvDtype::K8V4;
-            return strata::ink::InkKvDtype::FP16;
-        };
-        const auto cuda_kvd = map_kvd(kv_dtype_);
-
-        const int eff_chunk = std::max(64, opts.chunk);
-        const size_t swa_r = (max_slots_ >= 16) ? (size_t)(strata::ink::kInkSwaWin + 32)
-                                                : (size_t)(strata::ink::kInkSwaWin + std::max(eff_chunk, 64));
-        const size_t per_visit_pos = strata::ink::InkCudaRunner::kv_bytes_per_visit_pos(cuda_kvd);
-        const int init_glob = (kv_offload_mode == 1)
-            ? 0
-            : ((kv_offload_mode == 0 && prop.totalGlobalMem <= (13ull << 30))
-                ? std::min(std::max(256, opts.max_ctx), 2048)
-                : std::max(256, std::min(std::max(256, opts.max_ctx), (max_slots_ == 1) ? 8192 : 4096)));
-        const size_t min_kv_bytes = (size_t)40 * max_slots_ * swa_r * per_visit_pos
-                                  + (size_t)strata::ink::kInkVisits * max_slots_ * 3 * strata::ink::kInkSconvCh * 4
-                                  + (size_t)8 * max_slots_ * init_glob * per_visit_pos;
-        // Include O(1) prefill ws (~114 MiB) + DSpark (~224 MiB when enabled) + activation ws (WDDM floor added inside loader!)
-        const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
-        const size_t dspark_pad = build_screen ? (224ull << 20) : 0ull;
-        const size_t ws_pad = ((max_slots_ >= 8) ? (1280ull << 20)
-                             : ((prop.totalGlobalMem >= (20ull << 30)) ? (960ull << 20)
-                              : (prop.totalGlobalMem <= (13ull << 30)) ? (512ull << 20)
-                                                                       : (832ull << 20))) + dspark_pad;
-        size_t min_reserve_bytes = min_kv_bytes + ws_pad;
-        if (opts.vram_reserve_mib >= 0) {
-            min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
-        }
+        // all of the sizing below is plan_vram_reserve() / plan_prefill_chunk() (top of this file)
+        VramPlanIn plan_in;
+        plan_in.opts = &opts;
+        plan_in.gpu_id = gpu_id_;
+        plan_in.sm_cc = sm_cc;
+        plan_in.total_vram = prop.totalGlobalMem;
+        plan_in.max_slots = max_slots_;
+        plan_in.kv_offload_mode = kv_offload_mode;
+        plan_in.build_screen = opts.enable_dspark && mf.m.dspark.present;
+        plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
+        plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
+        const VramPlan plan = plan_vram_reserve(plan_in);
+        kv_dtype_ = plan.kv_dtype;
+        const auto cuda_kvd = plan.cuda_kvd;
+        const bool build_screen = plan_in.build_screen;
+        const size_t min_reserve_bytes = plan.min_reserve_bytes;
+        const auto& opt5060 = *plan_in.c5060;
 
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
@@ -300,22 +416,7 @@ public:
         const char* retry_env = std::getenv("STRATA_INK_OOM_RETRY");
         strata::ink::ink_alloc_throws() = !(retry_env && std::atoi(retry_env) == 0);
         struct ThrowGuard { ~ThrowGuard() { strata::ink::ink_alloc_throws() = false; } } throw_guard;
-        int chunk_try = std::max(64, opts.chunk);
-        // No --chunk: the memory left after the experts decides (strata/core/ink_chunk.hpp); STRATA_INK_CHUNK_AUTO=0 keeps the old 512.
-        if (opts.chunk_auto && !model_.ls_active) {
-            const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
-            if (!(auto_env && std::atoi(auto_env) == 0)) {
-                // the K/V still to be allocated for every slot to reach the context stays free of the chunk's working memory (kv offload on: it is host RAM)
-                const double kv_grow_mib = (kv_offload_mode == 1) ? 0.0
-                    : (double)8 * max_slots_ * std::max(0, std::max(256, opts.max_ctx) - init_glob) * (double)per_visit_pos / 1048576.0;
-                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_grow_mib));
-                if (strata::ink::rtx5090::enabled() && !strata::ink::rtx5090::exact_mode_on() && max_slots_ == 1 && (led_loaded - kv_grow_mib) >= 4800.0) {
-                    chunk_try = std::max(chunk_try, 4096);
-                }
-                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB of K/V still to grow, %d slot(s); --chunk N sets it)\n",
-                             chunk_try, led_loaded, kv_grow_mib, max_slots_);
-            }
-        }
+        int chunk_try = plan_prefill_chunk(plan_in, plan, model_.all_sf4_vram, model_.ls_active, led_loaded);
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
@@ -354,6 +455,11 @@ public:
         }
         eff_max_ctx_ = runner_->max_ctx;
         eff_chunk_run_ = std::max(1, std::min(chunk_try, runner_->max_batch));
+        if (opt5060.prefill_lm && max_slots_ == 1 && runner_->can_layer_major_prefill()) {
+            eff_chunk_run_ = 8704;
+            std::fprintf(stderr, "[Ink5060Ti] Layer-Major Single-Sweep Coda Prefill active (effective_chunk=%d, micro_batch=%d, first_host_coda=L%d)\n",
+                         eff_chunk_run_, runner_->max_batch, runner_->first_host_coda_layer());
+        }
         const double led_runner = free_mib();
 
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
@@ -396,6 +502,8 @@ public:
         snap_M_.assign(max_slots_, 0);
         prompt_ckpts_.assign(max_slots_, PromptCkpt{});
         shared_ckpts_.assign(max_slots_, PromptCkpt{});
+        slot_hists_.assign(max_slots_, {});
+        c64_gov_steps_ = 0; c64_gov_emit_sum_ = 0.0; c64_gov_disabled_ = false;
         initialized_ = true;
         return true;
     }
@@ -426,7 +534,8 @@ public:
         snap_active_[slot] = false;
         if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].valid = false;
         if (slot < (int)shared_ckpts_.size()) shared_ckpts_[slot].valid = false;
-        if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; pld_hist_.clear(); }
+        if (slot >= 0 && slot < (int)slot_hists_.size()) slot_hists_[slot].clear();
+        if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; pld_hist_.clear(); slot0_hist_.clear(); }
         if (bspec_) bspec_->reset_slot(slot);
     }
 
@@ -781,12 +890,25 @@ public:
         kv_grow_failed_ = false;
         // Defensive KV position bounds check + elastic global KV growth (fixes #6590B CUDA error 700 & CA1JEeAx!)
         int max_pos_req = 0;
+        const bool track_pld = strata::ink::ink_rtx5060ti_cfg(gpu_id_).pld;
         for (int i = 0; i < N; ++i) {
             if (batch.pos[i] < 0 || batch.pos[i] >= eff_max_ctx_) {
                 err = "CUDA KV position " + std::to_string(batch.pos[i]) + " out of bounds [0, " + std::to_string(eff_max_ctx_) + ")";
                 return false;
             }
             if (batch.pos[i] > max_pos_req) max_pos_req = batch.pos[i];
+            if (track_pld && batch.slot_ids[i] >= 0 && batch.slot_ids[i] < (int)slot_hists_.size()) {
+                auto& sh = slot_hists_[batch.slot_ids[i]];
+                const size_t p = (size_t)batch.pos[i];
+                if (p == 0) sh.clear();
+                if (sh.size() <= p) sh.resize(p + 1, 0);
+                sh[p] = batch.token_ids[i];
+                if (batch.slot_ids[i] == 0) {
+                    if (p == 0) slot0_hist_.clear();
+                    if (slot0_hist_.size() <= p) slot0_hist_.resize(p + 1, 0);
+                    slot0_hist_[p] = batch.token_ids[i];
+                }
+            }
         }
         if (!runner_->ensure_global_kv_cap(max_pos_req + 1)) {
             err = "VRAM exhausted growing elastic global KV cache to " + std::to_string(max_pos_req + 1) + " tokens";
@@ -832,10 +954,42 @@ public:
             auto hnow = [] { return std::chrono::steady_clock::now(); };
             auto hms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
             auto hq0 = hnow();
+            if (model_.all_sf4_vram && nw > 4) {
+                for (int o0 = 0; o0 < nw; o0 += 4) {
+                    const int oc = std::min(4, nw - o0);
+                    runner_->head_logits_from(h_src + (size_t)o0 * strata::ink::kInkHidden, oc);
+                    if (cand_out && topk_.ensure(oc)) {
+                        INK_CK(topk_.run(runner_->d_logits, oc, V, runner_->st));
+                        INK_CK(cudaStreamSynchronize(runner_->st));
+                        const int kc = std::min(kInkCandidates, V);
+                        for (int k = 0; k < oc; ++k) {
+                            const int dst = dst_rows[o0 + k];
+                            const uint64_t* keys = topk_.h_out + (size_t)k * strata::ink::kTopkCand;
+                            for (int j = 0; j < kc; ++j) {
+                                int32_t id = strata::ink::ink_topk_key_index(keys[j]);
+                                if (id < 0 || id >= V) id = 0;
+                                cand_out->val[(size_t)dst * kInkCandidates + j] = strata::ink::ink_topk_key_value(keys[j]);
+                                cand_out->idx[(size_t)dst * kInkCandidates + j] = id;
+                            }
+                            cand_out->finite[dst] = topk_.h_fin[k] != 0 ? 1 : 0;
+                        }
+                    } else {
+                        ensure_pinned_logits(oc, V);
+                        INK_CK(cudaMemcpyAsync(h_logits_pin_, runner_->d_logits,
+                                               (size_t)oc * V * sizeof(float), cudaMemcpyDeviceToHost, runner_->st));
+                        INK_CK(cudaStreamSynchronize(runner_->st));
+                        for (int k = 0; k < oc; ++k) {
+                            std::memcpy(logits_out + (size_t)dst_rows[o0 + k] * V,
+                                        h_logits_pin_ + (size_t)k * V, (size_t)V * sizeof(float));
+                        }
+                    }
+                }
+                return;
+            }
             runner_->head_logits_from(h_src, nw);
             if (hp) INK_CK(cudaStreamSynchronize(runner_->st));
             auto hq1 = hnow();
-            if (cand_out) {
+            if (cand_out && topk_.ensure(nw)) {
                 // candidate rows: the 128 best (id, logit) of each wanted row and its finite flag; no full row leaves the card
                 INK_CK(topk_.run(runner_->d_logits, nw, V, runner_->st));
                 if (steptime_e1 && nw == 1 && StepTimeGuard::on()) cudaEventRecord(steptime_e1, runner_->st);
@@ -902,6 +1056,53 @@ public:
         // Helper: run a contiguous single-slot sequence (chunked to runner_->max_batch if needed!)
         auto run_single_slot_seq = [&](int slot, const std::vector<int>& idxs) {
             const int total_m = (int)idxs.size();
+            // Opt-in RTX 5060 Ti Visit-Major Macro-Prefill (All-VRAM W=4096 or Layer-Major Coda) for long prompts (M >= 1024)!
+            if (total_m >= 1024 && !snap_active_[slot] && taps_out == nullptr &&
+                (runner_->can_allvram_macro_prefill() || runner_->can_layer_major_prefill())) {
+                bool any_img_all = false;
+                int first_want = total_m;
+                for (int k = 0; k < total_m; ++k) {
+                    const int oi = idxs[k];
+                    if (batch.img_embeds && oi < (int)batch.img_embed_idx.size() && batch.img_embed_idx[oi] >= 0) {
+                        any_img_all = true;
+                        break;
+                    }
+                    if (out_row[oi] >= 0 && k < first_want) first_want = k;
+                }
+                if (!any_img_all && first_want >= total_m - runner_->max_batch) {
+                    std::vector<int32_t> all_toks(total_m);
+                    for (int k = 0; k < total_m; ++k) all_toks[k] = batch.token_ids[idxs[k]];
+                    const int p0_all = batch.pos[idxs[0]];
+                    const bool want_taps_lm = (batch.capture_taps && dspark_ && dspark_->ready &&
+                                               ((slot == 0) || dspark_->multislot_ready));
+                    int last_mc = 0;
+                    runner_->has_img_step = false;
+                    auto tap_cb = [&](int cp0, int cmc) {
+                        if (dspark_ && dspark_->ready && !dspark_->multislot_ready && slot == 0 && cp0 + cmc <= dspark_->max_ctx) {
+                            dspark_->ingest_taps(cp0, cmc);
+                            dspark_slot_ = 0;
+                        }
+                        if (dspark_ && dspark_->multislot_ready) {
+                            std::vector<int32_t> sls(cmc, slot), ps(cmc);
+                            for (int i = 0; i < cmc; ++i) ps[i] = cp0 + i;
+                            dspark_->ingest_taps_slots(runner_->d_taps, sls.data(), ps.data(), cmc);
+                        }
+                    };
+                    const bool ok_lm = runner_->can_allvram_macro_prefill()
+                        ? runner_->forward_seq_allvram_macro(all_toks.data(), p0_all, total_m, slot, want_taps_lm, last_mc, tap_cb)
+                        : runner_->forward_seq_layer_major(all_toks.data(), p0_all, total_m, slot, want_taps_lm, last_mc, tap_cb);
+                    if (ok_lm && last_mc > 0) {
+                        const int base_off = total_m - last_mc;
+                        std::vector<int> loc_idx, dst_rows;
+                        for (int k = 0; k < last_mc; ++k) {
+                            const int oi = idxs[base_off + k];
+                            if (out_row[oi] >= 0) { loc_idx.push_back(k); dst_rows.push_back(out_row[oi]); }
+                        }
+                        emit_selected_logits(loc_idx, dst_rows);
+                        return;
+                    }
+                }
+            }
             int off = 0;
             while (off < total_m) {
                 const int M = std::min(total_m - off, runner_->max_batch);
@@ -934,13 +1135,14 @@ public:
                     runner_->has_img_step = false;
                 }
 
-                if (slot == 0 && !any_img && p0 >= 0) {
+                if (track_pld90_ && slot == 0 && !any_img && p0 >= 0) {   // only when the 5090-family drafting part is on (review finding: this copy ran for everyone)
                     const size_t need_len = (size_t)(p0 + M);
                     if (pld_hist_.size() < need_len) pld_hist_.resize(need_len, -1);
                     for (int k = 0; k < M; ++k) pld_hist_[(size_t)(p0 + k)] = toks[k];
                 }
                 const bool want_ms = (bspec_ && bspec_->ready && dspark_ && dspark_->ready && slot < bspec_->max_slots);
-                const bool want_taps = (taps_out != nullptr) || want_ms || (batch.capture_taps && dspark_ && dspark_->ready && slot == 0);
+                const bool want_taps = (taps_out != nullptr) || want_ms ||
+                    (batch.capture_taps && dspark_ && dspark_->ready && (slot == 0 || dspark_->multislot_ready));
 
                 // If snapshot_slot(slot) is active for DSpark verify (M <= 16, no images):
                 // run forward_tree_verify (stages ShortConv + KV) & commit all M tokens so rollback_slot can replay exact n_keep!
@@ -970,13 +1172,18 @@ public:
                 }
                 runner_->has_img_step = false;
 
-                if (batch.capture_taps && dspark_ && dspark_->ready && slot == 0 && p0 + M <= dspark_->max_ctx) {
+                if (batch.capture_taps && dspark_ && dspark_->ready && !dspark_->multislot_ready && slot == 0 && p0 + M <= dspark_->max_ctx) {
                     dspark_->ingest_taps(p0, M);
                     dspark_slot_ = 0;
                 }
                 if (want_ms) {
                     bspec_->ingest_slot_seq(*dspark_, slot, p0, M);
                     bspec_->record_slot_tokens(slot, p0, toks.data(), M);
+                }
+                if (batch.capture_taps && dspark_ && dspark_->multislot_ready) {
+                    std::vector<int32_t> sls(M, slot), ps(M);
+                    for (int k = 0; k < M; ++k) ps[k] = p0 + k;
+                    dspark_->ingest_taps_slots(runner_->d_taps, sls.data(), ps.data(), M);
                 }
                 if (taps_out) {
                     std::vector<int> slice(idxs.begin() + off, idxs.begin() + off + M);
@@ -1031,7 +1238,7 @@ public:
         if (!dec_orig.empty()) {
             const int B = (int)dec_orig.size();
             const bool want_ms = (bspec_ && bspec_->ready && dspark_ && dspark_->ready);
-            const bool want_taps = (taps_out != nullptr) || want_ms;
+            const bool want_taps = (taps_out != nullptr) || want_ms || (batch.capture_taps && dspark_ && dspark_->multislot_ready);
             runner_->has_img_step = false;
             {
                 static double p_step_ms = 0; static long p_n = 0, p_rows = 0;
@@ -1050,6 +1257,9 @@ public:
             if (want_ms) {
                 bspec_->ingest_taps_batched(*dspark_, dec_slots.data(), dec_pos.data(), nullptr, B, 1);
                 for (int k = 0; k < B; ++k) bspec_->record_slot_tokens(dec_slots[k], dec_pos[k], &dec_toks[k], 1);
+            }
+            if (batch.capture_taps && dspark_ && dspark_->multislot_ready) {
+                dspark_->ingest_taps_slots(runner_->d_taps, dec_slots.data(), dec_pos.data(), B);
             }
             if (taps_out) copy_host_taps(dec_orig);
             std::vector<int> loc_idx, dst_rows;
@@ -1112,7 +1322,8 @@ public:
         std::string& /*err*/) override {
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
         const bool dspark_opt = strata::ink::rtx5090::dspark_opt_on() && (runner_->d_tree_anc32 != nullptr);
-        const int want_cap = (dspark_opt && anchor_pos + 24 < eff_max_ctx_ && anchor_pos + 24 < dspark_->max_ctx)
+        const bool deep_tree = (runner_->d_tree_anc32 != nullptr);   // deep verify tree allocated (5090 builder or the 5060 Ti PLD graft)
+        const int want_cap = (deep_tree && anchor_pos + 24 < eff_max_ctx_ && anchor_pos + 24 < dspark_->max_ctx)
                                  ? std::min(24, runner_->tree_cap)
                                  : std::min(12, runner_->tree_cap);
         if (anchor_pos <= 0 || anchor_pos + 12 >= eff_max_ctx_ || anchor_pos + 12 >= dspark_->max_ctx || max_emit < 1 || !out_emitted) return 0;
@@ -1128,9 +1339,22 @@ public:
         strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
             runner_->d_sconv_pool_arr, d_sconv_snap_, 0, runner_->max_slots, true);
 
-        // 2. Root-PLD-First (zero-cost exact >=3-gram suffix spine) + W=3..4 Multi-Branch Bayes-Optimal Beam Tree!
+        // 2. Build the verify tree. The card table picks the builder: the 5090-family one (Root-PLD-First spine, leaf graft, 2-block chain)
+        //    when dspark_opt, otherwise the generic / 5060 Ti one. With every switch off the second branch is exactly the shipped code path.
+        const bool sp_log = spec_cfg_.log;
+        auto sp_now = [] { return std::chrono::steady_clock::now(); };
+        auto sp_ms  = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        auto st_t0 = sp_now();
         strata::ink::InkTreeSpec tr{};
-        const int max_nodes = want_cap;
+        const auto& opt5060_sp = strata::ink::ink_rtx5060ti_cfg(gpu_id_);
+        int max_nodes = 0;
+        int real_M = 0;
+        auto st_t1 = st_t0;
+        if (dspark_opt) {
+        // 2. Root-PLD-First (zero-cost exact >=3-gram suffix spine) + W=3..4 Multi-Branch Bayes-Optimal Beam Tree!
+        max_nodes = want_cap;
         const int base_max = dspark_opt ? std::min(12, max_nodes) : max_nodes;
         static const bool pld_on = [] {
             const char* e = std::getenv("STRATA_INK_SM120_PLD");
@@ -1213,7 +1437,7 @@ public:
             dspark_->draft_beam_tree(anchor_tok, anchor_pos, spec_cfg_.beam, base_max, tr, spec_cfg_.cost, spec_cfg_.plain);
         }
 
-        int real_M = tr.M;
+        real_M = tr.M;
         if (dspark_opt && !root_pld_used && tr.M < max_nodes) {
             bool tree_mod = false;
             const int leaf_id = dspark_->last_deepest_node;
@@ -1320,14 +1544,82 @@ public:
                 tr.build();
             }
         }
+            st_t1 = sp_now();
+        } else {
+        // 2. Root-PLD-First (n >= 3) -> skips DSpark draft (0.005 ms!) on long exact suffix matches; else lean DSpark + leaf PLD graft!
+        const int eff_beam  = (opt5060_sp.core_graph && !std::getenv("STRATA_INK_SPEC_BEAM")) ? opt5060_sp.c1_beam : spec_cfg_.beam;
+        max_nodes = std::min(opt5060_sp.core_graph ? opt5060_sp.c1_max_nodes : 12, runner_->tree_cap);
+        const float eff_cost = (opt5060_sp.core_graph && !std::getenv("STRATA_INK_SPEC_COST")) ? opt5060_sp.c1_spec_cost : spec_cfg_.cost;
+        const float eff_plain = (opt5060_sp.core_graph && !std::getenv("STRATA_INK_SPEC_PLAIN")) ? opt5060_sp.c1_spec_plain : spec_cfg_.plain;
+        bool used_root_pld = false;
+        if (opt5060_sp.pld && !slot0_hist_.empty()) {
+            int32_t pld_cont[16];
+            const int max_d = std::min(14, std::max(0, eff_max_ctx_ - anchor_pos - 2));
+            const int nc = strata::ink::ink_pld_find_chain(slot0_hist_, anchor_tok, std::min(max_d, runner_->tree_cap - 1), pld_cont);
+            if (nc >= 3) {
+                tr.M = 1 + nc;
+                tr.tok[0] = anchor_tok;
+                tr.parent[0] = -1;
+                tr.depth[0] = 0;
+                for (int k = 0; k < nc; ++k) {
+                    tr.tok[1 + k] = pld_cont[k];
+                    tr.parent[1 + k] = (int8_t)k;
+                    tr.depth[1 + k] = (uint8_t)(k + 1);
+                }
+                tr.build();
+                used_root_pld = true;
+            }
+        }
+        if (!used_root_pld) {
+            dspark_->draft_beam_tree(anchor_tok, anchor_pos, eff_beam, max_nodes, tr, eff_cost, eff_plain);
+            if (opt5060_sp.pld && !slot0_hist_.empty()) {
+                const int max_d = std::min(strata::ink::kInkDeepTreeDepth - 1, std::max(1, eff_max_ctx_ - anchor_pos - 2));
+                const int pld_cap = std::min(opt5060_sp.c1_pld_max_m, runner_->tree_cap);
+                strata::ink::ink_pld_graft_tree(slot0_hist_, anchor_tok, tr, pld_cap, max_d);
+            }
+        }
+        st_t1 = sp_now();
+        real_M = tr.M;
+
+        // Fast M == 1 plain CUDA-Graph path when confidence gate chose M=1 (zero tree staging/commit overhead!)
+        if (opt5060_sp.compact_vram && tr.M == 1) {
+            runner_->forward_seq(&anchor_tok, anchor_pos, 1, 0, true);
+            auto st_t2 = sp_now();
+            int32_t tok_next = 0;
+            runner_->head_argmax_exact(1, &tok_next);
+            auto st_t3 = sp_now();
+            out_emitted[0] = tok_next;
+            if (opt5060_sp.pld) {
+                if (slot0_hist_.size() > (size_t)anchor_pos + 1) slot0_hist_.resize((size_t)anchor_pos + 1);
+                slot0_hist_.push_back(tok_next);
+            }
+            dspark_->ingest_taps(anchor_pos, 1);
+            tree_snap_ready_ = false;
+            if (sp_log) {
+                static long m1_n = 0; static double m1_d = 0, m1_v = 0, m1_a = 0, m1_c = 0;
+                INK_CK(cudaStreamSynchronize(runner_->st));
+                auto st_t4 = sp_now();
+                ++m1_n; m1_d += sp_ms(st_t0, st_t1); m1_v += sp_ms(st_t1, st_t2); m1_a += sp_ms(st_t2, st_t3); m1_c += sp_ms(st_t3, st_t4);
+                if (m1_n <= 5 || m1_n % 50 == 0) {
+                    std::fprintf(stderr, "[SPEC-M1 n=%ld] draft=%.2fms fwd=%.2fms argmax=%.2fms ing=%.2fms\n",
+                                 m1_n, m1_d / m1_n, m1_v / m1_n, m1_a / m1_n, m1_c / m1_n);
+                }
+            }
+            if (out_drafted) *out_drafted = 0;
+            return 1;
+        }
+        }
 
         // 3. Single CUDA-Graph 48-visit tree verify + exact GPU screened argmax (ZERO 6.4 MB logits D2H!)
         runner_->forward_tree_verify(tr, anchor_pos, 0, true);
+        if (sp_log) INK_CK(cudaStreamSynchronize(runner_->st));
+        auto st_t2 = sp_now();
         int32_t target_next[strata::ink::kInkMaxTree] = {};
         runner_->head_argmax_exact(tr.M, target_next);
+        auto st_t3 = sp_now();
 
-        // 4. Exact greedy tree walk (clamped to min(max_emit, 24 when dspark_opt else 8); never walks dummy padding nodes >= real_M!)
-        const int emit_cap = std::min(max_emit, dspark_opt ? std::min(24, max_nodes) : 8);
+        // 4. Exact greedy tree walk (clamped to min(max_emit, 24 on an sm_120 card with the drafting switches on, else 8); never walks dummy padding nodes >= real_M!)
+        const int emit_cap = std::min(max_emit, dspark_opt ? std::min(24, max_nodes) : (deep_tree ? 24 : 8));
         int32_t path[strata::ink::kInkMaxTree] = {};
         int n_emit = 0;
         int cur_node = 0;
@@ -1350,6 +1642,10 @@ public:
             if (pld_hist_.size() < end_len) pld_hist_.resize(end_len, -1);
             for (int i = 0; i < n_emit - 1; ++i) pld_hist_[(size_t)(anchor_pos + 1 + i)] = out_emitted[i];
         }
+        if (opt5060_sp.pld) {
+            if (slot0_hist_.size() > (size_t)anchor_pos + 1) slot0_hist_.resize((size_t)anchor_pos + 1);
+            for (int i = 0; i < n_emit; ++i) slot0_hist_.push_back(out_emitted[i]);
+        }
 
         // 5. Commit ONLY the accepted tree path across all 48 visits (2 launches) + compact & ingest DSpark taps!
         INK_CK(cudaMemcpyAsync(runner_->d_acc_path, path, (size_t)n_emit * 4, cudaMemcpyHostToDevice, runner_->st));
@@ -1366,9 +1662,17 @@ public:
         dspark_->ingest_taps_from(runner_->d_taps_compact, anchor_pos, n_emit);
 
         if (spec_cfg_.log) {
+            INK_CK(cudaStreamSynchronize(runner_->st));
+            auto st_t4 = sp_now();
             static long st_steps = 0, st_emit = 0, st_nodes = 0; static double st_pred = 0.0; static long st_plain = 0;
+            static double st_d = 0, st_v = 0, st_a = 0, st_c = 0;
             ++st_steps; st_emit += n_emit; st_nodes += tr.M; st_pred += dspark_->last_pred_etok; if (tr.M == 1) ++st_plain;
-            if (st_steps % 200 == 0) std::fprintf(stderr, "[SPEC-STATS] steps=%ld mean_M=%.2f mean_pred_tokens=%.2f mean_actual_tokens=%.2f plain_steps=%ld\n", st_steps, (double)st_nodes / st_steps, st_pred / st_steps, (double)st_emit / st_steps, st_plain);
+            st_d += sp_ms(st_t0, st_t1); st_v += sp_ms(st_t1, st_t2); st_a += sp_ms(st_t2, st_t3); st_c += sp_ms(st_t3, st_t4);
+            if (st_steps <= 5 || st_steps % 50 == 0) {
+                std::fprintf(stderr, "[SPEC-STATS steps=%ld] M=%.2f emit=%.2f plain=%ld | draft=%.2fms verify=%.2fms argmax=%.2fms commit=%.2fms\n",
+                             st_steps, (double)st_nodes / st_steps, (double)st_emit / st_steps, st_plain,
+                             st_d / st_steps, st_v / st_steps, st_a / st_steps, st_c / st_steps);
+            }
         }
         tree_snap_ready_ = true;
         tree_snap_p0_ = anchor_pos;
@@ -1391,6 +1695,19 @@ public:
         return n_emit;
     }
 
+    // ---- The one multi-user (C2..C64) drafting hook (ink_backend.h). The card table picks the implementation:
+    //      the 5090-family Mode-3 batched spec (bspec_) or the 5060 Ti-family K8V4 multi-slot DSpark chain verify. ----
+    bool c64_k8v4_ready() const noexcept {
+        return initialized_ && !model_.ls_active && runner_ && dspark_ && dspark_->multislot_ready &&
+               !c64_gov_disabled_ && strata::ink::ink_rtx5060ti_cfg(gpu_id_).c64_spec;
+    }
+    bool bspec_ready() const noexcept {
+        return initialized_ && !model_.ls_active && dspark_ && dspark_->ready && bspec_ && bspec_->ready;
+    }
+    bool supports_batched_dspark() const noexcept override { return bspec_ready() || c64_k8v4_ready(); }
+    bool prefers_candidate_rows() const noexcept override { return initialized_ && strata::ink::sm120_cfg(gpu_id_).fast; }
+    bool batched_dspark_prefill_first() const noexcept override { return c64_k8v4_ready(); }
+
     int dspark_spec_step_batched_greedy(
         int B,
         const int* slots,
@@ -1401,7 +1718,37 @@ public:
         int32_t* out_emitted,
         int* out_n_emit,
         int* out_drafted,
-        std::string& /*err*/) override {
+        std::string& err) override {
+        if (bspec_ready()) {
+            return spec_step_batched_bspec(B, slots, anchor_toks, anchor_pos, max_emits, max_stride, out_emitted, out_n_emit, out_drafted, err);
+        }
+        if (c64_k8v4_ready()) {
+            // the K8V4 chain verify writes 8 tokens per slot
+            if (max_stride < 8) return 0;
+            return spec_step_batched_c64(B, slots, anchor_toks, anchor_pos, max_emits, out_emitted, out_n_emit, out_drafted, err);
+        }
+        return 0;
+    }
+
+
+
+    int max_macro_prefill_tokens() const noexcept override {
+        if (!initialized_ || !runner_) return 0;
+        if (runner_->can_allvram_macro_prefill() || runner_->can_layer_major_prefill()) return 8704;
+        return 0;
+    }
+
+    int spec_step_batched_bspec(
+        int B,
+        const int* slots,
+        const int32_t* anchor_toks,
+        const int* anchor_pos,
+        const int* max_emits,
+        int max_stride,
+        int32_t* out_emitted,
+        int* out_n_emit,
+        int* out_drafted,
+        std::string& /*err*/) {
         if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || !bspec_ || !bspec_->ready) return 0;
         if (B < 2 || B > bspec_->max_slots || max_stride < 4 || !slots || !anchor_toks || !anchor_pos || !max_emits || !out_emitted || !out_n_emit) return 0;
         if (bspec_->gov_plain_steps > 0) { --bspec_->gov_plain_steps; return 0; }
@@ -1519,6 +1866,151 @@ public:
         return total_emit;
     }
 
+    int spec_step_batched_c64(
+        int B,
+        const int32_t* slots,
+        const int32_t* anchor_toks,
+        const int32_t* anchor_pos,
+        const int32_t* max_emit,
+        int32_t* out_emitted,
+        int32_t* out_n_emit,
+        int32_t* out_drafted,
+        std::string& err) {
+        if (B <= 0 || B > max_slots_) return 0;
+        const auto& opt5060 = strata::ink::ink_rtx5060ti_cfg(gpu_id_);
+        const int base_kd = std::max(1, std::min(7, opt5060.c64_draft_k));
+        const int max_kd_fit = std::max(1, std::min(7, (runner_->max_batch / B) - 1));
+        const int tail_mode = []() { const char* e = strata::ink::sm120_cfg_detail::env2("STRATA_INK_SM120_C64_TAIL_MODE", "STRATA_INK_5060TI_C64_TAIL_MODE"); return (e && *e) ? std::atoi(e) : 1; }();
+        int n_multi = 0;
+        for (int b = 0; b < B; ++b) if (max_emit[b] >= 2) ++n_multi;
+        int want_kd = base_kd;
+        if (tail_mode == 1) {
+            if (B <= 16 || n_multi * 2 < B) return 0;
+            if (B <= 32) want_kd = 1;
+        } else if (tail_mode == 3) {
+            if (B <= 16) return 0;
+            else if (B <= 32) want_kd = 1;
+            else if (B <= 48) want_kd = std::min(base_kd, 2);
+        } else if (tail_mode == 4) {
+            if (B <= 24) return 0;
+            else if (B <= 44) want_kd = 1;
+        } else if (tail_mode == 2) {
+            want_kd = (B <= 30) ? std::max(base_kd, 5)
+                    : ((B <= 38) ? std::max(base_kd, 4)
+                    : ((B <= 48) ? std::max(base_kd, 3) : base_kd));
+        }
+        const int K_d = std::min(want_kd, max_kd_fit);
+        const int K   = 1 + K_d;
+        if (B * K > runner_->max_batch) return 0;
+        int max_need = 0;
+        for (int b = 0; b < B; ++b) {
+            if (anchor_pos[b] <= 0 || anchor_pos[b] + K + 1 >= eff_max_ctx_) return 0;
+            max_need = std::max(max_need, anchor_pos[b] + K + 1);
+        }
+        if (!runner_->ensure_global_kv_cap(max_need)) {
+            kv_grow_failed_ = true;
+            err = "global KV cap reached during batched speculative step";
+            return 0;
+        }
+        if (!runner_->ensure_mc_buffers(std::max(B * K, max_slots_ * (base_kd + 1)))) return 0;
+
+        const bool pf = runner_->prof_enabled;
+        auto now_tp = [] { return std::chrono::steady_clock::now(); };
+        auto dt_ms  = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        auto t0 = now_tp();
+        // 1. Batched Multi-Slot DSpark Block-8 Draft across all B concurrent slots (only K_d draft rows/steps!)
+        std::vector<int32_t> drafts((size_t)B * 7);
+        dspark_->draft_block8_batched(B, slots, anchor_toks, anchor_pos, drafts.data(), K_d);
+        if (opt5060.pld) {
+            int32_t pld_cont[8];
+            for (int b = 0; b < B; ++b) {
+                const int sl = slots[b];
+                if (sl >= 0 && sl < (int)slot_hists_.size() && !slot_hists_[sl].empty()) {
+                    const int nc = strata::ink::ink_pld_find_chain(slot_hists_[sl], anchor_toks[b], K_d, pld_cont);
+                    for (int k = 0; k < nc; ++k) drafts[(size_t)b * 7 + k] = pld_cont[k];
+                }
+            }
+        }
+        auto t1 = now_tp();
+
+        // 2. Pack [B * K] verify token chain & run ONE Mode-3 48-visit forward pass!
+        const int M = B * K;
+        std::vector<int32_t> v_toks(M);
+        for (int b = 0; b < B; ++b) {
+            v_toks[b * K + 0] = anchor_toks[b];
+            for (int k = 0; k < K_d; ++k) v_toks[b * K + 1 + k] = drafts[(size_t)b * 7 + k];
+        }
+        runner_->forward_multichain_verify(v_toks.data(), slots, anchor_pos, B, K, true);
+        if (pf) INK_CK(cudaStreamSynchronize(runner_->st));
+        auto t2 = now_tp();
+
+        // 3. Exact GPU screened argmax over all M = B * K rows (ZERO 400 MiB logits D2H!)
+        std::vector<int32_t> target_next(M);
+        runner_->head_argmax_exact_batch(M, target_next.data());
+        auto t3 = now_tp();
+
+        // 4. Exact greedy per-slot walk (100% mathematically lossless!)
+        std::vector<int32_t> n_acc(B, 1);
+        std::vector<int32_t> tap_rows, tap_slots, tap_pos;
+        tap_rows.reserve(M);
+        tap_slots.reserve(M);
+        tap_pos.reserve(M);
+        int tot_emit = 0;
+        for (int b = 0; b < B; ++b) {
+            const int cap = std::max(1, std::min(K, max_emit[b]));
+            int ne = 0;
+            for (int k = 0; k < cap; ++k) {
+                const int32_t tn = target_next[b * K + k];
+                out_emitted[(size_t)b * 8 + ne] = tn;
+                tap_rows.push_back(b * K + k);
+                tap_slots.push_back(slots[b]);
+                tap_pos.push_back(anchor_pos[b] + k);
+                ++ne;
+                if (k < K_d && tn == drafts[(size_t)b * 7 + k]) continue;
+                break;
+            }
+            n_acc[b] = ne;
+            out_n_emit[b] = ne;
+            tot_emit += ne;
+            if (opt5060.pld && slots[b] >= 0 && slots[b] < (int)slot_hists_.size()) {
+                auto& sh = slot_hists_[slots[b]];
+                const size_t want_len = (size_t)anchor_pos[b] + 1;
+                if (sh.size() > want_len) sh.resize(want_len);
+                if (sh.size() < want_len) sh.resize(want_len, anchor_toks[b]);
+                for (int k = 0; k < ne; ++k) sh.push_back(out_emitted[(size_t)b * 8 + k]);
+            }
+            if (out_drafted) out_drafted[b] = K_d;
+        }
+
+        // 5. Commit exact ShortConv 3-lag state per slot across all 48 visits + ingest accepted taps into multi-slot DSpark!
+        runner_->commit_multichain_sconv(n_acc.data(), B, K);
+        if (!tap_rows.empty()) {
+            dspark_->ingest_taps_selected(tap_rows.data(), tap_slots.data(), tap_pos.data(), (int)tap_rows.size());
+        }
+        // 2-step C64 Spec Governor: if random/unpredictable prompts emit < 1.35 tok/slot after 2 steps, cleanly defer to plain B=64!
+        if (++c64_gov_steps_ <= 2) {
+            c64_gov_emit_sum_ += (double)tot_emit / (double)B;
+            if (c64_gov_steps_ == 2 && (c64_gov_emit_sum_ * 0.5) < 1.35) {
+                c64_gov_disabled_ = true;
+                std::fprintf(stderr, "[Ink5060Ti] C64 Spec Governor: mean %.2f tok/slot < 1.35 -> switching to plain B=%d\n",
+                             c64_gov_emit_sum_ * 0.5, B);
+            }
+        }
+        if (pf) {
+            INK_CK(cudaStreamSynchronize(runner_->st));
+            auto t4 = now_tp();
+            static int mc_n = 0;
+            if (++mc_n <= 8 || (mc_n % 10 == 0)) {
+                std::fprintf(stderr, "[C64-SPEC step=%d B=%d K=%d M=%d] draft=%.1fms verify=%.1fms argmax=%.1fms commit+ing=%.1fms tot=%.1fms emit=%d (%.2f/slot, %.1f tok/s)\n",
+                             mc_n, B, K, M, dt_ms(t0, t1), dt_ms(t1, t2), dt_ms(t2, t3), dt_ms(t3, t4), dt_ms(t0, t4),
+                             tot_emit, (double)tot_emit / B, (double)tot_emit * 1000.0 / std::max(0.1, dt_ms(t0, t4)));
+            }
+        }
+        return std::max(1, tot_emit);
+    }
+
     bool selfcheck(std::string& err) override {
         cudaDeviceProp prop{};
         cudaError_t ce = cudaGetDeviceProperties(&prop, gpu_id_);
@@ -1613,7 +2105,13 @@ private:
     int tree_snap_p0_ = 0;
     int tree_snap_M_ = 0;
     int32_t tree_snap_path_[strata::ink::kInkMaxTree] = {};
-    std::vector<int32_t> pld_hist_;  // Slot-0 token history for zero-cost PLD suffix lookup (opt-in STRATA_INK_RTX5090=1)
+    bool track_pld90_ = false;       // sm_120 table: the 5090-family deep-tree drafting part is on for this card
+    std::vector<int32_t> pld_hist_;  // Slot-0 token history for zero-cost PLD suffix lookup (5090-family drafting switch)
+    std::vector<int32_t> slot0_hist_;
+    std::vector<std::vector<int32_t>> slot_hists_;
+    int    c64_gov_steps_    = 0;
+    double c64_gov_emit_sum_ = 0.0;
+    bool   c64_gov_disabled_ = false;
 };
 
 std::unique_ptr<InkBackend> make_cuda_backend() {

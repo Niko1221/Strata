@@ -3382,11 +3382,9 @@ inline void launch_ink_moe_rtx5090(
     // 2b. Bin + Dispatch SF4 & MX8 Experts (sm_120 NVFP4/MX8 TC for M>=2 — or M>=1 when M1_TC=1 — when !EXACT!)
     const bool use_sm120_tc = (sm120::available() && ((!force_exact_dec && M >= 24) || (!rtx5090::exact_mode_on() && M >= (m1_tc_on ? 1 : 2))));
     if (use_sm120_tc && !info.has_sk && !info.has_gguf && (info.has_sf4 || info.has_mx8)) {
-        static const int pf_tr_env = [] {
-            const char* e = std::getenv("STRATA_INK_SM120_PF_TR");
-            return (e && *e) ? std::atoi(e) : 128;
-        }();
-        const int tile_rows = (M >= 1024) ? ((pf_tr_env == 64) ? 64 : 128) : ((M <= 192) ? 16 : ((M <= 512) ? 32 : 64));
+        // tile size and kernel variants per batch range come from the card's table row (strata/core/ink_sm120_table.hpp)
+        const Sm120MoeSel moe_sel = sm120_moe_sel(sm120_cfg_current(), M);
+        const int tile_rows = moe_sel.tile_rows;
         const bool do_atomic = (use_atomic_out && tile_rows == 128 && y_out != nullptr);
         if (M >= 256 && d_scratch_f32 != nullptr) {
             const int P = M * kInkTopK;
@@ -3401,19 +3399,19 @@ inline void launch_ink_moe_rtx5090(
         const int mt = ink_moe_max_tiles(M, tile_rows);
         if (do_atomic) INK_CK(cudaMemsetAsync(y_out, 0, (size_t)M * kInkHidden * sizeof(float), st));
         if (info.has_sf4) {
-            sm120::quantize_act_fp4_row(x_f32, M, kInkHidden, ws.xa_fp4, st);
-            sm120::moe_sf4_gu_tc_v2(sec4_base, experts, ws.tb, ws.xa_fp4, ws.ha_fp4, mt, tile_rows, st);
+            sm120::quantize_act_fp4(x_f32, M, kInkHidden, ws.xa_fp4, st, moe_sel.row_quant);
+            sm120::moe_sf4_gu_tc(sec4_base, experts, ws.tb, ws.xa_fp4, ws.ha_fp4, mt, tile_rows, st, &moe_sel);
             ink_moe_mark(2);
             if (do_atomic) sm120::moe_sf4_dn_tc_atomic(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, y_out, mt, st);
-            else           sm120::moe_sf4_dn_tc_v2(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, ws.y_pair, mt, tile_rows, st);
+            else           sm120::moe_sf4_dn_tc(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, ws.y_pair, mt, tile_rows, st, false, &moe_sel);
             ink_moe_mark(3);
         }
         if (info.has_mx8) {
             sm120::quantize_act_mx8(x_f32, M, kInkHidden, ws.xq_mx8, ws.xsc_mx8, st);
-            sm120::moe_mx8_gu_tc_v2(sec4_base, experts, ws.tb, ws.xq_mx8, ws.xsc_mx8, ws.hq_mx8, ws.hsc_mx8, mt, tile_rows, st);
+            sm120::moe_mx8_gu_tc(sec4_base, experts, ws.tb, ws.xq_mx8, ws.xsc_mx8, ws.hq_mx8, ws.hsc_mx8, mt, tile_rows, st, &moe_sel);
             ink_moe_mark(2);
             if (do_atomic) sm120::moe_mx8_dn_tc_atomic(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, y_out, mt, st);
-            else           sm120::moe_mx8_dn_tc_v2(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, ws.y_pair, mt, tile_rows, st);
+            else           sm120::moe_mx8_dn_tc(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, ws.y_pair, mt, tile_rows, st, &moe_sel);
             ink_moe_mark(3);
         }
         if (do_atomic) return;

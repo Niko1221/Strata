@@ -188,7 +188,8 @@ constexpr int kInkVocabUnpad  = 200058;
 constexpr int kInkDsparkLayers = 3;
 constexpr int kInkDsparkBlock  = 8;
 constexpr int kInkMaxTree      = 32;
-constexpr int kInkMaxTreeDepth = 8;  // root (depth 0) + up to 7 draft steps = 8 ancestors max!
+constexpr int kInkMaxTreeDepth = 8;  // root (depth 0) + up to 7 draft steps = 8 ancestors max! (the shipped table; deeper trees use the 32 x 32 table, kInkDeepTreeDepth)
+constexpr int kInkDeepTreeDepth = 24; // root + up to 23 draft/PLD steps in the deep verify tree (d_tree_anc32), RTX 50 fast mode only
 constexpr int kInkDsparkInter  = 9216;
 constexpr int kInkMarkovRank   = 256;
 constexpr int kInkSconvCh      = 2 * kInkKVDim + 2 * kInkHidden; // 1024 + 1024 + 2304 + 2304 = 6656

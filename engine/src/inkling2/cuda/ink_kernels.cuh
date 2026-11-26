@@ -1877,14 +1877,22 @@ struct UnembedScreenIndex {
     float*   sc = nullptr;    // [V] per-row scale = amax / 127.0
     float*   eps = nullptr;   // [V] exact L2 residual norm ||w_v - w_hat_v||_2
     int      V = 0;
+    int      V_pad = 0;       // padded rows (multiple of 4) for INT8 TC GEMM when borrowed from Q8_ROW unembed
     bool     ready = false;
+    bool     borrowed = false; // true when q8/sc point directly into compact d_trunk (do not cudaFree!)
 
     void free_all() {
-        if (q8)  { INK_CK(cudaFree(q8));  q8 = nullptr; }
-        if (sc)  { INK_CK(cudaFree(sc));  sc = nullptr; }
+        if (!borrowed) {
+            if (q8)  { INK_CK(cudaFree(q8));  }
+            if (sc)  { INK_CK(cudaFree(sc));  }
+        }
+        q8 = nullptr;
+        sc = nullptr;
         if (eps) { INK_CK(cudaFree(eps)); eps = nullptr; }
         V = 0;
+        V_pad = 0;
         ready = false;
+        borrowed = false;
     }
 };
 

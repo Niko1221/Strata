@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cublasLt.h>
+#include "ink_cublaslt_dyn.cuh"
 #include <cuda_fp8.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
@@ -1316,24 +1317,7 @@ struct Rtx5090Fp8Engine {
     }
 
     bool load_lt_symbols() {
-#ifndef _WIN32
-        void* h = RTLD_DEFAULT;
-        auto sym = [&](const char* name) -> void* {
-            void* p = dlsym(h, name);
-            if (!p) {
-                static void* lh = nullptr;
-                if (!lh) lh = dlopen("libcublasLt.so.12", RTLD_LAZY | RTLD_GLOBAL);
-                if (!lh) lh = dlopen("libcublasLt.so", RTLD_LAZY | RTLD_GLOBAL);
-                if (lh) p = dlsym(lh, name);
-            }
-            return p;
-        };
-#else
-        HMODULE hm = GetModuleHandleA("cublasLt64_12.dll");
-        if (!hm) hm = LoadLibraryA("cublasLt64_12.dll");
-        if (!hm) hm = LoadLibraryA("cublasLt64_13.dll");
-        auto sym = [&](const char* name) -> void* { return hm ? (void*)GetProcAddress(hm, name) : nullptr; };
-#endif
+        auto sym = [&](const char* name) -> void* { return ink_cublaslt_symbol(name); };
         p_create     = (fn_create_t)sym("cublasLtCreate");
         p_destroy    = (fn_destroy_t)sym("cublasLtDestroy");
         p_md_create  = (fn_md_create_t)sym("cublasLtMatmulDescCreate");

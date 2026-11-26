@@ -89,6 +89,7 @@ target_link_libraries(strata_inkling_cuda PUBLIC
   strata_quant
   CUDA::cudart
   CUDA::cublas
+  ${CMAKE_DL_LIBS}   # dlopen / dlsym in the FP8 engines (glibc < 2.34 keeps them in libdl)
 )
 
 target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_CUDA=1)

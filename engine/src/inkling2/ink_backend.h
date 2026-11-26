@@ -130,6 +130,8 @@ public:
     // forward_batch would have copied.  A backend that cannot do it returns false from supports_candidates() (the default).
     static constexpr int kInkCandidates = 128;
     virtual bool supports_candidates() const noexcept { return false; }
+    // true when the card table asks for candidate rows in the --bench decode loop (RTX 50 fast mode); false everywhere else, so --bench is the shipped loop.
+    virtual bool prefers_candidate_rows() const noexcept { return false; }
     virtual bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) {
         (void)batch; (void)out;
         err = "this backend does not return candidate rows";
@@ -164,7 +166,17 @@ public:
         return 0;
     }
 
-    // Optional opt-in batched multi-slot greedy speculative step (B >= 2 concurrent slots verified in one pass).
+    // ---- One multi-user (C2..C64) drafting hook for every RTX 50 card (sm_120 family) ----
+    // The card table (cuda/ink_sm120_cfg.cuh) decides whether a backend offers it and how; every default here is "not offered",
+    // so the serve loop runs its original path on any other backend and on every card with the switches off.
+    // supports_batched_dspark(): true only when dspark_spec_step_batched_greedy() may be called.
+    virtual bool supports_batched_dspark() const noexcept { return false; }
+    // batched_dspark_prefill_first(): true when all queued prompts should be read before batched decode starts (small-VRAM cards).
+    virtual bool batched_dspark_prefill_first() const noexcept { return false; }
+    // max_macro_prefill_tokens(): the largest single-slot prefill step the backend wants for C1 (0 = the generic chunk size).
+    virtual int max_macro_prefill_tokens() const noexcept { return 0; }
+    // Batched multi-slot greedy speculative step (B >= 2 concurrent slots verified in one pass).
+    // out_emitted is [B * max_stride], out_n_emit / out_drafted [B]; max_stride is 8.
     // Returns total emitted tokens across all B slots (> 0) on success, 0 to fall back to plain forward_batch, or -1 on error.
     virtual int dspark_spec_step_batched_greedy(
         int B,

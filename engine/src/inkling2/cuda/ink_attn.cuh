@@ -317,7 +317,8 @@ __global__ void __launch_bounds__(256) k_ink_rel_table(
     const float* __restrict__ r,          // [M, 24, 16]
     const float* __restrict__ rel_proj,   // [16, 1024] F32 (note: col 1024 is implicitly 0.0f!)
     float* __restrict__ table,            // [M, 24, 1025] F32
-    int M) {
+    int M,
+    int max_dist = kInkRelExtent) {
     const int m = blockIdx.y;
     const int h = blockIdx.x;  // 0..23
     if (m >= M || h >= kInkHeads) return;
@@ -326,7 +327,8 @@ __global__ void __launch_bounds__(256) k_ink_rel_table(
     __syncthreads();
 
     float* dst = table + ((size_t)m * kInkHeads + h) * (kInkRelExtent + 1);
-    for (int d = threadIdx.x; d < kInkRelExtent; d += 256) {
+    const int d_lim = min(max_dist, kInkRelExtent);
+    for (int d = threadIdx.x; d < d_lim; d += 256) {
         float acc = 0.0f;
 #pragma unroll
         for (int c = 0; c < kInkDRel; ++c) {

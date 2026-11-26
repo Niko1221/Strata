@@ -224,84 +224,109 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
             next_tok[0] = best;
             ++total_gen;
         }
-    } else {
-        const bool rtx5090_on = [] {
-            const char* e = std::getenv("STRATA_INK_RTX5090");
-            return e && e[0] != '\0' && e[0] != '0';
-        }();
-        const bool rtx5090_cand = rtx5090_on && backend->supports_candidates();
-        CandRows cand;
-        std::vector<int> cur_pos(P, prompt_len);
-        std::vector<int> slot_gen(P, 0);
-        std::vector<int> act_slots; act_slots.reserve(P);
-        std::vector<int32_t> act_anc; act_anc.reserve(P);
-        std::vector<int> act_pos, act_rem, act_n_emit;
-        act_pos.reserve(P); act_rem.reserve(P); act_n_emit.resize(P, 0);
-        std::vector<int32_t> act_emitted(static_cast<size_t>(P) * 8, 0);
-
+    } else if (use_dspark && P >= 2 && backend->supports_batched_dspark()) {
+        // One multi-user drafting hook for every RTX 50 card (ink_backend.h): C2..C64 batched speculative decode, then the tail one token at a time.
+        std::vector<int32_t> slot_pos(P, prompt_len), slot_gen(P, 0);
         while (true) {
-            act_slots.clear(); act_anc.clear(); act_pos.clear(); act_rem.clear();
+            std::vector<int32_t> b_slots, b_toks, b_pos, b_maxe;
             for (int s = 0; s < P; ++s) {
-                const int rem = std::min(gen_len - slot_gen[s], eff_ctx - cur_pos[s]);
-                if (rem > 0) {
-                    act_slots.push_back(s);
-                    act_anc.push_back(next_tok[s]);
-                    act_pos.push_back(cur_pos[s]);
-                    act_rem.push_back(rem);
+                const int rem = std::min(gen_len - slot_gen[s], eff_ctx - slot_pos[s] - 12);
+                if (rem >= 2) {
+                    b_slots.push_back(s);
+                    b_toks.push_back(next_tok[s]);
+                    b_pos.push_back(slot_pos[s]);
+                    b_maxe.push_back(rem);
                 }
             }
-            if (act_slots.empty()) break;
-            const int B = static_cast<int>(act_slots.size());
-            if (rtx5090_on && use_dspark && B >= 2) {
-                const int tot = backend->dspark_spec_step_batched_greedy(
-                    B, act_slots.data(), act_anc.data(), act_pos.data(), act_rem.data(),
-                    8, act_emitted.data(), act_n_emit.data(), nullptr, err);
+            if (b_slots.empty()) break;
+            const int B = static_cast<int>(b_slots.size());
+            std::vector<int32_t> emitted((size_t)B * 8, 0), n_emit(B, 0), drafted(B, 0);
+            int tot = 0;
+            if (B >= 2) {
+                tot = backend->dspark_spec_step_batched_greedy(
+                    B, b_slots.data(), b_toks.data(), b_pos.data(), b_maxe.data(),
+                    8, emitted.data(), n_emit.data(), drafted.data(), err);
                 if (tot < 0) { fprintf(stderr, "bench batched spec err: %s\n", err.c_str()); return 1; }
-                if (tot > 0) {
-                    for (int b = 0; b < B; ++b) {
-                        const int s = act_slots[b];
-                        const int ne = act_n_emit[b];
-                        next_tok[s] = act_emitted[static_cast<size_t>(b) * 8 + (ne - 1)];
-                        cur_pos[s] += ne;
-                        slot_gen[s] += ne;
-                        total_gen += ne;
-                    }
-                    continue;
+            }
+            if (tot > 0) {
+                for (int bi = 0; bi < B; ++bi) {
+                    const int s = b_slots[bi];
+                    const int ne = n_emit[bi];
+                    next_tok[s] = emitted[(size_t)bi * 8 + ne - 1];
+                    slot_pos[s] += ne;
+                    slot_gen[s] += ne;
+                    total_gen += ne;
                 }
+                continue;
             }
             batch.clear();
             batch.capture_taps = use_dspark;
-            for (int b = 0; b < B; ++b) {
-                const int s = act_slots[b];
-                batch.push(s, cur_pos[s], next_tok[s], true);
+            for (int bi = 0; bi < B; ++bi) batch.push(b_slots[bi], slot_pos[b_slots[bi]], next_tok[b_slots[bi]], true);
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "bench decode err: %s\n", err.c_str()); return 1; }
+            for (int bi = 0; bi < B; ++bi) {
+                const int s = b_slots[bi];
+                const float* lg = logits.data() + static_cast<size_t>(bi) * V;
+                int32_t best = 0;
+                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                next_tok[s] = best;
+                ++slot_pos[s];
+                ++slot_gen[s];
+                ++total_gen;
             }
-            if (rtx5090_cand) {
+        }
+        for (;;) {
+            batch.clear();
+            batch.capture_taps = false;
+            std::vector<int> tail_s;
+            for (int s = 0; s < P; ++s) {
+                if (slot_gen[s] < gen_len && slot_pos[s] < eff_ctx) {
+                    batch.push(s, slot_pos[s], next_tok[s], true);
+                    tail_s.push_back(s);
+                }
+            }
+            if (tail_s.empty()) break;
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "bench decode err: %s\n", err.c_str()); return 1; }
+            for (size_t bi = 0; bi < tail_s.size(); ++bi) {
+                const int s = tail_s[bi];
+                const float* lg = logits.data() + bi * V;
+                int32_t best = 0;
+                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                next_tok[s] = best;
+                ++slot_pos[s];
+                ++slot_gen[s];
+                ++total_gen;
+            }
+        }
+    } else {
+        // The shipped decode loop. On a card whose table row asks for it (fast mode), the 128 best candidates per row come back instead of the full
+        // vocab-wide logits (what --serve does; 64 rows are 51 MB a step otherwise). The backend decides, there is no environment read here.
+        const bool bench_cand = backend->prefers_candidate_rows() && backend->supports_candidates();
+        CandRows cand;
+        for (int step = 0; step < gen_len; ++step) {
+            batch.clear();
+            batch.capture_taps = use_dspark;
+            for (int s = 0; s < P; ++s) batch.push(s, prompt_len + step, next_tok[s], true);
+            if (bench_cand) {
                 if (!backend->forward_batch_cand(batch, cand, err)) {
                     fprintf(stderr, "bench decode err: %s\n", err.c_str());
                     return 1;
                 }
-                for (int b = 0; b < B; ++b) {
-                    const int s = act_slots[b];
-                    next_tok[s] = cand.idx[static_cast<size_t>(b) * InkBackend::kInkCandidates];
-                    ++cur_pos[s];
-                    ++slot_gen[s];
+                for (int s = 0; s < P; ++s) {
+                    next_tok[s] = cand.idx[static_cast<size_t>(s) * InkBackend::kInkCandidates];
                     ++total_gen;
                 }
-            } else {
-                if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
-                    fprintf(stderr, "bench decode err: %s\n", err.c_str());
-                    return 1;
-                }
-                for (int b = 0; b < B; ++b) {
-                    const int s = act_slots[b];
-                    const float* lg = logits.data() + static_cast<size_t>(b) * V;
-                    int32_t best = 0;
-                    for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
-                    next_tok[s] = best;
-                    ++cur_pos[s];
-                    ++slot_gen[s];
-                    ++total_gen;
-                }
+                continue;
+            }
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
+                fprintf(stderr, "bench decode err: %s\n", err.c_str());
+                return 1;
+            }
+            for (int s = 0; s < P; ++s) {
+                const float* lg = logits.data() + static_cast<size_t>(s) * V;
+                int32_t best = 0;
+                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                next_tok[s] = best;
+                ++total_gen;
             }
         }
     }

@@ -5,7 +5,7 @@
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 //
 // STRICTLY OFF BY DEFAULT (AGENT-RULES-GPU.md):
-//   Activated ONLY when STRATA_INK_ELASTIC_1M=1 or STRATA_INK_RTX5060TI=1 (checked once per GPU device).
+//   Activated ONLY when STRATA_INK_ELASTIC_1M=1 (checked once per GPU device). It is not part of the RTX 50 fast mode.
 //   When OFF, the existing baseline path in ink_runner.cuh / ink_cuda_backend.cu executes 100% untouched.
 //
 // Architecture (for Inkling-2-Mini's 8 Global Visits: visits 5, 11, 17, 23, 29, 35, 41, 47):
@@ -29,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +52,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #endif
 
@@ -70,7 +72,8 @@ inline bool ink_elastic_1m_enabled(int dev = 0) noexcept {
     const int d = (dev >= 0 && dev < 16) ? dev : 0;
     int v = cache[d].load(std::memory_order_acquire);
     if (v != 0) return v > 0;
-    const bool on = ink_elastic_env_on("STRATA_INK_ELASTIC_1M") || ink_elastic_env_on("STRATA_INK_RTX5060TI");
+    // Its own switch, separate from the sm_120 fast mode (long context is a separate lane): off unless STRATA_INK_ELASTIC_1M=1.
+    const bool on = ink_elastic_env_on("STRATA_INK_ELASTIC_1M");
     cache[d].store(on ? 1 : -1, std::memory_order_release);
     return on;
 }
@@ -491,7 +494,16 @@ struct InkElasticKvSsd {
     bool read_ev_pending[2] = {false, false};
 
     // Per-(gv, page) written bitmap & per-slot max written global position
-    std::vector<uint8_t> page_written;  // [8 * num_ssd_pages]
+    std::vector<uint8_t> page_written;  // [8 * num_ssd_pages]; read by the I/O thread, written by the main thread: only through pw_get / pw_set
+    mutable std::mutex pw_mu;
+    bool pw_get(int gv, int page) const {
+        std::lock_guard<std::mutex> lk(pw_mu);
+        return page_written[(size_t)gv * (size_t)num_ssd_pages + (size_t)page] != 0;
+    }
+    void pw_set(int gv, int page) {
+        std::lock_guard<std::mutex> lk(pw_mu);
+        page_written[(size_t)gv * (size_t)num_ssd_pages + (size_t)page] = 1u;
+    }
     std::vector<int> slot_max_pos;      // [max_slots]
 
     // Telemetry counters (bytes read/written to NVMe SSD)
@@ -569,13 +581,14 @@ struct InkElasticKvSsd {
         for (int v = 0; v < kInkVisits; ++v) visit_to_gv[v] = global_visit_idx(v);
 
         // Tier 0 (VRAM): align to kPageTokens (2048) when spilling so Tier 2 pages never straddle tier boundaries!
+        const int c1_hot_cap = (vram_fit_ctx >= 10240) ? 10240 : 8192;
         if (kv_offload_mode == 1) {
             dev_cap = 0;
         } else if (vram_fit_ctx >= max_ctx) {
-            dev_cap = std::max(256, std::min(max_ctx, (max_slots == 1) ? 8192 : 4096));
+            dev_cap = std::max(256, std::min(max_ctx, (max_slots == 1) ? c1_hot_cap : 4096));
         } else {
-            // Keep compact hot VRAM window (4K..8K aligned to 2048) leaving plenty of GDDR7 headroom for TC prefill & DSpark!
-            const int cap_hot = (max_slots == 1) ? 8192 : 4096;
+            // Keep compact hot VRAM window (4K..10K aligned to 2048) leaving plenty of GDDR7 headroom for TC prefill & DSpark!
+            const int cap_hot = (max_slots == 1) ? c1_hot_cap : 4096;
             const int fit_al = ((vram_fit_ctx * 3 / 4) / kPageTokens) * kPageTokens;
             dev_cap = std::min(cap_hot, std::max(0, fit_al));
         }
@@ -738,14 +751,14 @@ struct InkElasticKvSsd {
 #endif
         }
 #endif
-        page_written[(size_t)gv * (size_t)num_ssd_pages + (size_t)page] = 1u;
+        pw_set(gv, page);
         ssd_bytes_written.fetch_add(page_bytes, std::memory_order_relaxed);
         ssd_pages_written.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     bool raw_read_page(int gv, int page, uint8_t* dst) noexcept {
-        if (!page_written[(size_t)gv * (size_t)num_ssd_pages + (size_t)page]) {
+        if (!pw_get(gv, page)) {
             std::memset(dst, 0, page_bytes);
             return true;
         }
@@ -800,7 +813,7 @@ struct InkElasticKvSsd {
 #else
             struct stat st_w{};
             if (::stat("/workspace", &st_w) == 0 && S_ISDIR(st_w.st_mode)) dir = "/workspace/kv_ssd";
-            else dir = "/tmp/strata_kv_ssd";
+            else dir = "/tmp/strata_kv_ssd-" + std::to_string((unsigned long long)::getuid());   // one directory per user, not a shared name
 #endif
         }
 #ifdef _WIN32
@@ -817,19 +830,39 @@ struct InkElasticKvSsd {
             ssd_direct = false;
         }
 #else
-        (void)::mkdir(dir.c_str(), 0755);
+        (void)::mkdir(dir.c_str(), 0700);
+        {
+            // the directory must be ours, a real directory (not a link someone planted), and closed to other users
+            struct stat sd{};
+            if (::lstat(dir.c_str(), &sd) != 0 || !S_ISDIR(sd.st_mode) || sd.st_uid != ::geteuid() || (sd.st_mode & 077) != 0) {
+                std::fprintf(stderr, "[InkElasticKV] Tier-2 SSD directory %s is not a private directory of this user (owner/mode/link check failed); Tier-2 off. "
+                                     "Set STRATA_INK_KV_SSD_DIR to a directory you own.\n", dir.c_str());
+                return false;
+            }
+            // room for the file (it is sparse, but a full disk must not be found out in the middle of an answer)
+            struct statvfs sv{};
+            if (::statvfs(dir.c_str(), &sv) == 0) {
+                const uint64_t avail = (uint64_t)sv.f_bavail * (uint64_t)sv.f_frsize;
+                const uint64_t need = (uint64_t)kNumGlobalVisits * (uint64_t)num_ssd_pages * (uint64_t)page_bytes;
+                if (avail < need) {
+                    std::fprintf(stderr, "[InkElasticKV] Tier-2 SSD directory %s has %.1f GiB free, the plan needs %.1f GiB; Tier-2 off.\n",
+                                 dir.c_str(), (double)avail / 1073741824.0, (double)need / 1073741824.0);
+                    return false;
+                }
+            }
+        }
         static std::atomic<uint64_t> uid_gen{1};
         ssd_path = dir + "/kv_tier2_" + std::to_string(::getpid()) + "_" + std::to_string(uid_gen.fetch_add(1)) + ".bin";
 #if defined(O_DIRECT)
-        fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_DIRECT, 0600);
+        fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_DIRECT, 0600);
         if (fd >= 0) {
             ssd_direct = true;
         } else {
-            fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+            fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
             ssd_direct = false;
         }
 #else
-        fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+        fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         ssd_direct = false;
 #endif
         if (fd < 0) return false;
@@ -852,7 +885,7 @@ struct InkElasticKvSsd {
             if (pw < 0 && errno == EINVAL) {
                 ::close(fd);
                 ssd_direct = false;
-                fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+                fd = ::open(ssd_path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);   // the path was unlinked a moment ago
                 if (fd < 0) { free_ssd_only(); return false; }
                 (void)::unlink(ssd_path.c_str());
             }
@@ -1078,11 +1111,19 @@ struct InkElasticKvSsd {
         return make_page_desc(write_buf[gv], ssd_base + pg * kPageTokens);
     }
 
+    /// A Tier-2 page that cannot be written or read back (full disk, I/O error) would leave zeros where K/V should be: the model would go on with
+    /// silently wrong attention. Stop the engine with a clear message instead (same exit path as a fatal GPU error).
+    [[noreturn]] void ssd_io_fatal(const char* what, int gv, int page) const {
+        char msg[256];
+        std::snprintf(msg, sizeof(msg), "strata-inkling elastic KV: Tier-2 SSD %s failed (visit %d, page %d, file %s)", what, gv, page, ssd_path.c_str());
+        strata::core::exit_device_error(msg, std::strerror(errno));
+    }
+
     void flush_write_buf(int gv, cudaStream_t st) {
         auto& wb = write_buf[gv];
         if (!wb.dirty || wb.cur_page < 0) return;
         INK_CK(cudaStreamSynchronize(st));
-        raw_write_page(gv, wb.cur_page, wb.h_base);
+        if (!raw_write_page(gv, wb.cur_page, wb.h_base)) ssd_io_fatal("write", gv, wb.cur_page);
         wb.dirty = false;
     }
 
@@ -1093,11 +1134,11 @@ struct InkElasticKvSsd {
         if (wb.cur_gv == gv && wb.cur_page == pg) return true;
         if (wb.dirty && wb.cur_page >= 0) {
             INK_CK(cudaStreamSynchronize(st));
-            if (!raw_write_page(gv, wb.cur_page, wb.h_base)) return false;
+            if (!raw_write_page(gv, wb.cur_page, wb.h_base)) ssd_io_fatal("write", gv, wb.cur_page);
             wb.dirty = false;
         }
-        if (page_written[(size_t)gv * (size_t)num_ssd_pages + (size_t)pg]) {
-            if (!raw_read_page(gv, pg, wb.h_base)) return false;
+        if (pw_get(gv, pg)) {
+            if (!raw_read_page(gv, pg, wb.h_base)) ssd_io_fatal("read", gv, pg);
         } else {
             std::memset(wb.h_base, 0, page_bytes);
         }

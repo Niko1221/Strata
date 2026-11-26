@@ -138,6 +138,118 @@ float dot_mx8_row(const uint8_t* w, const uint8_t* sc, const float* x, int cols,
     return avx2_hsum_ps(vsum);
 }
 
+namespace {
+
+// Pure AVX2 SIMD E4M3FN (8 bytes) -> FP32 (8 floats), bit-for-bit identical to e4m3_lut_h() for all 256 byte values.
+inline __m256 e4m3_to_f32_x8(const uint8_t* src) noexcept {
+    const __m256i b      = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src)));
+    const __m256i c_7f   = _mm256_set1_epi32(0x7F);
+    const __m256i c_80   = _mm256_set1_epi32(0x80);
+    const __m256i c_8    = _mm256_set1_epi32(8);
+    const __m256i c_bias = _mm256_set1_epi32(120 << 23);
+    const __m256  c_inv  = _mm256_set1_ps(1.0f / 512.0f);
+    const __m256i mag    = _mm256_and_si256(b, c_7f);
+    const __m256i sign   = _mm256_slli_epi32(_mm256_and_si256(b, c_80), 24);
+    const __m256i nan_m  = _mm256_cmpeq_epi32(mag, c_7f);
+    const __m256i sub_m  = _mm256_cmpgt_epi32(c_8, mag);
+    const __m256i norm_i = _mm256_andnot_si256(nan_m, _mm256_add_epi32(_mm256_slli_epi32(mag, 20), c_bias));
+    const __m256  sub_f  = _mm256_mul_ps(_mm256_cvtepi32_ps(mag), c_inv);
+    const __m256  abs_f  = _mm256_blendv_ps(_mm256_castsi256_ps(norm_i), sub_f, _mm256_castsi256_ps(sub_m));
+    return _mm256_or_ps(abs_f, _mm256_castsi256_ps(sign));
+}
+
+template <int NT>
+inline void dot_sf4_tile(const uint8_t* p, const uint8_t* sc, float w_outer,
+                         const float* const* xs, int cols,
+                         const float* e4_lut, float* out) noexcept {
+    const int nb = cols >> 4;
+    const __m128i lut2x  = _mm_setr_epi8(0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12);
+    const __m128i mask0f = _mm_set1_epi8(0x0F);
+    __m256 vsum[NT];
+    for (int i = 0; i < NT; ++i) vsum[i] = _mm256_setzero_ps();
+    for (int b = 0; b < nb; ++b) {
+        const __m128i raw = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p + b * 8));
+        const __m128i lo  = _mm_and_si128(raw, mask0f);
+        const __m128i hi  = _mm_and_si128(_mm_srli_epi16(raw, 4), mask0f);
+        const __m128i nib = _mm_unpacklo_epi8(lo, hi);
+        const __m128i w8  = _mm_shuffle_epi8(lut2x, nib);
+        const __m256 wf0  = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(w8));
+        const __m256 wf1  = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(w8, 8)));
+        const __m256 vsc  = _mm256_set1_ps(0.5f * e4_lut[sc[b]]);
+        const int off = b * 16;
+        for (int i = 0; i < NT; ++i) {
+            const float* xb = xs[i] + off;
+            const __m256 prod = _mm256_fmadd_ps(wf0, _mm256_loadu_ps(xb), _mm256_mul_ps(wf1, _mm256_loadu_ps(xb + 8)));
+            vsum[i] = _mm256_fmadd_ps(prod, vsc, vsum[i]);
+        }
+    }
+    for (int i = 0; i < NT; ++i) out[i] = avx2_hsum_ps(vsum[i]) * w_outer;
+}
+
+template <int NT>
+inline void dot_mx8_tile(const uint8_t* w, const uint8_t* sc,
+                         const float* const* xs, int cols,
+                         const float* u8_lut, float* out) noexcept {
+    const int nb = cols >> 5;
+    __m256 vsum[NT];
+    for (int i = 0; i < NT; ++i) vsum[i] = _mm256_setzero_ps();
+    for (int b = 0; b < nb; ++b) {
+        const uint8_t* wb = w + b * 32;
+        const int off = b * 32;
+        __m256 acc[NT];
+        for (int i = 0; i < NT; ++i) acc[i] = _mm256_setzero_ps();
+        for (int k = 0; k < 32; k += 8) {
+            const __m256 wf = e4m3_to_f32_x8(wb + k);
+            for (int i = 0; i < NT; ++i) {
+                acc[i] = _mm256_fmadd_ps(wf, _mm256_loadu_ps(xs[i] + off + k), acc[i]);
+            }
+        }
+        const __m256 vsc = _mm256_set1_ps(u8_lut[sc[b]]);
+        for (int i = 0; i < NT; ++i) {
+            vsum[i] = _mm256_fmadd_ps(acc[i], vsc, vsum[i]);
+        }
+    }
+    for (int i = 0; i < NT; ++i) out[i] = avx2_hsum_ps(vsum[i]);
+}
+
+}  // namespace
+
+void dot_sf4_row_multi(const uint8_t* p, const uint8_t* sc, float w_outer,
+                       const float* const* xs, int T, int cols,
+                       const float* e4_lut, float* out) noexcept {
+    int t = 0;
+    while (t + 8 <= T) {
+        dot_sf4_tile<8>(p, sc, w_outer, xs + t, cols, e4_lut, out + t);
+        t += 8;
+    }
+    switch (T - t) {
+        case 7: dot_sf4_tile<7>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 6: dot_sf4_tile<6>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 5: dot_sf4_tile<5>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 4: dot_sf4_tile<4>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 3: dot_sf4_tile<3>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 2: dot_sf4_tile<2>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        case 1: dot_sf4_tile<1>(p, sc, w_outer, xs + t, cols, e4_lut, out + t); break;
+        default: break;
+    }
+}
+
+void dot_mx8_row_multi(const uint8_t* w, const uint8_t* sc,
+                       const float* const* xs, int T, int cols,
+                       const float* u8_lut, float* out) noexcept {
+    int t = 0;
+    while (t + 4 <= T) {
+        dot_mx8_tile<4>(w, sc, xs + t, cols, u8_lut, out + t);
+        t += 4;
+    }
+    switch (T - t) {
+        case 3: dot_mx8_tile<3>(w, sc, xs + t, cols, u8_lut, out + t); break;
+        case 2: dot_mx8_tile<2>(w, sc, xs + t, cols, u8_lut, out + t); break;
+        case 1: dot_mx8_tile<1>(w, sc, xs + t, cols, u8_lut, out + t); break;
+        default: break;
+    }
+}
+
 float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_d, float x_s,
                    float eff, const int8_t (*s15_lut)[5]) noexcept {
     int32_t isum = 0;
@@ -399,6 +511,8 @@ bool dot_sk_row_multi(const uint8_t*, int, int, int, const uint8_t* const*, int,
 bool dot_sk_pair_multi(const uint8_t*, int, int, const uint8_t* const*, int, float*, float*) noexcept { return false; }
 float dot_sf4_row(const uint8_t*, const uint8_t*, float, const float*, int, const float*) noexcept { return 0.0f; }
 float dot_mx8_row(const uint8_t*, const uint8_t*, const float*, int, const float*, const float*) noexcept { return 0.0f; }
+void dot_sf4_row_multi(const uint8_t*, const uint8_t*, float, const float* const*, int, int, const float*, float*) noexcept {}
+void dot_mx8_row_multi(const uint8_t*, const uint8_t*, const float* const*, int, int, const float*, float*) noexcept {}
 float dot_sk_sub64(const uint8_t*, int, int, const int8_t*, float, float, float, const int8_t (*)[5]) noexcept { return 0.0f; }
 
 #endif

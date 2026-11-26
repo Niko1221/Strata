@@ -884,7 +884,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 int32_t emitted[32]{};
                 int drafted = 0;
                 std::string serr;
-                const int max_emit = rq.max_new - rq.generated;
+                const int max_emit = std::min(rq.max_new - rq.generated, std::max(1, eff_max_ctx - rq.cur_pos - 2));
                 const double gov_t0 = now_s();
                 const int n_emit = backend.dspark_spec_step_greedy(
                     rq.slot, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
@@ -1001,7 +1001,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
 
         // 2b. Opt-in Batched Multi-Slot Greedy Speculative Step (B >= 2 concurrent decoding slots in ONE pass!)
-        if (use_dspark && spec_tree && n_active >= 2) {
+        if (use_dspark && spec_tree && n_active >= 2 && backend.supports_batched_dspark()) {
             bool all_bspec_ok = true;
             std::vector<int> bs_slots; bs_slots.reserve(n_active);
             std::vector<int32_t> bs_anc; bs_anc.reserve(n_active);
@@ -1076,20 +1076,34 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         merged_img_embeds.clear();
         logit_slots.clear();
         int token_budget = std::max(chunk_sz, n_active);
+        if (n_active == 1) {
+            const int macro_cap = backend.max_macro_prefill_tokens();
+            if (macro_cap > token_budget) token_budget = macro_cap;
+        }
         std::vector<int> prefill_fed(P, 0);
         double t_step0 = now_s();
 
         // First schedule 1 decode token for every decoding slot (zero head-of-line blocking!)
-        for (int s = 0; s < P; ++s) {
-            auto& rq = reqs[s];
-            if (!rq.active || rq.prefill_pos < rq.prompt_len) continue;
-            if (rq.cur_pos >= eff_max_ctx) {
-                finish_req(rq, "length");
-                continue;
+        // Under opt-in multi-slot C64 batched mode (supports_batched_dspark), finish all queued prompt prefills
+        // in full per-slot chunks BEFORE starting batched decode so all 64 slots lock-step into B=64 decode!
+        bool c64_prefill_first = false;
+        if (backend.batched_dspark_prefill_first() && n_active >= 2) {
+            for (int s = 0; s < P; ++s) {
+                if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) { c64_prefill_first = true; break; }
             }
-            batch.push(s, rq.cur_pos, rq.next_tok, true);
-            logit_slots.push_back(s);
-            --token_budget;
+        }
+        if (!c64_prefill_first) {
+            for (int s = 0; s < P; ++s) {
+                auto& rq = reqs[s];
+                if (!rq.active || rq.prefill_pos < rq.prompt_len) continue;
+                if (rq.cur_pos >= eff_max_ctx) {
+                    finish_req(rq, "length");
+                    continue;
+                }
+                batch.push(s, rq.cur_pos, rq.next_tok, true);
+                logit_slots.push_back(s);
+                --token_budget;
+            }
         }
         // While some slot decodes, a prompt is read at most `prefill_cap` tokens per step: one step then costs the decode tokens plus
         // that chunk, so the decoding slots keep their cadence while a long prompt is read (a 2048-token chunk was ~0.5 s per decode token).
@@ -1100,12 +1114,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             std::vector<int> pf_slots;
             for (int s = 0; s < P; ++s) if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) pf_slots.push_back(s);
             if (!pf_slots.empty()) {
-                const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
-                for (int s : pf_slots) {
+                if (c64_prefill_first) {
+                    // Whole-slot sequential prefill (1 full forward_seq per slot instead of 64x M=5 -> 15x faster C64 prefill!)
+                    int s = pf_slots[0];
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
-                    int take = std::min(rem, per_slot);
-                    // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
+                    int take = std::min(rem, token_budget);
                     if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
                     }
@@ -1124,6 +1138,32 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         if (is_last) logit_slots.push_back(s);
                     }
                     prefill_fed[s] = take;
+                } else {
+                    const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
+                    for (int s : pf_slots) {
+                        auto& rq = reqs[s];
+                        const int rem = rq.prompt_len - rq.prefill_pos;
+                        int take = std::min(rem, per_slot);
+                        // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
+                        if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
+                            take = (rq.prompt_len - 1) - rq.prefill_pos;
+                        }
+                        if (rq.shared_pending && rq.prefill_pos < rq.pin) {
+                            take = std::min(take, rq.pin - rq.prefill_pos);
+                        }
+                        const int img_base = static_cast<int>(merged_img_embeds.size()) / c.hidden;
+                        if (!rq.img_embeds.empty()) {
+                            merged_img_embeds.insert(merged_img_embeds.end(), rq.img_embeds.begin(), rq.img_embeds.end());
+                        }
+                        for (int k = 0; k < take; ++k) {
+                            const int p_i = rq.prefill_pos + k;
+                            const bool is_last = (p_i == rq.prompt_len - 1);
+                            int img_idx = (rq.prompt_img_idx[p_i] >= 0) ? (img_base + rq.prompt_img_idx[p_i]) : -1;
+                            batch.push(s, p_i, rq.prompt_ids[p_i], is_last, img_idx);
+                            if (is_last) logit_slots.push_back(s);
+                        }
+                        prefill_fed[s] = take;
+                    }
                 }
             }
         }

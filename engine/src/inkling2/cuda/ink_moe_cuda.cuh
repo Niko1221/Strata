@@ -17,6 +17,7 @@
 #include "ink_cuda.cuh"
 #include "strata/core/ink_caps.hpp"
 #include "ink_moe_fp4_sm120.cuh"
+#include "ink_sm120_cfg.cuh"
 
 #if defined(__CUDACC__)
 #include <mma.h>
@@ -89,8 +90,10 @@ struct InkMoeWorkspace {
     void*    raw_buf  = nullptr;
     size_t   raw_bytes = 0;
     int      cap_M    = 0;
+    bool     sm120_tc_smallm = false;  // the table row asks for the sm_120 NVFP4 TC from M >= 4 (OFF by default; set from the card decision)
+    int      sm120_dev = -1;           // device ordinal whose table row supplies the MoE tile / variant choice
 
-    void alloc(int max_M) {
+    void alloc(int max_M, bool compact_sf4_only = false) {
         if (max_M <= cap_M && raw_buf) return;
         free_all();
         cap_M = max_M;
@@ -114,18 +117,18 @@ struct InkMoeWorkspace {
         const size_t o_rlog    = bump(M * kInkExperts * 4);
         const size_t o_tidx    = bump(P * 4);
         const size_t o_tw      = bump(P * 4);
-        const size_t o_hf32    = bump(P * kInkInter * 4);
+        const size_t o_hf32    = bump((compact_sf4_only ? (size_t)(16 * kInkTopK) : P) * kInkInter * 4);
         const size_t o_ypair   = bump(P * kInkHidden * 4);
         const size_t o_xafp4   = bump(M * (kInkHidden / 64) * sm120::kActFp4SlotBytes);
         const size_t o_hafp4   = bump(P * (kInkInter / 64) * sm120::kActFp4SlotBytes);
-        const size_t o_xqmx8   = bump(M * kInkHidden);
-        const size_t o_xscmx8  = bump(M * (kInkHidden / 32));
-        const size_t o_hqmx8   = bump(P * kInkInter);
-        const size_t o_hscmx8  = bump(P * (kInkInter / 32));
-        const size_t o_xqsk    = bump(M * (kInkHidden / 64) * sizeof(InkQ8_1_G64));
-        const size_t o_hqsk    = bump(P * (kInkInter / 64) * sizeof(InkQ8_1_G64));
-        const size_t o_xqg32   = bump(M * (kInkHidden / 32) * sizeof(InkQ8_1_G32));
-        const size_t o_hqg32   = bump(P * (kInkInter / 32) * sizeof(InkQ8_1_G32));
+        const size_t o_xqmx8   = bump(compact_sf4_only ? 256u : (M * kInkHidden));
+        const size_t o_xscmx8  = bump(compact_sf4_only ? 256u : (M * (kInkHidden / 32)));
+        const size_t o_hqmx8   = bump(compact_sf4_only ? 256u : (P * kInkInter));
+        const size_t o_hscmx8  = bump(compact_sf4_only ? 256u : (P * (kInkInter / 32)));
+        const size_t o_xqsk    = bump((compact_sf4_only ? (size_t)64u : M) * (kInkHidden / 64) * sizeof(InkQ8_1_G64));
+        const size_t o_hqsk    = bump(compact_sf4_only ? 256u : (P * (kInkInter / 64) * sizeof(InkQ8_1_G64)));
+        const size_t o_xqg32   = bump(compact_sf4_only ? 256u : (M * (kInkHidden / 32) * sizeof(InkQ8_1_G32)));
+        const size_t o_hqg32   = bump(compact_sf4_only ? 256u : (P * (kInkInter / 32) * sizeof(InkQ8_1_G32)));
 
         raw_bytes = off;
         {
@@ -3675,15 +3678,18 @@ inline void launch_ink_moe_dispatch_only(
     bool quant_x_done = false) {
     // For 128-expert Top-8 MoE, M<=16 (all spec verify trees) averages ~1..1.5 tok/active-expert (fast decode kernel);
     // M>=24 (c=32, c=64, prefill) gets 2x-3x speedup from Blackwell sm_120a / INT8 / FP16 Tensor Cores!
-    const bool use_sm120_tc = (!force_exact_dec && M >= 24 && sm120::available());
+    const bool use_sm120_tc = ((!force_exact_dec && M >= 24) || (ws.sm120_tc_smallm && M >= 4)) && sm120::available();
     const bool use_fp16_tc  = (!use_sm120_tc && M >= 24 && ink_has_int8_tc());
     const bool use_wmma_tc  = (!use_sm120_tc && !use_fp16_tc && M >= 24 && ink_has_wmma_f16());
     // Prefill chunks on sm_80..89: 64-token tiles per expert (the weight tile is decoded once per 64 tokens, not per 16); same arithmetic,
     // bit-identical results.  STRATA_INK_PF_TILE=0 keeps the 16-token kernel.
     static const bool pf_tile_env = [] { const char* e = std::getenv("STRATA_INK_PF_TILE"); return !(e && e[0] == '0'); }();
     const bool use_pf_tile = pf_tile_env && use_fp16_tc && M >= kInkPrefillTileMinM && (info.has_sf4 || info.has_mx8);
+    // The card's table row picks the tile size and the kernel variant for this batch range (RTX 50 fast mode); everything else is the shipped rule.
+    const Sm120MoeSel sm_sel = (use_sm120_tc && ws.sm120_tc_smallm && ws.sm120_dev >= 0) ? sm120_moe_sel(sm120_cfg(ws.sm120_dev), M) : Sm120MoeSel{};
     const int tile_rows = use_pf_tile ? kInkPrefillTileRows
                         : use_wmma_tc ? ((M <= 128) ? 16 : 64)
+                        : sm_sel.active ? sm_sel.tile_rows
                                       : ((M <= 128 || use_fp16_tc) ? 16 : 64);
     k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb);
     ink_moe_mark(1);
@@ -3726,16 +3732,16 @@ inline void launch_ink_moe_dispatch_only(
         if (use_sm120_tc) {
             const int mt = ink_moe_max_tiles(M, tile_rows);
             if (info.has_sf4) {
-                if (!quant_x_done) sm120::quantize_act_fp4(x_f32, M, kInkHidden, ws.xa_fp4, st);
-                sm120::moe_sf4_gu_tc(sec4_base, experts, ws.tb, ws.xa_fp4, ws.ha_fp4, mt, tile_rows, st);
+                if (!quant_x_done) sm120::quantize_act_fp4(x_f32, M, kInkHidden, ws.xa_fp4, st, sm_sel.active && sm_sel.row_quant);
+                sm120::moe_sf4_gu_tc(sec4_base, experts, ws.tb, ws.xa_fp4, ws.ha_fp4, mt, tile_rows, st, &sm_sel);
                 ink_moe_mark(2);
-                sm120::moe_sf4_dn_tc(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, ws.y_pair, mt, tile_rows, st);
+                sm120::moe_sf4_dn_tc(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, ws.y_pair, mt, tile_rows, st, false, &sm_sel);
                 ink_moe_mark(3);
             }
             if (info.has_mx8) {
                 if (!quant_x_done) sm120::quantize_act_mx8(x_f32, M, kInkHidden, ws.xq_mx8, ws.xsc_mx8, st);
-                sm120::moe_mx8_gu_tc(sec4_base, experts, ws.tb, ws.xq_mx8, ws.xsc_mx8, ws.hq_mx8, ws.hsc_mx8, mt, tile_rows, st);
-                sm120::moe_mx8_dn_tc(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, ws.y_pair, mt, tile_rows, st);
+                sm120::moe_mx8_gu_tc(sec4_base, experts, ws.tb, ws.xq_mx8, ws.xsc_mx8, ws.hq_mx8, ws.hsc_mx8, mt, tile_rows, st, &sm_sel);
+                sm120::moe_mx8_dn_tc(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, ws.y_pair, mt, tile_rows, st, &sm_sel);
             }
         } else if (use_fp16_tc && use_pf_tile) {
             const int mt = ink_moe_max_tiles(M, kInkPrefillTileRows);

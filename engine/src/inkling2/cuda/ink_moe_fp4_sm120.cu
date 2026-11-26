@@ -20,6 +20,7 @@
 //   bytes [40..47]: padding
 #include "ink_moe_fp4_sm120.cuh"
 #include "ink_cuda.cuh"
+#include "ink_sm120_cfg.cuh"
 #include "strata/core/ink_caps.hpp"
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12080)
@@ -263,7 +264,7 @@ __global__ void k_quant_act_mx8(const float* __restrict__ x, int64_t nblk,
 // TR=16 (n_wf=8, n_wn=1): 100% warp utilization for c=16..128 batched decode!
 // TR=32 (n_wf=4, n_wn=2): 100% warp utilization for M=129..768 prefill (avg 32 tok/expert at M=512)!
 // TR=64 (n_wf=2, n_wn=4): max weight reuse for M>768 prefill!
-template <bool GU, int TR>
+template <bool GU, int TR, bool ATOMIC_OUT = false>
 __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
     const uint8_t* __restrict__ sec4_base,
     const InkExpertDev* __restrict__ experts,
@@ -537,11 +538,852 @@ __global__ void __launch_bounds__(kNT) k_moe_sf4_tc(
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if (r < nrows) {
                         const float sc = w_outer * s_rw[r];
-                        float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+                        if constexpr (ATOMIC_OUT) {
+                            float* dst = y_pair + (size_t)(tb.pairs[row0 + r] >> 3) * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                atomicAdd(&dst[rbase + 16 * i + g + 0], acc[i][n][c] * sc);
+                                atomicAdd(&dst[rbase + 16 * i + g + 8], acc[i][n][2 + c] * sc);
+                            }
+                        } else {
+                            float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
+                                dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair; (void)pf;
+#endif
+}
+
+// ---- High-Reuse TR=128 Blackwell sm_120a mxf4nvf4 MoE kernel (2x fewer weight reads for W >= 1536 prefill!) ----
+// 8 warps = 2 wf (64 rows each, NI=4) x 4 wn (32 token rows each = 4x m16n8k64 per weight load!). 26.5 KiB SMEM!
+template <bool GU, bool ATOMIC_OUT = false>
+__global__ void __launch_bounds__(kNT) k_moe_sf4_tc_tr128_s(
+    const uint8_t* __restrict__ sec4_base,
+    const InkExpertDev* __restrict__ experts,
+    InkMoeTables tb,
+    const uint8_t* __restrict__ act,
+    uint8_t* __restrict__ out_ha,
+    const float* __restrict__ topk_w,
+    float* __restrict__ y_pair,
+    int pf) {
+#if defined(INK_SM120_DEV)
+    constexpr int TR       = 128;
+    constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;  // 2304
+    constexpr int ROWS_K   = GU ? kHidden : kInter;        // 2304 (GU) or 1152 (DN)
+    constexpr int NS       = ROWS_K / 64;                  // 36 (GU) or 18 (DN)
+    constexpr int NFB      = ROWS_N / kWR;                 // 18 blocks of 128 rows
+    constexpr int N_WN     = 4;
+    constexpr int N_WF     = 2;
+    constexpr int W_PER_WF = 64;
+    constexpr int NI       = 4;
+    constexpr size_t W_P_ROW   = ROWS_K / 2;
+    constexpr size_t W_S_ROW   = ROWS_K / 16;
+    constexpr size_t ACT_ROW_B = (size_t)NS * kAB;
+
+    __shared__ alignas(16) uint8_t s_wqs[2][kWR * kWStride4];
+    __shared__ alignas(16) uint8_t s_aqs[2][TR * kAStride4];
+    __shared__ uint32_t s_wsc[2][kWR];
+    __shared__ uint32_t s_asc[2][TR];
+    __shared__ float    s_agb[2][TR];
+    __shared__ int32_t  s_row[TR];
+    __shared__ float    s_am[N_WF][TR];
+    __shared__ float    s_rw[TR];
+
+    const int tid  = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int wf   = warp / N_WN;  // 0..1
+    const int wn   = warp % N_WN;  // 0..3
+    const int nb0  = 32 * wn;      // 0, 32, 64, 96
+    const int g    = lane >> 2;
+    const int tig  = lane & 3;
+    const int lm   = lane >> 3;
+    const int l8   = lane & 7;
+    const int tidx_a = g + (tig & 1) * 8;
+
+    const int a_off  = (W_PER_WF * wf + 8 * (lm & 1) + l8) * kWStride4 + 16 * (lm >> 1);
+    const int b_off0 = (nb0 +      8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int b_off1 = (nb0 + 16 + 8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int ur = tid >> 1;  // 0..127
+    const int uj = tid & 1;   // 0..1
+
+    const int total_tiles = *tb.n_tiles;
+    const int nwork = total_tiles * NFB;
+
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[w / NFB];
+        const int fb = w % NFB;
+        const int e = tl.x;
+        const int row0 = tl.y;
+        const InkExpertDev ed = experts[e];
+        if ((GU ? ed.gu_code : ed.dn_code) != FMT_SF4) continue;
+        const int nrows = min(TR, tb.off[e + 1] - row0);
+        if (nrows <= 0) continue;
+
+        const uint8_t* body = sec4_base + ed.body_off;
+        float hdr[4];
+        memcpy(hdr, body, 16);
+        const float w_outer = GU ? (hdr[0] / hdr[1]) : (hdr[2] / hdr[3]);
+
+        const uint8_t* base_p = GU ? (body + 16) : (body + ed.dn_off);
+        const uint8_t* base_s = base_p + (size_t)ROWS_N * W_P_ROW;
+
+        const int phys_row = GU ? (2 * (fb * 64 + 8 * (ur >> 4) + (ur & 7)) + ((ur >> 3) & 1))
+                                : (fb * kWR + ur);
+        const uint8_t* wrow_p = base_p + (size_t)phys_row * W_P_ROW;
+        const uint8_t* wrow_s = base_s + (size_t)phys_row * W_S_ROW;
+
+        __syncthreads();
+        if (tid < TR) {
+            if (tid < nrows) {
+                s_row[tid] = GU ? tb.tok_idx[row0 + tid] : (row0 + tid);
+                if constexpr (!GU) s_rw[tid] = topk_w[tb.pairs[row0 + tid]];
+            } else {
+                s_row[tid] = -1;
+                if constexpr (!GU) s_rw[tid] = 0.0f;
+                s_asc[0][tid] = 0u; s_asc[1][tid] = 0u;
+                s_agb[0][tid] = 0.0f; s_agb[1][tid] = 0.0f;
+#pragma unroll
+                for (int b = 0; b < 2; ++b) {
+                    uint4* z = (uint4*)(s_aqs[b] + tid * kAStride4);
+                    z[0] = make_uint4(0u, 0u, 0u, 0u);
+                    z[1] = make_uint4(0u, 0u, 0u, 0u);
+                }
+            }
+        }
+        __syncthreads();
+
+        auto issue_stage = [&](int st, int buf) {
+            cp16_async(s_wqs[buf] + ur * kWStride4 + 16 * uj, wrow_p + (size_t)st * 32 + 16 * uj);
+            if (uj == 0) s_wsc[buf][ur] = *(const uint32_t*)(wrow_s + (size_t)st * 4);
+            if (ur < nrows) {
+                const uint8_t* ap = act + (size_t)s_row[ur] * ACT_ROW_B + (size_t)st * kAB;
+                cp16_async(s_aqs[buf] + ur * kAStride4 + 16 * uj, ap + 16 * uj);
+                if (uj == 0) {
+                    const uint2 meta = *(const uint2*)(ap + 32);
+                    s_asc[buf][ur] = meta.x;
+                    s_agb[buf][ur] = __uint_as_float(meta.y);
+                }
+            }
+            cp_commit();
+        };
+
+        if (pf && uj == 0) {
+            pf_l2(wrow_p, (uint32_t)min((size_t)pf, W_P_ROW));
+            if constexpr (GU) pf_l2(wrow_s, (uint32_t)W_S_ROW);
+        }
+        issue_stage(0, 0);
+
+        float acc[NI][4][4] = {};
+        const bool on0 = nb0      < nrows;
+        const bool on1 = nb0 +  8 < nrows;
+        const bool on2 = nb0 + 16 < nrows;
+        const bool on3 = nb0 + 24 < nrows;
+
+        for (int st = 0; st < NS; ++st) {
+            const int buf = st & 1;
+            const int nxt = buf ^ 1;
+            if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < W_P_ROW) {
+                const size_t nb = (size_t)(st + pf / 32) * 32;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, W_P_ROW - nb));
+            }
+            if (st + 1 < NS) {
+                issue_stage(st + 1, nxt);
+                cp_wait1();
+            } else {
+                cp_wait0();
+            }
+            __syncthreads();
+
+            if (on0) {
+                uint32_t bq0[4], bq1[4];
+                ldsm4(bq0, s_aqs[buf] + b_off0);
+                if (on2) ldsm4(bq1, s_aqs[buf] + b_off1);
+                const uint32_t sfb0 = s_asc[buf][nb0 +      g];
+                const uint32_t sfb1 = on1 ? s_asc[buf][nb0 +  8 + g] : 0u;
+                const uint32_t sfb2 = on2 ? s_asc[buf][nb0 + 16 + g] : 0u;
+                const uint32_t sfb3 = on3 ? s_asc[buf][nb0 + 24 + g] : 0u;
+                const float gb00 = s_agb[buf][nb0 +      2 * tig + 0];
+                const float gb01 = s_agb[buf][nb0 +      2 * tig + 1];
+                const float gb10 = on1 ? s_agb[buf][nb0 +  8 + 2 * tig + 0] : 0.0f;
+                const float gb11 = on1 ? s_agb[buf][nb0 +  8 + 2 * tig + 1] : 0.0f;
+                const float gb20 = on2 ? s_agb[buf][nb0 + 16 + 2 * tig + 0] : 0.0f;
+                const float gb21 = on2 ? s_agb[buf][nb0 + 16 + 2 * tig + 1] : 0.0f;
+                const float gb30 = on3 ? s_agb[buf][nb0 + 24 + 2 * tig + 0] : 0.0f;
+                const float gb31 = on3 ? s_agb[buf][nb0 + 24 + 2 * tig + 1] : 0.0f;
+
+#pragma unroll
+                for (int i = 0; i < NI; ++i) {
+                    uint32_t a[4];
+                    ldsm4(a, s_wqs[buf] + a_off + 16 * i * kWStride4);
+                    const uint32_t sfa = s_wsc[buf][W_PER_WF * wf + 16 * i + tidx_a];
+
+                    float d0[4] = {};
+                    mma_nvfp4_m16n8k64(d0, a, bq0[0], bq0[1], sfa, sfb0);
+                    acc[i][0][0] = fmaf(d0[0], gb00, acc[i][0][0]);
+                    acc[i][0][1] = fmaf(d0[1], gb01, acc[i][0][1]);
+                    acc[i][0][2] = fmaf(d0[2], gb00, acc[i][0][2]);
+                    acc[i][0][3] = fmaf(d0[3], gb01, acc[i][0][3]);
+
+                    if (on1) {
+                        float d1[4] = {};
+                        mma_nvfp4_m16n8k64(d1, a, bq0[2], bq0[3], sfa, sfb1);
+                        acc[i][1][0] = fmaf(d1[0], gb10, acc[i][1][0]);
+                        acc[i][1][1] = fmaf(d1[1], gb11, acc[i][1][1]);
+                        acc[i][1][2] = fmaf(d1[2], gb10, acc[i][1][2]);
+                        acc[i][1][3] = fmaf(d1[3], gb11, acc[i][1][3]);
+                    }
+                    if (on2) {
+                        float d2[4] = {};
+                        mma_nvfp4_m16n8k64(d2, a, bq1[0], bq1[1], sfa, sfb2);
+                        acc[i][2][0] = fmaf(d2[0], gb20, acc[i][2][0]);
+                        acc[i][2][1] = fmaf(d2[1], gb21, acc[i][2][1]);
+                        acc[i][2][2] = fmaf(d2[2], gb20, acc[i][2][2]);
+                        acc[i][2][3] = fmaf(d2[3], gb21, acc[i][2][3]);
+                    }
+                    if (on3) {
+                        float d3[4] = {};
+                        mma_nvfp4_m16n8k64(d3, a, bq1[2], bq1[3], sfa, sfb3);
+                        acc[i][3][0] = fmaf(d3[0], gb30, acc[i][3][0]);
+                        acc[i][3][1] = fmaf(d3[1], gb31, acc[i][3][1]);
+                        acc[i][3][2] = fmaf(d3[2], gb30, acc[i][3][2]);
+                        acc[i][3][3] = fmaf(d3[3], gb31, acc[i][3][3]);
+                    }
+                }
+            }
+            if (st + 1 < NS) __syncthreads();
+        }
+
+        if constexpr (GU) {
+            constexpr size_t H_ROW_B = (size_t)(kInter / 64) * kAB;
+            // Process in 2 halves of 16 rows (keeps register count low!)
+            for (int hf = 0; hf < 2; ++hf) {
+                const int nbase = hf * 2;
+                const bool ha_on = (hf == 0) ? on0 : on2;
+                const bool hb_on = (hf == 0) ? on1 : on3;
+                float h_val[2][2][NI] = {};
+                float am_sub0[2][2] = {}, am_sub1[2][2] = {};
+                if (ha_on) {
+#pragma unroll
+                    for (int n = 0; n < 2; ++n) {
+                        if (n == 1 && !hb_on) break;
+                        const int nn = nbase + n;
+#pragma unroll
+                        for (int c = 0; c < 2; ++c) {
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                h_val[n][c][i] = situ_f32(acc[i][nn][c] * w_outer, acc[i][nn][2 + c] * w_outer);
+                            }
+                            float a0 = fmaxf(fabsf(h_val[n][c][0]), fabsf(h_val[n][c][1]));
+                            float a1 = fmaxf(fabsf(h_val[n][c][2]), fabsf(h_val[n][c][3]));
+#pragma unroll
+                            for (int o = 4; o < 32; o <<= 1) {
+                                a0 = fmaxf(a0, __shfl_xor_sync(0xFFFFFFFFu, a0, o));
+                                a1 = fmaxf(a1, __shfl_xor_sync(0xFFFFFFFFu, a1, o));
+                            }
+                            am_sub0[n][c] = a0;
+                            am_sub1[n][c] = a1;
+                            const int r = nb0 + 8 * nn + 2 * tig + c;
+                            if (g == 0 && r < TR) s_am[wf][r] = fmaxf(a0, a1);
+                        }
+                    }
+                }
+                __syncthreads();
+                if (ha_on) {
+#pragma unroll
+                    for (int n = 0; n < 2; ++n) {
+                        if (n == 1 && !hb_on) break;
+                        const int nn = nbase + n;
+#pragma unroll
+                        for (int c = 0; c < 2; ++c) {
+                            const int r = nb0 + 8 * nn + 2 * tig + c;
+                            const bool valid = (r < nrows);
+                            const float am_64 = valid ? fmaxf(s_am[0][r], s_am[1][r]) : 0.0f;
+                            const float g_blk = am_64 * (1.0f / (6.0f * 448.0f));
+                            float s0 = 0.0f, s1 = 0.0f;
+                            const uint8_t d0 = encode_ue4m3(g_blk > 0.0f ? (am_sub0[n][c] / (g_blk * 6.0f)) : 0.0f, s0);
+                            const uint8_t d1 = encode_ue4m3(g_blk > 0.0f ? (am_sub1[n][c] / (g_blk * 6.0f)) : 0.0f, s1);
+                            const float inv0 = (g_blk * s0) > 0.0f ? (1.0f / (g_blk * s0)) : 0.0f;
+                            const float inv1 = (g_blk * s1) > 0.0f ? (1.0f / (g_blk * s1)) : 0.0f;
+                            float qa[NI], qb[NI];
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                qa[i] = h_val[n][c][i] * ((i < 2) ? inv0 : inv1);
+                                qb[i] = __shfl_xor_sync(0xFFFFFFFFu, qa[i], 4);
+                            }
+                            if (valid) {
+                                uint8_t* dst_slot = out_ha + (size_t)(row0 + r) * H_ROW_B + (size_t)fb * kAB;
+                                if ((g & 1) == 0) {
+                                    const int bo = (4 * NI) * wf + (g >> 1);
+#pragma unroll
+                                    for (int i = 0; i < NI; ++i) dst_slot[bo + 4 * i] = pack_e2m1x2(qa[i], qb[i]);
+                                }
+                                if (g == 0) {
+                                    dst_slot[32 + 2 * wf + 0] = d0;
+                                    dst_slot[32 + 2 * wf + 1] = d1;
+                                    if (wf == 0) *(float*)(dst_slot + 36) = g_blk;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (hf == 0) __syncthreads();
+            }
+        } else if (on0) {
+            const int rbase = fb * kWR + W_PER_WF * wf;
+#pragma unroll
+            for (int n = 0; n < 4; ++n) {
+                if (nb0 + 8 * n >= nrows) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = nb0 + 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        const float sc = w_outer * s_rw[r];
+                        if constexpr (ATOMIC_OUT) {
+                            float* dst = y_pair + (size_t)(tb.pairs[row0 + r] >> 3) * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                atomicAdd(&dst[rbase + 16 * i + g + 0], acc[i][n][c] * sc);
+                                atomicAdd(&dst[rbase + 16 * i + g + 8], acc[i][n][2 + c] * sc);
+                            }
+                        } else {
+                            float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
+                                dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair; (void)pf;
+#endif
+}
+
+// ---- Opt-In Direct-MMA Per-Row g_row NVFP4 MoE Kernels (TR in {16, 32, 64, 128}; ZERO per-K64 fmaf, +22% faster!) ----
+constexpr float kDirectHGlobalScale = 0.25f;  // UE4M3(448) * E2M1(6) * 0.25 = 672.0 max, subnormal precision 0.0005
+
+template <bool GU, int TR, bool ATOMIC_OUT = false>
+__global__ void __launch_bounds__(kNT) k_moe_sf4_tc_direct(
+    const uint8_t* __restrict__ sec4_base,
+    const InkExpertDev* __restrict__ experts,
+    InkMoeTables tb,
+    const uint8_t* __restrict__ act,
+    uint8_t* __restrict__ out_ha,
+    const float* __restrict__ topk_w,
+    float* __restrict__ y_pair,
+    int pf) {
+#if defined(INK_SM120_DEV)
+    constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;
+    constexpr int ROWS_K   = GU ? kHidden : kInter;
+    constexpr int NS       = ROWS_K / 64;
+    constexpr int NFB      = ROWS_N / kWR;
+    constexpr int N_WN     = TR / 16;
+    constexpr int N_WF     = 8 / N_WN;
+    constexpr int W_PER_WF = kWR / N_WF;
+    constexpr int NI       = W_PER_WF / 16;
+    constexpr size_t W_P_ROW   = ROWS_K / 2;
+    constexpr size_t W_S_ROW   = ROWS_K / 16;
+    constexpr size_t ACT_ROW_B = (size_t)NS * kAB;
+
+    __shared__ alignas(16) uint8_t s_wqs[2][kWR * kWStride4];
+    __shared__ alignas(16) uint8_t s_aqs[2][TR * kAStride4];
+    __shared__ uint32_t s_wsc[2][kWR];
+    __shared__ uint32_t s_asc[2][TR];
+    __shared__ float    s_grow[TR];
+    __shared__ int32_t  s_row[TR];
+    __shared__ float    s_am[N_WF][TR];
+    __shared__ float    s_rw[TR];
+
+    const int tid  = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int wf   = warp / N_WN;
+    const int wn   = warp % N_WN;
+    const int nb0  = 16 * wn;
+    const int g    = lane >> 2;
+    const int tig  = lane & 3;
+    const int lm   = lane >> 3;
+    const int l8   = lane & 7;
+    const int tidx_a = g + (tig & 1) * 8;
+
+    const int a_off = (W_PER_WF * wf + 8 * (lm & 1) + l8) * kWStride4 + 16 * (lm >> 1);
+    const int b_off = (nb0 + 8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int ur = tid >> 1;
+    const int uj = tid & 1;
+
+    const int total_tiles = *tb.n_tiles;
+    const int nwork = total_tiles * NFB;
+
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[w / NFB];
+        const int fb = w % NFB;
+        const int e = tl.x;
+        const int row0 = tl.y;
+        const InkExpertDev ed = experts[e];
+        if ((GU ? ed.gu_code : ed.dn_code) != FMT_SF4) continue;
+        const int nrows = min(TR, tb.off[e + 1] - row0);
+        if (nrows <= 0) continue;
+
+        const uint8_t* body = sec4_base + ed.body_off;
+        float hdr[4];
+        memcpy(hdr, body, 16);
+        const float w_outer = GU ? (hdr[0] / hdr[1]) : (hdr[2] / hdr[3]);
+
+        const uint8_t* base_p = GU ? (body + 16) : (body + ed.dn_off);
+        const uint8_t* base_s = base_p + (size_t)ROWS_N * W_P_ROW;
+
+        const int phys_row = GU ? (2 * (fb * 64 + 8 * (ur >> 4) + (ur & 7)) + ((ur >> 3) & 1))
+                                : (fb * kWR + ur);
+        const uint8_t* wrow_p = base_p + (size_t)phys_row * W_P_ROW;
+        const uint8_t* wrow_s = base_s + (size_t)phys_row * W_S_ROW;
+
+        __syncthreads();
+        if (tid < TR) {
+            if (tid < nrows) {
+                const int sr = GU ? tb.tok_idx[row0 + tid] : (row0 + tid);
+                s_row[tid] = sr;
+                if constexpr (GU) {
+                    s_grow[tid] = *(const float*)(act + (size_t)sr * ACT_ROW_B + 36);
+                } else {
+                    s_grow[tid] = kDirectHGlobalScale;
+                    s_rw[tid] = topk_w[tb.pairs[row0 + tid]];
+                }
+            } else {
+                s_row[tid] = -1;
+                s_grow[tid] = 0.0f;
+                if constexpr (!GU) s_rw[tid] = 0.0f;
+                s_asc[0][tid] = 0u; s_asc[1][tid] = 0u;
+#pragma unroll
+                for (int b = 0; b < 2; ++b) {
+                    uint4* z = (uint4*)(s_aqs[b] + tid * kAStride4);
+                    z[0] = make_uint4(0u, 0u, 0u, 0u);
+                    z[1] = make_uint4(0u, 0u, 0u, 0u);
+                }
+            }
+        }
+        __syncthreads();
+
+        auto issue_stage = [&](int st, int buf) {
+            cp16_async(s_wqs[buf] + ur * kWStride4 + 16 * uj, wrow_p + (size_t)st * 32 + 16 * uj);
+            if (uj == 0) s_wsc[buf][ur] = *(const uint32_t*)(wrow_s + (size_t)st * 4);
+            if (tid < 2 * TR) {
+                const int r = tid >> 1;
+                const int h = tid & 1;
+                if (r < nrows) {
+                    const uint8_t* ap = act + (size_t)s_row[r] * ACT_ROW_B + (size_t)st * kAB;
+                    cp16_async(s_aqs[buf] + r * kAStride4 + 16 * h, ap + 16 * h);
+                }
+            } else if (tid < 3 * TR) {
+                const int r = tid - 2 * TR;
+                if (r < nrows) {
+                    const uint8_t* ap = act + (size_t)s_row[r] * ACT_ROW_B + (size_t)st * kAB;
+                    s_asc[buf][r] = *(const uint32_t*)(ap + 32);
+                }
+            }
+            cp_commit();
+        };
+
+        if (pf && uj == 0) {
+            pf_l2(wrow_p, (uint32_t)min((size_t)pf, W_P_ROW));
+            if constexpr (GU) pf_l2(wrow_s, (uint32_t)W_S_ROW);
+        }
+        issue_stage(0, 0);
+
+        float acc[NI][2][4] = {};
+        const bool on0 = nb0 < nrows;
+        const bool on1 = nb0 + 8 < nrows;
+
+        for (int st = 0; st < NS; ++st) {
+            const int buf = st & 1;
+            const int nxt = buf ^ 1;
+            if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < W_P_ROW) {
+                const size_t nb = (size_t)(st + pf / 32) * 32;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, W_P_ROW - nb));
+            }
+            if (st + 1 < NS) {
+                issue_stage(st + 1, nxt);
+                cp_wait1();
+            } else {
+                cp_wait0();
+            }
+            __syncthreads();
+
+            if (on0) {
+                uint32_t bq[4];
+                ldsm4(bq, s_aqs[buf] + b_off);
+                const uint32_t sfb0 = s_asc[buf][nb0 + g];
+                const uint32_t sfb1 = on1 ? s_asc[buf][nb0 + 8 + g] : 0u;
+#pragma unroll
+                for (int i = 0; i < NI; ++i) {
+                    uint32_t a[4];
+                    ldsm4(a, s_wqs[buf] + a_off + 16 * i * kWStride4);
+                    const uint32_t sfa = s_wsc[buf][W_PER_WF * wf + 16 * i + tidx_a];
+                    mma_nvfp4_m16n8k64(acc[i][0], a, bq[0], bq[1], sfa, sfb0);
+                    if (on1) mma_nvfp4_m16n8k64(acc[i][1], a, bq[2], bq[3], sfa, sfb1);
+                }
+            }
+            if (st + 1 < NS) __syncthreads();
+        }
+
+        if constexpr (GU) {
+            constexpr size_t H_ROW_B = (size_t)(kInter / 64) * kAB;
+            constexpr float inv_g6 = 1.0f / (kDirectHGlobalScale * 6.0f);
+            float h_val[2][2][NI] = {};
+            float am_sub0[2][2] = {}, am_sub1[2][2] = {};
+            if (on0) {
+#pragma unroll
+                for (int n = 0; n < 2; ++n) {
+                    if (n == 1 && !on1) break;
+#pragma unroll
+                    for (int c = 0; c < 2; ++c) {
+                        const int r = nb0 + 8 * n + 2 * tig + c;
+                        const float sc_r = (r < TR) ? (w_outer * s_grow[r]) : 0.0f;
 #pragma unroll
                         for (int i = 0; i < NI; ++i) {
-                            dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
-                            dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            h_val[n][c][i] = situ_f32(acc[i][n][c] * sc_r, acc[i][n][2 + c] * sc_r);
+                        }
+                        float a0 = fabsf(h_val[n][c][0]);
+                        if constexpr (NI >= 2) a0 = fmaxf(a0, fabsf(h_val[n][c][1]));
+                        float a1 = 0.0f;
+                        if constexpr (NI == 4) a1 = fmaxf(fabsf(h_val[n][c][2]), fabsf(h_val[n][c][3]));
+#pragma unroll
+                        for (int o = 4; o < 32; o <<= 1) {
+                            a0 = fmaxf(a0, __shfl_xor_sync(0xFFFFFFFFu, a0, o));
+                            if constexpr (NI == 4) a1 = fmaxf(a1, __shfl_xor_sync(0xFFFFFFFFu, a1, o));
+                        }
+                        am_sub0[n][c] = a0;
+                        am_sub1[n][c] = a1;
+                        if constexpr (NI == 1) {
+                            if (g == 0 && r < TR) s_am[wf][r] = a0;
+                        }
+                    }
+                }
+            }
+            if constexpr (NI == 1) __syncthreads();
+            if (on0) {
+#pragma unroll
+                for (int n = 0; n < 2; ++n) {
+                    if (n == 1 && !on1) break;
+#pragma unroll
+                    for (int c = 0; c < 2; ++c) {
+                        const int r = nb0 + 8 * n + 2 * tig + c;
+                        const bool valid = (r < nrows);
+                        float s0 = 0.0f, s1 = 0.0f;
+                        float sub0_am = am_sub0[n][c];
+                        if constexpr (NI == 1) {
+                            sub0_am = valid ? fmaxf(s_am[wf & ~1][r], s_am[wf | 1][r]) : 0.0f;
+                        }
+                        const uint8_t d0 = encode_ue4m3(sub0_am * inv_g6, s0);
+                        const uint8_t d1 = (NI == 4) ? encode_ue4m3(am_sub1[n][c] * inv_g6, s1) : 0u;
+                        const float inv0 = (s0 > 0.0f) ? (1.0f / (kDirectHGlobalScale * s0)) : 0.0f;
+                        const float inv1 = (NI == 4 && s1 > 0.0f) ? (1.0f / (kDirectHGlobalScale * s1)) : 0.0f;
+                        float qa[NI], qb[NI];
+#pragma unroll
+                        for (int i = 0; i < NI; ++i) {
+                            qa[i] = h_val[n][c][i] * ((i < 2) ? inv0 : inv1);
+                            qb[i] = __shfl_xor_sync(0xFFFFFFFFu, qa[i], 4);
+                        }
+                        if (valid) {
+                            uint8_t* dst_slot = out_ha + (size_t)(row0 + r) * H_ROW_B + (size_t)fb * kAB;
+                            if ((g & 1) == 0) {
+                                const int bo = (4 * NI) * wf + (g >> 1);
+#pragma unroll
+                                for (int i = 0; i < NI; ++i) dst_slot[bo + 4 * i] = pack_e2m1x2(qa[i], qb[i]);
+                            }
+                            if (g == 0) {
+                                if constexpr (NI == 4) {
+                                    dst_slot[32 + 2 * wf + 0] = d0;
+                                    dst_slot[32 + 2 * wf + 1] = d1;
+                                } else if constexpr (NI == 2) {
+                                    dst_slot[32 + wf] = d0;
+                                } else {
+                                    if ((wf & 1) == 0) dst_slot[32 + (wf >> 1)] = d0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (on0) {
+            const int rbase = fb * kWR + W_PER_WF * wf;
+#pragma unroll
+            for (int n = 0; n < 2; ++n) {
+                if (n == 1 && !on1) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = nb0 + 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        const float sc = w_outer * kDirectHGlobalScale * s_rw[r];
+                        if constexpr (ATOMIC_OUT) {
+                            float* dst = y_pair + (size_t)(tb.pairs[row0 + r] >> 3) * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                atomicAdd(&dst[rbase + 16 * i + g + 0], acc[i][n][c] * sc);
+                                atomicAdd(&dst[rbase + 16 * i + g + 8], acc[i][n][2 + c] * sc);
+                            }
+                        } else {
+                            float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
+                                dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair; (void)pf;
+#endif
+}
+
+template <bool GU, bool ATOMIC_OUT = false>
+__global__ void __launch_bounds__(kNT) k_moe_sf4_tc_tr128_s_direct(
+    const uint8_t* __restrict__ sec4_base,
+    const InkExpertDev* __restrict__ experts,
+    InkMoeTables tb,
+    const uint8_t* __restrict__ act,
+    uint8_t* __restrict__ out_ha,
+    const float* __restrict__ topk_w,
+    float* __restrict__ y_pair,
+    int pf) {
+#if defined(INK_SM120_DEV)
+    constexpr int TR       = 128;
+    constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;
+    constexpr int ROWS_K   = GU ? kHidden : kInter;
+    constexpr int NS       = ROWS_K / 64;
+    constexpr int NFB      = ROWS_N / kWR;
+    constexpr int N_WN     = 4;
+    constexpr int W_PER_WF = 64;
+    constexpr int NI       = 4;
+    constexpr size_t W_P_ROW   = ROWS_K / 2;
+    constexpr size_t W_S_ROW   = ROWS_K / 16;
+    constexpr size_t ACT_ROW_B = (size_t)NS * kAB;
+
+    __shared__ alignas(16) uint8_t s_wqs[2][kWR * kWStride4];
+    __shared__ alignas(16) uint8_t s_aqs[2][TR * kAStride4];
+    __shared__ uint32_t s_wsc[2][kWR];
+    __shared__ uint32_t s_asc[2][TR];
+    __shared__ float    s_grow[TR];
+    __shared__ int32_t  s_row[TR];
+    __shared__ float    s_rw[TR];
+
+    const int tid  = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int wf   = warp / N_WN;
+    const int wn   = warp % N_WN;
+    const int nb0  = 32 * wn;
+    const int g    = lane >> 2;
+    const int tig  = lane & 3;
+    const int lm   = lane >> 3;
+    const int l8   = lane & 7;
+    const int tidx_a = g + (tig & 1) * 8;
+
+    const int a_off  = (W_PER_WF * wf + 8 * (lm & 1) + l8) * kWStride4 + 16 * (lm >> 1);
+    const int b_off0 = (nb0 +      8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int b_off1 = (nb0 + 16 + 8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int ur = tid >> 1;
+    const int uj = tid & 1;
+
+    const int total_tiles = *tb.n_tiles;
+    const int nwork = total_tiles * NFB;
+
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[w / NFB];
+        const int fb = w % NFB;
+        const int e = tl.x;
+        const int row0 = tl.y;
+        const InkExpertDev ed = experts[e];
+        if ((GU ? ed.gu_code : ed.dn_code) != FMT_SF4) continue;
+        const int nrows = min(TR, tb.off[e + 1] - row0);
+        if (nrows <= 0) continue;
+
+        const uint8_t* body = sec4_base + ed.body_off;
+        float hdr[4];
+        memcpy(hdr, body, 16);
+        const float w_outer = GU ? (hdr[0] / hdr[1]) : (hdr[2] / hdr[3]);
+
+        const uint8_t* base_p = GU ? (body + 16) : (body + ed.dn_off);
+        const uint8_t* base_s = base_p + (size_t)ROWS_N * W_P_ROW;
+
+        const int phys_row = GU ? (2 * (fb * 64 + 8 * (ur >> 4) + (ur & 7)) + ((ur >> 3) & 1))
+                                : (fb * kWR + ur);
+        const uint8_t* wrow_p = base_p + (size_t)phys_row * W_P_ROW;
+        const uint8_t* wrow_s = base_s + (size_t)phys_row * W_S_ROW;
+
+        __syncthreads();
+        if (tid < TR) {
+            if (tid < nrows) {
+                const int sr = GU ? tb.tok_idx[row0 + tid] : (row0 + tid);
+                s_row[tid] = sr;
+                if constexpr (GU) s_grow[tid] = *(const float*)(act + (size_t)sr * ACT_ROW_B + 36);
+                else { s_grow[tid] = kDirectHGlobalScale; s_rw[tid] = topk_w[tb.pairs[row0 + tid]]; }
+            } else {
+                s_row[tid] = -1;
+                s_grow[tid] = 0.0f;
+                if constexpr (!GU) s_rw[tid] = 0.0f;
+                s_asc[0][tid] = 0u; s_asc[1][tid] = 0u;
+#pragma unroll
+                for (int b = 0; b < 2; ++b) {
+                    uint4* z = (uint4*)(s_aqs[b] + tid * kAStride4);
+                    z[0] = make_uint4(0u, 0u, 0u, 0u);
+                    z[1] = make_uint4(0u, 0u, 0u, 0u);
+                }
+            }
+        }
+        __syncthreads();
+
+        auto issue_stage = [&](int st, int buf) {
+            cp16_async(s_wqs[buf] + ur * kWStride4 + 16 * uj, wrow_p + (size_t)st * 32 + 16 * uj);
+            if (uj == 0) s_wsc[buf][ur] = *(const uint32_t*)(wrow_s + (size_t)st * 4);
+            if (ur < nrows) {
+                const uint8_t* ap = act + (size_t)s_row[ur] * ACT_ROW_B + (size_t)st * kAB;
+                cp16_async(s_aqs[buf] + ur * kAStride4 + 16 * uj, ap + 16 * uj);
+                if (uj == 0) s_asc[buf][ur] = *(const uint32_t*)(ap + 32);
+            }
+            cp_commit();
+        };
+
+        if (pf && uj == 0) {
+            pf_l2(wrow_p, (uint32_t)min((size_t)pf, W_P_ROW));
+            if constexpr (GU) pf_l2(wrow_s, (uint32_t)W_S_ROW);
+        }
+        issue_stage(0, 0);
+
+        float acc[NI][4][4] = {};
+        const bool on0 = nb0      < nrows;
+        const bool on1 = nb0 +  8 < nrows;
+        const bool on2 = nb0 + 16 < nrows;
+        const bool on3 = nb0 + 24 < nrows;
+
+        for (int st = 0; st < NS; ++st) {
+            const int buf = st & 1;
+            const int nxt = buf ^ 1;
+            if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < W_P_ROW) {
+                const size_t nb = (size_t)(st + pf / 32) * 32;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, W_P_ROW - nb));
+            }
+            if (st + 1 < NS) {
+                issue_stage(st + 1, nxt);
+                cp_wait1();
+            } else {
+                cp_wait0();
+            }
+            __syncthreads();
+
+            if (on0) {
+                uint32_t bq0[4], bq1[4];
+                ldsm4(bq0, s_aqs[buf] + b_off0);
+                if (on2) ldsm4(bq1, s_aqs[buf] + b_off1);
+                const uint32_t sfb0 = s_asc[buf][nb0 +      g];
+                const uint32_t sfb1 = on1 ? s_asc[buf][nb0 +  8 + g] : 0u;
+                const uint32_t sfb2 = on2 ? s_asc[buf][nb0 + 16 + g] : 0u;
+                const uint32_t sfb3 = on3 ? s_asc[buf][nb0 + 24 + g] : 0u;
+#pragma unroll
+                for (int i = 0; i < NI; ++i) {
+                    uint32_t a[4];
+                    ldsm4(a, s_wqs[buf] + a_off + 16 * i * kWStride4);
+                    const uint32_t sfa = s_wsc[buf][W_PER_WF * wf + 16 * i + tidx_a];
+                    mma_nvfp4_m16n8k64(acc[i][0], a, bq0[0], bq0[1], sfa, sfb0);
+                    if (on1) mma_nvfp4_m16n8k64(acc[i][1], a, bq0[2], bq0[3], sfa, sfb1);
+                    if (on2) mma_nvfp4_m16n8k64(acc[i][2], a, bq1[0], bq1[1], sfa, sfb2);
+                    if (on3) mma_nvfp4_m16n8k64(acc[i][3], a, bq1[2], bq1[3], sfa, sfb3);
+                }
+            }
+            if (st + 1 < NS) __syncthreads();
+        }
+
+        if constexpr (GU) {
+            constexpr size_t H_ROW_B = (size_t)(kInter / 64) * kAB;
+            constexpr float inv_g6 = 1.0f / (kDirectHGlobalScale * 6.0f);
+            if (on0) {
+#pragma unroll
+                for (int nn = 0; nn < 4; ++nn) {
+                    if (nb0 + 8 * nn >= nrows) break;
+#pragma unroll
+                    for (int c = 0; c < 2; ++c) {
+                        const int r = nb0 + 8 * nn + 2 * tig + c;
+                        const bool valid = (r < nrows);
+                        const float sc_r = valid ? (w_outer * s_grow[r]) : 0.0f;
+                        float hv[NI];
+#pragma unroll
+                        for (int i = 0; i < NI; ++i) {
+                            hv[i] = situ_f32(acc[i][nn][c] * sc_r, acc[i][nn][2 + c] * sc_r);
+                        }
+                        float a0 = fmaxf(fabsf(hv[0]), fabsf(hv[1]));
+                        float a1 = fmaxf(fabsf(hv[2]), fabsf(hv[3]));
+#pragma unroll
+                        for (int o = 4; o < 32; o <<= 1) {
+                            a0 = fmaxf(a0, __shfl_xor_sync(0xFFFFFFFFu, a0, o));
+                            a1 = fmaxf(a1, __shfl_xor_sync(0xFFFFFFFFu, a1, o));
+                        }
+                        float s0 = 0.0f, s1 = 0.0f;
+                        const uint8_t d0 = encode_ue4m3(a0 * inv_g6, s0);
+                        const uint8_t d1 = encode_ue4m3(a1 * inv_g6, s1);
+                        const float inv0 = (s0 > 0.0f) ? (1.0f / (kDirectHGlobalScale * s0)) : 0.0f;
+                        const float inv1 = (s1 > 0.0f) ? (1.0f / (kDirectHGlobalScale * s1)) : 0.0f;
+                        float qa[NI], qb[NI];
+#pragma unroll
+                        for (int i = 0; i < NI; ++i) {
+                            qa[i] = hv[i] * ((i < 2) ? inv0 : inv1);
+                            qb[i] = __shfl_xor_sync(0xFFFFFFFFu, qa[i], 4);
+                        }
+                        if (valid) {
+                            uint8_t* dst_slot = out_ha + (size_t)(row0 + r) * H_ROW_B + (size_t)fb * kAB;
+                            if ((g & 1) == 0) {
+                                const int bo = (4 * NI) * wf + (g >> 1);
+#pragma unroll
+                                for (int i = 0; i < NI; ++i) dst_slot[bo + 4 * i] = pack_e2m1x2(qa[i], qb[i]);
+                            }
+                            if (g == 0) {
+                                dst_slot[32 + 2 * wf + 0] = d0;
+                                dst_slot[32 + 2 * wf + 1] = d1;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (on0) {
+            const int rbase = fb * kWR + W_PER_WF * wf;
+#pragma unroll
+            for (int n = 0; n < 4; ++n) {
+                if (nb0 + 8 * n >= nrows) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = nb0 + 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        const float sc = w_outer * kDirectHGlobalScale * s_rw[r];
+                        if constexpr (ATOMIC_OUT) {
+                            float* dst = y_pair + (size_t)(tb.pairs[row0 + r] >> 3) * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                atomicAdd(&dst[rbase + 16 * i + g + 0], acc[i][n][c] * sc);
+                                atomicAdd(&dst[rbase + 16 * i + g + 8], acc[i][n][2 + c] * sc);
+                            }
+                        } else {
+                            float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
+                                dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            }
                         }
                     }
                 }
@@ -1528,6 +2370,393 @@ __global__ void __launch_bounds__(kNT) k_moe_mx8_tc_bk64(
 #endif
 }
 
+// ---- Opt-In BK=128 XOR-Swizzled TR=128 NVFP4 MoE Kernel (512 threads, 41.5 KB smem, kGHaConst!) ----
+// Halves __syncthreads() barriers (18 GU / 9 DN) AND uses cp8/cp4_async + constant SITU scale kGHaConst!
+constexpr float kGHaConst5060 = 100.0f / (6.0f * 448.0f);
+
+template <bool GU, bool ATOMIC_OUT = false>
+__global__ void __launch_bounds__(512) k_moe_sf4_tc_tr128_s_bk128(
+    const uint8_t* __restrict__ sec4_base,
+    const InkExpertDev* __restrict__ experts,
+    InkMoeTables tb,
+    const uint8_t* __restrict__ act,
+    uint8_t* __restrict__ out_ha,
+    const float* __restrict__ topk_w,
+    float* __restrict__ y_pair) {
+#if defined(INK_SM120_DEV)
+    constexpr int TR       = 128;
+    constexpr int ROWS_N   = GU ? (2 * kInter) : kHidden;
+    constexpr int ROWS_K   = GU ? kHidden : kInter;
+    constexpr int NS       = ROWS_K / 64;
+    constexpr int NS2      = NS / 2;
+    constexpr int NFB      = ROWS_N / kWR;
+    constexpr int W_PER_WF = 32;
+    constexpr int NI       = 2;
+    constexpr int kStr64   = 64;
+    constexpr size_t W_P_ROW   = ROWS_K / 2;
+    constexpr size_t W_S_ROW   = ROWS_K / 16;
+    constexpr size_t ACT_ROW_B = (size_t)NS * kAB;
+
+    __shared__ alignas(16) uint8_t s_wqs[2][kWR * kStr64];
+    __shared__ alignas(16) uint8_t s_aqs[2][TR * kStr64];
+    __shared__ alignas(8)  uint32_t s_wsc[2][kWR][2];
+    __shared__ alignas(8)  uint32_t s_asc[2][TR][2];
+    __shared__ float    s_row_g[TR];
+    __shared__ int32_t  s_row[TR];
+    __shared__ int32_t  s_tok[TR];
+    __shared__ float    s_rw[TR];
+
+    auto swiz64 = [](int row, int col16) -> int { return row * kStr64 + ((col16 ^ (row & 3)) << 4); };
+
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int wf = warp >> 2, wn = warp & 3, nb0 = 32 * wn;
+    const int g = lane >> 2, tig = lane & 3, lm = lane >> 3, l8 = lane & 7;
+    const int tidx_a = g + (tig & 1) * 8;
+    const int a_row_base = W_PER_WF * wf + 8 * (lm & 1) + l8, a_col_in = lm >> 1;
+    const int b_row0 = nb0 + 8 * (lm >> 1) + l8, b_row1 = b_row0 + 16, b_col_in = lm & 1;
+
+    const bool is_w_ld = (tid < 256);
+    const int ur = tid >> 1, uj = tid & 1;
+    const int ar = (tid - 256) >> 1, ah = tid & 1;
+
+    const int total_tiles = *tb.n_tiles;
+    const int nwork = total_tiles * NFB;
+
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[w / NFB];
+        const int fb = w % NFB, e = tl.x, row0 = tl.y;
+        const InkExpertDev ed = experts[e];
+        if ((GU ? ed.gu_code : ed.dn_code) != FMT_SF4) continue;
+        const int nrows = min(TR, tb.off[e + 1] - row0);
+        if (nrows <= 0) continue;
+
+        const uint8_t* body = sec4_base + ed.body_off;
+        float hdr[4];
+        memcpy(hdr, body, 16);
+        const float w_outer = GU ? (hdr[0] / hdr[1]) : (hdr[2] / hdr[3]);
+        const uint8_t* base_p = GU ? (body + 16) : (body + ed.dn_off);
+        const uint8_t* base_s = base_p + (size_t)ROWS_N * W_P_ROW;
+
+        const uint8_t* wrow_p = nullptr;
+        const uint8_t* wrow_s = nullptr;
+        if (is_w_ld) {
+            const int phys_row = GU ? (2 * (fb * 64 + 8 * (ur >> 4) + (ur & 7)) + ((ur >> 3) & 1)) : (fb * kWR + ur);
+            wrow_p = base_p + (size_t)phys_row * W_P_ROW;
+            wrow_s = base_s + (size_t)phys_row * W_S_ROW;
+        }
+
+        __syncthreads();
+        if (tid < TR) {
+            if (tid < nrows) {
+                const int tk = tb.tok_idx[row0 + tid];
+                const int sr = GU ? tk : (row0 + tid);
+                s_row[tid] = sr;
+                if constexpr (GU) s_row_g[tid] = *(const float*)(act + (size_t)sr * ACT_ROW_B + 36);
+                else { s_tok[tid] = tk; s_rw[tid] = topk_w[tb.pairs[row0 + tid]]; }
+            } else {
+                s_row[tid] = -1;
+                if constexpr (GU) s_row_g[tid] = 0.0f;
+                else { s_tok[tid] = 0; s_rw[tid] = 0.0f; }
+                for (int b = 0; b < 2; ++b) {
+                    s_asc[b][tid][0] = 0u; s_asc[b][tid][1] = 0u;
+                    uint4* z = (uint4*)(s_aqs[b] + tid * kStr64);
+                    z[0] = make_uint4(0u,0u,0u,0u); z[1] = make_uint4(0u,0u,0u,0u);
+                    z[2] = make_uint4(0u,0u,0u,0u); z[3] = make_uint4(0u,0u,0u,0u);
+                }
+            }
+        }
+        __syncthreads();
+
+        auto issue_stage = [&](int s2, int buf) {
+            if (is_w_ld) {
+                const size_t woff = (size_t)s2 * 64 + 16 * uj;
+                cp16_async(s_wqs[buf] + swiz64(ur, uj),     wrow_p + woff);
+                cp16_async(s_wqs[buf] + swiz64(ur, 2 + uj), wrow_p + woff + 32);
+                if (uj == 0) cp8_async(&s_wsc[buf][ur][0], wrow_s + (size_t)s2 * 8);
+            } else if (ar < nrows) {
+                const uint8_t* ap0 = act + (size_t)s_row[ar] * ACT_ROW_B + (size_t)(2 * s2) * kAB;
+                const uint8_t* ap1 = ap0 + kAB;
+                cp16_async(s_aqs[buf] + swiz64(ar, ah),     ap0 + 16 * ah);
+                cp16_async(s_aqs[buf] + swiz64(ar, 2 + ah), ap1 + 16 * ah);
+                if (ah == 0) { cp4_async(&s_asc[buf][ar][0], ap0 + 32); cp4_async(&s_asc[buf][ar][1], ap1 + 32); }
+            }
+            cp_commit();
+        };
+
+        if (is_w_ld && uj == 0) {
+            pf_l2(wrow_p, (uint32_t)min((size_t)256, W_P_ROW));
+            if constexpr (GU) pf_l2(wrow_s, (uint32_t)W_S_ROW);
+        }
+        issue_stage(0, 0);
+
+        float acc[NI][4][4] = {};
+        const bool on0 = nb0 < nrows, on1 = nb0 + 8 < nrows, on2 = nb0 + 16 < nrows, on3 = nb0 + 24 < nrows;
+
+        for (int s2 = 0; s2 < NS2; ++s2) {
+            const int buf = s2 & 1, nxt = buf ^ 1;
+            if (is_w_ld && uj == 0 && ((s2 & 3) == 0) && (size_t)(s2 + 4) * 64 < W_P_ROW) {
+                const size_t nb = (size_t)(s2 + 4) * 64;
+                pf_l2(wrow_p + nb, (uint32_t)min((size_t)256, W_P_ROW - nb));
+            }
+            if (s2 + 1 < NS2) { issue_stage(s2 + 1, nxt); cp_wait1(); } else cp_wait0();
+            __syncthreads();
+            if (on0) {
+#pragma unroll
+                for (int sub = 0; sub < 2; ++sub) {
+                    uint32_t bq0[4], bq1[4];
+                    ldsm4(bq0, s_aqs[buf] + swiz64(b_row0, sub * 2 + b_col_in));
+                    if (on2) ldsm4(bq1, s_aqs[buf] + swiz64(b_row1, sub * 2 + b_col_in));
+                    const uint32_t sfb0 = s_asc[buf][nb0 + g][sub];
+                    const uint32_t sfb1 = on1 ? s_asc[buf][nb0 + 8 + g][sub] : 0u;
+                    const uint32_t sfb2 = on2 ? s_asc[buf][nb0 + 16 + g][sub] : 0u;
+                    const uint32_t sfb3 = on3 ? s_asc[buf][nb0 + 24 + g][sub] : 0u;
+#pragma unroll
+                    for (int i = 0; i < NI; ++i) {
+                        uint32_t a[4];
+                        ldsm4(a, s_wqs[buf] + swiz64(a_row_base + 16 * i, sub * 2 + a_col_in));
+                        const uint32_t sfa = s_wsc[buf][W_PER_WF * wf + 16 * i + tidx_a][sub];
+                        mma_nvfp4_m16n8k64(acc[i][0], a, bq0[0], bq0[1], sfa, sfb0);
+                        if (on1) mma_nvfp4_m16n8k64(acc[i][1], a, bq0[2], bq0[3], sfa, sfb1);
+                        if (on2) mma_nvfp4_m16n8k64(acc[i][2], a, bq1[0], bq1[1], sfa, sfb2);
+                        if (on3) mma_nvfp4_m16n8k64(acc[i][3], a, bq1[2], bq1[3], sfa, sfb3);
+                    }
+                }
+            }
+            if (s2 + 1 < NS2) __syncthreads();
+        }
+
+        if constexpr (GU) {
+            if (on0) {
+                constexpr size_t H_ROW_B = (size_t)(kInter / 64) * kAB;
+                constexpr float inv_6g = 1.0f / (kGHaConst5060 * 6.0f);
+#pragma unroll
+                for (int n = 0; n < 4; ++n) {
+                    if ((n == 1 && !on1) || (n == 2 && !on2) || (n == 3 && !on3)) break;
+#pragma unroll
+                    for (int c = 0; c < 2; ++c) {
+                        const int r = nb0 + 8 * n + 2 * tig + c;
+                        const bool valid = (r < nrows);
+                        const float sc_r = valid ? (w_outer * s_row_g[r]) : 0.0f;
+                        const float h0 = situ_f32(acc[0][n][c] * sc_r, acc[0][n][2 + c] * sc_r);
+                        const float h1 = situ_f32(acc[1][n][c] * sc_r, acc[1][n][2 + c] * sc_r);
+                        float a0 = fmaxf(fabsf(h0), fabsf(h1));
+#pragma unroll
+                        for (int o = 4; o < 32; o <<= 1) a0 = fmaxf(a0, __shfl_xor_sync(0xFFFFFFFFu, a0, o));
+                        float s0 = 0.0f;
+                        const uint8_t d0 = encode_ue4m3(a0 * inv_6g, s0);
+                        const float inv0 = (kGHaConst5060 * s0) > 0.0f ? (1.0f / (kGHaConst5060 * s0)) : 0.0f;
+                        const float qa0 = h0 * inv0, qb0 = __shfl_xor_sync(0xFFFFFFFFu, qa0, 4);
+                        const float qa1 = h1 * inv0, qb1 = __shfl_xor_sync(0xFFFFFFFFu, qa1, 4);
+                        if (valid) {
+                            uint8_t* dst_slot = out_ha + (size_t)(row0 + r) * H_ROW_B + (size_t)fb * kAB;
+                            if ((g & 1) == 0) {
+                                const int bo = 8 * wf + (g >> 1);
+                                dst_slot[bo + 0] = pack_e2m1x2(qa0, qb0);
+                                dst_slot[bo + 4] = pack_e2m1x2(qa1, qb1);
+                            }
+                            if (g == 0) dst_slot[32 + wf] = d0;
+                        }
+                    }
+                }
+            }
+        } else if (on0) {
+            const int rbase = fb * kWR + W_PER_WF * wf;
+            const float wg = w_outer * kGHaConst5060;
+#pragma unroll
+            for (int n = 0; n < 4; ++n) {
+                if ((n == 1 && !on1) || (n == 2 && !on2) || (n == 3 && !on3)) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = nb0 + 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        const float sc = wg * s_rw[r];
+                        if constexpr (ATOMIC_OUT) {
+                            float* dst = y_pair + (size_t)s_tok[r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                atomicAdd(dst + rbase + 16 * i + g + 0, acc[i][n][c] * sc);
+                                atomicAdd(dst + rbase + 16 * i + g + 8, acc[i][n][2 + c] * sc);
+                            }
+                        } else {
+                            float* dst = y_pair + (size_t)tb.pairs[row0 + r] * kHidden;
+#pragma unroll
+                            for (int i = 0; i < NI; ++i) {
+                                dst[rbase + 16 * i + g + 0] = acc[i][n][c] * sc;
+                                dst[rbase + 16 * i + g + 8] = acc[i][n][2 + c] * sc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)sec4_base; (void)experts; (void)tb; (void)act; (void)out_ha; (void)topk_w; (void)y_pair;
+#endif
+}
+
+// ---- Opt-in Blackwell sm_120a Dense NVFP4 GEMM (reads w_outer directly on GPU -> 100% CUDA Graph capturable!) ----
+template <bool DIRECT>
+__global__ void __launch_bounds__(kNT) k_dense_sf4_tc(
+    const uint8_t* __restrict__ w_sf4,  // .strata v1.1 FMT_SF4: [float w_outer, float x_sc, qs[N*K/2], sc[N*K/16]]
+    const uint8_t* __restrict__ xa,     // [M, K/64, 48]
+    float* __restrict__ y,              // [M, N]
+    int M, int N, int K, int pf) {
+#if defined(INK_SM120_DEV)
+    __shared__ alignas(16) uint8_t  s_wqs[2][kWR * kWStride4];
+    __shared__ alignas(16) uint32_t s_wsc[2][kWR];
+    __shared__ alignas(16) uint8_t  s_aqs[2][kTR * kAStride4];
+    __shared__ alignas(16) uint32_t s_asc[2][kTR];
+    __shared__ alignas(16) float    s_agb[2][kTR];
+
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int wf = warp >> 2, wn = warp & 3, nb0 = 16 * wn;
+    const int g = lane >> 2, tig = lane & 3, lm = lane >> 3, l8 = lane & 7;
+    const int tidx_a = g + (tig & 1) * 8;
+    const int a_off = (64 * wf + 8 * (lm & 1) + l8) * kWStride4 + 16 * (lm >> 1);
+    const int b_off = (nb0 + 8 * (lm >> 1) + l8) * kAStride4 + 16 * (lm & 1);
+    const int ur = tid >> 1, uj = tid & 1;
+
+    const int rbase = blockIdx.x * kWR;
+    const int row0  = blockIdx.y * kTR;
+    const int nrows = min(kTR, M - row0);
+    if (nrows <= 0 || rbase >= N) return;
+
+    const float    w_outer = *reinterpret_cast<const float*>(w_sf4);
+    const uint8_t* w_u8    = w_sf4 + 16u;
+    const size_t   W_P_ROW = (size_t)(K / 2);
+    const size_t   W_S_ROW = (size_t)(K / 16);
+    const uint8_t* w_sc    = w_u8 + (size_t)N * W_P_ROW;
+    const int      NS      = K / 64;
+    const size_t   ACT_ROW_B = (size_t)NS * kAB;
+    const int      wrow_i  = min(rbase + ur, N - 1);
+    const uint8_t* wrow_p  = w_u8 + (size_t)wrow_i * W_P_ROW;
+    const uint8_t* wrow_s  = w_sc + (size_t)wrow_i * W_S_ROW;
+
+    if (tid < kTR) {
+        if (tid >= nrows) {
+            s_asc[0][tid] = 0u; s_asc[1][tid] = 0u;
+            s_agb[0][tid] = 0.0f; s_agb[1][tid] = 0.0f;
+            for (int b = 0; b < 2; ++b) {
+                uint4* z = (uint4*)(s_aqs[b] + tid * kAStride4);
+                z[0] = make_uint4(0u, 0u, 0u, 0u);
+                z[1] = make_uint4(0u, 0u, 0u, 0u);
+            }
+        } else if constexpr (DIRECT) {
+            s_agb[0][tid] = *reinterpret_cast<const float*>(xa + (size_t)(row0 + tid) * ACT_ROW_B + 36);
+        }
+    }
+    __syncthreads();
+
+    auto issue = [&](int st, int buf) {
+        cp16_async(s_wqs[buf] + ur * kWStride4 + 16 * uj, wrow_p + (size_t)st * 32 + 16 * uj);
+        if (uj == 0) s_wsc[buf][ur] = *(const uint32_t*)(wrow_s + (size_t)st * 4);
+        if (tid < 2 * kTR) {
+            const int r = tid >> 1, h = tid & 1;
+            if (r < nrows) cp16_async(s_aqs[buf] + r * kAStride4 + 16 * h, xa + (size_t)(row0 + r) * ACT_ROW_B + (size_t)st * kAB + 16 * h);
+        } else if (tid < 3 * kTR) {
+            const int r = tid - 2 * kTR;
+            if (r < nrows) {
+                if constexpr (DIRECT) {
+                    s_asc[buf][r] = *(const uint32_t*)(xa + (size_t)(row0 + r) * ACT_ROW_B + (size_t)st * kAB + 32);
+                } else {
+                    const uint2 meta = *(const uint2*)(xa + (size_t)(row0 + r) * ACT_ROW_B + (size_t)st * kAB + 32);
+                    s_asc[buf][r] = meta.x;
+                    s_agb[buf][r] = __uint_as_float(meta.y);
+                }
+            }
+        }
+        cp_commit();
+    };
+
+    if (pf && uj == 0) {
+        pf_l2(wrow_p, (uint32_t)min((size_t)pf, W_P_ROW));
+        pf_l2(wrow_s, (uint32_t)W_S_ROW);
+    }
+    issue(0, 0);
+    float acc[4][2][4] = {};
+    const bool on0 = nb0 < nrows;
+    const bool on1 = nb0 + 8 < nrows;
+
+    for (int st = 0; st < NS; ++st) {
+        const int buf = st & 1, nxt = buf ^ 1;
+        if (pf && uj == 0 && (st % (pf / 32)) == 0 && (size_t)(st + pf / 32) * 32 < W_P_ROW) {
+            const size_t nb = (size_t)(st + pf / 32) * 32;
+            pf_l2(wrow_p + nb, (uint32_t)min((size_t)pf, W_P_ROW - nb));
+        }
+        if (st + 1 < NS) { issue(st + 1, nxt); cp_wait1(); } else cp_wait0();
+        __syncthreads();
+        if (on0) {
+            uint32_t bq[4];
+            ldsm4(bq, s_aqs[buf] + b_off);
+            const uint32_t sfb0 = s_asc[buf][nb0 + g];
+            const uint32_t sfb1 = on1 ? s_asc[buf][nb0 + 8 + g] : 0u;
+            if constexpr (DIRECT) {
+#pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    uint32_t a[4];
+                    ldsm4(a, s_wqs[buf] + a_off + 16 * i * kWStride4);
+                    const uint32_t sfa = s_wsc[buf][64 * wf + 16 * i + tidx_a];
+                    mma_nvfp4_m16n8k64(acc[i][0], a, bq[0], bq[1], sfa, sfb0);
+                    if (on1) mma_nvfp4_m16n8k64(acc[i][1], a, bq[2], bq[3], sfa, sfb1);
+                }
+            } else {
+                const float gb00 = s_agb[buf][nb0 + 2 * tig + 0];
+                const float gb01 = s_agb[buf][nb0 + 2 * tig + 1];
+                const float gb10 = on1 ? s_agb[buf][nb0 + 8 + 2 * tig + 0] : 0.0f;
+                const float gb11 = on1 ? s_agb[buf][nb0 + 8 + 2 * tig + 1] : 0.0f;
+#pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    uint32_t a[4];
+                    ldsm4(a, s_wqs[buf] + a_off + 16 * i * kWStride4);
+                    const uint32_t sfa = s_wsc[buf][64 * wf + 16 * i + tidx_a];
+                    float d0[4] = {};
+                    mma_nvfp4_m16n8k64(d0, a, bq[0], bq[1], sfa, sfb0);
+                    acc[i][0][0] = fmaf(d0[0], gb00, acc[i][0][0]);
+                    acc[i][0][1] = fmaf(d0[1], gb01, acc[i][0][1]);
+                    acc[i][0][2] = fmaf(d0[2], gb00, acc[i][0][2]);
+                    acc[i][0][3] = fmaf(d0[3], gb01, acc[i][0][3]);
+                    if (on1) {
+                        float d1[4] = {};
+                        mma_nvfp4_m16n8k64(d1, a, bq[2], bq[3], sfa, sfb1);
+                        acc[i][1][0] = fmaf(d1[0], gb10, acc[i][1][0]);
+                        acc[i][1][1] = fmaf(d1[1], gb11, acc[i][1][1]);
+                        acc[i][1][2] = fmaf(d1[2], gb10, acc[i][1][2]);
+                        acc[i][1][3] = fmaf(d1[3], gb11, acc[i][1][3]);
+                    }
+                }
+            }
+        }
+        if (st + 1 < NS) __syncthreads();
+    }
+
+    if (on0) {
+        const int rb = rbase + 64 * wf;
+#pragma unroll
+        for (int n = 0; n < 2; ++n) {
+            if (n == 1 && !on1) break;
+#pragma unroll
+            for (int c = 0; c < 2; ++c) {
+                const int r = nb0 + 8 * n + 2 * tig + c;
+                if (r < nrows) {
+                    const float sc = DIRECT ? (w_outer * s_agb[0][r]) : w_outer;
+                    float* dst = y + (size_t)(row0 + r) * N;
+#pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        const int c0 = rb + 16 * i + g;
+                        if (c0 < N) dst[c0] = acc[i][n][c] * sc;
+                        if (c0 + 8 < N) dst[c0 + 8] = acc[i][n][2 + c] * sc;
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)w_sf4; (void)xa; (void)y; (void)M; (void)N; (void)K; (void)pf;
+#endif
+}
+
+
 }  // namespace
 
 bool available() {
@@ -1547,78 +2776,7 @@ bool available() {
 #endif
 }
 
-void quantize_act_fp4(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream) {
-    const int64_t nblk = (int64_t)rows * (cols / 64);
-    const unsigned blocks = (unsigned)std::max<int64_t>(1, (nblk + 7) / 8);
-    k_quant_act_fp4<<<blocks, 256, 0, stream>>>(x, nblk, xa);
-}
 
-void quantize_act_fp4_row(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream) {
-    if (rows <= 0) return;
-    k_quant_act_fp4_row<<<(unsigned)rows, 256, 0, stream>>>(x, rows, cols, xa);
-}
-
-void quantize_act_mx8(const float* x, int rows, int cols, uint8_t* xq, uint8_t* xsc, cudaStream_t stream) {
-    const int64_t nblk = (int64_t)rows * (cols / 32);
-    const unsigned blocks = (unsigned)std::max<int64_t>(1, (nblk + 7) / 8);
-    k_quant_act_mx8<<<blocks, 256, 0, stream>>>(x, nblk, xq, xsc);
-}
-
-// STRATA_INK_SM120_PF (gate/up, default 128) and STRATA_INK_SM120_PFD (down, default off): L2 prefetch window per weight row in bytes (multiple of 32), 0 = off.
-// On a 5090 the 32 B per row and K64 step weight reads left the memory system at about half its bandwidth; asking for 128 contiguous bytes of a row
-// ahead of time takes the gate/up phase at 64 slots from 20.6 to 13.1 ms (SQ-20). A prefetch is a hint: it changes no result.
-static int sf4_pf_env(bool gu) {
-    static const int v_gu = [] { const char* e = std::getenv("STRATA_INK_SM120_PF"); return e ? std::atoi(e) : 128; }();
-    static const int v_dn = [] { const char* e = std::getenv("STRATA_INK_SM120_PFD"); return e ? std::atoi(e) : 0; }();
-    return gu ? v_gu : v_dn;
-}
-
-// The MX8 kernel (layers 20-23 of a native NVFP4 file, SQ-20) takes the same window only on request: STRATA_INK_SM120_PF_MX8 = 1 (128 B) or a window in bytes,
-// default 0 = no prefetch, which is the code path before the prefetch existed. It becomes the default once its memcheck has run.
-static int mx8_pf_env() {
-    static const int v = [] {
-        const char* e = std::getenv("STRATA_INK_SM120_PF_MX8");
-        const int x = e ? std::atoi(e) : 0;
-        return x == 1 ? 128 : (x >= 32 ? (x / 32) * 32 : 0);
-    }();
-    return v;
-}
-
-void moe_sf4_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                   const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream) {
-    const int pf = sf4_pf_env(true);
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_sf4_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-    else if (tile_rows <= 32) k_moe_sf4_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-    else                      k_moe_sf4_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-}
-
-void moe_sf4_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                   const uint8_t* ha, const float* topk_w, float* y_pair, int max_tiles, int tile_rows, cudaStream_t stream) {
-    const int pf = sf4_pf_env(false);
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_sf4_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-    else if (tile_rows <= 32) k_moe_sf4_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-    else                      k_moe_sf4_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-}
-
-void moe_mx8_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                   const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
-                   int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
-    else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
-    else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
-}
-
-void moe_mx8_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                   const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
-                   int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
-    else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
-    else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
-}
 
 // ---- Opt-in RTX 5090 Prefill TR=128 (kNT=512, 16 warps, BK=128 XOR-swizzled) SF4 MoE Kernel ----
 // Halves expert weight reads AND halves __syncthreads() barriers (18 GU / 9 DN) in 41.5 KB static smem!
@@ -2608,47 +3766,186 @@ void moe_mx8_dn_tc_atomic(const uint8_t* sec4_base, const InkExpertDev* experts,
     k_moe_mx8_tc_tr128<false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, nullptr, y_out_atomic);
 }
 
-void moe_sf4_gu_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                      const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 4096);
-    const int pf = (tile_rows <= 16) ? 256 : 0;
-    if (tile_rows <= 16)      k_moe_sf4_tc_bk128<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-    else if (tile_rows <= 32) k_moe_sf4_tc_bk128<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-    else if (tile_rows <= 64) k_moe_sf4_tc_bk128<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
-    else                      k_moe_sf4_tc_tr128<true><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// One MoE GEMM dispatch for every sm_120 card. The variant for a batch range comes from the card's table row (strata/core/ink_sm120_table.hpp) through
+// `sel`; with sel == nullptr (or sel->active false) the shipped kernels run with the shipped prefetch rule, exactly as before the RTX 50 work.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+using strata::core::Sm120Tc;
+
+static inline bool sel_on(const Sm120MoeSel* s) { return s && s->active; }
+
+// STRATA_INK_SM120_PF (gate/up, default 128) and STRATA_INK_SM120_PFD (down, default 0): L2 prefetch window per weight row in bytes (multiple of 32), 0 = off.
+// On a 5090 the 32 B per row and K64 step weight reads left the memory system at about half its bandwidth; asking for 128 contiguous bytes of a row
+// ahead of time takes the gate/up phase at 64 slots from 20.6 to 13.1 ms (SQ-20). A prefetch is a hint: it changes no result.
+static int sf4_pf_env(bool gu) {
+    static const int v_gu = [] { const char* e = std::getenv("STRATA_INK_SM120_PF"); return e ? std::atoi(e) : 128; }();
+    static const int v_dn = [] { const char* e = std::getenv("STRATA_INK_SM120_PFD"); return e ? std::atoi(e) : 0; }();
+    return gu ? v_gu : v_dn;
 }
 
-void moe_sf4_dn_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                      const uint8_t* ha, const float* topk_w, float* y_pair, int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 4096);
-    const int pf = (tile_rows <= 16) ? 256 : 0;
-    if (tile_rows <= 16)      k_moe_sf4_tc_bk128<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-    else if (tile_rows <= 32) k_moe_sf4_tc_bk128<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-    else if (tile_rows <= 64) k_moe_sf4_tc_bk128<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
-    else                      k_moe_sf4_tc_tr128<false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
+// The MX8 kernel (layers 20-23 of a native NVFP4 file, SQ-20) takes the same window only on request: STRATA_INK_SM120_PF_MX8 = 1 (128 B) or a window in bytes,
+// default 0 = no prefetch, which is the code path before the prefetch existed.
+static int mx8_pf_env() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_INK_SM120_PF_MX8");
+        const int x = e ? std::atoi(e) : 0;
+        return x == 1 ? 128 : (x >= 32 ? (x / 32) * 32 : 0);
+    }();
+    return v;
 }
 
-void moe_mx8_gu_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                      const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
-                      int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 4096);
-    const int pf = (tile_rows <= 16) ? 256 : 0;
-    if (tile_rows <= 16)      k_moe_mx8_tc_bk64<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
-    else if (tile_rows <= 32) k_moe_mx8_tc_bk64<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
-    else if (tile_rows <= 64) k_moe_mx8_tc_bk64<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
-    else                      k_moe_mx8_tc_tr128<true><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr);
+void quantize_act_fp4(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream, bool per_row) {
+    if (per_row) {
+        if (rows <= 0) return;
+        k_quant_act_fp4_row<<<(unsigned)rows, 256, 0, stream>>>(x, rows, cols, xa);
+        return;
+    }
+    const int64_t nblk = (int64_t)rows * (cols / 64);
+    const unsigned blocks = (unsigned)std::max<int64_t>(1, (nblk + 7) / 8);
+    k_quant_act_fp4<<<blocks, 256, 0, stream>>>(x, nblk, xa);
 }
 
-void moe_mx8_dn_tc_v2(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
-                      const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
-                      int max_tiles, int tile_rows, cudaStream_t stream) {
-    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 4096);
-    const int pf = (tile_rows <= 16) ? 256 : 0;
-    if (tile_rows <= 16)      k_moe_mx8_tc_bk64<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
-    else if (tile_rows <= 32) k_moe_mx8_tc_bk64<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
-    else if (tile_rows <= 64) k_moe_mx8_tc_bk64<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
-    else                      k_moe_mx8_tc_tr128<false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair);
+void quantize_act_fp4_row(const float* x, int rows, int cols, uint8_t* xa, cudaStream_t stream) {
+    quantize_act_fp4(x, rows, cols, xa, stream, true);
 }
+
+void quantize_act_mx8(const float* x, int rows, int cols, uint8_t* xq, uint8_t* xsc, cudaStream_t stream) {
+    const int64_t nblk = (int64_t)rows * (cols / 32);
+    const unsigned blocks = (unsigned)std::max<int64_t>(1, (nblk + 7) / 8);
+    k_quant_act_mx8<<<blocks, 256, 0, stream>>>(x, nblk, xq, xsc);
+}
+
+void moe_sf4_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                   const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream, const Sm120MoeSel* sel) {
+    const Sm120Tc v = sel_on(sel) ? sel->sf4 : Sm120Tc::Base;
+    const int pf = (sel_on(sel) && sel->pf_gu >= 0) ? sel->pf_gu : sf4_pf_env(true);
+    const bool big = (v == Sm120Tc::Bk128 || v == Sm120Tc::Tr128 || (tile_rows > 64 && v != Sm120Tc::Tr128Small && v != Sm120Tc::Tr128Bk128));
+    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), big ? 4096 : 2048);
+    if (tile_rows > 64) {
+        if (v == Sm120Tc::Tr128Small)     k_moe_sf4_tc_tr128_s<true, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else if (v == Sm120Tc::Tr128Bk128) k_moe_sf4_tc_tr128_s_bk128<true, false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
+        else                               k_moe_sf4_tc_tr128<true><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr);
+        return;
+    }
+    if (v == Sm120Tc::Bk128) {
+        if (tile_rows <= 16)      k_moe_sf4_tc_bk128<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else if (tile_rows <= 32) k_moe_sf4_tc_bk128<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else                      k_moe_sf4_tc_bk128<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+    } else if (v == Sm120Tc::Direct) {
+        if (tile_rows <= 16)      k_moe_sf4_tc_direct<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else if (tile_rows <= 32) k_moe_sf4_tc_direct<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else                      k_moe_sf4_tc_direct<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+    } else {
+        if (tile_rows <= 16)      k_moe_sf4_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else if (tile_rows <= 32) k_moe_sf4_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+        else                      k_moe_sf4_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xa, ha, nullptr, nullptr, pf);
+    }
+}
+
+void moe_sf4_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                   const uint8_t* ha, const float* topk_w, float* y_pair, int max_tiles, int tile_rows, cudaStream_t stream,
+                   bool atomic_reduce, const Sm120MoeSel* sel) {
+    const Sm120Tc v = sel_on(sel) ? sel->sf4 : Sm120Tc::Base;
+    const int pf = (sel_on(sel) && sel->pf_dn >= 0) ? sel->pf_dn : sf4_pf_env(false);
+    const bool big = (v == Sm120Tc::Bk128 || v == Sm120Tc::Tr128 || (tile_rows > 64 && v != Sm120Tc::Tr128Small && v != Sm120Tc::Tr128Bk128));
+    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), big ? 4096 : 2048);
+    if (tile_rows > 64) {
+        if (v == Sm120Tc::Tr128Small) {
+            if (atomic_reduce) k_moe_sf4_tc_tr128_s<false, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else               k_moe_sf4_tc_tr128_s<false, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        } else if (v == Sm120Tc::Tr128Bk128) {
+            if (atomic_reduce) k_moe_sf4_tc_tr128_s_bk128<false, true><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
+            else               k_moe_sf4_tc_tr128_s_bk128<false, false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
+        } else {
+            // the 5090 TR=128 kernel writes pairs (its atomic form is moe_sf4_dn_tc_atomic)
+            k_moe_sf4_tc_tr128<false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair);
+        }
+        return;
+    }
+    if (v == Sm120Tc::Bk128) {
+        if (tile_rows <= 16)      k_moe_sf4_tc_bk128<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        else if (tile_rows <= 32) k_moe_sf4_tc_bk128<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        else                      k_moe_sf4_tc_bk128<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+    } else if (v == Sm120Tc::Direct) {
+        if (atomic_reduce) {
+            if (tile_rows <= 16)      k_moe_sf4_tc_direct<false, 16, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else if (tile_rows <= 32) k_moe_sf4_tc_direct<false, 32, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else                      k_moe_sf4_tc_direct<false, 64, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        } else {
+            if (tile_rows <= 16)      k_moe_sf4_tc_direct<false, 16, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else if (tile_rows <= 32) k_moe_sf4_tc_direct<false, 32, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else                      k_moe_sf4_tc_direct<false, 64, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        }
+    } else {
+        if (atomic_reduce) {
+            if (tile_rows <= 16)      k_moe_sf4_tc<false, 16, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else if (tile_rows <= 32) k_moe_sf4_tc<false, 32, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else                      k_moe_sf4_tc<false, 64, true><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        } else {
+            if (tile_rows <= 16)      k_moe_sf4_tc<false, 16, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else if (tile_rows <= 32) k_moe_sf4_tc<false, 32, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+            else                      k_moe_sf4_tc<false, 64, false><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, ha, nullptr, topk_w, y_pair, pf);
+        }
+    }
+}
+
+void moe_mx8_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                   const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
+                   int max_tiles, int tile_rows, cudaStream_t stream, const Sm120MoeSel* sel) {
+    const Sm120Tc v = sel_on(sel) ? sel->mx8 : Sm120Tc::Base;
+    const bool on = sel_on(sel);
+    const int pf = on ? (sel->pf_dn >= 0 ? sel->pf_dn : 0) : mx8_pf_env();
+    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), (v == Sm120Tc::Bk128 || v == Sm120Tc::Tr128) ? 4096 : 2048);
+    if (tile_rows > 64) {
+        // (the 5060 Ti hand-over ran the 64-row kernel on 128-row tiles here; the TR=128 kernel is the one that covers them)
+        k_moe_mx8_tc_tr128<true><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr);
+        return;
+    }
+    if (v == Sm120Tc::Bk128) {
+        if (tile_rows <= 16)      k_moe_mx8_tc_bk64<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+        else if (tile_rows <= 32) k_moe_mx8_tc_bk64<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+        else                      k_moe_mx8_tc_bk64<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+    } else {
+        if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+        else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+        else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, pf);
+    }
+}
+
+void moe_mx8_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
+                   const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
+                   int max_tiles, int tile_rows, cudaStream_t stream, const Sm120MoeSel* sel) {
+    const Sm120Tc v = sel_on(sel) ? sel->mx8 : Sm120Tc::Base;
+    const bool on = sel_on(sel);
+    // shipped: the MX8 down kernel never prefetches (pf 0); only a row that asks for it does
+    const int pf = on ? (sel->pf_dn >= 0 ? sel->pf_dn : 0) : 0;
+    const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), (v == Sm120Tc::Bk128 || v == Sm120Tc::Tr128) ? 4096 : 2048);
+    if (tile_rows > 64) {
+        k_moe_mx8_tc_tr128<false><<<grid, 512, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair);
+        return;
+    }
+    if (v == Sm120Tc::Bk128) {
+        if (tile_rows <= 16)      k_moe_mx8_tc_bk64<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+        else if (tile_rows <= 32) k_moe_mx8_tc_bk64<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+        else                      k_moe_mx8_tc_bk64<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+    } else {
+        if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+        else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+        else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, pf);
+    }
+}
+
+void dense_sf4_gemm_tc(const uint8_t* w_sf4, const uint8_t* xa_fp4, float* y_f32,
+                       int M, int N, int K, cudaStream_t stream, bool direct) {
+    const int pf = sf4_pf_env(true);
+    dim3 grid((N + kWR - 1) / kWR, (M + kTR - 1) / kTR);
+    if (direct) {
+        k_dense_sf4_tc<true><<<grid, kNT, 0, stream>>>(w_sf4, xa_fp4, y_f32, M, N, K, pf);
+    } else {
+        k_dense_sf4_tc<false><<<grid, kNT, 0, stream>>>(w_sf4, xa_fp4, y_f32, M, N, K, pf);
+    }
+}
+
 
 void test_sf4_gemm_tc(const uint8_t* w_u8, const uint8_t* w_sc, float w_outer,
                       const float* x_f32, float* y_f32, int M, int N, int K, cudaStream_t stream) {

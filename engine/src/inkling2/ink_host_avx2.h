@@ -15,6 +15,14 @@ float dot_sf4_row(const uint8_t* p, const uint8_t* sc, float w_outer, const floa
                   const float* e4_lut) noexcept;
 float dot_mx8_row(const uint8_t* w, const uint8_t* sc, const float* x, int cols,
                   const float* e4_lut, const float* u8_lut) noexcept;
+// Multi-token SF4 / MX8 row dot products (T in [1..16]): unpacks each weight block ONCE across all T tokens!
+// MX8 uses pure AVX2 SIMD E4M3FN->FP32 decode matching e4m3_lut_h() bit-for-bit (zero scalar LUT loads).
+void dot_sf4_row_multi(const uint8_t* p, const uint8_t* sc, float w_outer,
+                       const float* const* xs, int T, int cols,
+                       const float* e4_lut, float* out) noexcept;
+void dot_mx8_row_multi(const uint8_t* w, const uint8_t* sc,
+                       const float* const* xs, int T, int cols,
+                       const float* u8_lut, float* out) noexcept;
 float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_d, float x_s,
                    float eff, const int8_t (*s15_lut)[5]) noexcept;
 

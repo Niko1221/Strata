@@ -70,7 +70,7 @@ public:
             const char* e = std::getenv(k);
             return e && (e[0] == '1' || e[0] == 't' || e[0] == 'T');
         };
-        return on("STRATA_INK_COLD_16K") || on("STRATA_INK_ELASTIC_1M") || on("STRATA_INK_RTX5060TI");
+        return on("STRATA_INK_COLD_16K") || on("STRATA_INK_ELASTIC_1M");
     }
 
     /// Open `strata_path` for unbuffered NVMe streaming into a bounded LRU cache of `budget_bytes`.
@@ -151,13 +151,19 @@ public:
         pool_bytes_ = static_cast<size_t>(n_slots_) * slot_stride_;
 
         if (alloc_fn_) {
-            // Ensure `align` (up to 16 KiB) buffer alignment even when custom allocator (e.g. cudaHostAlloc) aligns to 4 KiB.
-            const size_t pad = (align > 4096u) ? align : 0u;
-            pool_raw_ = alloc_fn_(pool_bytes_ + pad);
-            if (pool_raw_) {
-                const uintptr_t addr = reinterpret_cast<uintptr_t>(pool_raw_);
-                const uintptr_t aligned_addr = (addr + align - 1u) & ~(static_cast<uintptr_t>(align) - 1u);
-                pool_ = reinterpret_cast<uint8_t*>(aligned_addr);
+            if (cold_16k_enabled()) {
+                // Opt-in 16 KiB mode: ensure `align` (up to 16 KiB) buffer alignment even when the custom allocator (e.g. cudaHostAlloc) aligns to 4 KiB.
+                // Always over-allocate by `align` so the aligned-up pointer can never run past the block (review finding B20).
+                pool_raw_ = alloc_fn_(pool_bytes_ + align);
+                if (pool_raw_) {
+                    const uintptr_t addr = reinterpret_cast<uintptr_t>(pool_raw_);
+                    const uintptr_t aligned_addr = (addr + align - 1u) & ~(static_cast<uintptr_t>(align) - 1u);
+                    pool_ = reinterpret_cast<uint8_t*>(aligned_addr);
+                }
+            } else {
+                // the shipped allocation, byte for byte
+                pool_raw_ = alloc_fn_(pool_bytes_);
+                pool_ = pool_raw_;
             }
             custom_alloc_ = true;
         } else {
@@ -180,7 +186,7 @@ public:
         }
         // Probe O_DIRECT compatibility on Linux overlayfs/virtual filesystems; gracefully fall back to buffered fd on EINVAL.
 #if !defined(_WIN32) && defined(O_DIRECT)
-        if (direct_ && !descs_.empty()) {
+        if (cold_16k_enabled() && direct_ && !descs_.empty()) {   // opt-in only: the shipped open() does not read at open time
             const ssize_t probe = ::pread(fd_, pool_, align, 0);
             if (probe < 0 && errno == EINVAL) {
                 ::close(fd_);
