@@ -26,6 +26,10 @@
 #include <cstdint>
 #include <cstdlib>
 
+#ifdef STRATA_INKLING_DISTRIBUTED
+#include "ink_remote_experts.cuh"
+#endif
+
 namespace strata::ink {
 
 // ---- Q8_1_G64 activation block for S_K experts (matches strata::quant::sk::BlockQ8_1_G64 bit-for-bit!) ----
@@ -3875,13 +3879,23 @@ inline void launch_ink_moe(
     InkMoeWorkspace& ws,
     float route_scale = kInkRouteScale,
     bool force_exact_dec = false,
-    bool run_reduce8 = true) {
+    bool run_reduce8 = true
+#ifdef STRATA_INKLING_DISTRIBUTED
+    , InkRemoteExperts* remote = nullptr, int layer = 0
+#endif
+    ) {
     // 1. Exact Top-8 / 128 sigmoid router
     launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec);
 
+#ifdef STRATA_INKLING_DISTRIBUTED
+    if (remote) remote->submit(layer, M, force_exact_dec, const_cast<float*>(x_f32), ws, st);
+#endif
     // 2. Dispatch GPU-resident experts
     launch_ink_moe_dispatch_only(st, sec4_base, experts, info, x_f32, M, ws, force_exact_dec, false);
 
+#ifdef STRATA_INKLING_DISTRIBUTED
+    if (remote) remote->collect(M, ws, st);
+#endif
     // 3. Deterministic 8-slot weighted sum -> y_out [M, 2304] (skipped when caller fuses reduce8 + post-MLP ShortConv4!)
     if (run_reduce8) {
         dim3 rgrid((kInkHidden + 255) / 256, M);

@@ -3,6 +3,7 @@
 #include "strata/tp/mpi_runtime.hpp"
 #include <cuda_runtime_api.h>
 #include <nccl.h>
+#include <initializer_list>
 
 namespace strata::tp {
 class NcclSession {
@@ -13,6 +14,8 @@ public:
     NcclSession& operator=(const NcclSession&) = delete;
     void sum(float* data, size_t count, cudaStream_t stream);
     void broadcast_bytes(void* data, size_t bytes, cudaStream_t stream);
+    struct ByteBuffer { void* data; size_t bytes; };
+    void broadcast_bytes(std::initializer_list<ByteBuffer> buffers, cudaStream_t stream);
     void send(const float* data, size_t count, int peer, cudaStream_t stream);
     void receive(float* data, size_t count, int peer, cudaStream_t stream);
     void gather(const float* input, float* output, size_t count, cudaStream_t stream);

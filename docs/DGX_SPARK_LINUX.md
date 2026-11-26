@@ -192,3 +192,53 @@ that contain the drafter. Add `--vision FILE` on an image-capable configuration.
 Qwen3.8-Flash-Next decode on the 48-SM GB10 is limited by the GPU's work, about 930 kernel launches per token. No configuration switch measured here moved it more
 than a few percent. A DFlash2 drafter is slower here than the MTP drafter (37 against 45 tok/s) and is not used. Teacher-forced quality over
 long text and task suites was run only for the prompt path (above).
+
+## Inkling-2-Mini across two Spark hosts
+
+Build the optional CUDA expert worker with the same CUDA 13, MPI and NCCL
+installation on both hosts. Use a shared path or place the same executable and
+native model pack at the same absolute paths on each host. The vision pack
+and tokenizer are needed on the coordinator. Enable the cable interfaces and
+test the NCCL link as described in [NVIDIA's two-Spark connection guide](https://build.nvidia.com/spark/connect-multiple-sparks).
+
+```sh
+cmake -S engine/src/inkling2 -B build-inkling -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
+  -DSTRATA_INK_CUDA_ARCHS=121 -DCMAKE_CUDA_ARCHITECTURES=121 \
+  -DSTRATA_INKLING_DISTRIBUTED=ON
+cmake --build build-inkling --target strata-inkling
+mpirun -np 2 --host "$SPARK1:1,$SPARK2:1" --map-by ppr:1:node --bind-to none \
+  "$INKLING" --serve --mpi-experts --native "$MODEL" --vision "$VISION" \
+  --parallel 4 --max-context 262144 --draft dspark
+```
+
+Set `INKLING`, `MODEL` and `VISION` to absolute paths. Configure the appropriate
+NCCL HCA and bootstrap interface for the pair. Report the actual `NET/IB`
+transport from the NCCL startup log when comparing performance. The native
+protocol belongs to rank 0. For the HTTP service, give the launcher a basename
+beginning with `strata-inkling` and forward metadata queries such as `--info`
+to the coordinator's binary outside MPI.
+
+Each rank loads half the routed experts. Rank 0 owns the tokenizer-facing
+protocol, routing, attention, KV, ShortConv, sampling, vision and DSpark.
+The peer returns weighted expert rows. Rank 0 puts each row in its original
+top-k position before the native reduction. The rank-local weight allocations
+exclude the other rank's expert bodies. KV lives on the coordinator, so use
+the `READY` capacity and exercise the intended input lengths and concurrency.
+The two-host path uses eager expert dispatch. Both ranks broadcast activations
+and routing data in one NCCL group. On the coordinator a CUDA event orders
+each received result before its reduction, with a bounded host check every
+eight visits. The worker checks each send. Use matching engine builds on both hosts.
+
+To check sequential cache reuse and four concurrent requests on one and two hosts, use an
+MPI launcher wrapper that forwards arguments to the executable without
+adding model options. Both binaries must use the same source revision and
+CUDA build settings. Run the hardware check under a wall-time limit.
+
+```sh
+c++ -std=c++17 -Iengine/include -Iengine/src/inkling2/cuda \
+  engine/tests/inkling2/check_shard_directory.cpp -o /tmp/check-inkling-directory
+/tmp/check-inkling-directory
+python3 engine/tests/inkling2/check_mpi_experts.py \
+  --single "$INKLING" --pair "$MPI_LAUNCHER" --model "$MODEL"
+```

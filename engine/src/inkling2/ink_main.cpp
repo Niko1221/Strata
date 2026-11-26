@@ -17,6 +17,9 @@
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_serve.h"
+#ifdef STRATA_INKLING_DISTRIBUTED
+#include "ink_mpi.h"
+#endif
 #include "ink_vision.h"
 #include "strata/core/device_error_exit.hpp"
 #include "strata/core/volta_forever.hpp"
@@ -834,6 +837,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[inkling] volta-forever detected: setting CUDA_MODULE_LOADING=LAZY\n");
     }
 #endif
+    bool mpi_experts = false;
     ServeConfig cfg;
     cfg.version = INKLING_VERSION;
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
@@ -855,6 +859,8 @@ int main(int argc, char** argv) {
             mode_info = true; info_file = next();
         } else if (a == "--export-tokenizer") {
             mode_export = true; export_file = next(); export_dir = next();
+        } else if (a == "--mpi-experts") {
+            mpi_experts = true;
         } else if (a == "--serve") {
             mode_serve = true;
         } else if (a == "--bench") {
@@ -974,6 +980,9 @@ int main(int argc, char** argv) {
         } else if (a == "--help" || a == "-h") {
             printf("strata-inkling %s - Unified Inkling-2-Mini (.strata v1.1 / HF safetensors / .gguf) Shape Engine\n"
                    "  --version\n"
+#ifdef STRATA_INKLING_DISTRIBUTED
+                   "  --serve --mpi-experts --native MODEL.strata (two hosts, one CUDA device each)\n"
+#endif
                    "  --info PATH [--vision VISION] [--dspark PATH]\n"
                    "  --export-tokenizer PATH OUT_DIR\n"
                    "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv auto|fp16|fp8|k8v8|k8v4]\n"
@@ -1025,6 +1034,25 @@ int main(int argc, char** argv) {
 
     if (mode_serve) {
         strata::core::set_serve_error_line(true);
+    }
+
+    if (mpi_experts) {
+#ifdef STRATA_INKLING_DISTRIBUTED
+        const auto& o = cfg.bopts;
+        if (!mode_serve || mode_info || mode_bench || mode_selfcheck || mode_export ||
+            spec_check_n > 0 || ring_check_stride > 0 || batch_check_n > 0 ||
+            !kld_ref.empty() || !dump_ref.empty() || cfg.model_path.empty() || cfg.force_cpu ||
+            o.gpus != 1 || !o.gpu_ids.empty() || o.gpu_index != 0 || !o.layer_split.empty() ||
+            o.ep_split != 0.5 || o.ssd_experts || o.vram_experts_gb >= 0 || o.ram_experts_gb >= 0) {
+            std::fprintf(stderr, "--mpi-experts requires --serve with resident native experts and one GPU per host\n");
+            return 2;
+        }
+        return run_mpi_experts(argc, argv, cfg.model_path, o,
+            [&](InkModelFile& model, InkBackend& backend) { return run_serve_loop(cfg, model, backend); });
+#else
+        std::fprintf(stderr, "--mpi-experts requires a STRATA_INKLING_DISTRIBUTED CUDA build\n");
+        return 2;
+#endif
     }
 
 #ifdef INKLING_ENABLE_CUDA

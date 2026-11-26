@@ -66,6 +66,22 @@ void NcclSession::broadcast_bytes(void* data, size_t bytes, cudaStream_t stream)
     if (size_ > 1) ready(ncclBroadcast(data, data, bytes, ncclUint8, 0, comm_, stream), "NCCL broadcast");
 }
 
+void NcclSession::broadcast_bytes(std::initializer_list<ByteBuffer> buffers, cudaStream_t stream) {
+    if (size_ == 1) return;
+    ready(ncclGroupStart(), "NCCL broadcast group start");
+    ncclResult_t submission = ncclSuccess;
+    for (const auto& buffer : buffers) {
+        const auto result = ncclBroadcast(buffer.data, buffer.data, buffer.bytes, ncclUint8, 0, comm_, stream);
+        if (result != ncclSuccess && result != ncclInProgress) {
+            submission = result;
+            break;
+        }
+    }
+    const auto end = ncclGroupEnd();
+    ready(submission, "NCCL broadcast submission");
+    ready(end, "NCCL broadcast group end");
+}
+
 void NcclSession::send(const float* data, size_t count, int peer, cudaStream_t stream) {
     ready(ncclSend(data, count, ncclFloat, peer, comm_, stream), "NCCL send");
 }

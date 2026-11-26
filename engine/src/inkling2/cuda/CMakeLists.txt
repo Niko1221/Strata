@@ -93,3 +93,12 @@ target_link_libraries(strata_inkling_cuda PUBLIC
 
 target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_CUDA=1)
 target_link_libraries(strata-inkling PRIVATE strata_inkling_cuda)
+
+if(STRATA_INKLING_DISTRIBUTED)
+  if(NOT TARGET strata_tp_nccl)
+    set(STRATA_TP_CUDA ON)
+    add_subdirectory("${_ink_engine_root}/src/tp" distributed-runtime)
+  endif()
+  target_link_libraries(strata_inkling_cuda PUBLIC strata_tp_nccl)
+  target_compile_definitions(strata_inkling_cuda PUBLIC STRATA_INKLING_DISTRIBUTED=1)
+endif()
