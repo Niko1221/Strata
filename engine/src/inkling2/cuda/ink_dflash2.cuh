@@ -526,6 +526,9 @@ struct InkDFlash2 {
         // As many as fit: on a 16 GB card in compact mode the mix leaves room for 6 or 7 of the 8 (11-26: all 8 or nothing meant no drafter at all there); a slot without a ring decodes plainly.
         int with_ring = 0;
         for (int s = 0; s < std::min(max_slots, 8); ++s) {
+            size_t vf_r = 0, vt_r = 0;
+            const size_t ring_bytes = (size_t)2 * df2::kLayers * df2::kRingCap * df2::kKV * sizeof(__half);
+            if (ink_cuda_mem_info(&vf_r, &vt_r) == cudaSuccess && vf_r < ring_bytes + (128ull << 20)) break;   // the card keeps 128 MiB free: no more rings (the first ring of a 16 GB card still fits: 161 MiB free at the end)
             if (!ensure_slot(s)) break;
             ++with_ring;
         }

@@ -1264,7 +1264,7 @@ struct InkDSpark {
             if (init_dflash2(ctx)) return;
         }
         if (!df2_dspark_selected()) {   // DFlash 2 is the only drafter (owner, 2026-11-26): no sidecar, or it could not start, means no drafter, not DSpark
-            std::fprintf(stderr, "[InkDFlash2] this run has no drafter (DFlash 2 is the only drafter; STRATA_INK_DRAFTER=dspark selects the dormant DSpark)\n");
+            std::fprintf(stderr, "[InkDFlash2] this run has no drafter (DFlash 2 is the only drafter and it is not used here: no sidecar file, 2..15 slots on a card below 24 GiB, or it could not start; STRATA_INK_DRAFTER=dspark selects the dormant DSpark)\n");
             ready = false;
             return;
         }

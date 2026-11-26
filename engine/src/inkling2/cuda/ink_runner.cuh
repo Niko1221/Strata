@@ -416,7 +416,7 @@ struct InkCudaModel {
                     sm120_compact_refuse(primary_gpu);
                 }
             }
-            const size_t compact_margin = (768ull << 20) + (64ull << 20) + df2_pre_bytes;   // + DFlash 2's real total (the precheck did not count it)
+            const size_t compact_margin = (768ull << 20) + (64ull << 20) + (plan_slots_pre == 1 ? df2_pre_bytes : 0u);   // + DFlash 2's real total for 1 slot (the precheck did not count it); 16 and more slots: the rings that fit
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
             if (do_compact_vram && opt5060_ld.compact_hybrid && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
@@ -1540,7 +1540,7 @@ struct InkCudaModel {
         man.c.situ_lb        = mf.m.c.situ_lb;
         man.c.logit_softcap  = mf.m.c.logit_softcap;
         man.c.is_swa.assign(mf.m.c.is_swa.begin(), mf.m.c.is_swa.end());
-        man.has_dspark       = mf.m.dspark.present || df2_replaces_dspark(mf.path);   // "has a drafter": the model file carries DSpark, or DFlash 2's sidecar is beside it
+        man.has_dspark       = (mf.m.dspark.present && df2_dspark_selected()) || df2_replaces_dspark(mf.path);   // "has a drafter": DSpark of the pack only when STRATA_INK_DRAFTER=dspark asks for it (a pack that carries it but runs without a drafter keeps no reserve for it), or DFlash 2 sidecar beside the model
         for (const auto& kv : mf.m.trunk) {
             TensorInfo ti;
             ti.name = kv.second.name;

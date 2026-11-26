@@ -491,6 +491,7 @@ public:
         // Compute exact minimum KV + ShortConv + workspace headroom BEFORE pinning experts!
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
+        strata::ink::df2_small_card() = prop.totalGlobalMem < (24ull << 30);
         strata::ink::df2_parallel() = max_slots_;   // DFlash 2 as the default drafter only up to 16 slots (see ink_dflash2_path.cuh)
         const int kv_offload_mode = (opts.kv_offload == "on") ? 1 : ((opts.kv_offload == "off") ? -1 : 0);
         // all of the sizing below is plan_vram_reserve() / plan_prefill_chunk() (top of this file)
@@ -501,7 +502,7 @@ public:
         plan_in.total_vram = prop.totalGlobalMem;
         plan_in.max_slots = max_slots_;
         plan_in.kv_offload_mode = kv_offload_mode;
-        plan_in.build_screen = (opts.enable_dspark && (mf.m.dspark.present || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);   // DFlash 2 (a sidecar) also needs the screen; PERF-STEP: the head screen needs the INT8 index of the unembedding
+        plan_in.build_screen = (opts.enable_dspark && ((mf.m.dspark.present && strata::ink::df2_dspark_selected()) || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);   // DFlash 2 (a sidecar) also needs the screen; PERF-STEP: the head screen needs the INT8 index of the unembedding
         plan_in.compact_gguf = mf.m.embed_host_tail && !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0');
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
@@ -510,7 +511,7 @@ public:
         // `--draft on`, STRATA_INK_DFLASH2_FORCE=1 and STRATA_INK_DRAFTER=dflash2 ask for it by name and are never vetoed. The COMPACT path has its own accounting (its precheck) and is skipped.
         auto plan_for = [&](bool veto) {
             strata::ink::df2_residency_veto() = veto;
-            plan_in.build_screen = (opts.enable_dspark && (mf.m.dspark.present || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);
+            plan_in.build_screen = (opts.enable_dspark && ((mf.m.dspark.present && strata::ink::df2_dspark_selected()) || strata::ink::df2_replaces_dspark(mf.path))) || strata::ink::ink_head_screen_wanted(gpu_id_);
             return plan_vram_reserve(plan_in);
         };
         draft_forced_ = opts.draft_forced || strata::ink::df2_forced_by_env();

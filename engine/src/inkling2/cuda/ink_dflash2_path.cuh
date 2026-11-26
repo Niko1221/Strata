@@ -57,10 +57,17 @@ inline bool df2_forced_by_env() {
     return e && e[0] == '1';
 }
 
+// Set by the backend before anything loads: the card has less than 24 GiB.
+inline bool& df2_small_card() {
+    static bool b = false;
+    return b;
+}
+
 inline bool df2_requested() {
     const std::string s = df2_drafter_env();
     if (s == "dflash2") return true;
-    if (s.empty()) return kDflash2Default && !df2_residency_veto();
+    // 2..15 slots on a card below 24 GiB: no drafter (no multi-user chain there, and the drafter's memory only costs experts: RTX 5060 Ti -14 / -16 percent at 4 / 8 slots, fast)
+    if (s.empty()) return kDflash2Default && !df2_residency_veto() && !(df2_small_card() && df2_parallel() >= 2 && df2_parallel() < 16);
     return false;
 }
 
