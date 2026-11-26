@@ -61,6 +61,29 @@ test('adding a node probes its agent and records real resources', async () => {
   }
 });
 
+test('losing a node is recorded without breaking the cluster file', async () => {
+  process.env.STRATA_HOME = mkdtempSync(join(tmpdir(), 'strata-cluster-loss-'));
+  process.env.STRATA_CLUSTER_TOKEN = 'loss-token';
+  const server = createServer((req, res) => {
+    if (req.headers['x-cluster-token'] !== 'loss-token') { res.writeHead(401).end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, hostname: 'will-vanish', os: 'TestOS',
+      gpu: 'Test GPU', vram_gib: 8, ram_gib: 32, cpu_cores: 4, status: 'healthy' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const mod = await import('../server/cluster.mjs');
+  await mod.createCluster('loss-lab');
+  await mod.addNode('loss-lab', {
+    id: 'vanishing', address: '127.0.0.1', port: server.address().port, backend: 'cuda',
+  });
+  await new Promise(resolve => server.close(resolve));
+  const after = await mod.refreshCluster('loss-lab');
+  assert.equal(after.nodes.vanishing.status, 'offline');
+  const reread = await mod.listClusters();
+  assert.equal(reread[0].name, 'loss-lab');
+  assert.equal(reread[0].nodes.vanishing.status, 'offline');
+});
+
 test('cluster service creates a cluster and rejects bad input', async () => {
   const root = mkdtempSync(join(tmpdir(), 'strata-cluster-ui-'));
   process.env.STRATA_HOME = root;
