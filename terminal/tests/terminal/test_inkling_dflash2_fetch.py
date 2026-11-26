@@ -28,6 +28,34 @@ class Dflash2PinTest(unittest.TestCase):
         self.assertIn((989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"), pins)     # the original checkpoint is always accepted
         self.assertEqual(F.size_of(F.DFLASH2_FILE), pins[0][0])                                                   # the size shown is the first source's
 
+    def test_the_prequantized_copy_is_accepted_and_is_fetched_first_once_it_is_hosted(self):
+        self.assertIn(F.DFLASH2_Q_PIN, F.pins_for(F.DFLASH2_FILE))
+        self.assertEqual(F.DFLASH2_Q_PIN, (551_600_700, "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387"))
+        self.assertLess(F.DFLASH2_Q_PIN[0], 0.6 * F.pins_for(F.DFLASH2_FILE)[0][0])
+        with mock.patch.object(F, "DFLASH2_Q_URL", "https://example.org/q/dflash2.safetensors"):
+            self.assertEqual(F.size_of(F.DFLASH2_FILE), F.DFLASH2_Q_PIN[0])                    # the download step shows the size of what comes first
+            src = F.sources_for(F.DFLASH2_FILE, env={})
+            self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0])[0], "https://example.org/q/dflash2.safetensors")
+            self.assertTrue(F.urls_for(F.DFLASH2_FILE, src[-1])[0].startswith("https://huggingface.co/incoai/"))       # the original is the last resort
+        self.assertEqual(F.size_of(F.DFLASH2_FILE), F.pins_for(F.DFLASH2_FILE)[0][0])           # not hosted yet: the original is what is fetched
+
+    def test_our_own_copies_are_planned_but_not_used_until_the_commit_is_filled_in(self):
+        self.assertEqual((F.DFLASH2_OWN_COMMIT, F.DFLASH2_OWN_COPY, F.DFLASH2_Q_URL, F.DFLASH2_MIRROR_URL), ("", "", "", ""))      # the placeholders the coordinator fills
+        self.assertEqual(len(F.sources_for(F.DFLASH2_FILE, env={})), 1)                                                         # only the third party's repository until then
+        with mock.patch.object(F, "DFLASH2_OWN_COMMIT", "c0ffee"):
+            self.assertEqual(F._own_url(F.DFLASH2_Q_FILE, "mix"), "")                                                          # no choice made: nothing
+            with mock.patch.object(F, "DFLASH2_OWN_COPY", "mix"):
+                self.assertEqual(F._own_url(F.DFLASH2_Q_FILE, "mix"),
+                                 "https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/c0ffee/Inkling-2-Mini-DFlash2-mix.safetensors")
+                self.assertEqual(F._own_url(F.DFLASH2_MIRROR_FILE, "original"), "")
+            with mock.patch.object(F, "DFLASH2_OWN_COPY", "original"):
+                self.assertEqual(F._own_url(F.DFLASH2_MIRROR_FILE, "original"),
+                                 "https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/c0ffee/model.safetensors")
+        with mock.patch.object(F, "DFLASH2_MIRROR_URL", "https://example.org/m/model.safetensors"):
+            src = F.sources_for(F.DFLASH2_FILE, env={})
+            self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0])[0], "https://example.org/m/model.safetensors")                  # ours before the third party's
+            self.assertEqual(F.size_of(F.DFLASH2_FILE), F.pins_for(F.DFLASH2_FILE)[0][0])                                       # a mirror of the original: its size
+
     def test_a_mirror_comes_first_and_the_original_repository_is_always_there(self):
         src = F.sources_for(F.DFLASH2_FILE, env={F.DFLASH2_SOURCE_ENV: "https://example.org/d"})
         self.assertEqual(src[0]["base"], "https://example.org/d")
@@ -39,6 +67,9 @@ class Dflash2PinTest(unittest.TestCase):
         apache = (notices / "INKLING-2-MINI-DFLASH2-APACHE-2.0.txt").read_text(encoding="utf-8")
         self.assertIn("Apache License 2.0", apache)
         self.assertIn(F.DFLASH2_COMMIT, apache)
+        self.assertIn("Inco AI", apache)                                                                       # incoai / z-lab stay named: the licence requires it
+        self.assertIn(F.DFLASH2_Q_PIN[1], apache)                                                              # the modified copy is described, with its sha
+        self.assertIn("a modified version", apache)
         mit = (notices / "DFLASH2-TJM8874-MIT.txt").read_text(encoding="utf-8")
         self.assertIn("MIT License", mit)
         self.assertIn("tjm8874", mit)

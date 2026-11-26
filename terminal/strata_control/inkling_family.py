@@ -150,6 +150,27 @@ DFLASH2_FILE = "dflash2.safetensors"
 DFLASH2_COMMIT = "4f9088ea66c21f2b99ed657d1941c306b03e84d2"
 DFLASH2_URL = f"https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/{DFLASH2_COMMIT}/model.safetensors"
 DFLASH2_SOURCE_ENV = "STRATA_INKLING_DFLASH2_SOURCE"
+#: Strata's pre-quantized copy of the same weights (engine format "strata-dflash2-q1", variant "mix": attention Q8_ROW, feed-forward SF4, the rest unchanged), written by the
+#: engine (STRATA_INK_DFLASH2_DUMP) and reproduced byte for byte by hf-package/make_mix_from_original.py. 551,600,700 bytes against 989,975,616: 44 percent less to download, measured to
+#: keep the drafter's acceptance within about 2 percent on an RTX 5090 and an RTX 5060 Ti (phaseA-tests/rel0223/dflash2/RESULTS.md). Both pins are accepted, whichever the file in the folder is.
+DFLASH2_Q_PIN = (551_600_700, "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387")
+#: Where our own copies are planned (the package is phaseA-tests/rel0223/dflash2/hf-package/): repository strata-engine/Inkling-2-Mini-DFlash2, a commit pinned like the others.
+#: The commit and the choice are EMPTY until the upload is done and the owner has chosen; empty means that source does not exist and nothing is tried.
+#:   option A ("mix"): DFLASH2_Q_FILE (the pre-quantized mix, DFLASH2_Q_PIN) is fetched first;
+#:   option B ("original"): DFLASH2_MIRROR_FILE (a byte-for-byte copy of the original, the first pin) is fetched before the third party's repository.
+DFLASH2_REPO = "strata-engine/Inkling-2-Mini-DFlash2"
+DFLASH2_Q_FILE = "Inkling-2-Mini-DFlash2-mix.safetensors"
+DFLASH2_MIRROR_FILE = "model.safetensors"
+DFLASH2_OWN_COMMIT = ""     # fill after the upload: the HF commit that holds the files above
+DFLASH2_OWN_COPY = ""       # fill with the owner's choice: "mix" (option A) or "original" (option B); empty = no copy of ours is used
+
+
+def _own_url(file: str, kind: str) -> str:
+    return f"https://huggingface.co/{DFLASH2_REPO}/resolve/{DFLASH2_OWN_COMMIT}/{file}" if (DFLASH2_OWN_COMMIT and DFLASH2_OWN_COPY == kind) else ""
+
+
+DFLASH2_Q_URL = _own_url(DFLASH2_Q_FILE, "mix")
+DFLASH2_MIRROR_URL = _own_url(DFLASH2_MIRROR_FILE, "original")
 DRAFTER_FILES = {
     MTP_FILE: (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"),
     DFLASH2_FILE: (989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"),
@@ -238,10 +259,14 @@ def pins_for(name: str) -> list[tuple[int, str | None]]:
     for got in (FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name), LEGACY_FILES.get(name), ALT_GGUF_FILES.get(name)):
         if got and got not in out:
             out.append(got)
+    if name == DFLASH2_FILE and DFLASH2_Q_PIN not in out:
+        out.append(DFLASH2_Q_PIN)
     return out
 
 
 def size_of(name: str) -> int | None:
+    if name == DFLASH2_FILE and DFLASH2_Q_URL:
+        return DFLASH2_Q_PIN[0]                                 # the first source's file: what the download step shows
     got = _pin_of(name)
     return got[0] if got else None
 
@@ -390,7 +415,8 @@ def sources_for(name: str, env: dict | None = None, cfg: dict | None = None, shi
     if name == DFLASH2_FILE:
         env = os.environ if env is None else env
         mirror = _normalise(env.get(DFLASH2_SOURCE_ENV)) if env.get(DFLASH2_SOURCE_ENV) else []
-        return mirror + [{"kind": "http", "base": DFLASH2_URL.rsplit("/", 1)[0], "files": {DFLASH2_FILE: DFLASH2_URL}}]
+        own = [{"kind": "http", "base": u.rsplit("/", 1)[0], "files": {DFLASH2_FILE: u}} for u in (DFLASH2_Q_URL, DFLASH2_MIRROR_URL) if u]
+        return mirror + own + [{"kind": "http", "base": DFLASH2_URL.rsplit("/", 1)[0], "files": {DFLASH2_FILE: DFLASH2_URL}}]
     if name in DRAFTER_FILES:
         return drafter_sources(env=env, cfg=cfg)
     if name in (GSQ_IQ3S_FILE, GSQ_MMPROJ_FILE):
