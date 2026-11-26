@@ -94,7 +94,7 @@ int main() {
         const Sm120Decision e1 = decide(r5060ti, {{"STRATA_INK_SM120_EXACT", "1"}});
         CHECK(e1.mode == Sm120Decision::Exact && e1.parts == P_L2PF);
         const Sm120Decision e2 = decide(r5090, {{"STRATA_INK_RTX5090_EXACT", "1"}});
-        CHECK(e2.mode == Sm120Decision::Exact && e2.parts == P_DSPARK_OPT);
+        CHECK(e2.mode == Sm120Decision::Exact && e2.parts == 0);   // exact never changes the drafting policy
         const Sm120Decision f1 = decide(r5070, {{"STRATA_INK_SM120_ROW", "5060ti-16"}});   // a row id alone does not turn anything on for a placeholder card
         CHECK(f1.mode == Sm120Decision::Off && f1.parts == 0);
     }

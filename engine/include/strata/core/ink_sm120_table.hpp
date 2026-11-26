@@ -128,7 +128,8 @@ struct Sm120Row {
       {1536, 64, Sm120Tc::Direct, Sm120Tc::Base, 128}, {1 << 30, 128, Sm120Tc::Tr128Bk128, Sm120Tc::Tr128, 128} }, 4
 
 constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;   // P_TC_ATTN joins this set only after the long-context A/B and the KL check (PERF-LONGCTX)
-constexpr uint32_t kSm120BigExact = P_DSPARK_OPT;
+// The exact form must not change the DRAFTING POLICY against off (tree shape, window, beam, node count, spec_cost, slot cap): with DFlash 2 as the only drafter DSPARK_OPT (deep verify tree, 2-block chain, row spec numbers) does, and the Spark and the R9700 saw exact differ from off for that reason, so the 5090 exact set is EMPTY: only the bit-identical kernels that have their own switches (PDL, PFQ, the sm_120a build) differ from off.
+constexpr uint32_t kSm120BigExact = 0;
 // The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
 // trunk on, fast mode lost 17 of 26 tool calls; with FP8_TRUNK=0 (attention in Q8_ROW) it is at or above off on every suite (report-5060ti-fp8t0.md). The in-place FP8 trunk is
 // explicit-only (STRATA_INK_SM120_FP8_INPLACE=1); FP8_TRUNK (the 5090 cache engine) cannot start next to compact (no room), so it is not in this set either.

@@ -19058,7 +19058,7 @@
    "last_date": "2026-11-26",
    "status": "opt-in",
    "owner": "inkling2/cuda",
-   "note": "RTX 50 (sm_120) exact form of the fast mode: only the parts that keep the tokens identical to the old path (RTX 5090: deep verify tree; RTX 5060 Ti 16 GB: L2 prefetch only). docs/INKLING_SM120.md.",
+   "note": "RTX 50 (sm_120) exact form of the fast mode: only the parts that keep the tokens identical to the old path (RTX 5090: none, exact never changes the drafting policy; RTX 5060 Ti 16 GB: L2 prefetch only). docs/INKLING_SM120.md.",
    "retire_after": "",
    "retired_in": ""
   },
