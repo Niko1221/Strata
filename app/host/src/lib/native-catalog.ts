@@ -21,10 +21,7 @@ export const versionNote=(model:string)=>{const nv=nvfp4Version(model);return nv
 const INKLING_ORDER=['SQ-20','SQ-15','SQ-10','GSQ-RCO-IQ3_S','UD-Q4_K_XL'];
 export const inklingRank=(model:string,offered?:boolean)=>{if(offered===false)return 20;const i=INKLING_ORDER.indexOf(String(model).toUpperCase());return i>=0?i:/^SQ-/i.test(model)?5:/^GSQ-/i.test(model)?6:7;};
 export function orderInklingSizes<T extends {model:string;offered?:boolean;installed?:boolean}>(sizes:T[]):T[]{return sizes.filter(s=>s.offered!==false||s.installed).map((s,i)=>({s,i})).sort((a,b)=>inklingRank(a.s.model,a.s.offered)-inklingRank(b.s.model,b.s.offered)||a.i-b.i).map(x=>x.s);}
-export const hasKvChoice=(group?:string)=>group!=='qwen3.6'&&group!==ORNITH_FAMILY&&group!==HY4_FAMILY&&group!==INKLING_FAMILY;
-/** Ornith-1.5-35B-A3B (setup.py OWN_PATH_FAMILIES['ornith'], the Qwen3.6 engine path): a display group of its own, so its Q4_K_M..Q8_0 sizes are not listed under Qwen3.6. */
-export const ORNITH_FAMILY='ornith';
-const isOrnithFamily=(family:{family:string;title?:string})=>family.family===ORNITH_FAMILY||/ornith/i.test(family.title??'');
+export const hasKvChoice=(group?:string)=>group!=='qwen3.6'&&group!==HY4_FAMILY&&group!==INKLING_FAMILY;
 /** Tencent Hy4-Flash (setup.py HY4_FAMILIES, its own engine program): a display group of its own; its KV is fp16 and its builds (SQ-64, SQ-96, SQ-128; there is no SQ-32) are placed by the author's rank-cut rule (native-fit.ts hy4Fit). */
 export const HY4_FAMILY='hy4-flash';
 /** Thinking Machines Inkling-2-Mini (setup.py INKLING_FAMILIES, its own shape engine strata-inkling). */
@@ -33,19 +30,15 @@ export const INKLING_FAMILY='inkling-2-mini';
 export function nativeCatalogModels(families:NativeFamily[]):CatalogModel[]{
  if(!families.length)return[];
  const groups:CatalogModel[]=[{family:'qwen3.8',title:'Qwen3.8-Flash-Next',about:'',experimental:false,images:false,sizes:[]},{family:'qwen3.6',title:'Qwen3.6-35B-A3B',about:'',experimental:false,images:false,sizes:[]}];
- // Ornith-1.5-35B-A3B (#7134) runs on the Qwen3.6 engine path but is its own model: its sizes are a group of their own, listed after Qwen3.6 only when Control offers them (an older Control does not).
- const ornith:CatalogModel={family:ORNITH_FAMILY,title:'Ornith-1.5-35B-A3B',about:'',experimental:false,images:false,sizes:[]};
  for(const family of families){
   if(family.family===HY4_FAMILY||family.family===INKLING_FAMILY){groups.push({family:family.family,title:family.title,about:family.about??'',experimental:false,images:family.images,sizes:(family.family===INKLING_FAMILY?orderInklingSizes(family.sizes):family.sizes).map(size=>({...size,sourceFamily:family.family,edition:family.family===INKLING_FAMILY?(/^UD-/i.test(size.model)?'Unsloth':/^GSQ-RCO-/i.test(size.model)?'GSQ-RCO':''):'',images:family.images}))});continue;}
   if(family.feed){groups.push({family:family.family,title:family.title,about:family.about??'',experimental:false,images:family.images,available:family.available,unavailable_reason:family.unavailable_reason,feed:true,sizes:family.sizes.map(size=>({...size,sourceFamily:family.family,edition:'',images:family.images}))});continue;}
-  if(isOrnithFamily(family)){ornith.images ||= family.images;ornith.sizes.push(...family.sizes.map(size=>({...size,sourceFamily:family.family,edition:'',images:family.images})));continue;}
   const target=/qwen3[._-]?6|35b[-_]?a3b/i.test(family.title+' '+family.family)?groups[1]:['qwen','swift','coder','unsloth','gyro'].includes(family.family)||/qwen3[._-]?8|flash.next/i.test(family.title)?groups[0]:undefined;
   if(!target)continue;
   const edition=target===groups[0]?({swift:'Swift 1.5',coder:'Coder',unsloth:'Unsloth',gyro:'Gyro'} as Record<string,string>)[family.family]??'':'';
   target.images ||= family.images;
   target.sizes.push(...family.sizes.map(size=>({...size,sourceFamily:family.family,edition,images:family.images})));
  }
- if(ornith.sizes.length)groups.splice(2,0,ornith);
  return groups;
 }
 

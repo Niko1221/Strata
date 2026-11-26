@@ -120,7 +120,6 @@ HF_REVISIONS = {
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
-    "ornith-ai/Ornith-1.5-35B-A3B-GGUF": "12393612fd4f730ff5aadc23e9b8f9648aa49ceb",                 # 2026-08-24
 }
 
 
@@ -787,16 +786,6 @@ QWEN36_FILES = {
     "Qwen3.6-35B-A3B-Q8_0.gguf": (37801097504, "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"),
     "mmproj-F16.gguf": (899283584, "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"),
 }
-# Ornith-1.5-35B-A3B, Ornith AI's GGUFs with the MTP block: the same architecture (qwen35moe), tensor layout, tokenizer and MTP block as
-# Qwen3.6-35B-A3B, so the engine path, the flags and the tuning rules above are used as they are (strata_control/ornith_types.py).  The BF16
-# GGUF is not offered: this engine path has no BF16 row.
-ORNITH_FILES = {
-    "Ornith-1.5-35B-Q4_K_M.gguf": (21713463040, "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"),
-    "Ornith-1.5-35B-Q5_K_M.gguf": (25347532544, "91df97de5845100e850b4b5ec5ff35695382020b880fad6f7f51787b3a953bd0"),
-    "Ornith-1.5-35B-Q6_K.gguf": (29208731392, "15d4658bbfc9c6034621729c15bbb50662c82b32a7ddd9624a1e545a74bdbb4b"),
-    "Ornith-1.5-35B-Q8_0.gguf": (37802149280, "de46c4baf4b4dd85ea438bb0f757f21c38841a353506579979bba114311658c3"),
-    "mmproj-Ornith-1.5-35B-BF16.gguf": (902822240, "1921a36a85aee56cd2abd27f46701802c9d85a33474792e600df6c3b282a135d"),
-}
 OWN_PATH_FAMILIES = {
     "qwen36": {"title": "Qwen3.6-35B-A3B", "by": "Qwen; GGUFs with the MTP layer by Unsloth", "arch": "qwen35moe",
                "about": "35B mixture of experts with 3B active (256 experts, top-8): a smaller cousin of "
@@ -818,27 +807,6 @@ OWN_PATH_FAMILIES = {
                # pictures: Unsloth's mmproj (the same projector family as Flash-Next's: qwen3vl_merger) through
                # strata-vision; a parallel slot's session: its KV cache (kv_bytes_per_token) and the recurrent state of
                # the 30 GDN layers (state_gb)
-               "vision": True, "state_gb": 0.07},
-    # Ornith-1.5-35B-A3B: the same engine path as qwen36 above (identical architecture, tensor layout, tokenizer and MTP
-    # block), so the KV, MTP and picture figures are the same; only the files, the names and the RAM figures are its own.
-    "ornith": {"title": "Ornith-1.5-35B-A3B", "by": "Ornith AI; GGUFs with the MTP layer", "arch": "qwen35moe",
-               "about": "35B mixture of experts with 3B active (256 experts, top-8): the same architecture and tokenizer "
-                        "as Qwen3.6-35B-A3B",
-               "hf": hf("ornith-ai/Ornith-1.5-35B-A3B-GGUF"), "file": "Ornith-1.5-35B-{q}.gguf", "tag": "ornith-1.5-35b-a3b-",
-               "mmproj_hf": hf("ornith-ai/Ornith-1.5-35B-A3B-GGUF"), "mmproj": "mmproj-Ornith-1.5-35B-BF16.gguf",
-               "name": "ornith-1.5-35b-a3b",
-               "license": "MIT: https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B/blob/main/LICENSE",
-               # RAM: the same hybrid rule as qwen36 (a copy of every expert stays in RAM when they do not all fit in
-               # VRAM), so the figure is the file's download size
-               "models": {"Q4_K_M": {"about": "4-bit, the smallest", "ram_gb": 21.7},
-                          "Q5_K_M": {"about": "5-bit", "ram_gb": 25.3},
-                          "Q6_K": {"about": "6-bit, closer to the full model", "ram_gb": 29.2},
-                          "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 37.8}},
-               "sha256": ORNITH_FILES,
-               # the engine's KV cache per context token: the same 10 attention layers + the MTP block, 2 KV heads x 256,
-               # K and V in fp32 (strata-q36)
-               "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
-               "mtp": 2,                     # drafts per step: the same MTP block as qwen36
                "vision": True, "state_gb": 0.07}
 }
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
@@ -986,7 +954,6 @@ REPO_PINS = {
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": CODER_FILES,
     UNSLOTH_REPO: {**UNSLOTH_V31_SHARDS, **UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS},
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": QWEN36_FILES,
-    "ornith-ai/Ornith-1.5-35B-A3B-GGUF": ORNITH_FILES,
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": GYRO_FILES,
 }
 # the files of a repository at a commit other than HF_REVISIONS' (UNSLOTH_V31_REVISION): (repository, commit) -> name -> (bytes, sha256); file_pin looks here first
@@ -11603,7 +11570,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES) + list(INKLING_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
-                         "several requests at once with --parallel; docs/QWEN36.md), ornith = Ornith-1.5-35B-A3B (the same engine path; Q4_K_M / Q5_K_M / Q6_K / Q8_0), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
+                         "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
                          "inkling-2-mini = Thinking Machines Inkling-2-Mini (SQ-20 / SQ-15 / SQ-10 / GSQ-RCO-IQ3_S / UD-Q4_K_XL)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),

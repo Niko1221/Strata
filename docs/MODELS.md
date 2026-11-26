@@ -1,11 +1,11 @@
 ﻿# Which model? Sizes, versions and what fits
 
 This page helps you choose a model and check that your computer can run it. It covers
-Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Ornith-1.5-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
+Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
 
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
 > [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
-> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Ornith-1.5-35B-A3B](#ornith-15-35b-a3b) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) ·
 > [Tencent Hy4-Flash](#tencent-hy4-flash) ·
 > [Inkling-2-Mini](#inkling-2-mini) · [Adding or switching models](#adding-or-switching-models) ·
 > [History](#history--older-measurements)
@@ -248,33 +248,6 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 ```sh
 strata launch --family qwen36 --model UD-Q4_K_XL
 ```
-
-## Ornith-1.5-35B-A3B
-
-[Ornith-1.5-35B-A3B](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B) by Ornith AI (MIT) has the same architecture
-as Qwen3.6-35B-A3B (`qwen35moe`: 35 billion parameters, 3 billion active, 256 experts, the same tokenizer and MTP
-block), so it runs on the same engine path, with the same flags, pictures and parallel requests. Strata lists the
-plain quantizations of [the publisher's GGUFs](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF), pinned to
-one revision and SHA-256 checked. It is in the app's model list and in setup (`--family ornith`).
-
-| Size | File | RAM setup plans for |
-| --- | ---: | ---: |
-| **Q4_K_M** | 21.7 GB | 21.7 GB |
-| **Q5_K_M** | 25.3 GB | 25.3 GB |
-| **Q6_K** | 29.2 GB | 29.2 GB |
-| **Q8_0** | 37.8 GB | 37.8 GB |
-
-The picture reader (`mmproj-Ornith-1.5-35B-BF16.gguf`, 0.9 GB) is downloaded with the model. The 122B Ornith models
-are a different size and are not part of this entry. The graphics-memory figures behind the context advice are the
-Qwen3.6 ones, not measured for Ornith yet: on a small card the engine says what it really fits when it starts.
-The catalog entry, its tests and the file sizes and hashes are from eSPiYa's patch (PR #7140).
-
-```sh
-strata launch --family ornith --model Q4_K_M
-```
-
-If you already have one of these files, `strata models import PATH --plan` reads an Ornith file as `--family ornith`
-(a file under another name is read as the Qwen3.6 family, which is the same architecture).
 
 ## Tencent Hy4-Flash
 

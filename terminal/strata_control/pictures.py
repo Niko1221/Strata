@@ -119,7 +119,7 @@ def family_of(cfg: dict, gguf: Path | None, asked: str | None = None) -> str | N
     from strata_control import retired
     if retired.config_reason(cfg) or any("deepseek" in n for n in names):      # never a DeepSeek config (retired.py)
         return None
-    if any(n.startswith("qwen3.6") or "qwen3.6-35b" in n or n.startswith("ornith-1.5") for n in names):      # Ornith-1.5-35B-A3B (#7134): the Qwen3.6 engine path, its own picture file in setup
+    if any(n.startswith("qwen3.6") or "qwen3.6-35b" in n for n in names):
         return None
     if any(n.startswith("swift") for n in names):
         return "swift"

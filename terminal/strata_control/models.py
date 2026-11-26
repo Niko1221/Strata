@@ -311,9 +311,8 @@ def _candidate_by_header(shards: list[Path], tensors: int, payload: int, experts
 
 def _qwen36_candidate(shards: list[Path], issues: list[str], notes: list[str]) -> dict | None:
     """A qwen35moe file set (#5869): every tensor's type checked against what the Qwen3.6 engine's loader takes (strata_control/q36_types.py);
-    any tensor it would refuse makes the set unsupported (the existing words), otherwise family qwen36 at the size setup installs it as.
-    An Ornith-1.5-35B file runs on the same engine path, so it is read as family ornith with its own sizes (strata_control/ornith_types.py)."""
-    from strata_control import gguf_preflight, q36_types, ornith_types
+    any tensor it would refuse makes the set unsupported (the existing words), otherwise family qwen36 at the size setup installs it as."""
+    from strata_control import gguf_preflight, q36_types
     types: dict[str, int] = {}
     try:
         for item in shards:
@@ -324,19 +323,15 @@ def _qwen36_candidate(shards: list[Path], issues: list[str], notes: list[str]) -
     if q36_types.problems(types) or len(shards) != 1:      # the engine reads one GGUF file
         issues.append("unsupported_or_missing_architecture")
         return None
-    # the family by the file's own name first: Ornith's files are the same architecture under their own names and sizes
-    is_ornith = str(shards[0].name).lower().startswith("ornith-1.5-35b")
-    table = ornith_types if is_ornith else q36_types
-    family = table.FAMILY
-    model, published = table.size_for(shards[0].name, types)
+    model, published = q36_types.size_for(shards[0].name, types)
     if not published:
-        notes.append(f"These files are not exactly a build Strata has tested; they have the layout of {family} "
+        notes.append(f"These files are not exactly a build Strata has tested; they have the layout of {q36_types.FAMILY} "
                      f"{model}, so Strata uses them as that model. Check a few answers before you rely on them.")
     from tools.gguf_reader import GGML_TYPES
     experts = sorted({GGML_TYPES.get(t, str(t)) for n, t in types.items() if n.endswith("_exps.weight")})
-    return {"family": family, "model": model, "basis": "qwen35moe_engine_types" if not published else "published_file_name",
+    return {"family": q36_types.FAMILY, "model": model, "basis": "qwen35moe_engine_types" if not published else "published_file_name",
             "expected_expert_types": experts, "expected_tensor_count": len(types),
-            "setup_args_hint": ["--family", family, "--model", model, "--gguf-dir", str(shards[0].parent)]}
+            "setup_args_hint": ["--family", q36_types.FAMILY, "--model", model, "--gguf-dir", str(shards[0].parent)]}
 
 
 def _inkling_build_for_bytes(total_bytes: int, name: str = "") -> str:

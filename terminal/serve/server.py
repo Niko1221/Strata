@@ -4706,12 +4706,12 @@ class Service:
         return asked if isinstance(asked, str) and asked in self.aliases else self.model
 
     _STRATA_MODEL_PREFIXES = (
-        "inkling-2-mini", "hy4-flash", "qwen3.8-flash-next", "qwen3.6-", "qwen3.5-", "ornith-1.5-",
+        "inkling-2-mini", "hy4-flash", "qwen3.8-flash-next", "qwen3.6-", "qwen3.5-",
     )
     # #6778: the catalog's own size names ("iq3_s", "q2_0", "ud-q4_k_xl", "ud-iq4_xs-v31", "sq-15", "gyro-s") are Strata ids
     # too: a client set to one of them while another size is loaded gets the error, not the loaded model's answer.
     _STRATA_SIZE_NAME = re.compile(r"(?:(?:ud-)?i?q\d_[0-9a-z_]+(?:-v\d+)?|sq-\d+|gyro-[a-z])\Z")
-    _FAMILY_PREFIX = re.compile(r"(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|ornith-1\.5-35b-a3b|hy4-flash|inkling-2-mini)-")
+    _FAMILY_PREFIX = re.compile(r"(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|hy4-flash|inkling-2-mini)-")
 
     @classmethod
     def is_strata_model_id(cls, asked_l: str) -> bool:
