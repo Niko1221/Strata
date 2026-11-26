@@ -132,6 +132,11 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+// MI50/gfx906 local build: peer_experts.cpp uses these CUDA P2P names; the
+// compat layer had no mapping for them (ROCm 7.2.4).
+#define cudaDevP2PAttrNativeAtomicSupported hipDevP2PAttrNativeAtomicSupported
+#define cudaDeviceGetP2PAttribute hipDeviceGetP2PAttribute
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery

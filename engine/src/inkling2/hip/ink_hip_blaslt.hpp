@@ -7,6 +7,7 @@
 #include "strata/hip_uma_guard.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
@@ -52,6 +53,9 @@ public:
 
     bool init(bool is_uma, strata::hip_uma::AmdGen gen) noexcept {
         release();
+        if (want_rocblas()) {
+            return init_rocblas();
+        }
         if (gen == strata::hip_uma::AmdGen::Rdna2 || gen == strata::hip_uma::AmdGen::Unknown) {
             return false;
         }
@@ -135,10 +139,14 @@ public:
             strata::hip_uma::alloc_gpu_buffer(dc, 64u * 64u * 4u, is_uma) == hipSuccess) {
             (void)hipMemsetAsync(da.dev_ptr, 0, da.bytes, stream);
             (void)hipMemsetAsync(db.dev_ptr, 0, db.bytes, stream);
-            (void)gemm_bf16_f32(reinterpret_cast<const uint16_t*>(da.dev_ptr),
-                                reinterpret_cast<const uint16_t*>(db.dev_ptr),
-                                reinterpret_cast<float*>(dc.dev_ptr),
-                                64, 64, 64, stream, 1.0f);
+            if (rb_mode_) {
+                (void)gemm_f16_f32(da.dev_ptr, db.dev_ptr, reinterpret_cast<float*>(dc.dev_ptr), 64, 64, 64, stream, 1.0f);
+            } else {
+                (void)gemm_bf16_f32(reinterpret_cast<const uint16_t*>(da.dev_ptr),
+                                    reinterpret_cast<const uint16_t*>(db.dev_ptr),
+                                    reinterpret_cast<float*>(dc.dev_ptr),
+                                    64, 64, 64, stream, 1.0f);
+            }
             (void)hipStreamSynchronize(stream);
         }
         strata::hip_uma::free_gpu_buffer(da);
@@ -151,6 +159,16 @@ public:
                  const void* W_nk, const void* X_mk, void* Y_mn,
                  int M, int N, int K, hipStream_t stream, float alpha = 1.0f) noexcept {
         if (!ready_ || M <= 0 || N <= 0 || K <= 0) return false;
+        if (rb_mode_) {
+            if (in_type != kTypeF16 || out_type != kTypeF32) return false;
+            if (rb_set_stream_(rb_handle_, stream) != 0) return false;
+            const float beta = 0.0f;
+            // Column-major: Y^T[N, M] = op_T(W stored [K, N], ld K) * X^T[K, M] (ld K).
+            const int32_t st = rb_gemm_ex_(rb_handle_, kOpT, kOpN, N, M, K, &alpha,
+                                           W_nk, kRbF16, K, X_mk, kRbF16, K, &beta,
+                                           Y_mn, kRbF32, N, Y_mn, kRbF32, N, kRbF32, 0, 0, 0u);
+            return st == 0;
+        }
         const PlanKey key{in_type, out_type, M, N, K};
         auto it = cache_.find(key);
         if (it == cache_.end()) {
@@ -200,6 +218,8 @@ public:
             if (cp.md && fn_md_destroy_) fn_md_destroy_(cp.md);
         }
         cache_.clear();
+        if (rb_handle_ && rb_destroy_) { rb_destroy_(rb_handle_); rb_handle_ = nullptr; }
+        rb_mode_ = false;
         if (pref_ && fn_pref_destroy_) { fn_pref_destroy_(pref_); pref_ = nullptr; }
         if (handle_ && fn_destroy_) { fn_destroy_(handle_); handle_ = nullptr; }
         strata::hip_uma::free_gpu_buffer(ws_);
@@ -215,7 +235,61 @@ public:
         ready_ = false;
     }
 
+    bool rocblas_mode() const noexcept { return rb_mode_; }
+
 private:
+    // rocBLAS fallback for gfx906 (MI50 / MI60 / Radeon VII): hipBLASLt has no gfx906 kernels.
+    // Only F16 x F16 -> F32 is offered; rocBLAS BF16 gemm_ex crashes on gfx906, so BF16 calls return
+    // false and the callers keep their own kernels. Enum values are from rocblas.h.
+    static constexpr int kRbF16 = 150;   // rocblas_datatype_f16_r
+    static constexpr int kRbF32 = 151;   // rocblas_datatype_f32_r
+    using RbCreate    = int32_t (*)(void**);
+    using RbDestroy   = int32_t (*)(void*);
+    using RbSetStream = int32_t (*)(void*, hipStream_t);
+    using RbGemmEx    = int32_t (*)(void*, int, int, int, int, int, const void*, const void*, int, int,
+                                    const void*, int, int, const void*, const void*, int, int,
+                                    void*, int, int, int, int, int32_t, uint32_t);
+    bool rb_mode_ = false;
+    void* rb_handle_ = nullptr;
+    RbCreate    rb_create_     = nullptr;
+    RbDestroy   rb_destroy_    = nullptr;
+    RbSetStream rb_set_stream_ = nullptr;
+    RbGemmEx    rb_gemm_ex_    = nullptr;
+
+    static bool want_rocblas() noexcept {
+        if (const char* env = std::getenv("STRATA_ROCBLAS")) return std::atoi(env) != 0;
+#ifndef _WIN32
+        int dev = 0;
+        hipDeviceProp_t prop{};
+        if (hipGetDevice(&dev) == hipSuccess && hipGetDeviceProperties(&prop, dev) == hipSuccess) {
+            return std::strncmp(prop.gcnArchName, "gfx906", 6) == 0;
+        }
+#endif
+        return false;
+    }
+
+    bool init_rocblas() noexcept {
+#ifdef _WIN32
+        return false;
+#else
+        lib_ = dlopen("librocblas.so.5", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib_) lib_ = dlopen("librocblas.so", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib_) return false;
+        rb_create_     = reinterpret_cast<RbCreate>(dlsym(lib_, "rocblas_create_handle"));
+        rb_destroy_    = reinterpret_cast<RbDestroy>(dlsym(lib_, "rocblas_destroy_handle"));
+        rb_set_stream_ = reinterpret_cast<RbSetStream>(dlsym(lib_, "rocblas_set_stream"));
+        rb_gemm_ex_    = reinterpret_cast<RbGemmEx>(dlsym(lib_, "rocblas_gemm_ex"));
+        if (!rb_create_ || !rb_destroy_ || !rb_set_stream_ || !rb_gemm_ex_ || rb_create_(&rb_handle_) != 0 || !rb_handle_) {
+            release();
+            return false;
+        }
+        rb_mode_ = true;
+        ready_ = true;
+        std::fprintf(stderr, "[ink-hip] rocBLAS FP16 GEMM enabled (no hipBLASLt for this GPU)\n");
+        return true;
+#endif
+    }
+
     struct PlanKey {
         int in_type, out_type, M, N, K;
         bool operator==(const PlanKey& o) const noexcept {
