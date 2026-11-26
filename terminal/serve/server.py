@@ -2071,6 +2071,16 @@ class StrataEngine:
                        for b in range(self.batch))
 
     INKLING_ROUTE_MIN = 32       # a held prefix shorter than this does not decide the slot
+
+    @staticmethod
+    def inkling_keep_chats() -> bool:
+        """#7226: Inkling with several slots keeps a long conversation in its slot.  A request that continues nothing never takes the slot
+        of a chat of SIDE_REQUEST_MIN tokens or more while another slot is free, whatever its own size, the drafter's preference for slot 0
+        gives way to that, and the wrap-up pass of a thinking budget leaves the first pass's checkpoint recorded.  On unless
+        STRATA_INKLING_KEEP_CHATS is 0 (or false / no / off): then every decision is as in 0.2.22.  The price: the chat that lives in another slot
+        decodes without drafts (the drafter works in slot 0 only)."""
+        return os.environ.get("STRATA_INKLING_KEEP_CHATS", "").strip().lower() not in ("0", "false", "no", "off")
+
     _side_note_said = False      # the "--parallel 2 keeps it" line is printed once per server run
 
     def _inkling_route(self, prompt: list[int]) -> int:
@@ -2090,7 +2100,8 @@ class StrataEngine:
                       f"prefix per slot {held}", flush=True)
             if held[best] >= self.INKLING_ROUTE_MIN:
                 return best
-            if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN and len(prompt) < self.SIDE_REQUEST_MIN):
+            if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
+                    and (len(prompt) < self.SIDE_REQUEST_MIN or self.inkling_keep_chats())):
                 free = [b for b in range(1, self.batch) if not self.slot_busy[b]]
                 if free:
                     return min(free, key=lambda b: (bool(self.slot_held[b]), len(self.slot_held[b]) >= self.SIDE_REQUEST_MIN,
@@ -2187,7 +2198,8 @@ class StrataEngine:
                             print(f"[strata] a side request ({len(prompt)} tokens) replaced the cached chat ({len(self.slot_held[0])} tokens); "
                                   "--parallel 2 keeps it", flush=True)
                         self.slot_held[0] = []              # the solo path is slot 0 of this engine: the read overwrites what it held
-                        self.slot_prompt[0] = list(prompt)
+                        if not (" ckpt=0" in keys0 and self.inkling_keep_chats() and prompt[:len(self.slot_prompt[0])] == self.slot_prompt[0]):
+                            self.slot_prompt[0] = list(prompt)   # (a later pass, ckpt=0, keeps the first pass's checkpoint: so does this record, #7226)
                         solo_leg = (list(prompt), len(out), self.gen)
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
@@ -2346,7 +2358,8 @@ class StrataEngine:
                     if started is not None:
                         started()
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
-                    self.slot_prompt[slot] = list(prompt)   # (Inkling: valid once the BDONE sets slot_held again)
+                    if not (" ckpt=0" in keys0 and self.inkling_keep_chats() and prompt[:len(self.slot_prompt[slot])] == self.slot_prompt[slot]):
+                        self.slot_prompt[slot] = list(prompt)   # (Inkling: valid once the BDONE sets slot_held again; a ckpt=0 pass keeps the first pass's, #7226)
                     adm_from = len(out)                     # (the admission's own token comes after these)
                     admission_pending, admission_before = True, self.last
                     phase = "admit"
@@ -2671,7 +2684,11 @@ class StrataEngine:
         agreed = {}
         held_prefix = lambda b: self._slot_prefix(b, prompt, agreed)
         best = max(free, key=held_prefix)
-        if self.drafter_in_slot_zero() and 0 in free and (best == 0 or held_prefix(best) < self.SLOT0_PREFIX_MAX):
+        # #7226: slot 0 holds a long chat and another slot is free: the drafter's preference gives way (the chat keeps its slot; the request takes an empty or the
+        # least recently used slot below).  STRATA_INKLING_KEEP_CHATS=0 brings back the 0.2.22 rule.
+        keep0 = (getattr(self, "inkling_engine", False) and self.inkling_keep_chats() and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
+                 and any(b != 0 for b in free))
+        if self.drafter_in_slot_zero() and 0 in free and not keep0 and (best == 0 or held_prefix(best) < self.SLOT0_PREFIX_MAX):
             # the DSpark drafter exists only for slot 0 (the engine's spec step and tap ingest are slot 0 only), so a lone request drafts only there. Nothing
             # worth keeping (a held start of fewer than SLOT0_PREFIX_MAX tokens re-prefills in well under a second) beats slot 0; a real conversation keeps its slot
             return 0
