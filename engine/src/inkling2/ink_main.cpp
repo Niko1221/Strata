@@ -17,6 +17,7 @@
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_serve.h"
+#include "ink_tail_kl.h"
 #include "ink_vision.h"
 #include "strata/core/device_error_exit.hpp"
 #include "strata/core/volta_forever.hpp"
@@ -927,6 +928,8 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
+    std::string tkl_corpus, tkl_cfgs, tkl_out, tkl_only, tgen_in, tgen_out, tgen_stop, tkl_calib, turbo_preset;
+    int tkl_chunk = 2048;
     int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0, batch_check_n = 0;
     float cli_temp = 0.0f;
 
@@ -955,6 +958,28 @@ int main(int argc, char** argv) {
             kld_ref = next();
         } else if (a == "--dump-ref") {
             dump_ref = next();
+        } else if (a == "--tail-kl") {
+            tkl_corpus = next();
+        } else if (a == "--tail-gen") {
+            tgen_in = next();
+        } else if (a == "--tail-gen-out") {
+            tgen_out = next();
+        } else if (a == "--tail-stop") {
+            tgen_stop = next();
+        } else if (a == "--tail-cfgs") {
+            tkl_cfgs = next();
+        } else if (a == "--tail-out") {
+            tkl_out = next();
+        } else if (a == "--tail-chunk") {
+            tkl_chunk = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--turbo") {
+            turbo_preset = "turbo";
+        } else if (a == "--turbo-max") {
+            turbo_preset = "turbo-max";
+        } else if (a == "--tail-calib") {
+            tkl_calib = next();
+        } else if (a == "--tail-only") {
+            tkl_only = next();
         } else if (a == "--native" || a == "--model") {
             cfg.model_path = next();
         } else if (a == "--vision") {
@@ -1066,6 +1091,7 @@ int main(int argc, char** argv) {
                    "  --export-tokenizer PATH OUT_DIR\n"
                    "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv auto|fp16|fp8|k8v8|k8v4]\n"
                    "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
+                   "  --turbo | --turbo-max   opt-in router tail skip presets (answers differ slightly; CUDA and HIP; see docs/INKLING_TURBO.md)\n"
                    "  --kld-eval REF.bin --native PATH\n"
                    "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
@@ -1106,6 +1132,19 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --turbo / --turbo-max: the preset goes through the same environment switch as STRATA_INK_TAIL_SKIP=turbo (a value the person set wins)
+    if (!turbo_preset.empty()) {
+        if (const char* have = std::getenv("STRATA_INK_TAIL_SKIP"); have && have[0]) {
+            fprintf(stderr, "[inkling] --%s ignored: STRATA_INK_TAIL_SKIP=%s is set and wins\n", turbo_preset.c_str(), have);
+        } else {
+#ifdef _WIN32
+            _putenv_s("STRATA_INK_TAIL_SKIP", turbo_preset.c_str());
+#else
+            setenv("STRATA_INK_TAIL_SKIP", turbo_preset.c_str(), 1);
+#endif
+        }
+    }
+
     // Auto-select FP8_E4M3 KV when parallel >= 16 unless user explicitly forced a format
     if (cfg.bopts.kv_dtype_auto && cfg.bopts.parallel >= 16) {
         cfg.bopts.kv_dtype = KvDtype::FP8_E4M3;
@@ -1131,6 +1170,9 @@ int main(int argc, char** argv) {
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
+    if (!tkl_calib.empty()) return cmd_tail_calib(cfg.model_path, tkl_calib, tkl_cfgs, tkl_out, tkl_chunk, cfg.bopts, cfg.force_cpu);
+    if (!tgen_in.empty()) return cmd_tail_gen(cfg.model_path, tgen_in, tgen_out, tgen_stop, cfg.bopts, cfg.force_cpu);
+    if (!tkl_corpus.empty()) return cmd_tail_kl(cfg.model_path, tkl_corpus, tkl_cfgs, tkl_out, tkl_chunk, tkl_only, cfg.bopts, cfg.force_cpu);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);
     if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu);
     if (ring_check_stride > 0) {
@@ -1180,6 +1222,13 @@ int main(int argc, char** argv) {
         if (mode_serve) proto("ERR init: %s", err.c_str());
         else fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
+    }
+
+    if (const char* ts = std::getenv("STRATA_INK_TAIL_SKIP"); ts && ts[0] && std::string(ts) != "off" && std::string(ts) != "0") {
+        // the opt-in tail skip (--turbo, STRATA_INK_TAIL_SKIP): only the CUDA and HIP backends have it; say so where it has no effect
+        std::string terr;
+        if (backend->set_tail_skip(ts, terr)) fprintf(stderr, "[inkling] tail skip on (%s): answers differ slightly from exact\n", ts);
+        else fprintf(stderr, "[inkling] STRATA_INK_TAIL_SKIP=%s has no effect on the %s backend (%s): answers are exact\n", ts, backend->backend_name(), terr.c_str());
     }
 
     if (mode_serve) {

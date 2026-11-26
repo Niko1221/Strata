@@ -19,6 +19,7 @@
 #include "ink_moe_fp4_sm120.cuh"
 #include "ink_sm120_cfg.cuh"
 #include "ink_iq_grids.cuh"
+#include "ink_tail_skip.cuh"
 
 #if defined(__CUDACC__)
 #include <mma.h>
@@ -219,7 +220,8 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
     int32_t* __restrict__ topk_idx,     // [M, 8]
     float* __restrict__ topk_w,         // [M, 8]
     float route_scale,
-    int M) {
+    int M,
+    InkTailArgs ta) {
     INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int tok = blockIdx.x;
     if (tok >= M) return;
@@ -266,10 +268,107 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
             if (id[j] == mi) sc[j] = -1e30f;
         }
     }
+    // Opt-in TAIL SKIP (ink_tail_skip.cuh): every lane holds the same best_id / best_p, so drop_mask is warp-uniform.
+    uint32_t drop_mask = 0;     // slots skipped (no expert, weight 0)
+    uint32_t sub_mask = 0;      // slots swapped for a resident fallback expert
+    int sub_id[kInkTopK];
+    float kept_psum = psum;
+    // cold = not in VRAM: the virtual hot mask when given, else the real tier of the expert (2 = cold)
+    uint32_t cold_mask = 0;
+    if (ta.cnt || ta.cold_only || ta.mode_fb) {
+#pragma unroll
+        for (int k = 0; k < kInkTopK; ++k) {
+            bool cold = true;
+            if (ta.hot) cold = ta.hot[ta.ip * kInkExperts + best_id[k]] == 0;
+            else if (ta.ex) cold = static_cast<const InkExpertDev*>(ta.ex)[best_id[k]].tier == 2;
+            if (cold) cold_mask |= (1u << k);
+        }
+    }
+    if (ta.cnt && lane == 0 && (ta.ex || ta.hot)) {
+        unsigned long long* c = ta.cnt + (size_t)ta.visit * kInkTailStatW;
+        atomicAdd(c + 12, (unsigned long long)__popc(cold_mask));
+    }
+    if (ta.on) {
+        float dropped_share = 0.0f, dropped_p = 0.0f;
+        const float inv_ps = 1.0f / (psum + 1e-20f);
+        uint32_t cand = 0;
+#pragma unroll
+        for (int k = kInkTopK - 1; k >= 1; --k) {
+            if (k < ta.first_rank0) continue;
+            if (ta.cold_only && !(cold_mask & (1u << k))) continue;
+            const float s = best_p[k] * inv_ps;
+            if (s <= ta.thr && (ta.cap <= 0.0f || dropped_share + s <= ta.cap)) {
+                cand |= (1u << k);
+                dropped_share += s;
+                dropped_p += best_p[k];
+            }
+        }
+        if (ta.mask_out && lane == 0) ta.mask_out[tok] = (int)cand;   // calibration: the candidates are only recorded
+        if (!ta.calib) {
+            if (ta.mode_fb && ta.fb) {
+#pragma unroll
+                for (int k = 1; k < kInkTopK; ++k) {
+                    sub_id[k] = -1;
+                    if (cand & (1u << k)) {
+                        const int t = (int)ta.fb[ta.ip * kInkExperts + best_id[k]];
+                        bool tcold = true;
+                        if (ta.hot) tcold = ta.hot[ta.ip * kInkExperts + t] == 0;
+                        else if (ta.ex) tcold = static_cast<const InkExpertDev*>(ta.ex)[t].tier == 2;
+                        if (!tcold) { sub_mask |= (1u << k); sub_id[k] = t; }
+                        else drop_mask |= (1u << k);
+                    }
+                }
+            } else {
+                drop_mask = cand;
+            }
+            if (ta.renorm && drop_mask) {
+                float dp = 0.0f;
+#pragma unroll
+                for (int k = 1; k < kInkTopK; ++k) if (drop_mask & (1u << k)) dp += best_p[k];
+                kept_psum = psum - dp;
+            }
+        }
+        const uint32_t applied = drop_mask | sub_mask;
+        if (ta.cnt && lane == 0) {
+            unsigned long long* c = ta.cnt + (size_t)ta.visit * kInkTailStatW;
+            atomicAdd(c + 0, 1ull);
+            if (applied) {
+#pragma unroll
+                for (int k = 1; k < kInkTopK; ++k) if (applied & (1u << k)) atomicAdd(c + 1 + k, 1ull);
+                atomicAdd(c + 9, (unsigned long long)(dropped_share * 1.0e6f + 0.5f));
+                if (ta.ex || ta.hot) atomicAdd(c + 13, (unsigned long long)__popc(applied & cold_mask));
+            }
+        }
+        if (drop_mask) {
+            const int nd = __popc(drop_mask);
+            const int first = __ffs(drop_mask) - 1;
+#pragma unroll
+            for (int k = 1; k < kInkTopK; ++k) {
+                if (drop_mask & (1u << k)) {
+                    float* row = ta.y_pair + ((size_t)tok * kInkTopK + k) * kInkHidden;
+                    if (ta.comp && k == first) {   // the layer's mean drift of a skipped expert, once per skipped slot
+                        const float* cb = ta.comp + (size_t)ta.ip * kInkHidden;
+                        const float sc = ta.comp_scale * (float)nd;
+                        for (int d = lane; d < kInkHidden; d += 32) row[d] = cb[d] * sc;
+                    } else {
+                        for (int d = lane; d < kInkHidden; d += 32) row[d] = 0.0f;
+                    }
+                }
+            }
+        }
+    }
     if (lane < kInkTopK) {
-        const float inv = route_scale / (psum + 1e-20f);
-        topk_idx[(size_t)tok * kInkTopK + lane] = best_id[lane];
-        topk_w[(size_t)tok * kInkTopK + lane] = best_p[lane] * inv;
+        const float inv = route_scale / (kept_psum + 1e-20f);
+        if (ta.on && (drop_mask & (1u << lane))) {
+            topk_idx[(size_t)tok * kInkTopK + lane] = ta.cnt ? -(best_id[lane] + 2) : -1;   // with the counters on the id stays readable: -(id + 2)
+            topk_w[(size_t)tok * kInkTopK + lane] = 0.0f;
+        } else if (ta.on && (sub_mask & (1u << lane))) {
+            topk_idx[(size_t)tok * kInkTopK + lane] = sub_id[lane];   // a resident expert instead of the cold one, the original weight
+            topk_w[(size_t)tok * kInkTopK + lane] = best_p[lane] * inv;
+        } else {
+            topk_idx[(size_t)tok * kInkTopK + lane] = best_id[lane];
+            topk_w[(size_t)tok * kInkTopK + lane] = best_p[lane] * inv;
+        }
     }
 }
 
@@ -286,18 +385,27 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     const int32_t* __restrict__ topk_idx,
     int M,
     int tile_rows,
-    InkMoeTables tb) {
+    InkMoeTables tb,
+    unsigned long long* tail_cnt = nullptr,   // opt-in tail-skip counters (nullptr = off)
+    int tail_visit = 0) {
     INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     __shared__ int s_cnt[128], s_off[128], s_act[128], s_fill[128], s_tcnt[128];
+    __shared__ int s_pre[128];
     const int t = threadIdx.x;
     const int P = M * kInkTopK;
 
     s_cnt[t] = 0;
     s_fill[t] = 0;
+    s_pre[t] = 0;
     __syncthreads();
 
     for (int i = t; i < P; i += 128) {
         const int e = topk_idx[i];
+        if (e < 0) {   // a slot dropped by the opt-in tail skip (ink_tail_skip.cuh); with the counters on the id is -(id + 2)
+            if (tail_cnt && e <= -2 && ex[-e - 2].tier <= 1) s_pre[-e - 2] = 1;
+            continue;
+        }
+        if (tail_cnt && ex[e].tier <= 1) s_pre[e] = 1;
         if (ex[e].tier <= 1) atomicAdd(&s_cnt[e], 1);  // tier 0=VRAM, 1=pinned host GPU-readable, 2=CPU hybrid
     }
     __syncthreads();
@@ -325,6 +433,13 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     const int off_e = s_off[t] - cv;
     tb.cnt[t] = cv;
     tb.off[t] = off_e;
+    if (tail_cnt) {
+        // experts the exact router would have read (kept + dropped) against the experts read now, per visit
+        const int pre = (s_pre[t] || cv > 0) ? 1 : 0;
+        const unsigned pre_ballot = __ballot_sync(0xFFFFFFFFu, pre);
+        if ((t & 31) == 0) atomicAdd(tail_cnt + (size_t)tail_visit * kInkTailStatW + 10, (unsigned long long)__popc(pre_ballot));
+        if (t == 127) atomicAdd(tail_cnt + (size_t)tail_visit * kInkTailStatW + 11, (unsigned long long)s_act[127]);
+    }
     if (t == 127) {
         tb.off[128] = s_off[127];
         *tb.nact = s_act[127];
@@ -346,7 +461,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     // Scatter sorted pair indices & source token indices
     for (int i = t; i < P; i += 128) {
         const int e = topk_idx[i];
-        if (ex[e].tier > 1) continue;
+        if (e < 0 || ex[e].tier > 1) continue;
         const int pos = s_off[e] + atomicAdd(&s_fill[e], 1);
         tb.pairs[pos] = i;
         tb.tok_idx[pos] = i / kInkTopK;
@@ -4073,6 +4188,92 @@ inline void (*g_ink_moe_hook)(int tag, void* ctx) = nullptr;
 inline void* g_ink_moe_hook_ctx = nullptr;
 inline void ink_moe_mark(int tag) { if (g_ink_moe_hook) g_ink_moe_hook(tag, g_ink_moe_hook_ctx); }
 
+// The opt-in tail skip's router arguments for the visit being launched (ink_tail_cur_visit(), set by the runner); on = 0 when it is off or the visit is not in its mask.
+// Device tables of the calibrated bias, the virtual hot mask and the fallback table, loaded from the files the spec names (reloaded when a path changes).
+struct InkTailDevTables {
+    std::string comp_p, hot_p, fb_p;
+    float* comp = nullptr;
+    uint8_t* hot = nullptr;
+    uint16_t* fb = nullptr;
+    int* mask = nullptr;               // [kInkTailMaskCap] drop candidates of the last router call (calibration)
+    double* acc = nullptr;             // [24 * 2304] calibration sums
+    unsigned long long* cnt = nullptr; // [24] dropped slots counted per layer
+};
+constexpr int kInkTailMaskCap = 16384;
+inline InkTailDevTables& ink_tail_dev() { static InkTailDevTables t; return t; }
+
+inline bool ink_tail_load_file(const std::string& path, void** dev, size_t bytes) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { std::fprintf(stderr, "[InkCUDA] tail skip: cannot open %s\n", path.c_str()); return false; }
+    std::vector<uint8_t> h(bytes);
+    const size_t n = std::fread(h.data(), 1, bytes, f);
+    std::fclose(f);
+    if (n != bytes) { std::fprintf(stderr, "[InkCUDA] tail skip: %s has %zu bytes, %zu expected\n", path.c_str(), n, bytes); return false; }
+    if (*dev) cudaFree(*dev);
+    *dev = nullptr;
+    if (cudaMalloc(dev, bytes) != cudaSuccess) return false;
+    cudaMemcpy(*dev, h.data(), bytes, cudaMemcpyHostToDevice);
+    return true;
+}
+
+inline void ink_tail_sync_tables(const InkTailCfg& tc) {
+    InkTailDevTables& t = ink_tail_dev();
+    if (tc.comp_path != t.comp_p) { t.comp_p = tc.comp_path; if (!t.comp_p.empty()) ink_tail_load_file(t.comp_p, (void**)&t.comp, (size_t)24 * kInkHidden * 4); else { if (t.comp) cudaFree(t.comp); t.comp = nullptr; } }
+    if (tc.hot_path != t.hot_p) { t.hot_p = tc.hot_path; if (!t.hot_p.empty()) ink_tail_load_file(t.hot_p, (void**)&t.hot, (size_t)24 * kInkExperts); else { if (t.hot) cudaFree(t.hot); t.hot = nullptr; } }
+    if (tc.fb_path != t.fb_p) { t.fb_p = tc.fb_path; if (!t.fb_p.empty()) ink_tail_load_file(t.fb_p, (void**)&t.fb, (size_t)24 * kInkExperts * 2); else { if (t.fb) cudaFree(t.fb); t.fb = nullptr; } }
+    if (tc.calib && !t.mask) {
+        cudaMalloc((void**)&t.mask, sizeof(int) * kInkTailMaskCap);
+        cudaMalloc((void**)&t.acc, sizeof(double) * 24 * kInkHidden);
+        cudaMalloc((void**)&t.cnt, sizeof(unsigned long long) * 24);
+        cudaMemset(t.acc, 0, sizeof(double) * 24 * kInkHidden);
+        cudaMemset(t.cnt, 0, sizeof(unsigned long long) * 24);
+    }
+}
+
+inline InkTailArgs ink_tail_args_now(float* y_pair, const InkExpertDev* ex = nullptr) {
+    InkTailArgs ta;
+    const InkTailCfg& tc = ink_tail_cfg();
+    const int tv = ink_tail_cur_visit();
+    if (!tc.on || tv < 0 || tv >= kInkTailVisits) return ta;
+    const bool in_mask = ((tc.visit_mask >> tv) & 1ull) != 0;
+    if (!in_mask && !tc.stats) return ta;
+    ink_tail_sync_tables(tc);
+    const InkTailDevTables& t = ink_tail_dev();
+    ta.on = in_mask ? 1 : 0;
+    ta.first_rank0 = tc.first_rank - 1;
+    ta.renorm = tc.renorm;
+    ta.visit = tv;
+    ta.thr = tc.thr;
+    ta.cap = tc.cap;
+    ta.y_pair = y_pair;
+    ta.cnt = tc.stats ? ink_tail_cnt_dev() : nullptr;
+    ta.ip = ink_visit_phys(tv);
+    ta.mode_fb = tc.mode_fb && t.fb ? 1 : 0;
+    ta.cold_only = tc.cold_only;
+    ta.calib = tc.calib;
+    ta.comp_scale = tc.comp_scale;
+    ta.ex = ex;
+    ta.hot = t.hot;
+    ta.fb = t.fb;
+    ta.comp = (tc.comp_path.empty() || tc.calib) ? nullptr : t.comp;
+    ta.mask_out = tc.calib ? t.mask : nullptr;
+    return ta;
+}
+
+// Calibration: after the dispatch, add the weighted outputs of the candidate slots (y_pair rows) to the layer's sums.
+__global__ void k_ink_tail_calib(const float* __restrict__ y_pair, const int* __restrict__ mask, double* __restrict__ acc, unsigned long long* __restrict__ cnt, int M) {
+    const int tok = blockIdx.x;
+    if (tok >= M) return;
+    const int m = mask[tok];
+    if (!m) return;
+    if (threadIdx.x == 0) atomicAdd(cnt, (unsigned long long)__popc(m));
+    for (int k = 1; k < kInkTopK; ++k) {
+        if (!(m & (1 << k))) continue;
+        const float* row = y_pair + ((size_t)tok * kInkTopK + k) * kInkHidden;
+        for (int d = threadIdx.x; d < kInkHidden; d += blockDim.x) atomicAdd(acc + d, (double)row[d]);
+    }
+}
+
 inline void launch_ink_moe_router(
     cudaStream_t st,
     cublasHandle_t cublas,
@@ -4082,7 +4283,9 @@ inline void launch_ink_moe_router(
     int M,
     InkMoeWorkspace& ws,
     float route_scale = kInkRouteScale,
-    bool force_exact_dec = false) {
+    bool force_exact_dec = false,
+    bool tail_ok = false,
+    const InkExpertDev* tail_ex = nullptr) {
     if (M <= 16) {
         if (M == 1)      k_ink_router_gemv_smallM<1><<<kInkExperts, 256, 0, st>>>(x_f32, gate_w, ws.r_logits, M);
         else if (M <= 4) k_ink_router_gemv_smallM<4><<<kInkExperts, 256, 0, st>>>(x_f32, gate_w, ws.r_logits, M);
@@ -4097,7 +4300,8 @@ inline void launch_ink_moe_router(
             (!force_exact_dec && ink_has_int8_tc()) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    const InkTailArgs ta = tail_ok ? ink_tail_args_now(ws.y_pair, tail_ex) : InkTailArgs{};   // on = 0: the kernel runs as before
+    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, ta);
     ink_moe_mark(0);
 }
 
@@ -4127,7 +4331,12 @@ inline void launch_ink_moe_dispatch_only(
                         : use_wmma_tc ? ((M <= 128) ? 16 : 64)
                         : sm_sel.active ? sm_sel.tile_rows
                                       : ((M <= 128 || use_fp16_tc) ? 16 : 64);
-    k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb);
+    {
+        const InkTailCfg& tcb = ink_tail_cfg();
+        const int tvb = ink_tail_cur_visit();
+        unsigned long long* tcnt = (tcb.on && tcb.stats && tvb >= 0 && tvb < kInkTailVisits) ? ink_tail_cnt_dev() : nullptr;
+        k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb, tcnt, tvb);
+    }
     ink_moe_mark(1);
 
     const int P = M * kInkTopK;
@@ -4336,10 +4545,18 @@ inline void launch_ink_moe(
     bool force_exact_dec = false,
     bool run_reduce8 = true) {
     // 1. Exact Top-8 / 128 sigmoid router
-    launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec);
+    launch_ink_moe_router(st, cublas, gate_w, gate_b, x_f32, M, ws, route_scale, force_exact_dec, /*tail_ok=*/true, experts);
 
     // 2. Dispatch GPU-resident experts
     launch_ink_moe_dispatch_only(st, sec4_base, experts, info, x_f32, M, ws, force_exact_dec, false);
+    {   // tail-skip calibration (off unless the spec says calib=1)
+        const InkTailCfg& tcc = ink_tail_cfg();
+        const int tvc = ink_tail_cur_visit();
+        if (tcc.on && tcc.calib && tvc >= 0 && tvc < kInkTailVisits && ((tcc.visit_mask >> tvc) & 1ull) && ink_tail_dev().acc && M <= kInkTailMaskCap) {
+            const int ipc = ink_visit_phys(tvc);
+            k_ink_tail_calib<<<M, 256, 0, st>>>(ws.y_pair, ink_tail_dev().mask, ink_tail_dev().acc + (size_t)ipc * kInkHidden, ink_tail_dev().cnt + ipc, M);
+        }
+    }
 
     // 3. Deterministic 8-slot weighted sum -> y_out [M, 2304] (skipped when caller fuses reduce8 + post-MLP ShortConv4!)
     if (run_reduce8) {

@@ -280,6 +280,48 @@ public:
 
     bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
+    bool set_tail_skip(const std::string& spec, std::string& err) override {
+        if (!initialized_) { err = "CUDA backend not initialized"; return false; }
+        strata::ink::InkTailCfg c;
+        if (!strata::ink::ink_tail_parse(spec, c, err)) return false;
+        (void)strata::ink::ink_tail_cfg();   // read the environment first, so it cannot overwrite this later
+        if (c.stats && !strata::ink::ink_tail_cnt_dev()) {
+            void* p = nullptr;
+            if (cudaMalloc(&p, sizeof(unsigned long long) * strata::ink::kInkTailVisits * strata::ink::kInkTailStatW) != cudaSuccess) { err = "no memory for the tail-skip counters"; return false; }
+            cudaMemset(p, 0, sizeof(unsigned long long) * strata::ink::kInkTailVisits * strata::ink::kInkTailStatW);
+            strata::ink::ink_tail_cnt_dev() = static_cast<unsigned long long*>(p);
+        }
+        cudaStreamSynchronize(runner_->st);
+        strata::ink::ink_tail_cfg_ref() = c;
+        if (c.on) strata::ink::ink_tail_sync_tables(c);   // load the tables now, outside any graph capture
+        // the CUDA graphs of the one-token step carry the old arguments: drop them so the next step captures the new ones
+        for (auto& e : runner_->graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        runner_->graph_cache.clear();
+        return true;
+    }
+
+    bool tail_calib(std::vector<double>& sum, std::vector<uint64_t>& cnt, bool reset) override {
+        auto& t = strata::ink::ink_tail_dev();
+        sum.assign((size_t)24 * strata::ink::kInkHidden, 0.0);
+        cnt.assign(24, 0);
+        if (!initialized_ || !t.acc) return false;
+        cudaStreamSynchronize(runner_->st);
+        if (cudaMemcpy(sum.data(), t.acc, sum.size() * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (cudaMemcpy(cnt.data(), t.cnt, 24 * sizeof(uint64_t), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (reset) { cudaMemset(t.acc, 0, sum.size() * sizeof(double)); cudaMemset(t.cnt, 0, 24 * sizeof(uint64_t)); }
+        return true;
+    }
+
+    bool tail_stats(std::vector<uint64_t>& out, bool reset) override {
+        out.assign((size_t)strata::ink::kInkTailVisits * strata::ink::kInkTailStatW, 0);
+        unsigned long long* d = strata::ink::ink_tail_cnt_dev();
+        if (!initialized_ || !d) return false;
+        cudaStreamSynchronize(runner_->st);
+        if (cudaMemcpy(out.data(), d, out.size() * sizeof(unsigned long long), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (reset) cudaMemset(d, 0, out.size() * sizeof(unsigned long long));
+        return true;
+    }
+
     std::string device_info() const override { return dev_info_; }
 
     BackendStats stats() const override {
@@ -355,6 +397,10 @@ public:
                 if (!std::getenv("STRATA_INK_SPEC_COST") && opts.spec_cost <= 0.0) spec_cfg_.cost = s120.spec_cost;
                 if (!std::getenv("STRATA_INK_SPEC_PLAIN") && opts.spec_plain < 0.0) spec_cfg_.plain = s120.spec_plain;
             }
+        }
+        {   // the opt-in tail skip (environment): its tables are loaded before anything is captured into a CUDA graph (the runner may capture while it initialises)
+            const strata::ink::InkTailCfg& tc0 = strata::ink::ink_tail_cfg();
+            if (tc0.on) strata::ink::ink_tail_sync_tables(tc0);
         }
         cudaDeviceProp prop{};
         ce = cudaGetDeviceProperties(&prop, gpu_id_);
@@ -554,6 +600,10 @@ public:
         slot_hists_.assign(max_slots_, {});
         c64_gov_steps_ = 0; c64_gov_emit_sum_ = 0.0; c64_gov_disabled_ = false;
         initialized_ = true;
+        {   // the opt-in tail skip (environment): its tables are loaded now, never inside a CUDA graph capture
+            const strata::ink::InkTailCfg& tc0 = strata::ink::ink_tail_cfg();
+            if (tc0.on) strata::ink::ink_tail_sync_tables(tc0);
+        }
         return true;
     }
 

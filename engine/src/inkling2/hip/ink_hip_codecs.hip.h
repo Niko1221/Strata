@@ -2910,6 +2910,7 @@ __global__ void __launch_bounds__(256) k_moe_direct_w13_situ(
     if (slot_k >= B * top_k) return;
     const int b = slot_k / top_k;
     const int eid = topk_ids[slot_k];
+    if (eid < 0) return;   // a slot dropped by the opt-in tail skip: no weight is read
     const GpuExpertDesc desc = exps[eid];
     if (!desc.body) return;
 
@@ -3089,11 +3090,15 @@ __global__ void __launch_bounds__(256) k_moe_direct_w2_par(
     const int slot_k = blockIdx.y;
     if (slot_k >= B * top_k) return;
     const int eid = topk_ids[slot_k];
-    const GpuExpertDesc desc = exps[eid];
     const int tid = threadIdx.x;
     const int wave = tid >> 5;
     const int lane = tid & 31;
     const int row = blockIdx.x * 8 + wave;
+    if (eid < 0) {   // a slot dropped by the opt-in tail skip: its partial output is zero, no weight is read
+        if (lane == 0 && row < D) y_part[static_cast<size_t>(slot_k) * D + row] = 0.0f;
+        return;
+    }
+    const GpuExpertDesc desc = exps[eid];
     if (!desc.body) {
         if (lane == 0 && row < D) y_part[static_cast<size_t>(slot_k) * D + row] = 0.0f;
         return;

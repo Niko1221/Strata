@@ -515,6 +515,15 @@ public:
 
     bool dspark_ready() const override { return has_dspark_; }
 
+    // Opt-in router tail skip (cuda/ink_tail_skip.cuh): the HIP router reads the process-wide setting at every launch; the direct MoE path applies it.
+    bool set_tail_skip(const std::string& spec, std::string& err) override {
+        strata::ink::InkTailCfg c;
+        if (!strata::ink::ink_tail_parse(spec, c, err)) return false;
+        (void)strata::ink::ink_tail_cfg();
+        strata::ink::ink_tail_cfg_ref() = c;
+        return true;
+    }
+
     std::string device_info() const override {
         char buf[512];
         if (ep2_active_) {
@@ -4150,11 +4159,12 @@ private:
             }
             dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
             const bool fused_router_f16 = (layer_all_gpu_[ip] && (B <= 4 || exact_rows_) && (D & 3) == 0);
+            const HipTailArgs tail_a = hip_tail_args(visit, layer_all_gpu_[ip] && (B <= 4 || exact_rows_) && !ep2_active_);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
-                    rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale);
+                    rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale, tail_a);
             } else {
-                k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale);
+                k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale, tail_a);
             }
 
             // MoE Expert Execution:
@@ -5459,11 +5469,12 @@ private:
             dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
             const bool use_direct_moe = (B <= 6 || exact_rows_);
             const bool fused_router_f16 = ((D & 3) == 0);
+            const HipTailArgs tail_a = hip_tail_args(visit, use_direct_moe);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
-                    rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale);
+                    rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale, tail_a);
             } else {
-                k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale);
+                k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale, tail_a);
             }
 
             const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);

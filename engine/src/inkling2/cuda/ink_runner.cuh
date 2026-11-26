@@ -4269,6 +4269,7 @@ struct InkCudaRunner {
         const bool has_msg = (bank_stp != nullptr);
         const bool exact_x = (mode == 2);
         const size_t n_hid = (size_t)M * kInkHidden;
+        ink_tail_cur_visit() = visit;   // the opt-in tail skip (ink_tail_skip.cuh) reads the visit number at launch time
 
         // 1. Attention-Residual Depth Mix (+ Fused Looped Pre-Attn Msg + CatRMS -> eliminates 48+72 launches!)
         prof_mark_start();

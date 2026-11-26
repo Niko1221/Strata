@@ -1282,6 +1282,7 @@ __global__ void __launch_bounds__(256) k_ink_doorbell_ring(
         }
         for (int k = 0; k < kInkTopK; ++k) {
             const int e = topk_idx[k];
+            if (e < 0) continue;   // a slot dropped by the opt-in tail skip: nothing to fetch or compute
             const int key = layer * kInkExperts + e;
             if (use_cnt) use_cnt[key] += 1.0f;
             if (experts[e].tier == 2) {
@@ -1372,7 +1373,11 @@ __global__ void __launch_bounds__(32) k_ink_stage_plan(
     unsigned long long* __restrict__ stat) {
     const int k = threadIdx.x;
     int miss = 0;
-    if (k < kInkTopK) {
+    if (k < kInkTopK && topk_idx[k] < 0) {   // a slot dropped by the opt-in tail skip: not a miss, nothing to restore
+        ss->eid[k] = -1;
+        ss->miss[k] = 0;
+        ss->bytes[k] = 0;
+    } else if (k < kInkTopK) {
         const int e = topk_idx[k];
         const int key = layer * kInkExperts + e;
         if (use_cnt) atomicAdd(&use_cnt[key], 1.0f);
@@ -2770,7 +2775,7 @@ inline void launch_ink_moe_hybrid(
             ink_has_int8_tc() ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, ink_tail_args_now(ws.y_pair, experts));   // opt-in tail skip: a dropped slot has id < 0
 
     if (M == 1 && hyb.exact_mode && hyb.exact_graph) {
         // exact mode: the card copies the cold experts in and computes them itself (see k_ink_stage_plan)

@@ -6,6 +6,7 @@
 #pragma once
 
 #include "ink_hip_codecs.hip.h"
+#include "../cuda/ink_tail_skip.cuh"
 
 namespace strata::inkling2::hip {
 
@@ -2382,13 +2383,64 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
 // k4: Fused MoE Router (Top-K Sigmoid with F32 Bias + route_scale=8.0 Renormalization)
 // =================================================================================================
 
+// Opt-in router TAIL SKIP (see ../cuda/ink_tail_skip.cuh for the spec): a dropped slot gets expert id -1 and weight 0; the direct MoE kernels
+// (k_moe_direct_w13_situ / k_moe_direct_w2_par) read no weights for id -1. Only the direct (B <= 4 / exact rows) path passes on = 1.
+struct HipTailArgs {
+    int on = 0;
+    int first_rank0 = 6;
+    int renorm = 1;
+    int visit = 0;
+    float thr = 0.0f;
+    float cap = 0.0f;
+    unsigned long long* cnt = nullptr;   // [48 * 10] or nullptr
+};
+
+__device__ __forceinline__ void hip_tail_apply(const float* s_prob, const int32_t* s_chosen, int K_top, float wsum, float route_scale, HipTailArgs ta,
+                                                int m, int32_t* topk_ids, float* topk_weights) {
+    // thread 0 only: the exact weights are p / wsum * route_scale; the dropped ranks are those >= first_rank0 whose share p / wsum is <= thr
+    unsigned drop = 0u;
+    float dropped_share = 0.0f, dropped_p = 0.0f;
+    const float inv_ws = 1.0f / (wsum + 1e-20f);
+    if (ta.on) {
+        for (int k = K_top - 1; k >= 1; --k) {
+            if (k < ta.first_rank0) continue;
+            const float pk = s_prob[s_chosen[k]];
+            const float sh = pk * inv_ws;
+            if (sh <= ta.thr && (ta.cap <= 0.0f || dropped_share + sh <= ta.cap)) { drop |= (1u << k); dropped_share += sh; dropped_p += pk; }
+        }
+    }
+    const float kept = (ta.on && ta.renorm && drop) ? (wsum - dropped_p) : wsum;
+    const float inv_w = route_scale / (kept + 1e-20f);
+    for (int k = 0; k < K_top; ++k) {
+        if (drop & (1u << k)) { topk_ids[m * K_top + k] = -1; topk_weights[m * K_top + k] = 0.0f; }
+        else { topk_ids[m * K_top + k] = s_chosen[k]; topk_weights[m * K_top + k] = s_prob[s_chosen[k]] * inv_w; }
+    }
+    if (ta.on && ta.cnt) {
+        unsigned long long* c = ta.cnt + static_cast<size_t>(ta.visit) * 10;
+        atomicAdd(c + 0, 1ull);
+        if (drop) {
+            for (int k = 1; k < K_top; ++k) if (drop & (1u << k)) atomicAdd(c + 1 + k, 1ull);
+            atomicAdd(c + 9, static_cast<unsigned long long>(dropped_share * 1.0e6f + 0.5f));
+        }
+    }
+}
+
+// Host side: the arguments of one router launch (off unless STRATA_INK_TAIL_SKIP is set, the visit is in its mask and the path is the direct one).
+inline HipTailArgs hip_tail_args(int visit_no, bool direct_path) {
+    HipTailArgs ta;
+    const strata::ink::InkTailCfg& tc = strata::ink::ink_tail_cfg();
+    if (!direct_path || !tc.on || visit_no < 0 || visit_no >= strata::ink::kInkTailVisits || !((tc.visit_mask >> visit_no) & 1ull)) return ta;
+    ta.on = 1; ta.first_rank0 = tc.first_rank - 1; ta.renorm = tc.renorm; ta.visit = visit_no; ta.thr = tc.thr; ta.cap = tc.cap;
+    return ta;
+}
+
 // Grid: (M,), Block: 128 (1 thread per expert e=0..127, exact deterministic tie-break by smallest eid!)
 __global__ void __launch_bounds__(128) k4_moe_router_topk(
     const float* __restrict__ logits,  // [M, 128]
     const float* __restrict__ bias,    // nullptr or [128] (F32 gate.bias)
     int32_t* __restrict__ topk_ids,    // [M, K_top]
     float* __restrict__ topk_weights,  // [M, K_top]
-    int M, int K_top, float route_scale = 8.0f) {
+    int M, int K_top, float route_scale = 8.0f, HipTailArgs ta = HipTailArgs()) {
     const int m = blockIdx.x;
     if (m >= M) return;
     const int e = threadIdx.x;
@@ -2433,15 +2485,18 @@ __global__ void __launch_bounds__(128) k4_moe_router_topk(
     }
     if (e == 0) {
         float wsum = 0.0f;
-        for (int k = 0; k < K_top; ++k) {
-            const int best_e = s_chosen[k];
-            topk_ids[m * K_top + k] = best_e;
-            const float w = s_prob[best_e];
-            topk_weights[m * K_top + k] = w;
-            wsum += w;
+        for (int k = 0; k < K_top; ++k) wsum += s_prob[s_chosen[k]];
+        if (ta.on) {
+            hip_tail_apply(s_prob, s_chosen, K_top, wsum, route_scale, ta, m, topk_ids, topk_weights);
+        } else {
+            for (int k = 0; k < K_top; ++k) {
+                const int best_e = s_chosen[k];
+                topk_ids[m * K_top + k] = best_e;
+                topk_weights[m * K_top + k] = s_prob[best_e];
+            }
+            const float inv_w = route_scale / (wsum + 1e-20f);
+            for (int k = 0; k < K_top; ++k) topk_weights[m * K_top + k] *= inv_w;
         }
-        const float inv_w = route_scale / (wsum + 1e-20f);
-        for (int k = 0; k < K_top; ++k) topk_weights[m * K_top + k] *= inv_w;
     }
 }
 
@@ -2454,7 +2509,7 @@ __global__ void __launch_bounds__(128) k4_moe_router_topk_f16(
     half_t* __restrict__ mlpf16,       // [M, D]
     int32_t* __restrict__ topk_ids,    // [M, K_top]
     float* __restrict__ topk_weights,  // [M, K_top]
-    int M, int D, int K_top, float route_scale = 8.0f) {
+    int M, int D, int K_top, float route_scale = 8.0f, HipTailArgs ta = HipTailArgs()) {
     const int m = blockIdx.x;
     if (m >= M) return;
     const int e = threadIdx.x;
@@ -2506,15 +2561,18 @@ __global__ void __launch_bounds__(128) k4_moe_router_topk_f16(
     }
     if (e == 0) {
         float wsum = 0.0f;
-        for (int k = 0; k < K_top; ++k) {
-            const int best_e = s_chosen[k];
-            topk_ids[m * K_top + k] = best_e;
-            const float w = s_prob[best_e];
-            topk_weights[m * K_top + k] = w;
-            wsum += w;
+        for (int k = 0; k < K_top; ++k) wsum += s_prob[s_chosen[k]];
+        if (ta.on) {
+            hip_tail_apply(s_prob, s_chosen, K_top, wsum, route_scale, ta, m, topk_ids, topk_weights);
+        } else {
+            for (int k = 0; k < K_top; ++k) {
+                const int best_e = s_chosen[k];
+                topk_ids[m * K_top + k] = best_e;
+                topk_weights[m * K_top + k] = s_prob[best_e];
+            }
+            const float inv_w = route_scale / (wsum + 1e-20f);
+            for (int k = 0; k < K_top; ++k) topk_weights[m * K_top + k] *= inv_w;
         }
-        const float inv_w = route_scale / (wsum + 1e-20f);
-        for (int k = 0; k < K_top; ++k) topk_weights[m * K_top + k] *= inv_w;
     }
 }
 
