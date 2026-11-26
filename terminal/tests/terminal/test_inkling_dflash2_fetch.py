@@ -1,5 +1,5 @@
-"""The DFlash 2 sidecar (dflash2.safetensors) of an Inkling .strata model: Control fetches it beside the model on a new install and on update, verifies it against its pins,
-shows its size, and uses DSpark when it is missing or the download fails. The engine drafts with it by default (up to 16 slots) and falls back to DSpark without it.
+"""The DFlash 2 sidecar (dflash2.safetensors) of an Inkling model (a .strata pack or a GGUF): Control fetches it beside the model on a new install and on update, verifies it against its pins,
+shows its size, and the model runs with no drafter when it is missing or the download fails (0.2.23: DFlash 2 is the only drafter, DSpark is not offered).
 
     python -I terminal/tests/terminal/test_inkling_dflash2_fetch.py
 """
@@ -39,9 +39,9 @@ class Dflash2PinTest(unittest.TestCase):
         apache = (notices / "INKLING-2-MINI-DFLASH2-APACHE-2.0.txt").read_text(encoding="utf-8")
         self.assertIn("Apache License 2.0", apache)
         self.assertIn(F.DFLASH2_COMMIT, apache)
-        basalt = (notices / "BASALT-MIT.txt").read_text(encoding="utf-8")
-        self.assertIn("MIT License", basalt)
-        self.assertIn("tjm8874", basalt)
+        mit = (notices / "DFLASH2-TJM8874-MIT.txt").read_text(encoding="utf-8")
+        self.assertIn("MIT License", mit)
+        self.assertIn("tjm8874", mit)
 
 
 class Dflash2FetchTest(unittest.TestCase):
@@ -85,16 +85,18 @@ class Dflash2FetchTest(unittest.TestCase):
         got, calls, said, _ = self._fetch(have=True)
         self.assertEqual((got, calls), (F.DFLASH2_FILE, []))
 
-    def test_a_file_that_does_not_check_out_means_dspark(self):
+    def test_a_file_that_does_not_check_out_means_no_drafter(self):
         got, calls, said, _ = self._fetch(have=True, verify_fails=True)
         self.assertEqual((got, calls), (None, []))
-        self.assertTrue(any("DSpark" in m for m in said))
+        self.assertTrue(any("without a drafter" in m for m in said))
+        self.assertFalse(any("DSpark" in m for m in said))
 
-    def test_a_failed_download_means_dspark_and_leaves_nothing_behind(self):
+    def test_a_failed_download_means_no_drafter_and_leaves_nothing_behind(self):
         got, calls, said, left = self._fetch(fetch_fails=True, files=(F.DFLASH2_FILE, F.DFLASH2_FILE + ".part"))
         self.assertEqual((got, calls), (None, [F.DFLASH2_FILE]))
         self.assertEqual(left, [])
-        self.assertTrue(any("DSpark is used" in m for m in said))
+        self.assertTrue(any("without a drafter" in m for m in said))
+        self.assertFalse(any("DSpark" in m for m in said))
 
     def test_the_persons_own_folder_is_never_written_to(self):
         got, calls, said, _ = self._fetch(own=True)
@@ -125,8 +127,9 @@ class Dflash2UpdateTest(unittest.TestCase):
     def test_a_model_outside_the_models_folder_counts_as_the_persons_own(self):
         self.assertEqual(self._update(in_models_folder=False), [("elsewhere", True)])
 
-    def test_gguf_builds_and_other_families_are_left_alone(self):
-        self.assertEqual(self._update(model_name="Inkling-2-Mini-UD-Q4_K_XL.gguf"), [])
+    def test_gguf_builds_get_it_too_and_other_families_are_left_alone(self):
+        self.assertEqual(self._update(model_name="Inkling-2-Mini-UD-Q4_K_XL.gguf"), [(F.FAMILY, False)])         # DFlash 2 is the one drafter of every build
+        self.assertEqual(self._update(model_name="Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf"), [(F.FAMILY, False)])
         self.assertEqual(self._update({"arch": "qwen3"}), [])
 
     def test_update_install_calls_it_for_every_config(self):

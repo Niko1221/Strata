@@ -1,15 +1,6 @@
 {
- "note": "Hugging Face repositories for Thinking Machines Inkling-2-Mini: flagship native .strata v1.1 builds (strata-engine/Inkling-2-Mini-Strata) and Unsloth Dynamic GGUF builds (unsloth/Inkling-2-Mini-GGUF, pinned to the commit whose bytes the size / sha256 table in strata_control/inkling_family.py describes: Unsloth re-uploaded every GGUF and the drafter in another layout on 2026-11-23 14:54 UTC). Overridden by STRATA_INKLING_SOURCE or config key inkling_source.",
- "sources": [
-  {
-   "kind": "http",
-   "base": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main"
-  }
- ],
- "gguf_sources": [
-  {
-   "kind": "http",
-   "base": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/800c946d7b9c830c86290df49afbbe91db8455f5"
-  }
- ]
+ "note": "Extra download mirrors for Inkling-2-Mini, tried AFTER the built-in pinned sources of strata_control/inkling_family.py: the Strata packs, the Vision shard and the tokenizer files (strata-engine/Inkling-2-Mini-Strata at STRATA_PACK_COMMIT), the GSQ-RCO GGUF (ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF at GSQ_COMMIT) and Unsloth's UD-Q4_K_XL (unsloth/Inkling-2-Mini-GGUF at UNSLOTH_COMMIT). Every pin is a Hugging Face commit, so a later upload to a repository never changes what an install downloads. Empty by default. Overridden by STRATA_INKLING_SOURCE or config key inkling_source (a local mirror of every file).",
+ "sources": [],
+ "gguf_sources": [],
+ "gsq_sources": []
 }

@@ -337,14 +337,14 @@ def _qwen36_candidate(shards: list[Path], issues: list[str], notes: list[str]) -
 def _inkling_build_for_bytes(total_bytes: int, name: str = "") -> str:
     """Map a local Inkling-2-Mini .strata or .gguf file size/name to the closest catalog build."""
     low = str(name or "").lower()
-    if "sq-20" in low or "sq_20" in low:
+    if "sq-20" in low or "sq_20" in low or "sqv2-20" in low or "sqv2_20" in low:       # (0.2.23's file is Inkling-2-Mini-SQv2-20.strata)
         return "SQ-20"
     if "sq-15" in low or "sq_15" in low:
         return "SQ-15"
     if "sq-10" in low or "sq_10" in low:
         return "SQ-10"
     from strata_control import inkling_fit
-    for b in inkling_fit.GGUF_ORDER:
+    for b in inkling_fit.GGUF_ORDER:                    # every GGUF build the engine reads: the offered ones and the quants that are no longer offered
         if b.lower() in low:
             return b
     if total_bytes >= 17_000_000_000:
@@ -358,14 +358,15 @@ def _inkling_candidate(shards: list[Path], total_bytes: int, observed_experts: s
                        observed_tensor_count: int, model_dir: Path, notes: list[str]) -> dict:
     """An Inkling-2-Mini GGUF file set (both unsloth `inkling2` and ggml-org `inkling2_loop`)."""
     build = _inkling_build_for_bytes(total_bytes, shards[0].name)
-    dspark = next((p.name for p in sorted(model_dir.iterdir())
-                   if p.is_file() and (p.name.lower().startswith("dspark") and p.name.lower().endswith(".gguf")
-                                       or p.name.lower() == "mtp.safetensors")), None)
-    if dspark:
-        notes.append(f"Found Inkling-2-Mini DSpark drafter ({dspark}) beside the model; Strata will use it.")
-    vision_strata = model_dir / "Inkling-2-Mini-Vision.strata"
-    if vision_strata.is_file():
-        notes.append("Found Inkling-2-Mini-Vision.strata beside the model; pictures will work.")
+    sidecar = model_dir / "dflash2.safetensors"
+    if sidecar.is_file():
+        notes.append("Found the Inkling-2-Mini DFlash 2 drafter (dflash2.safetensors) beside the model; Strata will use it.")
+    elif any(p.is_file() and (p.name.lower().startswith("dspark") and p.name.lower().endswith(".gguf") or p.name.lower() == "mtp.safetensors")
+             for p in model_dir.iterdir()):
+        notes.append("Found an older DSpark drafter file beside the model; Strata 0.2.23 does not use it. Its one drafter is DFlash 2 (dflash2.safetensors); without that file the model runs with no drafter.")
+    vision_strata = next((model_dir / n for n in ("Inkling-2-Mini-Vision-v2.strata", "Inkling-2-Mini-Vision.strata") if (model_dir / n).is_file()), None)
+    if vision_strata is not None:
+        notes.append(f"Found {vision_strata.name} beside the model; pictures will work.")
     target = str(shards[0]) if len(shards) == 1 else str(model_dir)
     return {"family": "inkling-2-mini", "model": build, "basis": "inkling2_gguf",
             "expected_expert_types": sorted(observed_experts),
@@ -1000,9 +1001,11 @@ def plan_import(raw_path: str) -> dict:
     is_inkling = metadata is not None and metadata["architecture"] in INKLING_ARCHS
     if is_inkling:
         projectors = []
-        if (model_dir / "Inkling-2-Mini-Vision.strata").is_file():
-            projectors.append({"name": "Inkling-2-Mini-Vision.strata", "status": "ok", "pinned": True,
-                               "plain": "Inkling-2-Mini-Vision.strata is the picture reader shard for Inkling-2-Mini; pictures will work."})
+        for vname in ("Inkling-2-Mini-Vision-v2.strata", "Inkling-2-Mini-Vision.strata"):          # 0.2.23's file, 0.2.22's file (the same weights)
+            if (model_dir / vname).is_file():
+                projectors.append({"name": vname, "status": "ok", "pinned": True,
+                                   "plain": f"{vname} is the picture reader shard for Inkling-2-Mini; pictures will work."})
+                break
         for n in sorted(ignored_auxiliary)[:8]:
             projectors.append({"name": n, "status": "ok", "pinned": False,
                                "plain": f"{n} is a picture reader next to Inkling-2-Mini; pictures will work."})

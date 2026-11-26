@@ -174,13 +174,16 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
             self.assertEqual(p_dual["ram_gb"], 0.0)
             self.assertEqual(p_dual["ssd_gb"], 0.0)
 
-    def test_all_10_unsloth_gguf_and_strata_builds_across_all_vram_and_uma_tiers(self):
+    def test_all_gguf_and_strata_builds_across_all_vram_and_uma_tiers(self):
+        # 0.2.23: GGUF_ORDER is every GGUF build the engine reads (the offered GSQ-RCO IQ3_S and UD-Q4_K_XL first, then the nine Unsloth quants that are no longer offered
+        # but keep working where installed); ORDER is only what is offered
         unsloth_quants = (
             "UD-Q8_K_XL", "UD-Q4_K_XL", "UD-Q4_K_M", "UD-IQ4_XS", "UD-Q3_K_XL",
             "UD-IQ3_XXS", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S",
         )
-        self.assertEqual(tuple(inkling_fit.GGUF_ORDER), unsloth_quants)
-        all_builds = (*inkling_fit.STRATA_ORDER, *unsloth_quants)
+        self.assertEqual(set(inkling_fit.GGUF_ORDER), {"GSQ-RCO-IQ3_S", *unsloth_quants})
+        self.assertEqual(tuple(inkling_fit.GGUF_ORDER[:2]), ("GSQ-RCO-IQ3_S", "UD-Q4_K_XL"))
+        all_builds = (*inkling_fit.STRATA_ORDER, *inkling_fit.GGUF_ORDER)
 
         # Discrete tiers: 4, 6, 8, 10, 12, 16, 24, 32 GiB
         for vram, ram in ((4, 16), (6, 16), (8, 32), (10, 32), (12, 32), (16, 64), (24, 64), (32, 128)):
@@ -261,7 +264,7 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
             self.assertGreater(size, 10_000_000_000)
         vsize, vsha = inkling_family.FILES[inkling_family.VISION_FILE]
         self.assertEqual(len(vsha), 64)
-        self.assertEqual(vsize, 636526592)
+        self.assertEqual(vsize, 636551168)
 
     def test_hf_token_auth_headers_only_sent_to_huggingface(self):
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_test_secret_token"}, clear=False):

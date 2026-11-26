@@ -759,7 +759,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     drafting_off = _drafting.normalize(chosen if chosen is not None else cfg.get("drafting")) == "off"
     if is_inkling and isinstance(cfg.get("args"), list):
         if drafting_off:
-            # #6670: strata-inkling defaults to dspark=1 unless --draft off is explicitly passed.
+            # #6670: strata-inkling drafts by default (when a drafter is there) unless --draft off is explicitly passed.
             out_args: list[str] = []
             i = 0
             raw_args = [str(a) for a in cfg["args"]]
@@ -1343,7 +1343,8 @@ class Runner:
             note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
                     "so it will answer text only.")
             if self.is_inkling():                            # 0221 APPTUI: the real reason, and the way to add it
-                note = ("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB) is installed for this model, so it answers text only. "
+                from strata_control import inkling_family
+                note = (f"Images will not work: no picture reader file ({inkling_family.VISION_FILE}, 0.64 GB) is installed for this model, so it answers text only. "
                         "`strata launch --vision on` downloads it, or put the file next to the model files.")
             self.notices.append(note)
             self.emit("model", note, 100, level="warn")
@@ -2115,7 +2116,7 @@ class Runner:
     def ensure_drafter(self, base_path: Path) -> None:
         """Fetch the DFlash2 drafter when this launch will use it and it is not here yet. Never stops the launch: if it cannot be had, the model
         starts with the MTP and the person is told (recommend, never force)."""
-        if self.is_native_strata_family():                   # Hy4-Flash (DFly2) and Inkling-2-Mini (DSpark) carry their drafter inside the model file
+        if self.is_native_strata_family():                   # Hy4-Flash carries its drafter (DFly2) inside the model file; Inkling-2-Mini's DFlash 2 file is fetched by setup and `setup --update` (setup.inkling_fetch_dflash2)
             return
         from strata_control import drafting, drafting_fetch
         want: dict = {}
@@ -3032,8 +3033,9 @@ class Runner:
                          "Copy or link your pack there to use it as it is" +
                          (f"; only {gap['free_gb']:.0f} GB are free on that drive, so choose a bigger drive with --data-dir" if gap.get("free_gb") is not None and gap["free_gb"] < gap["gb"] else "") + ".")
             if any(p["kind"] == "mmproj" for p in parts):
+                from strata_control import inkling_family
                 reader_file = ("Hy4-Flash-Vision.strata" if self.is_hy4()
-                               else "Inkling-2-Mini-Vision.strata" if self.is_inkling()
+                               else inkling_family.VISION_FILE if self.is_inkling()
                                else "its mmproj file")
                 text += f" To skip the picture reader (the model then answers text only), add --vision off; or put {reader_file} next to your model files."
             if any(p["kind"] == "mtp" for p in parts):
@@ -3276,7 +3278,7 @@ class Runner:
         if self.is_hy4():
             return "Drafting: off" if str(self.s.drafting or "").strip().lower() == "off" else "Drafting: DFly2 (built into the model)"
         if self.is_inkling():
-            return "Drafting: off" if str(self.s.drafting or "").strip().lower() == "off" else "Drafting: DSpark Block-8 (built into the model)"
+            return "Drafting: off" if str(self.s.drafting or "").strip().lower() == "off" else "Drafting: DFlash 2 (a file beside the model)"
         if self.feed_without_draft_layer():                  # the model list says this model has no draft layer: setup fetches none and the engine starts without a drafter
             return drafting.summary_line(drafting.Decision("off", "off"))
         try:

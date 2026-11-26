@@ -72,12 +72,13 @@
 
 | 提供元 | 選択肢 |
 | --- | --- |
-| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
-| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+| **Strata** | SQ-20 (19.37 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **GSQ-RCO** | IQ3\_S (11.43 GB) |
+| **Unsloth** | UD-Q4\_K\_XL (17.63 GB) |
 
 SQ-20 は 24 GiB、SQ-15 は 16 GiB、SQ-10 は 12 GiB のグラフィックスカード向けです。4 GiB のカードから始められます。
 
-[Hugging Face の Strata パック](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF ファイル](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
+[Hugging Face の Strata パック](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF ファイル](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) · [GSQ-RCO IQ3_S](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF)
 
 </details>
 

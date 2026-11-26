@@ -35,7 +35,9 @@ def is_inkling_exe(exe) -> bool:
     return _base(exe).startswith(EXE_PREFIX)
 
 
-NO_DRAFTER_NOTE = "Inkling-2-Mini: this engine has no DSpark drafter yet, so it starts without it"
+NO_DRAFTER_NOTE = "Inkling-2-Mini: this engine has no drafter it can use here, so it starts without one"
+NO_SIDECAR_NOTE = ("Inkling-2-Mini: no dflash2.safetensors beside the model, so it starts without a drafter (DFlash 2 is the one drafter; "
+                   "Strata's setup and update download the file beside a model they installed)")
 NO_IMAGES_NOTE = "Inkling-2-Mini: this engine does not read images yet, so it starts without the image reader"
 NO_IMAGES_REPLY = "this Inkling-2-Mini engine does not read images yet; update Strata or attach the Vision shard"
 _PROBES: dict = {}
@@ -54,13 +56,21 @@ def wants_drafter(cfg: dict) -> bool:
     return choice not in ("off", "none", "false", "0")
 
 
+def model_of(cfg_or_args) -> str | None:
+    """The `--native` model path of a run config (or of an args list)."""
+    args = [str(a) for a in ((cfg_or_args.get("args") if isinstance(cfg_or_args, dict) else cfg_or_args) or ())]
+    return next((args[i + 1] for i, a in enumerate(args) if a in ("--native", "--model") and i + 1 < len(args)), None)
+
+
 def needs_drafting_probe(cfg: dict) -> bool:
     """True when this run config wants the measured drafting choice ("drafting": "auto", or nothing chosen) and
-    has no probe valid for its current placement: the launcher should run strata_control.inkling_probe.probe_run_config before the real start."""
+    has no probe valid for its current placement: the launcher should run strata_control.inkling_probe.probe_run_config before the real start.
+    Without the DFlash 2 file beside the model there is no drafter to measure: no probe, and the start is `--draft off`."""
     from strata_control import inkling_family, inkling_probe
     raw = cfg.get("drafting")
     choice = str(raw if raw not in (None, "") else inkling_family.default_drafting(cfg.get("backend"))).strip().lower()
     return (raw is not False and choice == "auto"
+            and inkling_family.dflash2_sidecar(model_of(cfg)) is not None
             and inkling_probe.is_stale(cfg))
 
 
@@ -110,12 +120,11 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
 
 
 def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
+    """Drafting is DFlash 2 and nothing else (0.2.23): on only when dflash2.safetensors is beside the model (or STRATA_INK_DFLASH2 names it); without it, `--draft off`."""
     from strata_control import inkling_family
-    if not wants_drafter(cfg):
+    if not wants_drafter(cfg) or inkling_family.dflash2_sidecar(model_of(cfg)) is None:
         return ["--draft", "off"]
-    if (info or {}).get("drafter") != "dspark":
-        return []
-    out = ["--draft", "dspark"]
+    out = ["--draft", inkling_family.DEFAULT_DRAFTER]
     # an engine that lists spec_opts=1 takes the window shape: one linear chain (the block drafter) unless the run config says otherwise
     if (info or {}).get("spec_opts") == "1":
         beam = cfg.get("draft_beam", inkling_family.DRAFT_BEAM)
@@ -127,7 +136,7 @@ def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
 
 
 def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
-    """Metrics/status view of Inkling-2-Mini's built-in DSpark drafter (`drafting`: `"dspark"` | `"off"`)."""
+    """Metrics/status view of Inkling-2-Mini's drafter (`drafting`: `"dflash2"` | `"off"`). DFlash 2 is the one drafter; the engine's own INFO line still says `dspark` for "a drafter runs"."""
     items = [str(a) for a in (args or ())]
     mode = None
     for i in range(len(items) - 1):
@@ -140,24 +149,24 @@ def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
     # cards (and when it has no drafter or no room for it); the status used to repeat what was asked for and say "dspark" over an engine
     # that ran without it. An older engine that does not say falls back to the asked mode, as before.
     said = str((info or {}).get("drafting") or "").strip().lower()
-    if said == "dspark":
-        return {"drafting": "dspark", "drafting_note": text}
+    if said in ("dspark", "dflash2"):                                    # the engine says a drafter runs (its INFO line still spells that "dspark")
+        return {"drafting": "dflash2", "drafting_note": text}
     if said == "off":
-        asked = mode == "dspark" or (info or {}).get("drafter") == "dspark"
+        asked = mode in ("dspark", "dflash2") or (info or {}).get("drafter") == "dspark"
         return {"drafting": "off", "drafting_note": _drafting_off_note(items, info) if asked else text}
-    if mode == "dspark" or (info or {}).get("drafter") == "dspark":
-        return {"drafting": "dspark", "drafting_note": text}
+    if mode in ("dspark", "dflash2") or (info or {}).get("drafter") == "dspark":
+        return {"drafting": "dflash2", "drafting_note": text}
     return {"drafting": "off", "drafting_note": text}
 
 
-DRAFTING_SPLIT_NOTE = ("Drafting is off: DSpark does not run yet when the model's layers are split across several cards (CUDA). "
+DRAFTING_SPLIT_NOTE = ("Drafting is off: the drafter does not run yet when the model's layers are split across several cards (CUDA). "
                        "On one card, with the rest of the experts in RAM, it does (--gpu N).")
-DRAFTING_NO_DRAFTER_NOTE = "Drafting is off: no DSpark drafter was found next to the model."
-DRAFTING_LEFT_OFF_NOTE = "Drafting is off: the engine started without the DSpark drafter (see its log for why, often too little free graphics memory)."
+DRAFTING_NO_DRAFTER_NOTE = "Drafting is off: no DFlash 2 drafter (dflash2.safetensors) was found next to the model."
+DRAFTING_LEFT_OFF_NOTE = "Drafting is off: the engine started without the DFlash 2 drafter (see its log for why, often too little free graphics memory)."
 
 
 def _drafting_off_note(items: list[str], info: dict | None) -> str:
-    """Plain words for 'DSpark was asked for and the engine left it off' (#6741)."""
+    """Plain words for 'the drafter was asked for and the engine left it off' (#6741)."""
     if (info or {}).get("drafter") == "none":
         return DRAFTING_NO_DRAFTER_NOTE
     if "--layer-split" in items or str((info or {}).get("backend") or "").endswith("-ls"):
@@ -214,7 +223,7 @@ def fit_dspark(args: list, info: dict | None, announce: bool = True) -> tuple[li
 
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
     """Build start args for `strata-inkling`, preserving `--parallel 1..64`, `--max-context`, `--vision`,
-    Main-first `--gpus` + `--layer-split`, and `--draft dspark|off`."""
+    Main-first `--gpus` + `--layer-split`, and `--draft dflash2|off`."""
     from strata_control import inkling_family, user_args
     args = list(cfg["args"])
     mine = user_args.capture(cfg)
@@ -286,8 +295,9 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     elif need_draft:
         add = drafter_args(cfg, info)
         args += add
-        if not add and announce:
-            print(f"[strata] {NO_DRAFTER_NOTE}", flush=True)
+        if add[:2] == ["--draft", "off"] and announce:
+            print(f"[strata] {NO_SIDECAR_NOTE}", flush=True)
+            _NOTE["text"] = NO_SIDECAR_NOTE
     if announce and isinstance(cfg.get("drafting_probe"), dict):          # why drafting is on or off here, for /metrics and `strata launch --status`
         from strata_control import inkling_family, inkling_probe
         text = inkling_probe.note(cfg)

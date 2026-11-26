@@ -46,25 +46,28 @@ def make_pins(repo_root: Path) -> dict:
     uns = setup.hf(setup.UNSLOTH_REPO)
     out["qwen/UD-Q4_K_XL"] = {"folder": "UD-Q4_K_XL", "files": [
         {"name": n, "bytes": v[0], "sha256": v[1], "url": "%sUD-Q4_K_XL/%s" % (uns, n)} for n, v in sorted(setup.UNSLOTH_SHARDS.items())]}
-    src = json.loads((repo_root / "terminal" / "data" / "inkling-sources.json").read_text(encoding="utf-8"))
-    strata_base, gguf_base = src["sources"][0]["base"], src["gguf_sources"][0]["base"]
-    for name in ("SQ-10", "SQ-15", "SQ-20"):
-        fn = "Inkling-2-Mini-%s.strata" % name
-        out["ink/" + name] = {"folder": "Inkling-2-Mini-" + name, "files": [
-            {"name": fn, "bytes": ink.FILES[fn][0], "sha256": ink.FILES[fn][1], "url": "%s/%s" % (strata_base, fn)}]}
-    for fn, (size, sha) in ink.UNSLOTH_GGUF_FILES.items():
-        if not fn.startswith("Inkling-2-Mini-UD-"):
-            continue
-        key = fn[len("Inkling-2-Mini-"):-len(".gguf")]
+    # every offered build (the 0.2.23 lineup) with the sidecar the engine drafts with; the quants that are no longer offered keep their pin keys (the grid still tests them) at their own commit
+    strata_base = ink.pack_base()
+    for build in ink.inkling_fit.ORDER:
+        fn = ink.build_file(build)
+        src = ink.sources_for(fn, env={})[0]
+        out["ink/" + build] = {"folder": "Inkling-2-Mini-" + build, "files": [
+            {"name": fn, "bytes": ink.size_of(fn), "sha256": ink.sha256_of(fn), "url": ink.urls_for(fn, src)[0]},
+            {"name": ink.DFLASH2_FILE, "bytes": ink.size_of(ink.DFLASH2_FILE), "sha256": ink.sha256_of(ink.DFLASH2_FILE), "url": ink.DFLASH2_URL}]}
+    for key in ink.inkling_fit.LEGACY_ORDER:
+        fn = ink.build_file(key)
+        size, sha = ink.UNSLOTH_GGUF_FILES[fn]
+        gguf_base = ink.sources_for(fn, env={})[0]["base"]
         d = ink.DSPARK_GGUF_FILE
         out["ink/" + key] = {"folder": "Inkling-2-Mini-" + key, "files": [
             {"name": fn, "bytes": size, "sha256": sha, "url": "%s/%s" % (gguf_base, fn)},
-            {"name": d, "bytes": ink.FILES[d][0], "sha256": ink.FILES[d][1], "url": "%s/%s" % (gguf_base, d)}]}
-    # the picture readers: SQ builds read pictures with the Vision shard beside the model, the Unsloth GGUFs with an mmproj file beside it
+            {"name": d, "bytes": ink.LEGACY_FILES[d][0], "sha256": ink.LEGACY_FILES[d][1], "url": "%s/%s" % (gguf_base, d)}]}
+    # the picture reader: every build reads pictures with the Vision shard beside the model
     out["ink/Vision"] = {"folder": "Inkling-2-Mini-Vision", "files": [
         {"name": ink.VISION_FILE, "bytes": ink.FILES[ink.VISION_FILE][0], "sha256": ink.FILES[ink.VISION_FILE][1], "url": "%s/%s" % (strata_base, ink.VISION_FILE)}]}
     out["ink/mmproj-BF16"] = {"folder": "Inkling-2-Mini-mmproj-BF16", "files": [
-        {"name": ink.MMPROJ_BF16_FILE, "bytes": ink.FILES[ink.MMPROJ_BF16_FILE][0], "sha256": ink.FILES[ink.MMPROJ_BF16_FILE][1], "url": "%s/%s" % (gguf_base, ink.MMPROJ_BF16_FILE)}]}
+        {"name": ink.MMPROJ_BF16_FILE, "bytes": ink.LEGACY_FILES[ink.MMPROJ_BF16_FILE][0], "sha256": ink.LEGACY_FILES[ink.MMPROJ_BF16_FILE][1],
+         "url": "%s/%s" % (ink.hf_base(ink.UNSLOTH_REPO, ink.UNSLOTH_OLD_COMMIT), ink.MMPROJ_BF16_FILE)}]}
     hsrc = json.loads((repo_root / "terminal" / "data" / "hy4-sources.json").read_text(encoding="utf-8"))["sources"][0]["base"]
     for name in ("SQ-64",):
         fn = hy4.build_file(name)

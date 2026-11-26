@@ -77,7 +77,7 @@ docker run -d --name strata --device /dev/dri --group-add $(getent group render 
 
 Every `0.2.20` image bundles all three engines (`strata`, `strata-hy4`, and `strata-inkling`), so switching model families only changes `FAMILY` and `MODEL` (or use `:latest-<flavor>` to track the newest release):
 
-- **Inkling-2-Mini (Strata native `.strata` or Unsloth Dynamic GGUF):** set `FAMILY=inkling-2-mini` with `MODEL=SQ-10`, `SQ-15`, or `SQ-20` (native `.strata`), or an Unsloth GGUF size such as `UD-Q4_K_XL`:
+- **Inkling-2-Mini (Strata native `.strata`, GSQ-RCO or Unsloth GGUF):** set `FAMILY=inkling-2-mini` with `MODEL=SQ-20`, `SQ-15`, or `SQ-10` (native `.strata`), `GSQ-RCO-IQ3_S`, or `UD-Q4_K_XL`:
 
   ```sh
   docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
@@ -138,7 +138,7 @@ screens; leave out what you do not care about.
 
 | Variable | What it does | Default |
 | --- | --- | --- |
-| `MODEL` | model size: `IQ2_XS`, `IQ3_XXS`, `IQ3_S`, `Q2_0`, `UD-Q4_K_XL`, `SQ-10` / `SQ-15` / `SQ-20` (Inkling-2-Mini), `SQ-64` / `SQ-96` / `SQ-128` (Hy4-Flash), ... ([MODELS.md](MODELS.md)) | Strata picks what suits the card, and says so in the log |
+| `MODEL` | model size: `IQ2_XS`, `IQ3_XXS`, `IQ3_S`, `Q2_0`, `UD-Q4_K_XL`, `SQ-20` / `SQ-15` / `SQ-10`, `GSQ-RCO-IQ3_S`, `UD-Q4_K_XL` (Inkling-2-Mini), `SQ-64` / `SQ-96` / `SQ-128` (Hy4-Flash), ... ([MODELS.md](MODELS.md)) | Strata picks what suits the card, and says so in the log |
 | `FAMILY` | `qwen`, `qwen36`, `hy4-flash`, `inkling-2-mini`, `unsloth`, `gyro`, `coder`, `swift`, `nvfp4`; use `qwen` for the original ISTA-DASLab packs | installer recommendation; may differ by hardware |
 | `MODEL_PATH` | model files you already have: a folder or one `.gguf`, `.strata`, or Hugging Face `.safetensors` file/folder, **inside the container** (mount it with `-v`, `:ro` is fine) | download |
 | `ALLOW_DOWNLOAD` | `1`: go on and download the model although model files of the older layout were left unread in `/data/models` (see [From the older image](#from-the-older-image)) | stop |

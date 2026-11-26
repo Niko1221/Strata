@@ -279,10 +279,11 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual(got_off[got_off.index("--draft") + 1], "off")
         self.assertEqual(inkling_kind.drafting_info(got_off, {"drafter": "dspark"}), {"drafting": "off", "drafting_note": ""})
 
-        # --draft dspark or INFO drafter=dspark reports drafting: "dspark"
-        got_on = base + ["--draft", "dspark"]
-        self.assertEqual(inkling_kind.drafting_info(got_on, {"drafter": "dspark"}), {"drafting": "dspark", "drafting_note": ""})
-        self.assertEqual(inkling_kind.drafting_info(base, {"drafter": "dspark"}), {"drafting": "dspark", "drafting_note": ""})
+        # --draft dflash2 (or the old word dspark) or INFO drafter=dspark (the engine's own spelling for "a drafter is there") reports drafting: "dflash2" (0.2.23: the one drafter)
+        got_on = base + ["--draft", "dflash2"]
+        self.assertEqual(inkling_kind.drafting_info(got_on, {"drafter": "dspark"}), {"drafting": "dflash2", "drafting_note": ""})
+        self.assertEqual(inkling_kind.drafting_info(base + ["--draft", "dspark"], {"drafter": "dspark"}), {"drafting": "dflash2", "drafting_note": ""})
+        self.assertEqual(inkling_kind.drafting_info(base, {"drafter": "dspark"}), {"drafting": "dflash2", "drafting_note": ""})
         self.assertEqual(inkling_kind.drafting_info(base, {"drafter": "none"}), {"drafting": "off", "drafting_note": ""})
 
     def test_drafting_info_follows_what_the_engine_started_with_6741(self):
@@ -294,7 +295,7 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual(got["drafting_note"], inkling_kind.DRAFTING_SPLIT_NOTE)
         one = ["--native", "m.strata", "--draft", "dspark"]
         self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "dspark", "drafting": "dspark", "backend": "cuda"}),
-                         {"drafting": "dspark", "drafting_note": ""})
+                         {"drafting": "dflash2", "drafting_note": ""})
         self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "none", "drafting": "off"}),
                          {"drafting": "off", "drafting_note": inkling_kind.DRAFTING_NO_DRAFTER_NOTE})
         self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "dspark", "drafting": "off", "backend": "cuda"}),

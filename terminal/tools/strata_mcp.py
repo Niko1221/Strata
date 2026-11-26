@@ -730,16 +730,30 @@ class Strata:
                 "arena_gb": b["bodies_gb"], "vision": True, "engine": None, "families": (family,), "context_fit": None, "hy4": True,
                 "footprint_gb": b["footprint_gb"], "engram_gb": hy4_fit.ENGRAM_GB}
 
+    def inkling_old_file(self, tag: str, model: str) -> bool:
+        """The installed run config of Inkling-2-Mini `model` runs a file an older Strata wrote and a newer one exists (SQ-20: the 0.2.22 file, SQv2-20 is out)."""
+        try:
+            from strata_control import inkling_family
+            cfg = next((c for c in self.configs() if c.stem == f"strata-{tag}"), None)
+            args = [str(a) for a in (json.loads(cfg.read_text(encoding="utf-8-sig")).get("args") or [])] if cfg is not None else []
+            arg = lambda k: args[args.index(k) + 1] if k in args[:-1] else None      # noqa: E731
+            return inkling_family.has_newer_file(model, arg("--native"), arg("--vision"))
+        except Exception:                                # noqa: BLE001 - the list never fails on this
+            return False
+
     def inkling_size(self, family, model) -> dict | None:
         d = (getattr(self.setup_module(), "INKLING_FAMILIES", None) or {}).get(family)
-        if not d or model not in d["models"]:
+        known = {**d["models"], **d.get("legacy_models", {})} if d else {}
+        if model not in known:
             return None
         from strata_control import inkling_family, inkling_fit
         b = inkling_fit.BUILDS[model]
-        dl_bytes = sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(model, vision=True, dspark=True))
-        return {"about": d["models"][model]["about"], "download_gb": round(dl_bytes / 1e9, 1), "ram_gb": d["models"][model]["ram_gb"],
+        dl_bytes = sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(model, vision=True, drafter=True))      # the model, the Vision shard and the DFlash 2 file
+        return {"about": known[model]["about"], "download_gb": round(dl_bytes / 1e9, 1), "ram_gb": known[model]["ram_gb"],
                 "arena_gb": b["bodies_gb"], "vision": True, "engine": None, "families": (family,), "context_fit": None, "inkling": True,
-                "footprint_gb": b["footprint_gb"], "format": b.get("format", "strata")}
+                "footprint_gb": b["footprint_gb"], "format": b.get("format", "strata"),
+                # 0.2.23 lineup: only d["models"] are offered; a legacy quant is listed only because it is installed ("no longer offered", never recommended, never downloaded)
+                "offered": model in d["models"], "credit": known[model].get("credit")}
 
     def own_size(self, family, model) -> dict | None:
         """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
@@ -772,7 +786,11 @@ class Strata:
                or (getattr(self.setup_module(), "HY4_FAMILIES", None) or {}).get(family)
                or (getattr(self.setup_module(), "INKLING_FAMILIES", None) or {}).get(family))
         if own:
-            return list(own["models"])
+            out = list(own["models"])
+            if own.get("legacy_models"):                # Inkling-2-Mini: a quant that is no longer offered stays in the list while it is installed (never deleted, never recommended)
+                have = {c.stem[len("strata-"):] for c in self.configs()}
+                out += [m for m in own["legacy_models"] if (own.get("tag", "") + m).lower() in have]
+            return out
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
                       key=lambda m: bool(models[m].get("experimental")))
 
@@ -1406,6 +1424,9 @@ class Strata:
                     sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                                   **({"inkling": ink} if ink else {}),
                                   **({"format": d["format"]} if d.get("format") else {}),
+                                  **({"offered": False} if d.get("offered") is False else {}),
+                                  **({"credit": d["credit"]} if d.get("credit") else {}),
+                                  **({"update_available": True} if tag in have and self.inkling_old_file(tag, m) else {}),
                                   "experimental": False, "images": True,
                                   "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
                                   "memory_gb": d["footprint_gb"], "fit_gb": d["footprint_gb"],
@@ -1479,7 +1500,7 @@ class Strata:
             from strata_control import inkling_family, inkling_fit
             rec_ink = inkling_fit.recommend(vram, ram)
             b = rec_ink["build"]
-            dl_gb = round(sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(b, vision=True, dspark=True)) / 1e9, 1)
+            dl_gb = round(sum((inkling_family.size_of(n) or 0) for n in inkling_family.files_of(b, vision=True, drafter=True)) / 1e9, 1)
             why = (f"{ram:.0f} GB of RAM + {vram:.0f} GB of VRAM: Inkling-2-Mini {b} ({inkling_fit.BUILDS[b]['footprint_gb']:.1f} GB) "
                    f"runs cleanly on 4+ GB GPUs with routed experts in RAM")
             cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
@@ -1558,6 +1579,9 @@ class Strata:
                               **({"hy4": hy4} if hy4 else {}),
                               **({"inkling": ink} if ink else {}),
                               **({"format": d["format"]} if d.get("format") else {}),
+                              **({"offered": False} if d.get("offered") is False else {}),
+                              **({"credit": d["credit"]} if d.get("credit") else {}),
+                              **({"update_available": True} if d.get("inkling") and tag in have and self.inkling_old_file(tag, m) else {}),
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
                               # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
@@ -1803,11 +1827,11 @@ def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -
             for name in hy4_family.files_of(model, bool(vision)):
                 out.append({"path": str(folder / name), "bytes": hy4_family.size_of(name), "role": "model"})
             return out
-        if family in (getattr(S, "INKLING_FAMILIES", None) or {}):      # Inkling-2-Mini: the build (+ DSpark GGUF for Unsloth GGUFs) + optional Vision shard in one folder
+        if family in (getattr(S, "INKLING_FAMILIES", None) or {}):      # Inkling-2-Mini: the build + optional Vision shard + the DFlash 2 file (the one drafter) in one folder
             from strata_control import inkling_family
             folder = Path(models_dir) / inkling_family.FAMILY
-            for name in inkling_family.files_of(model, bool(vision), dspark=True):
-                role = "vision" if name == inkling_family.VISION_FILE else ("dspark" if name == inkling_family.DSPARK_GGUF_FILE else "model")
+            for name in inkling_family.files_of(model, bool(vision), drafter=True):
+                role = "vision" if name == inkling_family.VISION_FILE else ("drafter" if name == inkling_family.DFLASH2_FILE else "model")
                 out.append({"path": str(folder / name), "bytes": inkling_family.size_of(name), "role": role})
             return out
         own = (getattr(S, "OWN_PATH_FAMILIES", None) or {}).get(family)
@@ -2654,7 +2678,7 @@ class Tools:
                 md = {**md, "download_gb": 0.0}
             else:
                 have_files = inkling_family.local_files(target / "models" / inkling_family.FAMILY)
-                md = {**md, "download_gb": round(sum(inkling_family.size_of(n) / 1e9 for n in inkling_family.files_of(model, vision != "no") if n not in have_files), 1)}
+                md = {**md, "download_gb": round(sum(inkling_family.size_of(n) / 1e9 for n in inkling_family.files_of(model, vision != "no", drafter=True) if n not in have_files), 1)}
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir) \
             or (ready_dir is not None and ready_dir.is_dir() and any(ready_dir.glob("*.gguf*")))   # a local folder: nothing to download
         repack_gb = 0 if (md.get("hy4") or md.get("inkling")) else (s.mac().repacked_gb(model) if mac and s.mac() else 0)
