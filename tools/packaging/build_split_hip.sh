@@ -16,6 +16,7 @@
 # Prints the binary paths (strata-split-<N>-amd), one per line, last.
 set -eu
 SRC=${SRC:-$(cd "$(dirname "$0")/../.." && pwd)}
+. "$SRC/tools/packaging/symbols_build.sh"   # sym_cmake, symbols_keep (owner decision 2026-11-25)
 B=${B:?B=<build dir>}
 HP=${HP:?HP=<ROCm devel root>}
 LIBW=${LIBW:-$HP}
@@ -32,7 +33,7 @@ cmake -G Ninja -S "$SRC/engine" -B "$B" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENAB
   "-DSTRATA_SPLIT_CARDS=${CARDS// /;}" "-DCMAKE_HIP_ARCHITECTURES=gfx1201" "-DSTRATA_SPLIT_HIP_ARCHS=$ARCHS" -DSTRATA_NATIVE_EXPERTS=ON $ggml \
   -DCMAKE_HIP_COMPILER="$HP/llvm/bin/clang++" -DCMAKE_HIP_COMPILER_ROCM_ROOT="$HP" "-DCMAKE_PREFIX_PATH=$HP;$LIBW$SYSDEPS" \
   "-DCMAKE_HIP_FLAGS=--rocm-path=$HP --rocm-device-lib-path=$BC" -DSTRATA_PORTABLE=ON \
-  "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags"
+  "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags -Wl,--build-id=sha1" $sym_cmake
 out=""
 for n in $CARDS; do
   ninja -j "$JOBS" -C "$B" "strata-split-$n"
@@ -56,6 +57,7 @@ for n in $CARDS; do
   done
   named="$(dirname "$exe")/strata-split-$n-amd"
   cp -f "$exe" "$named"
+  [ -z "${SYMBOL_PKG:-}" ] || symbols_keep elf "$SRC" "$SYMBOL_PKG" "$named" >&2   # the symbol file of strata-split-N-amd (SYMBOL_PKG = the package folder name; SYMBOLS_DIR)
   out="$out$named"$'\n'
 done
 printf '%s' "$out"

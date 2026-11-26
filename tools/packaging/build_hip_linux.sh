@@ -63,7 +63,7 @@ if [ -z "${VISION_ONLY:-}" ]; then
   # shellcheck disable=SC2086
   cmake -G Ninja -S engine -B "$OUT/b" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF \
     "-DCMAKE_HIP_ARCHITECTURES=$ARCHS" "${HIPDEFS[@]}" ${GGML[@]+"${GGML[@]}"} -DSTRATA_PORTABLE=ON \
-    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake > "$OUT/cfg.log" 2>&1
+    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags -Wl,--build-id=sha1" ${STRATA_CMAKE_EXTRA:-} $shape_cmake $sym_cmake > "$OUT/cfg.log" 2>&1
   chk $? "engine configured"
   nice -n 10 cmake --build "$OUT/b" --target strata -j "$JOBS" > "$OUT/build.log" 2>&1
   chk $? "engine built"
