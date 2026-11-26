@@ -271,6 +271,64 @@ void arena() {
                   "prefetch on 2 threads, then blob(): the same bytes");
         }
         fs.close();
+        {   // the end of the startup reads runs release_startup_stage (end_startup_unbuffered's stage-pool step): experts.bin lets go of
+            // its stage buffers, the GGUF in place keeps its pool, so a later blob() assembles the expert into a buffer of its own size
+            strata::core::FileExpertSource sp;
+            sp.set_gguf(A.string());
+            std::string e4;
+            const bool o4 = sp.open(pack.string(), 2, NE, e4);
+            bool pooled = o4;
+            for (int round = 0; o4 && round < 3; ++round) {
+                for (int64_t l = 0; l < 2; ++l)
+                    for (int64_t e = 0; e < NE; ++e) {
+                        sp.begin_layer(l, nullptr, 0);
+                        const uint8_t* b = sp.blob(l, e);
+                        pooled = pooled && b != nullptr && std::memcmp(b, dst.data() + L.blob_offset(l, e), (size_t) L.blob_bytes(l)) == 0;
+                    }
+                sp.release_startup_stage();
+            }
+            check(pooled, "blob() on the GGUF in place still assembles every expert after release_startup_stage" + (o4 ? "" : ": " + e4));
+            sp.close();
+        }
+#if defined(_WIN32)
+        {   // Windows: the startup reads of the GGUF in place unbuffered with the views closed (begin_startup_unbuffered), then
+            // the views back (end_startup_unbuffered).  The stage pool the GGUF tier assembles blobs into must survive that:
+            // 0.1.67 zeroed its buffer size there, and the next blob() copied a whole blob into a zero-byte allocation.
+            strata::core::FileExpertSource sg;
+            sg.set_gguf(A.string());
+            std::string e3, why;
+            const bool o3 = sg.open(pack.string(), 2, NE, e3);
+            const bool began = o3 && sg.begin_startup_unbuffered(why);
+            check(began, "begin_startup_unbuffered on the GGUF in place" + (began ? "" : ": " + e3 + why));
+            if (began) {
+                std::vector<uint8_t> buf((size_t) std::max(f0.bytes, f1.bytes));
+                bool unb = true;
+                for (int64_t l = 0; l < 2; ++l)
+                    for (int64_t e = 0; e < NE; ++e) {
+                        sg.begin_layer(l, nullptr, 0);
+                        const uint8_t* b = sg.blob(l, e);
+                        unb = unb && b != nullptr && std::memcmp(b, dst.data() + L.blob_offset(l, e), (size_t) L.blob_bytes(l)) == 0 &&
+                              sg.copy_blob(l, e, buf.data()) &&
+                              std::memcmp(buf.data(), dst.data() + L.blob_offset(l, e), (size_t) L.blob_bytes(l)) == 0;
+                    }
+                check(unb, "with the views closed, blob() and copy_blob() read unbuffered and equal the arena");
+                std::string ewhy;
+                check(sg.end_startup_unbuffered(ewhy), "end_startup_unbuffered maps the views again" + (ewhy.empty() ? "" : ": " + ewhy));
+                bool after = true;
+                for (int round = 0; round < 3; ++round)
+                    for (int64_t l = 0; l < 2; ++l)
+                        for (int64_t e = 0; e < NE; ++e) {
+                            sg.begin_layer(l, nullptr, 0);
+                            const uint8_t* b = sg.blob(l, e);
+                            after = after && b != nullptr && std::memcmp(b, dst.data() + L.blob_offset(l, e), (size_t) L.blob_bytes(l)) == 0 &&
+                                    sg.copy_blob(l, e, buf.data()) &&
+                                    std::memcmp(buf.data(), dst.data() + L.blob_offset(l, e), (size_t) L.blob_bytes(l)) == 0;
+                        }
+                check(after, "after end_startup_unbuffered blob() still assembles every expert (the stage pool survives)");
+            }
+            sg.close();
+        }
+#endif
         // with experts.bin present, the pack's file is mapped as before, whatever set_gguf says
         {
             std::ofstream eb(pack / "experts.bin", std::ios::binary);
