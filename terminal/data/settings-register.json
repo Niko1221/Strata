@@ -50022,6 +50022,80 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_TQ_I8",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/iq_kernels.cu",
+     "line": 6338,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/prefill/prefill.cpp",
+     "line": 2085,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/prefill/prefill.cpp",
+     "line": 2195,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/prefill/prefill.cpp",
+     "line": 2218,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/prefill/prefill.cpp",
+     "line": 6257,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/prefill/prefill.cpp",
+     "line": 6386,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [
+    {
+     "file": "engine/src/kernels/native_i8_parity.cpp",
+     "line": 518
+    },
+    {
+     "file": "engine/src/kernels/native_i8_parity.cpp",
+     "line": 528
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:268"
+   ],
+   "first_commit": "a76357ed89",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "a76357ed89",
+   "last_date": "2026-11-23",
+   "status": "opt-in",
+   "owner": "kernels/cuda",
+   "note": "opt-in: the trellis expert formats (TQ2_T 144, TQK6 145, TQK7 146 - Gyro's experts) run on our own int8 dot-product tile kernels (native_expert_i8), a pack's Hadamard fold of block 128 included (the gate/up writes its h rows as FP32, hadamard_rows rotates them, a requantize follows before the down launch). Unset or 0: the trellis experts keep the dequantize + FP16 GEMM path exactly as before. 1: on for a trellis pair the kernels and the shape cover; a layer that asks for it and is not taken is said once. Nothing turns it on by itself, on any card. Checked on gfx1150 (Radeon 890M, ROCm 7.14.1): native_i8_parity passes every trellis row (plain and fold) and the off-switch answers.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_TQ_ROWCH",
    "backends": [
     "cuda-hip"

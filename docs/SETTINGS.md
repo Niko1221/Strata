@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (338)
+## Switches you can turn on (339)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -342,6 +342,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_TOPK_MULTI` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_TOPK_OLD` | on / off | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_TQ_ISA` | on / off | CPU | [GYRO.md](GYRO.md) |
+| `STRATA_TQ_I8` | on / off | NVIDIA and AMD | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_UMA_COHERENT` | number | AMD | - |
 | `STRATA_UMA_HEADROOM_GIB` | number | NVIDIA and AMD, Intel Arc | [INTEL.md](INTEL.md), [INTEL_ARC.md](INTEL_ARC.md), [STRIX_HALO.md](STRIX_HALO.md) |
 | `STRATA_UNBUFFERED_LOAD` | on / off | NVIDIA and AMD, Intel Arc | [QUANTS.md](QUANTS.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md), [README.md](bench-results/2026-10-01-community-rtx-5090-5950x/README.md) |

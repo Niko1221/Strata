@@ -93,7 +93,16 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 /// Covered: gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S with a down of IQ4_NL / Q2_0 (`native_expert_i8_supported`);
 /// no NVFP4 tail, no APR Hadamard, no 4-bit slots.  STRATA_EXPERT_I8=1 makes `native_expert_grouped` itself take it for a call of
 /// 256 entries or more (the prompt chunk of a Qwen3.6 engine without MMQ); STRATA_I8_TM = 2 | 3 | 4 forces the tile.
+/// STRATA_TQ_I8=1 (include/strata/kernels/tq_i8_rule.hpp, off elsewhere) adds the trellis pair TQ2_T / TQK6 / TQK7 - Gyro's
+/// experts - on the same kernels: the weights decode the int8 codebook, and the pair's Hadamard fold of block 128 is covered
+/// by an FP32-h epilogue, `hadamard_rows` in place and a requantize before the down launch (`native_expert_i8_fold_h`).
 bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept;
+/// The same question with the STRATA_TQ_I8 state given instead of read: a test or the prompt plan asks it without the
+/// environment.  Unset or off: the trellis formats are not covered, exactly as before the switch existed.
+bool native_expert_i8_supported_ex(const NativeExpertLayout& L, bool tq_on) noexcept;
+/// true when `native_expert_i8` runs this layout's fold through that epilogue: a trellis pair with the pack's fold of
+/// block 128.  Its scratch needs the FP32 h rows: `native_expert_i8_scratch_bytes(..., true)`.
+bool native_expert_i8_fold_h(const NativeExpertLayout& L) noexcept;
 /// OWN-I8, the prompt path's question (once per layer, src/prefill/prefill.cpp): do the expert groups of this layer take `native_expert_i8`
 /// on this device, for groups of about `group_entries` entries (rows of one launch)?  STRATA_EXPERT_I8=1 asks for it on any card, =0 never; unset:
 /// the HIP cards gfx1030 / gfx1031 / gfx1032 take it, every other card keeps MMQ (include/strata/kernels/i8_expert_rule.hpp).  The formats and the
@@ -125,8 +134,9 @@ NativeExpertI8Launch native_expert_i8_last_launch() noexcept;
 /// diagnostic for native_i8_parity; the attribute call is tried and its refusal ignored, the launch decides; the context is left clean.
 int native_expert_i8_probe_launch(size_t bytes) noexcept;
 /// Bytes of scratch `native_expert_i8` needs (it is smaller than native_expert_scratch_bytes: H goes out as q8_1 blocks only): `cap_entries`
-/// entries, at most `cap_groups` groups, `n_ff` features.
-size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff);
+/// entries, at most `cap_groups` groups, `n_ff` features.  `fold_h`: also the FP32 h rows (`cap_entries` x `n_ff` floats) the folded
+/// trellis layer of STRATA_TQ_I8 goes through - what `native_expert_i8_fold_h` answers true for.
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff, bool fold_h = false);
 /// The activation image `native_expert_i8` reads (its `x_q8_1` argument): `n_rows` x `n_cols` floats as blocks of 32 values {float d; int8 q[32]} (36 bytes), MMQ's numbers
 /// (d_inv = 127 / amax, q = round(x * d_inv), d = 1 / d_inv, the scale in FP32).  NOT the q8_1 block of the other kernels (half2 ds); `n_cols` a multiple of 32.
 void native_expert_i8_quantize(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream);

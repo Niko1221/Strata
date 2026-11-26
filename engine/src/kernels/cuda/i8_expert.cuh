@@ -1,7 +1,8 @@
 // src/kernels/cuda/i8_expert.cuh - our own int8 dot-product kernels for a prompt layer of experts (native_expert_i8, declared in
 // include/strata/kernels/iq_kernels.hpp), for cards that have no matrix cores the fused kernels can use (RDNA2, Pascal, any
 // card with only a byte dot product).  Included once by iq_kernels.cu, INSIDE its anonymous namespace (it uses that file's
-// block types, codebook tables, q8_1 helpers and the dp4a wrapper).
+// block types, codebook tables, q8_1 helpers and the dp4a wrapper).  Its trellis branch uses src/kernels/cuda/tq_state.cuh,
+// the state window the grouped trellis kernels decode with, so the two read the same bits (STRATA_TQ_I8, tq_i8_rule.hpp).
 //
 // What it does, against native_expert_grouped.  The grouped kernels decode every weight block again for each pass of
 // GRP_NC = 4 activation rows; an expert of a prompt chunk carries 40-390 rows.  Here a block owns a tile of
@@ -48,27 +49,34 @@ constexpr int I8_NT = 256;
 // Second wave (same arithmetic, new decodes): gate/up IQ4_XS (23: the IQ4_NL table with a 6-bit scale per 32 values) and IQ1_M (29: the grid of +-1 / 0 times 8, with the
 // block's two delta signs folded into the int8 values: 8 (g - 1 +- 1/8) is an integer, so no activation-sum term is needed); down Q5_0 (6) and Q8_0 (8), the legacy
 // 32-value blocks with one scale (the 5th bit of Q5_0 comes from the 32-bit qh word; 16 is subtracted per byte).
+// The trellis formats (STRATA_TQ_I8, tq_i8_rule.hpp): TQ2_T 144, TQK6 145, TQK7 146.  128 weights a block, one fp16 scale
+// a block, no integer scale and no minimum: value = d * TQ_LUT_I8_SCALE * q (q the int8 codebook).  A stage slot of 128
+// values is exactly one trellis block, and the thread's 32-value piece of it is the block's lane pair 2wp and 2wp+1
+// (lane l = the block's weights 16l..16l+15 = steps 4l..4l+3), so one state window per lane gives the piece's 8 steps.
+__host__ __device__ constexpr bool i8_trellis_type(int t) { return t == 144 || t == 145 || t == 146; }
 __host__ __device__ constexpr int i8_block_bytes(int t) {
     return t == 16 ? 66 : t == 17 ? 74 : t == 22 ? 82 : t == 18 ? 98 : t == 21 ? 110 : t == 20 ? 18 : t == 42 ? 18 : t == 23 ? 136 : t == 29 ? 56 : t == 6 ? 22 : t == 8 ? 34 :
-           t == 12 ? 144 : t == 13 ? 176 : t == 14 ? 210 : t == 7 ? 24 : 0;
+           t == 12 ? 144 : t == 13 ? 176 : t == 14 ? 210 : t == 7 ? 24 : i8_trellis_type(t) ? (t == 144 ? 34 : t == 145 ? 26 : 30) : 0;
 }
-__host__ __device__ constexpr int i8_block_vals(int t) { return t == 20 || t == 6 || t == 8 || t == 7 ? 32 : t == 42 ? 64 : 256; }
-__host__ __device__ constexpr int i8_grid_words(int t) { return t == 16 ? 512 : t == 17 ? 1024 : t == 22 ? 2048 : t == 18 ? 256 : t == 21 ? 512 : t == 29 ? 2048 : 4; }
+__host__ __device__ constexpr int i8_block_vals(int t) { return t == 20 || t == 6 || t == 8 || t == 7 ? 32 : t == 42 ? 64 : i8_trellis_type(t) ? 128 : 256; }
+__host__ __device__ constexpr int i8_grid_words(int t) { return t == 16 ? 512 : t == 17 ? 1024 : t == 22 ? 2048 : t == 18 ? 256 : t == 21 ? 512 : t == 29 ? 2048 : i8_trellis_type(t) ? 0 : 4; }
 __host__ __device__ constexpr bool i8_two_scales(int t) { return t == 17 || t == 22 || t == 29 || t == 14; }
-__host__ __device__ constexpr bool i8_unit_scale(int t) { return t == 20 || t == 42 || t == 6 || t == 8 || t == 7; }
+__host__ __device__ constexpr bool i8_unit_scale(int t) { return t == 20 || t == 42 || t == 6 || t == 8 || t == 7 || i8_trellis_type(t); }
 __host__ __device__ constexpr bool i8_wide_scale(int t) { return t == 23; }   // scale -32..31: |sum x scale| can pass 2^23, plain 32-bit multiply
 __host__ __device__ constexpr bool i8_sign_type(int t) { return t == 16 || t == 17 || t == 18 || t == 21 || t == 22; }
-__host__ __device__ constexpr bool i8_gu_type(int t) { return t == 16 || t == 17 || t == 18 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 12 || t == 13 || t == 14 || t == 8; }   // (42: the Q2_0 pack gate/up; 8: Q8_0 gate/up of the Qwen3.6 Q8_0 set and the one Q8_0 layer of UD-Q6_K_XL)
-__host__ __device__ constexpr bool i8_d_type(int t) { return t == 20 || t == 42 || t == 6 || t == 8 || t == 7 || t == 13 || t == 14; }   // (13, 14: Q5_K / Q6_K down of UD-Q4_K_XL; n_ff must be a whole number of 256-value super-blocks, native_expert_i8_supported)
+__host__ __device__ constexpr bool i8_gu_type(int t) { return t == 16 || t == 17 || t == 18 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 12 || t == 13 || t == 14 || t == 8 || i8_trellis_type(t); }   // (42: the Q2_0 pack gate/up; 8: Q8_0 gate/up of the Qwen3.6 Q8_0 set and the one Q8_0 layer of UD-Q6_K_XL; the trellis pair: STRATA_TQ_I8)
+__host__ __device__ constexpr bool i8_d_type(int t) { return t == 20 || t == 42 || t == 6 || t == 8 || t == 7 || t == 13 || t == 14 || i8_trellis_type(t); }   // (13, 14: Q5_K / Q6_K down of UD-Q4_K_XL; n_ff must be a whole number of 256-value super-blocks, native_expert_i8_supported)
 // Third wave: the K-quants Q4_K (12), Q5_K (13), Q6_K (14) as gate/up and Q5_1 (7) as down.  Q4_K / Q5_K / Q5_1 have a per-32-value minimum: w = base * s * q + min, so
 // sum w x = d_x (base s sum(q a) + min sum(a)): the kernel keeps d_x * sum(a) of every activation block in shared memory (s_as, summed with dp4a when the block is staged) and
 // the decode puts the float `min` (-dmin * m, or + m for Q5_1) in the fourth word of the scale record: one fma more per (row, entry, sub-block).  Q6_K has two int8 scales per 32
 // values and no minimum (the two-scale form).  These formats run on the tile-2..4 kernels only (no tile 8).
 __host__ __device__ constexpr bool i8_min_type(int t) { return t == 12 || t == 13 || t == 7; }
-__host__ __device__ constexpr bool i8_tile8_type(int t) { return !(t == 12 || t == 13 || t == 14 || t == 7); }
-// raw words one thread loads for a sub-block, and the packed words the decode reads (Q8_0: the 8 code words and the scale)
-template <int T> constexpr int I8NR = T == 8 ? 9 : T == 12 ? 12 : T == 13 ? 20 : T == 14 ? 18 : 6;
-template <int T> constexpr int I8NW = T == 8 ? 9 : T == 6 ? 6 : T == 7 ? 6 : T == 12 ? 10 : T == 13 || T == 14 ? 18 : 5;
+__host__ __device__ constexpr bool i8_tile8_type(int t) { return !(t == 12 || t == 13 || t == 14 || t == 7 || i8_trellis_type(t)); }   // (the trellis formats: the tile-8 kernel's stage is 64 values, half a trellis block)
+// raw words one thread loads for a sub-block, and the packed words the decode reads (Q8_0: the 8 code words and the scale).
+// Trellis: the raw words are the state windows of the thread's lane pair - TQ2_T 4 window words + 2 circular prev bytes + d
+// (7), TQK6 / TQK7 8 window words + d (9) - and pack turns them into the 8 step states + d (9), see i8_pack.
+template <int T> constexpr int I8NR = T == 8 ? 9 : T == 12 ? 12 : T == 13 ? 20 : T == 14 ? 18 : T == 144 ? 7 : i8_trellis_type(T) ? 9 : 6;
+template <int T> constexpr int I8NW = T == 8 ? 9 : T == 6 ? 6 : T == 7 ? 6 : T == 12 ? 10 : T == 13 || T == 14 ? 18 : i8_trellis_type(T) ? 9 : 5;
 
 // Weight bytes are read through a GLOBAL address-space pointer on HIP: a flat load also counts in lgkmcnt, so every LDS wait of the dot loop then waited
 // for the prefetch that was meant to overlap it (iteration 2 compiled to flat_load + an immediate s_waitcnt vmcnt(0) before the first dot).
@@ -85,6 +93,32 @@ __device__ __forceinline__ uint32_t i8_ld16(I8P p) { return *(I8P16) p; }   // 2
 __device__ __forceinline__ uint32_t i8_ld8(I8P p) { return *p; }
 __device__ __forceinline__ uint32_t i8_ldw(I8P p) { return *(I8P32) p; }   // 4-byte aligned
 __device__ __forceinline__ float i8_half(uint32_t w) { return __half2float(__ushort_as_half((unsigned short) w)); }
+
+// The trellis (APR) state window and the int8 codebook's step decode: the same bits iq_kernels.cu's tq_load reads, in
+// one place (src/kernels/cuda/tq_state.cuh).  Included here rather than at the top of the file because the window
+// loader below reads through I8P, the global address-space pointer.
+#include "tq_state.cuh"
+
+// the state window of steps 8wp .. 8wp + 7 - the 32 values of the tile kernel's lane pair 2wp and 2wp+1 of the block
+// at `qs` - as its raw u16 words: lane 2wp's four first, then lane 2wp + 1's.  The window arithmetic is tq_states4's
+// (same offsets, same circular wrap over 2K words), read through I8P; native_i8_parity checks the decoded bits.
+template <int TY>
+__device__ __forceinline__ void i8_tq_window(I8P qs, int wp, uint32_t* w) {   // fills w[0..7]: the tile kernel passes its register array (I8NR is 9 here, w[8] is d)
+    constexpr int K = TqInfo<TY>::K, nwords = 2 * K;
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+        const int l = 2 * wp + h;
+        const int off3 = (28 - 4 * l) * K, wb = off3 >> 4;
+        const int wi1 = wb + 1 >= nwords ? wb + 1 - nwords : wb + 1;
+        const int wi2 = wb + 2 >= nwords ? wb + 2 - nwords : wb + 2;
+        const int wi3 = wb + 3 >= nwords ? wb + 3 - nwords : wb + 3;
+        w[4 * h + 0] = i8_ld16(qs + 2 * wb);
+        w[4 * h + 1] = i8_ld16(qs + 2 * wi1);
+        w[4 * h + 2] = i8_ld16(qs + 2 * wi2);
+        w[4 * h + 3] = i8_ld16(qs + 2 * wi3);
+    }
+}
+
 // The activation image of these kernels (the call's x rows and the H the gate/up epilogue writes): blocks of 32 values {float d; int8 q[32]}, 36 bytes (the q8_1 block's size, so the
 // tables and strides are unchanged), numbers as MMQ's quantizer (quantize_mmq_q8_1, layout D4): d_inv = 127 / amax, q = round(x * d_inv), d = 1 / d_inv, the scale kept in FP32.
 // (The q8_1 half2 would round d to FP16 - up to 2^-11 per block - and the kernels would differ from MMQ's output by more than float rounding.)  An all-zero block: q 0, d 0.
@@ -160,11 +194,27 @@ __device__ __forceinline__ I8Off i8_offs(uint32_t row_off, int wp) {
     return o;
 }
 // the stage's pieces.  Per stage the bases are uniform (scalar), the offsets per thread: super-block bi = st / 2 and half par = st % 2 of it
-// (ib = 4 par + wp); IQ4_NL: block 4 st + wp; Q2_0: block 2 st + wp / 2.
+// (ib = 4 par + wp); IQ4_NL: block 4 st + wp; Q2_0: block 2 st + wp / 2.  Trellis: st is the block itself (128 values),
+// the thread's piece its lane pair 2wp and 2wp+1, and the raw words are the lane pair's state window (see tq_window_pair
+// and i8_pack) - nothing is combined here, so the first use of the loaded registers sits after the dot loop.
 template <int T>
 __device__ __forceinline__ void i8_load(I8P blob, const I8Off& of, int st, uint32_t (&r)[I8NR<T>]) {
     const uint32_t bi = (uint32_t) st >> 1, par = (uint32_t) st & 1;
-    if constexpr (T == 12 || T == 13) {   // Q4_K (144 bytes: d, dmin, 12 scale bytes, 128 code bytes) / Q5_K (176: d, dmin, 12 scale bytes, 32 qh bytes, 128 code bytes): sub-block ib = 4 par + wp
+    if constexpr (i8_trellis_type(T)) {
+        const int wp = (int) (of.o1 - of.o0);
+        I8P b = blob + of.o0 + (uint32_t) st * i8_block_bytes(T);   // the row's block st: d (2 bytes), then qs at byte 2 in all three formats
+        if constexpr (T == 144) {
+            I8P qs = b + 2;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) r[j] = i8_ld16(qs + 8 * wp + 2 * j);   // the lane pair's bytes 8wp .. 8wp + 7
+            r[4] = i8_ld8(qs + ((8 * wp - 1) & 31));   // the byte before lane 2wp, and before lane 2wp + 1
+            r[5] = i8_ld8(qs + ((8 * wp + 3) & 31));
+            r[6] = i8_ld16(b);   // d
+        } else {
+            i8_tq_window<T>(b + 2, wp, r);   // the lane pair's eight window words
+            r[8] = i8_ld16(b);   // d
+        }
+    } else if constexpr (T == 12 || T == 13) {   // Q4_K (144 bytes: d, dmin, 12 scale bytes, 128 code bytes) / Q5_K (176: d, dmin, 12 scale bytes, 32 qh bytes, 128 code bytes): sub-block ib = 4 par + wp
         constexpr uint32_t BB = T == 12 ? 144 : 176, QS = T == 12 ? 16 : 48;
         const uint32_t ib = 4 * par + (of.o1 - of.o0);
         I8P b = blob + bi * BB + of.o0;
@@ -232,7 +282,32 @@ __device__ __forceinline__ void i8_load(I8P blob, const I8Off& of, int st, uint3
 }
 template <int T>
 __device__ __forceinline__ void i8_pack(const uint32_t (&r)[I8NR<T>], int ib, uint32_t (&w)[I8NW<T>]) {
-    if constexpr (T == 12 || T == 13) {
+    if constexpr (i8_trellis_type(T)) {
+        // the raw window words into the 8 step states of the thread's lane pair 2wp and 2wp + 1 (wp = ib & 3, see
+        // store_w), the arithmetic of tq_state.cuh's tq_states4 (tq_states4_bytes / tq_states4_bits), and d unchanged in w[8]
+        if constexpr (T == 144) {
+            uint32_t s[4];
+            tq_states4_bytes(r[0] & 0xFF, r[0] >> 8, r[1] & 0xFF, r[1] >> 8, r[4], s);
+#pragma unroll
+            for (int i = 0; i < 4; ++i) w[i] = s[i];
+            tq_states4_bytes(r[2] & 0xFF, r[2] >> 8, r[3] & 0xFF, r[3] >> 8, r[5], s);
+#pragma unroll
+            for (int i = 0; i < 4; ++i) w[4 + i] = s[i];
+        } else {
+            constexpr int K = TqInfo<T>::K;
+            const int wp = ib & 3;
+            const uint64_t v0 = (uint64_t) r[0] | ((uint64_t) r[1] << 16) | ((uint64_t) r[2] << 32) | ((uint64_t) r[3] << 48);
+            const uint64_t v1 = (uint64_t) r[4] | ((uint64_t) r[5] << 16) | ((uint64_t) r[6] << 32) | ((uint64_t) r[7] << 48);
+            uint32_t s[4];
+            tq_states4_bits<K>(v0, ((28 - 8 * wp) * K) & 15, s);   // lane 2wp: bit offset (28 - 4 * 2wp) * K
+#pragma unroll
+            for (int i = 0; i < 4; ++i) w[i] = s[i];   // copy before the second call: the same s array
+            tq_states4_bits<K>(v1, ((24 - 8 * wp) * K) & 15, s);   // lane 2wp + 1: (28 - 4 * (2wp + 1)) * K
+#pragma unroll
+            for (int i = 0; i < 4; ++i) w[4 + i] = s[i];
+        }
+        w[8] = r[T == 144 ? 6 : 8];   // the block's fp16 scale
+    } else if constexpr (T == 12 || T == 13) {
         // get_scale_min_k4(ib) from the 12 scale bytes (r[9..11]): ib < 4: sc = s[ib] & 63, m = s[ib + 4] & 63; else sc = (s[ib + 4] & 15) | (s[ib - 4] >> 6) << 4, m = (s[ib + 4] >> 4) | (s[ib] >> 6) << 4
         auto sb = [&](int j) -> uint32_t {   // (a select, not a dynamic index into the register array)
             const int jw = j >> 2;
@@ -313,9 +388,17 @@ __device__ __forceinline__ void i8_signed8t(uint32_t gx, uint32_t gy, const uint
 // scale: value = base * m * q.  sg = the sign table (shared memory) of the sign formats.
 template <int T>
 __device__ __forceinline__ void i8_convert(const uint32_t (&w)[I8NW<T>], const uint32_t* grid, const uint2* sg, const uint32_t (&kv)[4], uint32_t (&q)[8],
-                                           int& m0, int& m1, float& base, int ib = 0, float* minv = nullptr) {
+                                           int& m0, int& m1, float& base, int ib = 0, float* minv = nullptr, const uint16_t* lut = nullptr) {
     // (the K-quants and Q5_1: ib = the sub-block's index in its 256-value super-block, minv = the float minimum of the (row, sub-block): Q4_K / Q5_K -dmin * m, Q5_1 +m)
-    if constexpr (T == 12 || T == 13) {   // Q4_K / Q5_K: code = nibble (ib & 1: high), plus the 5th bit (bit ib of the qh bytes) << 4 for Q5_K
+    if constexpr (i8_trellis_type(T)) {   // STRATA_TQ_I8: w[0..7] the 8 step states, w[8] the block's fp16 d.  One int8
+        // codebook value per step's four weights, one scale: value = d * TQ_LUT_I8_SCALE * q, so the record's m is 1
+        // (i8_unit_scale: the dot's integer part is the plain sumi, as tq_apply's) and the float base carries the codebook's scale.
+#pragma unroll
+        for (int k = 0; k < 8; ++k) q[k] = tq_i8_step4(w[k], lut);
+        m0 = m1 = 1;
+        base = i8_half(w[8]) * TQ_LUT_I8_SCALE;
+        if (minv) *minv = 0.0f;
+    } else if constexpr (T == 12 || T == 13) {   // Q4_K / Q5_K: code = nibble (ib & 1: high), plus the 5th bit (bit ib of the qh bytes) << 4 for Q5_K
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
             uint32_t v = (w[k] >> (4 * (ib & 1))) & 0x0F0F0F0Fu;
@@ -470,9 +553,10 @@ struct I8Smem {
     static constexpr int BM = 16 * TM;
     static constexpr int GW = GG ? 0 : (i8_grid_words(T) + 3) / 4 * 4;
     static constexpr int SG = i8_sign_type(T) ? 512 : 0;
+    static constexpr int LW = i8_trellis_type(T) ? 1024 : 0;   // STRATA_TQ_I8: the int8 codebook tq_lut_i8, 2048 u16 = 1024 dwords (staged, like the grids; trellis is never GG)
     static constexpr int SZ_W = 64 * I8_LD, SZ_A = BM * I8_LD, SZ_R = 64 * I8_RS, SZ_D = BM * 4, SZ_S = i8_min_type(T) ? BM * 4 : 0;   // SZ_S: the activation sums of the minimum formats
     static constexpr int o_sg = GW, o_w = o_sg + SG, o_a = o_w + 2 * SZ_W, o_r = o_a + 2 * SZ_A, o_d = o_r + 2 * SZ_R, o_s = o_d + 2 * SZ_D, o_src = o_s + 2 * SZ_S,
-                         total = (o_s + 2 * SZ_S + 3) / 4 * 4;   // (the source rows s_src: in the pad words of s_r, see i8_kernel)
+                         o_lut = o_src, total = (o_lut + LW + 3) / 4 * 4;   // (the source rows s_src: in the pad words of s_r, see i8_kernel; the codebook region starts at o_src and runs LW words)
     static constexpr size_t bytes = (size_t) total * 4;
 };
 
@@ -483,7 +567,8 @@ static_assert(I8Smem<16, 2>::bytes <= I8_SMEM_48K && I8Smem<17, 2>::bytes <= I8_
               I8Smem<21, 2>::bytes <= I8_SMEM_48K && I8Smem<22, 2>::bytes <= I8_SMEM_48K && I8Smem<23, 2>::bytes <= I8_SMEM_48K &&
               I8Smem<29, 2>::bytes <= I8_SMEM_48K && I8Smem<20, 2>::bytes <= I8_SMEM_48K && I8Smem<42, 2>::bytes <= I8_SMEM_48K &&
               I8Smem<6, 2>::bytes <= I8_SMEM_48K && I8Smem<8, 2>::bytes <= I8_SMEM_48K && I8Smem<12, 2>::bytes <= I8_SMEM_48K && I8Smem<13, 2>::bytes <= I8_SMEM_48K &&
-              I8Smem<14, 2>::bytes <= I8_SMEM_48K && I8Smem<7, 2>::bytes <= I8_SMEM_48K,
+              I8Smem<14, 2>::bytes <= I8_SMEM_48K && I8Smem<7, 2>::bytes <= I8_SMEM_48K &&
+              I8Smem<144, 2>::bytes <= I8_SMEM_48K && I8Smem<145, 2>::bytes <= I8_SMEM_48K && I8Smem<146, 2>::bytes <= I8_SMEM_48K,
               "the TM 2 tile of a covered format must fit 48 KB of shared memory per block");
 
 __global__ void __launch_bounds__(256) i8_tiles_kernel(const int32_t* __restrict__ grp_start, const int32_t* __restrict__ n_groups, int bm,
@@ -539,11 +624,15 @@ __device__ __forceinline__ int i8_row_t(const uint4 (&w)[2], const uint4& rc, co
 // rows tx + 16 (2 half + i2)) and one entry of each 8-entry slice (entry ty % 8 + 8 js), so a block with 6 entries runs one slice with all 256 threads busy
 // where the 16-entry slice left 10 of 16 entry rows computing nothing.  Every (row, entry) accumulates the same terms in the same order: bit-identical output.
 // The gate/up epilogue needs the gate (row pair 0) and up (row pair 1) values of one entry together: the up half hands them over through shared memory.
-template <int T, bool GU, int TM, bool NR, bool GG = false>
+// HF (STRATA_TQ_I8, a Hadamard-folded trellis layer): the gate/up epilogue writes its h values as FP32 rows of
+// `out` (the call's scratch) instead of the q8_1 blocks of hq, so the layer's hadamard_rows can run over them and
+// native_expert_i8_quantize can put the rotated rows into hq before the down launch (the fused path's pattern,
+// src/prefill/moe_fused_iq.cu's rot_quant_h_kernel).  GU only; the sums and the order are the ones below.
+template <int T, bool GU, int TM, bool NR, bool GG = false, bool HF = false>
 __global__ void __launch_bounds__(I8_NT)
 i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restrict__ grp_start, const int32_t* __restrict__ n_groups,
           const int32_t* __restrict__ tile_off, const int32_t* __restrict__ ent_idx, const block_q8_1* __restrict__ A,
-          block_q8_1* __restrict__ hq, float* __restrict__ out, NativeExpertLayout L, int bisect) {
+          const uint32_t* __restrict__ lut, block_q8_1* __restrict__ hq, float* __restrict__ out, NativeExpertLayout L, int bisect) {
     using SM = I8Smem<T, TM, GG>;
     constexpr int BM = SM::BM;
     extern __shared__ uint4 i8_dyn[];
@@ -551,6 +640,7 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
     uint32_t* const s_grid = smem;
     const uint32_t* const grid_rd = GG ? i8_grid_src<T>() : s_grid;   // GG: the grid words straight from global memory (through L1)
     uint32_t* const s_sg = smem + SM::o_sg;
+    uint32_t* const s_lut = smem + SM::o_lut;   // the trellis int8 codebook (SM::LW words; 0 for every other format)
     uint32_t* const s_w = smem + SM::o_w;
     uint32_t* const s_a = smem + SM::o_a;
     uint32_t* const s_r = smem + SM::o_r;
@@ -573,11 +663,6 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
     const int nv = e_hi - e_lo;   // entries of this tile (the rest of the tile is empty)
     I8P blob = i8_uniform(I8_GPTR(grp_ptr[g]));
     const int tid = threadIdx.x, tx = tid & 15, ty = tid >> 4;
-#if defined(STRATA_I8_DBG)
-    if (tid == 0 && blockIdx.y == 0 && ti < 3)
-        printf("i8 dbg T=%d GU=%d TM=%d ti=%d ng=%d total=%d g=%d e_lo=%d e_hi=%d blob=%p A=%p hq=%p out=%p tok=%p\n", T, (int) GU, TM, ti, ng,
-               tile_off[ng], g, e_lo, e_hi, (const void*) blob, (const void*) A, (const void*) hq, (const void*) out, (const void*) ent_idx);
-#endif
     if (bisect == 1) return;   // research (STRATA_I8_BISECT = n): return at point n, uniform over the block (the HIP fault hunt)
     const int K = GU ? (int) L.n_embd : (int) L.n_ff;
     const int ns = K / I8_KS;
@@ -605,6 +690,10 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
 #pragma unroll
         for (int i = 0; i < 4; ++i) kv[i] = t[i];
     }
+    if constexpr (SM::LW) {   // STRATA_TQ_I8: the int8 codebook (2048 u16 points) in shared memory, like the i-quant grids.  Copied as dwords from the call's device buffer (lut; see native_expert_i8 - a device-space copy of the table reads aliased data on gfx1150)
+        for (int i = tid; i < SM::LW; i += I8_NT) s_lut[i] = lut[i];
+    }
+    const uint16_t* const lut_rd = SM::LW ? (const uint16_t*) s_lut : nullptr;
     if (bisect == 2) return;
     if (tid < BM) s_src(tid) = (e_lo + tid < e_hi) ? (GU ? ent_idx[e_lo + tid] : e_lo + tid) : -1;
     __syncthreads();
@@ -632,7 +721,7 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
         float base, minv = 0.0f;
         const int ibs = (st * 4 + wp) & 7;
         i8_pack<T>(r, ibs, w);   // (ib of a 256-value super-block; the K-quants and IQ3_S read it)
-        i8_convert<T>(w, grid_rd, (const uint2*) s_sg, kv, q, m0, m1, base, ibs, &minv);
+        i8_convert<T>(w, grid_rd, (const uint2*) s_sg, kv, q, m0, m1, base, ibs, &minv, lut_rd);
         uint4* dst = (uint4*) (s_w + b * SM::SZ_W + wr * I8_LD + wp * 8);
         dst[0] = make_uint4(q[0], q[1], q[2], q[3]);
         dst[1] = make_uint4(q[4], q[5], q[6], q[7]);
@@ -672,9 +761,9 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
 #pragma unroll
     for (int k = 0; k < 9; ++k) ar[k] = 0;
     load_w(0, wraw);
-    if (bisect == 4) { if (wraw[0] == 0x12345678u) out[0] = 0.0f; return; }
+    if (bisect == 4) return;
     load_a(0, ar);
-    if (bisect == 5) { if (wraw[0] + ar[0] == 0x12345678u) out[0] = 0.0f; return; }
+    if (bisect == 5) return;
     store_w(0, 0, wraw);
     if (bisect == 6) return;
     store_a(0, ar);
@@ -786,6 +875,14 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
                     const float g0 = acc[j][0], g1 = acc[j][1];
                     const float h0 = (g0 / (1.0f + __expf(-g0))) * u.x;
                     const float h1 = (g1 / (1.0f + __expf(-g1))) * u.y;
+                    if constexpr (HF) {   // the fold: the h rows as FP32, for hadamard_rows and the requantize before the down launch
+                        if (e < e_hi) {
+                            float* o = out + (size_t) e * (size_t) L.n_ff + (size_t) blockIdx.y * 32 + tx;
+                            o[0] = h0;
+                            o[16] = h1;
+                        }
+                        continue;
+                    }
                     float amax = fmaxf(fabsf(h0), fabsf(h1));
 #pragma unroll
                     for (int o = 8; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
@@ -820,6 +917,14 @@ i8_kernel(const unsigned long long* __restrict__ grp_ptr, const int32_t* __restr
             const float g0 = acc[j][0], g1 = acc[j][1];
             const float h0 = (g0 / (1.0f + __expf(-g0))) * acc[j][2];
             const float h1 = (g1 / (1.0f + __expf(-g1))) * acc[j][3];
+            if constexpr (HF) {   // the fold: the h rows as FP32, for hadamard_rows and the requantize before the down launch
+                if (e < e_hi) {
+                    float* o = out + (size_t) e * (size_t) L.n_ff + (size_t) blockIdx.y * 32 + tx;
+                    o[0] = h0;
+                    o[16] = h1;
+                }
+                continue;
+            }
             float amax = fmaxf(fabsf(h0), fabsf(h1));
 #pragma unroll
             for (int o = 8; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
@@ -1108,11 +1213,14 @@ struct I8Args {
     const block_q8_1* x;
     block_q8_1* hq;
     float* out;
+    float* hbuf = nullptr;   // the folded trellis gate/up: the FP32 h rows (a.hf, see i8_kernel HF)
     NativeExpertLayout L;
     int64_t tiles_ub;
     int bisect;
     bool n8 = false;     // tile codes 2-4: 8-entry slices with two weight rows per thread (see i8_kernel, NR)
     bool gg = false;     // tile codes 2-4, a big-grid format (i8_gg_type): the grid read from global memory (see I8Smem, GG; Volta)
+    bool hf = false;     // gate/up only, a Hadamard-folded trellis layer (STRATA_TQ_I8): h as FP32 rows in `out`, not q8_1 in hq (see i8_kernel, HF)
+    const uint32_t* lut = nullptr;   // STRATA_TQ_I8: the int8 codebook as a device buffer (1024 dwords), staged into shared memory by i8_kernel
 };
 
 // what the last native_expert_i8 call asked its two launches for (the tile code, the dynamic shared memory in bytes passed as the launch's third argument, and
@@ -1136,19 +1244,33 @@ void i8_launch_tm_g(const I8Args& a, cudaStream_t s) {
     if (smem > 48 * 1024) {
         cudaFuncSetAttribute(i8_kernel<T, GU, TM, false, GG>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
         cudaFuncSetAttribute(i8_kernel<T, GU, TM, true, GG>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
+        if constexpr (GU && i8_trellis_type(T)) {   // the folded trellis instances (a.hf): h as FP32 rows
+            cudaFuncSetAttribute(i8_kernel<T, true, TM, false, GG, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
+            cudaFuncSetAttribute(i8_kernel<T, true, TM, true, GG, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
+        }
     }
 #endif
     const dim3 grid((unsigned) a.tiles_ub, (unsigned) (GU ? a.L.n_ff / 32 : a.L.n_embd / 64));
+    if constexpr (GU && i8_trellis_type(T)) {
+        if (a.hf) {   // STRATA_TQ_I8 on a Hadamard-folded layer: the h rows as FP32 into a.hbuf (see i8_kernel, HF)
+            if (a.n8)
+                i8_kernel<T, true, TM, true, GG, true><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.lut, a.hq, a.hbuf, a.L, a.bisect);
+            else
+                i8_kernel<T, true, TM, false, GG, true><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.lut, a.hq, a.hbuf, a.L, a.bisect);
+            i8_note_launch(GU, TM, smem);
+            return;
+        }
+    }
     if (a.n8) {   // 8-entry slices (i8_n8_takes)
         if constexpr (GU)
-            i8_kernel<T, true, TM, true, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.hq, a.out, a.L, a.bisect);
+            i8_kernel<T, true, TM, true, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.lut, a.hq, a.out, a.L, a.bisect);
         else
-            i8_kernel<T, false, TM, true, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_dst, a.hq, nullptr, a.out, a.L, a.bisect);
+            i8_kernel<T, false, TM, true, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_dst, a.hq, a.lut, nullptr, a.out, a.L, a.bisect);
     } else {
         if constexpr (GU)
-            i8_kernel<T, true, TM, false, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.hq, a.out, a.L, a.bisect);
+            i8_kernel<T, true, TM, false, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_tok, a.x, a.lut, a.hq, a.out, a.L, a.bisect);
         else
-            i8_kernel<T, false, TM, false, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_dst, a.hq, nullptr, a.out, a.L, a.bisect);
+            i8_kernel<T, false, TM, false, GG><<<grid, I8_NT, smem, s>>>(a.grp_ptr, a.grp_start, a.n_groups, a.tile_off, a.ent_dst, a.hq, a.lut, nullptr, a.out, a.L, a.bisect);
     }
     i8_note_launch(GU, TM, smem);
 }
@@ -1184,9 +1306,9 @@ size_t i8_sm(int tm, bool gg = false) {
 size_t i8_smem_bytes(int gu, int dt, int tm, bool gg = false) {
     const size_t a = gu == 16 ? i8_sm<16>(tm, gg) : gu == 17 ? i8_sm<17>(tm, gg) : gu == 18 ? i8_sm<18>(tm, gg) : gu == 21 ? i8_sm<21>(tm, gg) : gu == 23 ? i8_sm<23>(tm, gg) :
                      gu == 29 ? i8_sm<29>(tm, gg) : gu == 42 ? i8_sm<42>(tm, gg) : gu == 12 ? i8_sm<12>(tm, gg) : gu == 13 ? i8_sm<13>(tm, gg) : gu == 14 ? i8_sm<14>(tm, gg) :
-                     gu == 8 ? i8_sm<8>(tm, gg) : i8_sm<22>(tm, gg);
+                     gu == 8 ? i8_sm<8>(tm, gg) : gu == 144 ? i8_sm<144>(tm, gg) : gu == 145 ? i8_sm<145>(tm, gg) : gu == 146 ? i8_sm<146>(tm, gg) : i8_sm<22>(tm, gg);
     const size_t b = dt == 20 ? i8_sm<20>(tm, gg) : dt == 6 ? i8_sm<6>(tm, gg) : dt == 8 ? i8_sm<8>(tm, gg) : dt == 7 ? i8_sm<7>(tm, gg) : dt == 13 ? i8_sm<13>(tm, gg) :
-                     dt == 14 ? i8_sm<14>(tm, gg) : i8_sm<42>(tm, gg);
+                     dt == 14 ? i8_sm<14>(tm, gg) : dt == 144 ? i8_sm<144>(tm, gg) : dt == 145 ? i8_sm<145>(tm, gg) : dt == 146 ? i8_sm<146>(tm, gg) : i8_sm<42>(tm, gg);
     return a > b ? a : b;
 }
 int i8_env_int(const char* name, int dflt);

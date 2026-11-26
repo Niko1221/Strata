@@ -19,7 +19,7 @@ static int failed = 0;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); ++failed; } } while (0)
 
 int main() {
-    const int types[] = {2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 40, 42};
+    const int types[] = {2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 40, 42, 144, 145, 146};
     for (int t : types) {
         BlockLayout L;
         CHECK(layout_of(t, L));
@@ -81,9 +81,9 @@ int main() {
     // IQ4_XS: scales_l sits at 4..7, so the walk starts at 8
     BlockLayout x4;
     CHECK(layout_of(23, x4) && perturb_offset(x4, 0) == 8);
-    // a type the table does not know is refused, not guessed
+    // a type the table does not know is refused, not guessed (the trellis 144-146 are in the table now; TQP5 is not)
     BlockLayout u;
-    CHECK(!layout_of(24, u) && !layout_of(144, u) && !layout_of(-1, u));
+    CHECK(!layout_of(24, u) && !layout_of(147, u) && !layout_of(-1, u));
 
     if (failed) {
         std::fprintf(stderr, "bench_blob_layout_test: %d check(s) failed\n", failed);

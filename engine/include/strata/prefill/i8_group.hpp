@@ -87,7 +87,7 @@ bool run(const strata::kernels::NativeExpertLayout& L, const Group& g, const int
                                                ids_identity, src_dev + r0, ne, nr, x_q8_1, (void*) gu_scratch, dm + r0 * dm_row_floats, stream);
         return true;
     }
-    if (nr <= 0 || strata::kernels::native_expert_i8_scratch_bytes(nr, ne, L.n_ff) > (size_t) nr * (size_t) gu_row_floats * sizeof(float) ||
+    if (nr <= 0 || strata::kernels::native_expert_i8_scratch_bytes(nr, ne, L.n_ff, strata::kernels::native_expert_i8_fold_h(L)) > (size_t) nr * (size_t) gu_row_floats * sizeof(float) ||
         !upload((const void*) rec_h, kRecBytes))
         return false;
     strata::kernels::native_expert_i8(L, (const unsigned long long*) rec_dev, (const int32_t*) (rec_dev + kRecStart), (const int32_t*) (rec_dev + kRecN),

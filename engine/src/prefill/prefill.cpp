@@ -54,6 +54,7 @@
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/tq_i8_rule.hpp"   // STRATA_TQ_I8: the trellis experts on the int8 kernels (the fold rule and the switch's notice)
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -2102,6 +2103,7 @@ const MmqPlan& mmq_plan() {
             const bool entry_on = staged_fo_on();                           // the staged group entry for a fused-only layer below the floor (staged_fo_rule.hpp)
             strata::prefill::OwnOnlySplit big, small;                       // at or above the long-prompt floor, below it
             const bool i8_gated = strata::kernels::native_expert_i8_floor_gated();   // P100 class: the int8 default is for chunks under stream_all_min() only, the FP16 path from it up
+            const bool tq_i8_on = strata::kernels::tq_i8_switch_state(std::getenv("STRATA_TQ_I8")) == 1;   // STRATA_TQ_I8: a folded trellis layer joins the int8 kernels too (tq_i8_rule.hpp)
             for (int64_t l = 0; l < layers; ++l) {
                 const bool fo = p.fo[(size_t) l] != 0 && !peer_off;
                 bool i8 = false;                                            // the int8 expert kernels take this layer's formats (the class rule or STRATA_EXPERT_I8, i8_wants_identity's test)
@@ -2111,8 +2113,13 @@ const MmqPlan& mmq_plan() {
                     const auto& f = lay.fmt[(size_t) l];
                     unfolded = !f.tail_off && !f.had_gu && !f.had_d;
                     staged_ok = !f.had_gu && !f.had_d && (!f.tail_off || fo);
-                    if (unfolded)
-                        i8 = strata::kernels::native_expert_i8_prompt(strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff), (int64_t) 1 << 20);
+                    strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+                    if (!unfolded && !f.tail_off && strata::kernels::tq_i8_takes(f.gu_type, f.d_type, (int) f.had_block, f.had_gu, f.had_d, tq_i8_on)) {
+                        L.had_block = f.had_block;   // the fold the call runs inside: FP32 h rows, hadamard_rows, requantize (native_expert_i8_fold_h); the signs come with the run
+                        L.d_signs = nullptr;
+                    }
+                    if (unfolded || L.had_block != 0)
+                        i8 = strata::kernels::native_expert_i8_prompt(L, (int64_t) 1 << 20);
                 }
                 strata::prefill::own_only_count_layer(big, small, fo, i8, i8_gated, entry_on, staged_ok);
             }
@@ -2129,6 +2136,10 @@ const MmqPlan& mmq_plan() {
                 }();
                 (void) dense_mmq_said;
             }
+            if (mf) strata::core::manifest::instance().path("prefill", "experts: trellis int8", tq_i8_on,
+                tq_i8_on ? "STRATA_TQ_I8=1: trellis expert formats (TQ2_T / TQK6 / TQK7) on the int8 dot-product kernels, a fold of block 128 inside the call"
+                         : "STRATA_TQ_I8 not set: the trellis experts keep the FP16 path",
+                "native_expert_i8, src/kernels/cuda/i8_expert.cuh");
             std::string sw;
             for (const std::string& k : own_only_switches()) sw += (sw.empty() ? "" : " ") + k;
             if (mf) strata::core::manifest::instance().path("prefill", "own-only-build", true,
@@ -2192,14 +2203,42 @@ const MmqPlan& mmq_plan() {
 bool fp16_bufs(const MmqPlan& mp) { return mp.fallback || pf_wmma(); }
 // OWN-I8: does a layer of this layout take the int8 expert groups on this device (the class rule or STRATA_EXPERT_I8=1, and the formats)?  A build without MMQ
 // has no MMQ buffers when no layer takes the fused kernels (mmq_plan().any is false); the int8 groups need one row table of theirs (the identity ids_identity),
-// which carve and bytes_needed then take on their own.
+// which carve and bytes_needed then take on their own.  With STRATA_TQ_I8 a folded trellis layer joins too (tq_i8_rule.hpp), like the plan's own count and the
+// walk's i8_fold; without the switch a folded layer keeps the old answer - before this switch the int8 groups read no fold at all.
 bool i8_wants_identity() {
     static const bool on = [] {
         const auto& lay = strata::kernels::cpu::expert_layout();
         if (!lay.native) return false;
         for (const auto& f : lay.fmt) {
-            if (f.tail_off || f.had_gu || f.had_d) continue;
-            const strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+            if (f.tail_off) continue;
+            const bool fold = f.had_gu || f.had_d;   // the fold this path covers: a trellis pair, block 128, both roles (tq_i8_fold_ok)
+            if (fold && !strata::kernels::tq_i8_takes(f.gu_type, f.d_type, (int) f.had_block, f.had_gu, f.had_d,
+                                                      strata::kernels::tq_i8_switch_state(std::getenv("STRATA_TQ_I8")) == 1)) continue;
+            const strata::kernels::NativeExpertLayout L0 = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+            strata::kernels::NativeExpertLayout L = L0;
+            if (fold) { L.had_block = f.had_block; L.d_signs = nullptr; }   // the fold runs inside the call (native_expert_i8_fold_h)
+            if (strata::kernels::native_expert_i8_prompt(L, (int64_t) 1 << 20)) return true;
+        }
+        return false;
+    }();
+    return on;
+}
+// STRATA_TQ_I8: does a folded trellis layer take the int8 groups on this device?  Those layers need the rotated gate/up input the
+// walk calls m.Xr (its i8_fold test); in a layout with MMQ buffers carve and moe_set_bytes set it aside, but a folded-pack layout
+// without them (mmq_plan().any false, the usual HIP case) carved none, so every folded layer's int8 route failed its buffer
+// check and kept the FP16 path (the "asked for and not taken" notice, the 0.1.63 RX 6800 run of 11-23).  carve and moe_set_bytes
+// take it for these groups too when this says true.  Switch unset, no such pair, no device support: false, and the sizing is
+// exactly what it was before.
+bool i8_wants_fold() {
+    static const bool on = [] {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        if (!lay.native) return false;
+        for (const auto& f : lay.fmt) {
+            if (f.tail_off || !f.had_gu || !f.had_d) continue;   // a fold on both roles is the one this path covers
+            if (!strata::kernels::tq_i8_takes(f.gu_type, f.d_type, (int) f.had_block, f.had_gu, f.had_d,
+                                              strata::kernels::tq_i8_switch_state(std::getenv("STRATA_TQ_I8")) == 1)) continue;
+            strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+            L.had_block = f.had_block; L.d_signs = nullptr;
             if (strata::kernels::native_expert_i8_prompt(L, (int64_t) 1 << 20)) return true;
         }
         return false;
@@ -2366,6 +2405,8 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused, int64_t tail = -1
         a.take<float>(T * K, ok);
         // APR: the rotated copy of `mixed` for the MMQ path (carve's m.Xr) - it must be counted here too, or the MoE
         // set outgrows the region `carve` sizes from this, and `init` fails with "do not fit" at any chunk
+        if (strata::kernels::cpu::hadamard_spec().any()) a.take<float>(T * N, ok);
+    } else if (i8_wants_fold()) {   // STRATA_TQ_I8: the folded trellis groups need the rotated input too (carve takes m.Xr the same way)
         if (strata::kernels::cpu::hadamard_spec().any()) a.take<float>(T * N, ok);
     }
     return a.used;
@@ -2830,6 +2871,8 @@ bool Prefill::carve(size_t T, void* alloc) {
             m.grp_tail = c.take<float>(MMQ_GROUP * 4, ok);
             m.row_sd = c.take<float>(T * K, ok);
             // APR: the rotated expert input (only for Hadamard-folded packs)
+            m.Xr = strata::kernels::cpu::hadamard_spec().any() ? c.take<float>(T * N, ok) : nullptr;
+        } else if (i8_wants_fold()) {   // STRATA_TQ_I8: the folded trellis int8 groups, no MMQ buffers in this layout (moe_set_bytes counts this too)
             m.Xr = strata::kernels::cpu::hadamard_spec().any() ? c.take<float>(T * N, ok) : nullptr;
         }
         if (hcr) {   // STRATA_PF_HC_REGION: the hyper-connection read's set, from the region's start like the others
@@ -6355,11 +6398,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // the few-row path's rows) in place of MMQ's per-row copy; SwiGLU and the q8_1 of H are inside the gate/up launch, down
                         // writes the rows of Dm the combine reads.  Not with a layer the fused kernels take (they are the faster path on the
                         // cards that have them), (in a build with MMQ) a layer the CPU share took experts of, a peer, STRATA_MMQ_DIRECT / _WS, the WMMA tiles, STRATA_PF_GROUP_SCRATCH, NVFP4
-                        // tails, Hadamard-folded or nibble layers; and only for groups of 256 entries or more (native_expert_i8_prompt).
+                        // tails, nibble layers, and a Hadamard-folded layer unless STRATA_TQ_I8=1 takes the trellis fold inside the call; and only for groups of 256 entries or more (native_expert_i8_prompt).
                         static const bool i8_group_env = [] {   // the group walk's own switch: the I8 launches ride on it
                             const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
                             return v == nullptr || std::atoi(v) != 0;
                         }();
+                        static const bool tq_i8_on = strata::kernels::tq_i8_switch_state(std::getenv("STRATA_TQ_I8")) == 1;   // STRATA_TQ_I8, read once (tq_i8_rule.hpp)
+                        // A folded trellis layer joins the int8 kernels with the switch (tq_i8_rule.hpp): the fold runs inside native_expert_i8
+                        // (FP32 h rows, hadamard_rows, requantize - native_expert_i8_fold_h), and the layer's gate/up input is rotated before its
+                        // activation image, as the MMQ path rotates xsrc.  The peer and the few-rows route do not cover the fold: those layers keep the FP16 path.
+                        const bool i8_fold = tq_i8_on && had_gu && had_d && had_block == 128 && strata::kernels::tq_i8_pair(mmq_gt, mmq_dt) &&
+                                             on_peer.empty() && m.Xr != nullptr;
                         strata::kernels::NativeExpertLayout i8_L{};
                         bool i8_l = false;
                         bool i8_few = false;   // the few-rows route: the layer's groups run on native_expert_grouped, the activations as quantize_q8_1_rows makes them
@@ -6367,7 +6416,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const bool i8_peer_ok = on_peer.empty()
                                                     ? (!m.pp || (m.pp->compact && m.pp->fr_xq != nullptr && m.pp->i8_rec != nullptr))
                                                     : (m.pp && m.pp->compact && m.pp->fr_xq != nullptr && m.pp->i8_rec != nullptr);
-                        if (lay.native && strata::kernels::i8_order_allows(fused_l, fz_staged) && !wmma_l && !had_gu && !had_d && share_keeps_own_kernels(rows_cpu) && i8_peer_ok &&
+                        if (lay.native && strata::kernels::i8_order_allows(fused_l, fz_staged) && !wmma_l && (!had_gu || !had_d || i8_fold) && share_keeps_own_kernels(rows_cpu) && i8_peer_ok &&
                             m.group_cap == 0 && (!m.fused_bufs || !stream_all) && !lay.fmt[(size_t) l].tail_off && ws::mode() == 0 &&
                             !(m.cache && mmq_plan().direct[(size_t) l]) && i8_group_env && (!order.empty() || !order_peer.empty()) &&
                             (!strata::kernels::native_expert_i8_floor_gated() || strata::kernels::i8_chunk_default_allows(-1, true, true, (int64_t) T, stream_all_min())) &&   // the P100 class rule: from the stream floor up the unset default is the FP16 path (i8_expert_rule.hpp)
@@ -6378,6 +6427,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             true) {
                             const auto& f = lay.fmt[(size_t) l];
                             i8_L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+                            if (i8_fold) { i8_L.had_block = had_block; i8_L.d_signs = had_sh; }   // the fold native_expert_i8 runs inside (native_expert_i8_fold_h: FP32 h rows in scratch, hadamard_rows, requantize)
                             const int64_t i8_experts = (int64_t) order.size() + (int64_t) order_peer.size();
                             const int64_t i8_rows = rows_local + rows_peer;
                             const int64_t i8_groups = (i8_experts + MMQ_GROUP - 1) / MMQ_GROUP;
@@ -6385,7 +6435,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             // The few-rows route (i8_expert_rule.hpp): with it, the size floor of the int8 kernel (256 entries a group) gives way to the crossing; a layer
                             // under it (average rows per expert, over the experts that have rows) runs on the grouped kernels in the same groups, from it up on the int8
                             // kernel.  A pair the grouped kernels do not have, or a group whose scratch would not fit the layer's GU rows, keeps the floor.
-                            const int i8_fr = i8_same ? strata::kernels::native_expert_i8_few_rows_limit() : 0;
+                            const int i8_fr = i8_same && !i8_fold ? strata::kernels::native_expert_i8_few_rows_limit() : 0;   // (the fold: the grouped route quantizes the unrotated input, so a folded layer keeps the int8 kernel or the FP16 path)
                             i8_l = i8_same && strata::kernels::native_expert_i8_prompt(i8_L, i8_fr > 0 ? strata::kernels::kI8MinGroupEntries : i8_rows / i8_groups);
                             if (i8_l && i8_fr > 0 && strata::kernels::i8_fewrows_takes(i8_fr, i8_rows, i8_experts)) {
                                 int64_t max_rows = 0;   // the most rows one group of the walk launches with
@@ -6468,8 +6518,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                             if (i8_few)   // the few-rows route: the grouped kernels read q8_1 with FP16 scales (the same 36 bytes a block)
                                 strata::kernels::quantize_q8_1_rows(m.mixed, T, N, m.fr_xq, m.cs);
-                            else
-                                strata::kernels::native_expert_i8_quantize(m.mixed, T, N, m.fr_xq, m.cs);   // the kernels' own image (FP32 scales), 36 bytes per block as q8_1
+                            else {
+                                if (i8_L.had_block != 0) strata::kernels::hadamard_rows(m.mixed, m.Xr, T, N, had_block, had_sx, m.cs);   // the folded trellis gate/up: quantize the rotated copy, as the MMQ path's xsrc
+                                strata::kernels::native_expert_i8_quantize(i8_L.had_block != 0 ? m.Xr : m.mixed, T, N, m.fr_xq, m.cs);   // the kernels' own image (FP32 scales), 36 bytes per block as q8_1
+                            }
+                            if (strata::kernels::tq_i8_pair(mmq_gt, mmq_dt)) {   // STRATA_TQ_I8 in use: said once, like the STRATA_EXPERT_I8 line above
+                                static bool said_tq = false;
+                                if (!said_tq) {
+                                    said_tq = true;
+                                    std::fprintf(stderr, "strata: trellis prompt experts on our own int8 kernels (STRATA_TQ_I8=1%s)\n",
+                                                 i8_L.had_block != 0 ? ", the Hadamard fold inside the call" : "");
+                                }
+                            }
+                        }
+                        if (tq_i8_on && lay.native && !i8_l) {   // asked for and not taken (pair, fold or group size): said once, not left silently doing nothing (tq_i8_notice)
+                            static bool said_tq_no = false;
+                            if (!said_tq_no) {
+                                said_tq_no = true;
+                                const std::string t = strata::kernels::tq_i8_notice(std::getenv("STRATA_TQ_I8"), false);
+                                if (!t.empty()) std::fprintf(stderr, "%s\n", t.c_str());
+                            }
                         }
                         if (use_mmq || fz_staged) {   // (fz_staged without use_mmq: a fused-only layer with the entry on (staged_fo_on(), staged_fo_rule.hpp); the block builds the group bounds)
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed` (APR:
