@@ -2132,4 +2132,15 @@ bool ink_cuda_q8f_supported(int gpu_index) {
     return major == 8 && minor == 6;
 }
 
+bool ink_cuda_compact_trunk_supported(int gpu_index) {
+    int major = 0, minor = 0;
+    const int dev = gpu_index < 0 ? 0 : gpu_index;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    return major * 10 + minor >= 61;
+}
+
 }  // namespace ink2

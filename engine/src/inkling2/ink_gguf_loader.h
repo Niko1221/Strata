@@ -538,33 +538,57 @@ struct GgufAdapter {
             return true;
         };
 
+        // FMT_Q8ROW ([n_pad] fp32 row scales, then [n_pad][cols] int8; rows past n_src are zero), built from any dequantisable source type:
+        // scale = row absmax / 127, q = round-to-nearest-even of w / scale (what the runner's BF16 -> Q8_ROW kernel does).
+        auto copy_mat_q8row = [&](const std::string& gguf_name, const std::string& canon_name, int64_t n_src, int64_t n_pad, int64_t cols) -> bool {
+            const strata::TensorInfo* ti = nullptr;
+            const uint8_t* ptr = tensor_ptr(*model, gguf_name, ti);
+            if (!ti || !ptr) { err = "GGUF: missing tensor " + gguf_name; return false; }
+            const size_t rbs = gguf_detail::gguf_row_bytes(ti->type, cols);
+            if (rbs == 0) { err = "GGUF: unsupported dense type " + std::string(ti->type_name()) + " for " + gguf_name; return false; }
+            const size_t nb = static_cast<size_t>(n_pad) * 4u + static_cast<size_t>(n_pad) * static_cast<size_t>(cols);
+            size_t off = align64(sec1_arena.size());
+            sec1_arena.resize(off + nb, 0);
+            float* sc = reinterpret_cast<float*>(sec1_arena.data() + off);
+            int8_t* qd = reinterpret_cast<int8_t*>(sec1_arena.data() + off + static_cast<size_t>(n_pad) * 4u);
+            std::vector<float> rowf(static_cast<size_t>(cols));
+            for (int64_t r = 0; r < n_src; ++r) {
+                if (!gguf_detail::gguf_dequant_row_f32(ti->type, ptr + static_cast<size_t>(r) * rbs, rowf.data(), cols)) {
+                    err = "GGUF: dequant failed for " + gguf_name;
+                    return false;
+                }
+                float amax = 0.0f;
+                for (int64_t j = 0; j < cols; ++j) amax = std::max(amax, std::fabs(rowf[static_cast<size_t>(j)]));
+                const float s = amax > 0.0f ? amax * (1.0f / 127.0f) : 0.0f;
+                const float inv = s > 0.0f ? 1.0f / s : 0.0f;
+                sc[r] = s;
+                int8_t* qr = qd + static_cast<size_t>(r) * static_cast<size_t>(cols);
+                for (int64_t j = 0; j < cols; ++j) {
+                    const float q = std::nearbyint(rowf[static_cast<size_t>(j)] * inv);
+                    qr[j] = static_cast<int8_t>(std::max(-127.0f, std::min(127.0f, q)));
+                }
+            }
+            TInfoT out_ti;
+            out_ti.name = canon_name;
+            out_ti.fmt = 100;   // F_Q8ROW
+            out_ti.shape = {n_pad, cols};
+            out_ti.off = off;
+            out_ti.bytes = nb;
+            m.trunk[canon_name] = std::move(out_ti);
+            return true;
+        };
+
         // A dense matrix: a Q8_0 one stays Q8_0 when the CUDA front end asked for it, anything else goes through copy_mat_bf16.
         //   frag == false (the embedding table): fmt 104, as stored, row by row: [rows][cols/32] fp16 scales, then [rows][cols] int8.
         //   frag == true (the attention matrices): fmt 105, in the order the int8 tensor-core GEMM reads (k_ink_gemm_q8f in
         //   cuda/ink_kernels.cuh): per 16-row tile and 32-wide block 512 bytes, one 16-byte A fragment per lane, then the scales
         //   [rows/16][cols/32][16] fp16.
         auto copy_mat_dense = [&](const std::string& gguf_name, const std::string& canon_name, int64_t rows, int64_t cols, bool frag) -> bool {
+            // compact trunk (GSQ-RCO files): every attention matrix becomes FMT_Q8ROW, the layout the SQ packs use and the sm_120 kernels are tuned for
+            if (compact_trunk && frag) return copy_mat_q8row(gguf_name, canon_name, rows, rows, cols);
             const strata::TensorInfo* ti = nullptr;
-            const uint8_t* ptr = (gguf_detail::keep_q8_0_dense() || (compact_trunk && frag)) ? tensor_ptr(*model, gguf_name, ti) : nullptr;
-            // compact trunk: a K-quant / BF16 attention matrix is requantised to Q8_0 (dequantised row by row, then ggml's Q8_0 quantiser) and packed like a Q8_0 one
-            std::vector<uint8_t> q8tmp;
-            bool src_q8 = ptr && ti && ti->type == 8;
-            if (ptr && ti && !src_q8 && compact_trunk && frag && (cols % 32) == 0 && (rows % 16) == 0 && ((rows * cols) % 256) == 0) {
-                const size_t rbs = gguf_detail::gguf_row_bytes(ti->type, cols);
-                const bool is_dense_float = (ti->type == 0 || ti->type == 1 || ti->type == 30);
-                const size_t rb_src = is_dense_float ? static_cast<size_t>(cols) * (ti->type == 0 ? 4u : 2u) : rbs;
-                if (rb_src != 0) {
-                    q8tmp.resize(static_cast<size_t>(rows) * static_cast<size_t>(cols / 32) * 34);
-                    std::vector<float> rowf(static_cast<size_t>(cols));
-                    bool ok = true;
-                    for (int64_t r = 0; r < rows && ok; ++r) {
-                        ok = gguf_detail::gguf_dequant_row_f32(ti->type, ptr + static_cast<size_t>(r) * rb_src, rowf.data(), cols);
-                        if (ok) gguf_detail::quantize_row_q8_0_bytes(rowf.data(), q8tmp.data() + static_cast<size_t>(r) * (cols / 32) * 34, cols);
-                    }
-                    if (ok) { ptr = q8tmp.data(); src_q8 = true; }
-                }
-            }
-            if (!src_q8 || !ptr || !ti || (cols % 32) != 0 || ((rows * cols) % 256) != 0 || (frag && (rows % 16) != 0)) {
+            const uint8_t* ptr = gguf_detail::keep_q8_0_dense() ? tensor_ptr(*model, gguf_name, ti) : nullptr;
+            if (!ptr || !ti || ti->type != 8 || (cols % 32) != 0 || ((rows * cols) % 256) != 0 || (frag && (rows % 16) != 0)) {
                 return copy_mat_bf16(gguf_name, canon_name, rows, cols);
             }
             const size_t nblk = static_cast<size_t>(cols / 32);
@@ -641,44 +665,10 @@ struct GgufAdapter {
         }
         if (!copy_vec_f32("token_embd_norm.weight", "model.llm.embed_norm.weight", {D})) return false;
         if (compact_trunk) {
-            // unembed -> FMT_Q8ROW ([n_pad] fp32 row scales, then [n_pad][D] int8; rows past the unpadded vocab are zero), the layout the runner's Q8_ROW
-            // unembed and argmax kernels read (scale = row absmax / 127, q = round-to-nearest-even of w / scale)
-            const strata::TensorInfo* ti = nullptr;
-            const uint8_t* ptr = tensor_ptr(*model, "output.weight", ti);
-            if (!ti || !ptr) { err = "GGUF: missing tensor output.weight"; return false; }
-            const size_t rb = gguf_detail::gguf_row_bytes(ti->type, D);
-            if (rb == 0) { err = "GGUF: unsupported unembed type " + std::string(ti->type_name()); return false; }
+            // unembed -> FMT_Q8ROW (rows past the unpadded vocab are zero), the layout the runner's Q8_ROW unembed and argmax kernels read
             const int64_t n_src = std::min<int64_t>(c.vocab_padded, c.vocab_unpadded);
             const int64_t n_pad = (static_cast<int64_t>(c.vocab_unpadded) + 3) & ~static_cast<int64_t>(3);
-            const size_t nb = static_cast<size_t>(n_pad) * 4u + static_cast<size_t>(n_pad) * static_cast<size_t>(D);
-            size_t off = align64(sec1_arena.size());
-            sec1_arena.resize(off + nb, 0);
-            float* sc = reinterpret_cast<float*>(sec1_arena.data() + off);
-            int8_t* qd = reinterpret_cast<int8_t*>(sec1_arena.data() + off + static_cast<size_t>(n_pad) * 4u);
-            std::vector<float> rowf(static_cast<size_t>(D));
-            for (int64_t r = 0; r < n_src; ++r) {
-                if (!gguf_detail::gguf_dequant_row_f32(ti->type, ptr + static_cast<size_t>(r) * rb, rowf.data(), D)) {
-                    err = "GGUF: dequant failed for output.weight";
-                    return false;
-                }
-                float amax = 0.0f;
-                for (int j = 0; j < D; ++j) amax = std::max(amax, std::fabs(rowf[static_cast<size_t>(j)]));
-                const float s = amax > 0.0f ? amax * (1.0f / 127.0f) : 0.0f;
-                const float inv = s > 0.0f ? 1.0f / s : 0.0f;
-                sc[r] = s;
-                int8_t* qr = qd + static_cast<size_t>(r) * D;
-                for (int j = 0; j < D; ++j) {
-                    const float q = std::nearbyint(rowf[static_cast<size_t>(j)] * inv);
-                    qr[j] = static_cast<int8_t>(std::max(-127.0f, std::min(127.0f, q)));
-                }
-            }
-            TInfoT out_ti;
-            out_ti.name = "model.llm.unembed.weight";
-            out_ti.fmt = 100;   // F_Q8ROW
-            out_ti.shape = {n_pad, static_cast<int64_t>(D)};
-            out_ti.off = off;
-            out_ti.bytes = nb;
-            m.trunk["model.llm.unembed.weight"] = std::move(out_ti);
+            if (!copy_mat_q8row("output.weight", "model.llm.unembed.weight", n_src, n_pad, D)) return false;
         } else if (!copy_mat_bf16("output.weight", "model.llm.unembed.weight", c.vocab_padded, D)) {
             return false;
         }
