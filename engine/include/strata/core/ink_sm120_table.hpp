@@ -157,6 +157,9 @@ constexpr uint32_t kSm120ProFast = kSm120BigFast | P_TC_ATTN;
 // ink_sm120_compact_subparts), the tensor-core small-M kernels. PACK, PREFILL, PLD and CORE_GRAPH are out: measured on the RTX 5060 8 GB they made it slower (wider verify trees cost CPU
 // reads: 10-30 tok/s against 28-37). The batched cold-expert split between the CPU lane and PCIe comes from the card's own launch probe.
 constexpr uint32_t kSm120HybridFast = P_COMPACT | P_COMPACT_XCODE | P_COMPACT_KV | P_COMPACT_HYBRID | P_TC_SMALLM | P_L2PF;
+// The DGX Spark's exact set is empty: DSPARK_OPT replaces the drafting numbers (cost, plain margin) and the verify tree, which moved the text against off with a drafter on (GB10, json and tool
+// prompts); without it exact = off on every prompt, with and without a drafter. (The 5090 and PRO exact set above is empty for the same reason.)
+constexpr uint32_t kSm120SparkExact = 0;
 // The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
 // trunk on, fast mode lost 17 of 26 tool calls; with FP8_TRUNK=0 (attention in Q8_ROW) it is at or above off on every suite (report-5060ti-fp8t0.md). The in-place FP8 trunk is
 // explicit-only (STRATA_INK_SM120_FP8_INPLACE=1); FP8_TRUNK (the 5090 cache engine) cannot start next to compact (no room), so it is not in this set either.
@@ -240,13 +243,15 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         // ---- DGX Spark (NVIDIA GB10, cc 12.1, 48 SMs, 121 GB of memory shared with the CPU, about 273 GB/s) ----
         // Matched by name + SM count + memory AND cc 12.1, so it never takes the 5090 row and the 5090 never takes it. The whole model sits in the unified memory (no hybrid split,
         // no compact, no PACK), so the set is the 5090's "big" set: FP8 trunk with the cache copy (641 MiB, room for it), the NVFP4 tensor-core MoE, PF_ATTN, drafting.
-        // NOT measured and NOT default yet (measured = false: the old path runs unless STRATA_INK_SM120_ROW=gb10 or a part switch asks); the rows of the lane's tests
-        // (RESULTS.md of the DGX-SPARK lane) decide the tiles, the draft numbers and default_on. The numbers below are the 5090's, kept until measured:
-        // spec_cost 8 / beam 4 / 12 nodes are the 5090's after PDL, c64_draft_k 3; c1_chunk_big 4096 needs 4800 MiB of headroom, which the unified memory has.
-        {"gb10", "GB10", 44, 52, 100, 128, false, "placeholder: DGX Spark GB10 (cc 12.1, 48 SMs, 121 GB unified memory); numbers are the 5090's until measured",
-         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+        // MEASURED on a GB10 (Vast, 11-27, SQ-20 v2, DFlash 2; rel0223/spark/RESULTS.md). The set is the 5090's "big" fast set: dropping MOE_OPT or the FP8 trunk lost prefill and decode, TC_ATTN lost
+        // at C1 (code 65 vs 115 tok/s), PDL and SPEC_ADAPT changed nothing. What the 5090 numbers got wrong is the drafting: spec_cost 8 / plain 1.02 made fast decode at the plain rate (53 tok/s) on
+        // prose and chat, below off; cost 5 / plain 0 gives C1 decode prose 79 / chat 94 / json 99 / code 115 / count 183 / tool 112 against off 55 / 69 / 81 / 78 / 97 / 81 (mean 113.6 vs 76.8).
+        // The exact set is EMPTY: DSPARK_OPT in it changed the window numbers and the verify tree, so exact tokens differed from off with a drafter (json, tool); with it out, exact = off on every prompt.
+        // default_on is set by the FASTQ subset on this card (rel0223/spark/RESULTS.md).
+        {"gb10", "GB10", 44, 52, 100, 128, true, "measured on a DGX Spark GB10 (cc 12.1, 48 SMs, 121 GB unified memory, 11-27)",
+         kSm120BigFast, kSm120SparkExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 8.0f, 1.02f, 0.0f, false, 1},
+         4, 12, 24, 3, 5.0f, 0.0f, 0.0f, false, 1},
         // ---- NV-ADA-AMPERE lane: RTX 40 (cc 8.9) and RTX 30 / A-series (cc 8.6). Candidate sets until a card is measured (measured = false: old path unless STRATA_INK_SM120_ROW=<id>) ----
 #define STRATA_ADA_ROW(ID, NAME, SMLO, SMHI, GLO, GHI, NOTE, FAST, EXACT, FP8, C64, FAM)         {ID, NAME, SMLO, SMHI, GLO, GHI, false, NOTE, FAST, EXACT, FP8, C64, STRATA_SM120_ADA_MOE,          0, 0, 0, 0, 512, 768, 1536, 0, 1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false, (FAM) % 10, FAM}
         STRATA_ADA_ROW("4090", "RTX 4090", 120, 136, 22, 26, "RTX 4090 24 GB", kAdaBigFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::Bspec, 89),

@@ -59,7 +59,7 @@ int main() {
     CHECK(ink_sm120_match(rtx4090) && std::string(ink_sm120_match(rtx4090)->id) == "4090" && ink_sm120_match(rtx4090)->cc == 89);
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 4090", 12, 0, 128, 24)));   // a row matches only its own family
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 8, 9, 170, 32)));
-    CHECK(ink_sm120_match(spark) && std::string(ink_sm120_match(spark)->id) == "gb10" && !ink_sm120_match(spark)->measured && ink_sm120_match(spark)->cc_minor == 1);   // cc 12.1 is its own row
+    CHECK(ink_sm120_match(spark) && std::string(ink_sm120_match(spark)->id) == "gb10" && ink_sm120_match(spark)->measured && ink_sm120_match(spark)->cc_minor == 1);   // cc 12.1 is its own row
     CHECK(!ink_sm120_match(dev("NVIDIA GB10", 12, 0, 48, 120)) && !ink_sm120_match(dev("NVIDIA GB10", 12, 1, 170, 32)));   // the GB10 row needs cc 12.1 and its silicon
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 1, 170, 32)));                       // and an RTX name on cc 12.1 gets no row (the RTX rows are cc 12.0)
     CHECK(!ink_sm120_match(unknown));
@@ -75,7 +75,7 @@ int main() {
         // exact without it equals off on every C1 prompt with DFlash 2)
         const uint32_t kNotInExact = P_DSPARK_OPT | P_PLD | P_CORE_GRAPH | P_C64_SPEC | P_TC_ATTN | P_SPEC_ADAPT | P_COMPACT | P_PACK | P_PREFILL | P_MOE_OPT | P_DENSE_OPT | P_PF_ATTN | P_FP8_TRUNK;
         for (int i = 0; i < n; ++i) CHECK((rows[i].exact_parts & kNotInExact) == 0);
-        CHECK(measured == 10);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26)
+        CHECK(measured == 11);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26), DGX Spark GB10 (11-27)
         // the placeholders for the cards still to rent are in the table
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));
     }
@@ -230,20 +230,19 @@ int main() {
         CHECK(s.moe[ink_sm120_moe_range(s, 1536)].tile_rows == 64 && s.moe[ink_sm120_moe_range(s, 1537)].tile_rows == 128);
     }
 
-    // ---- the DGX Spark (GB10, cc 12.1): its own row, a placeholder until measured; never the 5090's row ----
+    // ---- the DGX Spark (GB10, cc 12.1): its own row, measured on a GB10; never the 5090's row ----
     {
-        // a switch alone is refused with the placeholder note that names the row; nothing is printed with no switch
+        // a switch runs the row's fast set (the big set: FP8 trunk cache, NVFP4 MoE, PF_ATTN, drafting, C64 bspec), silently (no placeholder note)
         const Sm120Decision x = decide(spark, {{"STRATA_INK_SM120", "1"}});
-        CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.refused && x.row && std::string(x.row->id) == "gb10");
-        CHECK(x.note.find("placeholder") != std::string::npos && x.note.find("gb10") != std::string::npos);
-        // the row asked for by name runs its fast set (the big set: FP8 trunk cache, NVFP4 MoE, PF_ATTN, drafting, C64 bspec), one line says so
-        const Sm120Decision f = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}});
+        CHECK(x.mode == Sm120Decision::Fast && x.row && std::string(x.row->id) == "gb10" && x.parts == kSm120BigFast && x.note.empty() && !x.refused);
+        const Sm120Decision f = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}});   // naming the row is still accepted
         CHECK(f.mode == Sm120Decision::Fast && f.forced_row && f.row && std::string(f.row->id) == "gb10" && f.parts == kSm120BigFast && !f.note.empty());
         CHECK(!(f.parts & P_COMPACT) && !(f.parts & P_PACK) && !(f.parts & P_TC_ATTN) && !(f.parts & P_SPEC_ADAPT));   // no hybrid split, and the long-context parts only by name
-        const Sm120Decision e = decide(spark, {{"STRATA_INK_SM120_EXACT", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}});
-        CHECK(e.mode == Sm120Decision::Exact && e.parts == kSm120BigExact && (e.parts & ~f.parts) == 0);
+        // the exact set is EMPTY: DSPARK_OPT changed the drafting numbers and the verify tree against off, so it is fast-only on the Spark
+        const Sm120Decision e = decide(spark, {{"STRATA_INK_SM120_EXACT", "1"}});
+        CHECK(e.mode == Sm120Decision::Exact && e.parts == 0 && kSm120SparkExact == 0 && !(e.parts & P_DSPARK_OPT));
         // one part off in the row's fast set
-        const Sm120Decision o = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}, {"STRATA_INK_SM120_MOE_OPT", "0"}});
+        const Sm120Decision o = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_MOE_OPT", "0"}});
         CHECK(o.mode == Sm120Decision::Fast && !(o.parts & P_MOE_OPT) && (o.parts & P_PF_ATTN));
         // =0 is the old path, silently
         const Sm120Decision z = decide(spark, {{"STRATA_INK_SM120", "0"}, {"STRATA_INK_SM120_ROW", "gb10"}});
@@ -255,7 +254,10 @@ int main() {
         // the RTX cards never take it, whatever a part switch says: the 5090 stays on its own row and an unmeasured RTX card on none
         CHECK(std::string(decide(r5090, {{"STRATA_INK_SM120", "1"}}).row->id) == "5090");
         // a placeholder that is measured later: the default applies only with measured AND default_on, so today nothing runs without a switch (the loop above)
-        CHECK(!g.measured && !g.default_on);
+        CHECK(g.measured);
+        CHECK(g.spec_cost == 5.0f && g.spec_plain == 0.0f);   // the drafting numbers measured on the GB10 (the 5090's 8 / 1.02 lost to off on prose and chat)
+        // default_on: see the FASTQ result in RESULTS.md; the unit test pins the value the table has
+        CHECK(g.default_on == (decide(spark, {}).mode == Sm120Decision::Fast));
         // an unknown cc 12.1 card (not a GB10) gets the "no measured table row" note and the old path
         const Sm120Dev odd = dev("NVIDIA Something Else", 12, 1, 60, 24);
         const Sm120Decision u = decide(odd, {{"STRATA_INK_SM120", "1"}});
