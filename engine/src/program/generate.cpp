@@ -5337,7 +5337,6 @@ int main(int argc, char** argv) {
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
 #if defined(STRATA_GPU_METAL)   // Apple Silicon: every expert is on the GPU; ggml-cpu (NEON) is the only CPU expert code
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
-    strata::metal_engine::set_batch_slots(o.batch);
     o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
 #else
@@ -8116,6 +8115,11 @@ int main(int argc, char** argv) {
                          (double) bytes0 * o.batch / 1073741824.0);
         }
     }
+
+#if defined(STRATA_GPU_METAL)
+    // The decode window allocates one state set per admitted slot, plus the solo session.
+    strata::metal_engine::set_batch_slots(o.batch);
+#endif
 
     // STRATA_PIPED_MTP is decided again now that the slots that fit and the groups are final.  Recommend, never force: when
     // it cannot run it is said and left off, and --batch-mtp goes on as it would without it.
