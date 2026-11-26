@@ -223,6 +223,100 @@ static int run_type(int t, int K, const Tabs& T, std::mt19937& rng) {
     return fails;
 }
 
+// The tensor-core prefill kernels against the dp4a kernels on one synthetic expert: 40 tokens routed to expert 0, random weights of the type, random activations.
+// GU: k_ink_moe_gu_gguf_dp4a<16> against k_ink_moe_iq_tc<true, WT>; DN: k_ink_moe_dn_gguf_dp4a<16> against k_ink_moe_iq_tc<false, 42> / k_ink_moe_q80_tc<false, 20>.
+static int run_tc_test(int wt, bool gu, std::mt19937& rng) {
+    const int P = 40;
+    const int Kg = kInkHidden, Kd = kInkInter;
+    const uint32_t gu_type = gu ? (uint32_t)wt : 21u, dn_type = gu ? 20u : (uint32_t)wt;
+    const size_t rb_gu = ink_gguf_row_bytes(gu_type, Kg), rb_dn = ink_gguf_row_bytes(dn_type, Kd);
+    const size_t gu_bytes = (size_t)(2 * kInkInter) * rb_gu, dn_bytes = (size_t)kInkHidden * rb_dn;
+    const uint32_t dn_off = (uint32_t)((32 + gu_bytes + 31) & ~(size_t)31);
+    std::vector<uint8_t> body(dn_off + dn_bytes + 64);
+    for (auto& b : body) b = (uint8_t)(rng() & 255);
+    std::uniform_real_distribution<float> dsc(0.002f, 0.05f);
+    auto fix_scales = [&](size_t start, size_t rows, size_t rb, int type) {
+        const int be = (type == 42) ? 64 : ((type == 20 || type == 8) ? 32 : 256);
+        const size_t bb = (type == 42 || type == 20) ? 18 : (type == 16 ? 66 : type == 17 ? 74 : type == 22 ? 82 : type == 21 ? 110 : type == 19 ? 50 : type == 18 ? 98 : 34);
+        for (size_t r = 0; r < rows; ++r)
+            for (size_t i = 0; i < rb / bb; ++i) {
+                float s = dsc(rng);
+                if (type == 42 && (rng() & 1)) s = -s;
+                const uint16_t h = f16_bits(s);
+                std::memcpy(&body[start + r * rb + i * bb], &h, 2);
+            }
+        (void)be;
+    };
+    fix_scales(32, 2 * kInkInter, rb_gu, (int)gu_type);
+    fix_scales(dn_off, kInkHidden, rb_dn, (int)dn_type);
+    InkGgufExpertHeader hdr{0x47475546u, gu_type, dn_type, 0u, 1.0f, 1.0f, 1.0f, 0u};
+    std::memcpy(body.data(), &hdr, sizeof(hdr));
+    uint8_t* d_body = dalloc<uint8_t>(body.size());
+    INK_CK(cudaMemcpy(d_body, body.data(), body.size(), cudaMemcpyHostToDevice));
+    InkExpertDev ex{0, dn_off, (uint8_t)FMT_GGUF_RAW, (uint8_t)FMT_GGUF_RAW, 0};
+    InkExpertDev* d_ex = dalloc<InkExpertDev>(128);
+    std::vector<InkExpertDev> hex(128, ex);
+    INK_CK(cudaMemcpy(d_ex, hex.data(), 128 * sizeof(InkExpertDev), cudaMemcpyHostToDevice));
+    InkMoeTables tb{};
+    tb.cnt = dalloc<int32_t>(128); tb.off = dalloc<int32_t>(129); tb.active = dalloc<int32_t>(128); tb.nact = dalloc<int32_t>(1);
+    tb.pairs = dalloc<int32_t>(P); tb.tok_idx = dalloc<int32_t>(P);
+    std::vector<int32_t> h_cnt(128, 0), h_off(129, 0), h_act(128, 0), h_pairs(P), h_tok(P);
+    h_cnt[0] = P; for (int i = 1; i <= 128; ++i) h_off[i] = P;
+    for (int i = 0; i < P; ++i) { h_pairs[i] = i; h_tok[i] = i; }
+    int32_t one = 1;
+    INK_CK(cudaMemcpy(tb.cnt, h_cnt.data(), 128 * 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemcpy(tb.off, h_off.data(), 129 * 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemcpy(tb.active, h_act.data(), 128 * 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemcpy(tb.nact, &one, 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemcpy(tb.pairs, h_pairs.data(), P * 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemcpy(tb.tok_idx, h_tok.data(), P * 4, cudaMemcpyHostToDevice));
+    std::normal_distribution<float> dn(0.0f, 1.0f);
+    const int K = gu ? Kg : Kd, NBX = K / 32;
+    std::vector<float> x((size_t)P * K);
+    for (auto& v : x) v = dn(rng);
+    float* d_x = dalloc<float>(x.size());
+    INK_CK(cudaMemcpy(d_x, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
+    InkQ8_1_G32* d_xq = dalloc<InkQ8_1_G32>((size_t)P * NBX);
+    k_ink_quant_q8_1_g32<<<(P * NBX + 7) / 8, 256>>>(d_x, d_xq, P, K);
+    const size_t n_out = gu ? (size_t)P * kInkInter : (size_t)P * kInkHidden;
+    float* d_a = dalloc<float>(n_out); float* d_b = dalloc<float>(n_out);
+    float* d_w = dalloc<float>(P);
+    std::vector<float> ones(P, 1.0f);
+    INK_CK(cudaMemcpy(d_w, ones.data(), P * 4, cudaMemcpyHostToDevice));
+    INK_CK(cudaMemset(d_a, 0, n_out * 4)); INK_CK(cudaMemset(d_b, 0, n_out * 4));
+    if (gu) {
+        k_ink_moe_gu_gguf_dp4a<16><<<dim3(kInkInter / 4, 1), 128>>>(d_body, d_ex, tb, d_xq, d_x, d_a, 0);
+        const dim3 g(kInkInter / 64, 1);
+        switch (wt) {
+            case 16: k_ink_moe_iq_tc<true, 16><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+            case 17: k_ink_moe_iq_tc<true, 17><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+            case 18: k_ink_moe_iq_tc<true, 18><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+            case 19: k_ink_moe_iq_tc<true, 19><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+            case 21: k_ink_moe_iq_tc<true, 21><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+            default: k_ink_moe_iq_tc<true, 22><<<g, 128>>>(d_body, d_ex, tb, d_xq, nullptr, d_b); break;
+        }
+    } else {
+        k_ink_moe_dn_gguf_dp4a<16><<<dim3(kInkHidden / 4, 1), 128>>>(d_body, d_ex, tb, d_xq, d_x, d_w, d_a, 0);
+        const dim3 g(kInkHidden / 64, 1);
+        if (wt == 42) k_ink_moe_iq_tc<false, 42><<<g, 128>>>(d_body, d_ex, tb, d_xq, d_w, d_b);
+        else          k_ink_moe_q80_tc<false, 20><<<g, 128>>>(d_body, d_ex, tb, d_xq, d_w, d_b);
+    }
+    INK_CK(cudaGetLastError());
+    INK_CK(cudaDeviceSynchronize());
+    std::vector<float> a(n_out), b(n_out);
+    INK_CK(cudaMemcpy(a.data(), d_a, n_out * 4, cudaMemcpyDeviceToHost));
+    INK_CK(cudaMemcpy(b.data(), d_b, n_out * 4, cudaMemcpyDeviceToHost));
+    double ss = 0, worst = 0;
+    for (size_t i = 0; i < n_out; ++i) ss += (double)a[i] * a[i];
+    const double rms = std::sqrt(ss / n_out);
+    for (size_t i = 0; i < n_out; ++i) worst = std::max(worst, std::fabs((double)a[i] - b[i]));
+    std::printf("  tensor-core %s type %2d: max |tc - dp4a| %.3g, rms of the output %.3g -> %.2g relative %s\n", gu ? "gate/up" : "down", wt, worst, rms, worst / (rms + 1e-30),
+                worst / (rms + 1e-30) < 2e-4 ? "ok" : "FAIL");
+    cudaFree(d_body); cudaFree(d_ex); cudaFree(tb.cnt); cudaFree(tb.off); cudaFree(tb.active); cudaFree(tb.nact); cudaFree(tb.pairs); cudaFree(tb.tok_idx);
+    cudaFree(d_x); cudaFree(d_xq); cudaFree(d_a); cudaFree(d_b); cudaFree(d_w);
+    return worst / (rms + 1e-30) < 2e-4 ? 0 : 1;
+}
+
 // ./ink_gguf_types_test bench: time of the row-dot kernel per type on a weight block larger than the L2, for 1 token (decode) and 16 tokens (prefill group).
 static size_t bench_rb(int t, int K) {
     switch (t) {
@@ -299,6 +393,10 @@ int main(int argc, char** argv) {
     for (int t : types) fails += run_type(t, 2304, T, rng);
     fails += run_type(42, 1152, T, rng);
     fails += run_type(20, 1152, T, rng);
+    std::printf("tensor-core prefill kernels against the dp4a kernels:\n");
+    for (int t : {16, 17, 18, 19, 21, 22}) fails += run_tc_test(t, true, rng);
+    fails += run_tc_test(42, false, rng);
+    fails += run_tc_test(20, false, rng);
     if (fails == 0) std::printf("ALL GGUF TYPE ROW-DOT TESTS PASSED\n");
     else            std::printf("FAILED: %d\n", fails);
     return fails ? 1 : 0;
