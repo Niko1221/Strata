@@ -10,7 +10,11 @@
 // maps to are untouched (the NaN pattern is still there), and three runs of the same call give the same bits (the tile order never changes a sum).
 // Every gate/up format of the kernel with both down formats; groups of 0, 1, 31..33, 47..49, 63..65 and 130 entries (zero-entry groups too),
 // the three tile sizes (STRATA_I8_TM = 2, 3, 4), scattered destinations, random tokens, stale scratch.
+// The trellis pairs (STRATA_TQ_I8, tq_i8_rule.hpp): TQK6 / TQK7 (Gyro-S) and TQ2_T / TQ2_T (Gyro-M), plain and Hadamard-folded
+// (fold 128: the activations rotate before both paths, the grouped kernels rotate h inside, the tile kernel writes its h rows as FP32,
+// rotates and requantizes them - native_expert_i8_fold_h).  With the switch off the trellis pairs answer not covered; that is checked too.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/tq_i8_rule.hpp"
 
 #include <cuda_runtime.h>
 
@@ -22,6 +26,7 @@
 #include <cstring>
 #include <numeric>
 #include <random>
+#include <tuple>
 #include <vector>
 
 namespace k = strata::kernels;
@@ -63,10 +68,25 @@ const char* name_of(int t) {
         case 13: return "Q5_K";
         case 14: return "Q6_K";
         case 7: return "Q5_1";
+        case 144: return "TQ2_T";
+        case 145: return "TQK6";
+        case 146: return "TQK7";
         default: return "?";
     }
 }
-int block_values(int t) { return t == 20 || t == 6 || t == 8 || t == 7 ? 32 : t == 42 ? 64 : 256; }
+int block_values(int t) { return t == 20 || t == 6 || t == 8 || t == 7 ? 32 : t == 42 ? 64 : t == 144 || t == 145 || t == 146 ? 128 : 256; }
+
+// the pack's fold of block 128 (cpu/hadamard.hpp's definition, prefill.cpp rotates x on the device the same way): y = H_128 (s * x) / sqrt(128)
+void rot128(float* x, int64_t n, const float* signs) {
+    for (int64_t b = 0; b < n; b += 128) {
+        double v[128];
+        for (int i = 0; i < 128; ++i) v[i] = (double) x[b + i] * (signs ? signs[b + i] : 1.0f);
+        for (int st = 1; st < 128; st <<= 1)
+            for (int i = 0; i < 128; ++i)
+                if (!(i & st)) { const double a = v[i], c = v[i + st]; v[i] = a + c; v[i + st] = a - c; }
+        for (int i = 0; i < 128; ++i) x[b + i] = (float) (v[i] / std::sqrt(128.0));
+    }
+}
 
 // `rows` rows of `n` values of format t: random bytes (every code is valid for these formats), then a finite fp16 scale in every block
 std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& rng) {
@@ -95,18 +115,33 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
 
 struct Setup {
     k::NativeExpertLayout L;
+    bool fold = false;      // the pack's Hadamard fold of block 128: x rotated before both paths, h rotated inside the call
     int T, cap, n_blobs;
     size_t slot;
     uint8_t *blobs, *xq, *xq8, *scr;   // xq: the q8_1 image of native_expert_grouped; xq8: native_expert_i8's own image (FP32 scales)
     size_t scr_bytes, out_floats;
     float* out;
+    float* d_sh = nullptr;  // the fold's down signs on the device (the layout's d_signs)
     unsigned long long* ptr;
     int32_t *start, *n, *dst, *tok;
     int active_lo = 0, active_hi = 0;
     std::vector<int32_t> dst_h;
+    std::vector<float> sx_rot;   // the fold's gate/up signs (host): the activations are rotated before both paths quantize them
 
-    Setup(int gu, int dt, int64_t H, int64_t FF, int tokens, int k_per_token, int blobs_n, std::mt19937& rng, cudaStream_t s) {
+    Setup(int gu, int dt, int64_t H, int64_t FF, int tokens, int k_per_token, int blobs_n, std::mt19937& rng, cudaStream_t s, bool folded = false) {
         L = k::native_expert_layout(gu, dt, H, FF);
+        fold = folded;
+        if (fold) {   // the fold's signs: their own generator, so the caller's rng sequence stays what the plain rows drew
+            std::mt19937 rs(20261121);
+            sx_rot.resize((size_t) H);
+            std::vector<float> sh((size_t) FF);
+            for (auto& v : sx_rot) v = (rs() & 1) ? 1.f : -1.f;
+            for (auto& v : sh) v = (rs() & 1) ? 1.f : -1.f;
+            L.had_block = 128;
+            d_sh = dalloc<float>(FF);
+            ck(cudaMemcpy(d_sh, sh.data(), sh.size() * 4, cudaMemcpyHostToDevice), "sh");
+            L.d_signs = d_sh;
+        }
         T = tokens;
         cap = T * k_per_token;
         n_blobs = blobs_n;
@@ -122,6 +157,7 @@ struct Setup {
         std::normal_distribution<float> nd(0.f, 1.f);
         std::vector<float> x((size_t) T * H);
         for (auto& v : x) v = nd(rng);
+        if (fold) for (int t = 0; t < T; ++t) rot128(x.data() + (size_t) t * (size_t) H, H, sx_rot.data());   // the gate/up input: rotated before both paths quantize it
         float* dx = dalloc<float>(x.size());
         ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
         xq = dalloc<uint8_t>((size_t) T * (H / 32) * 36);
@@ -130,7 +166,7 @@ struct Setup {
         k::native_expert_i8_quantize(dx, T, H, xq8, s);
         ck(cudaStreamSynchronize(s), "quantize");
         cudaFree(dx);
-        scr_bytes = k::native_expert_scratch_bytes(cap, FF);
+        scr_bytes = fold ? std::max(k::native_expert_scratch_bytes(cap, FF), k::native_expert_i8_scratch_bytes(cap, cap, FF, true)) : k::native_expert_scratch_bytes(cap, FF);
         scr = dalloc<uint8_t>(scr_bytes);
         out_floats = (size_t) cap * H;
         out = dalloc<float>(out_floats);
@@ -143,6 +179,7 @@ struct Setup {
     ~Setup() {
         cudaFree(blobs); cudaFree(xq); cudaFree(xq8); cudaFree(scr); cudaFree(out);
         cudaFree(ptr); cudaFree(start); cudaFree(n); cudaFree(dst); cudaFree(tok);
+        cudaFree(d_sh);
     }
     // groups of these sizes from entry `base` on, each its own blob; every other entry row of `out` is a destination nobody uses
     int plan_sizes(const std::vector<int>& sizes, int base, std::mt19937& rng) {
@@ -286,7 +323,7 @@ void check_carved(const Setup& S, int64_t H, int64_t FF, cudaStream_t s, std::mt
     cudaFree(scr_i8); cudaFree(scr_ref); cudaFree(out_i8); cudaFree(out_ref); cudaFree(d_ident); cudaFree(d_tok);
 }
 
-void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& rng) {
+void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& rng, bool fold = false) {
     const int tokens = 40, kpt = 8;   // cap 320 entries
     // A pair the device does not cover (its smallest tile does not fit the shared memory per block, or the layout is out of range) is skipped, not an error;
     // the earlier pass of another pair may have left a pretended limit in the environment, so ask with the device's own.
@@ -295,13 +332,15 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
 #else
     setenv("STRATA_I8_SMEM_LIMIT", "0", 1);
 #endif
-    if (!k::native_expert_i8_supported(k::native_expert_layout(gu, dt, H, FF))) {
-        std::printf("%-8s/%-7s %5lld x %4lld  skipped: not covered on this device\n", name_of(gu), name_of(dt), (long long) H, (long long) FF);
+    k::NativeExpertLayout trial = k::native_expert_layout(gu, dt, H, FF);
+    if (fold) trial.had_block = 128;   // the fold the tile kernel runs inside; STRATA_TQ_I8 decides whether the trellis pair is covered at all
+    if (!k::native_expert_i8_supported(trial)) {
+        std::printf("%-8s/%-7s %5lld x %4lld%s  skipped: not covered on this device\n", name_of(gu), name_of(dt), (long long) H, (long long) FF, fold ? " fold" : "");
         ++g_skipped;
         return;
     }
     ++g_run;
-    Setup S(gu, dt, H, FF, tokens, kpt, 12, rng, s);
+    Setup S(gu, dt, H, FF, tokens, kpt, 12, rng, s, fold);
     const std::vector<std::vector<int>> plans = {
         {},                                                // no groups at all
         {1, 0, 31, 32, 33},                                // zero-entry group in the middle
@@ -387,14 +426,41 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
         set_env("STRATA_I8_TM", std::to_string(tm).c_str());
         check_carved(S, H, FF, s, rng, tm, bad, worst, calls);
     }
-    std::printf("%-8s/%-7s %5lld x %4lld  %d calls: %s (worst relative RMS against grouped %.3e)\n", name_of(gu), name_of(dt), (long long) H,
-                (long long) FF, calls, bad ? "FAIL" : "ok", worst);
+    std::printf("%-8s/%-7s %5lld x %4lld%s  %d calls: %s (worst relative RMS against grouped %.3e)\n", name_of(gu), name_of(dt), (long long) H,
+                (long long) FF, fold ? " fold" : "", calls, bad ? "FAIL" : "ok", worst);
     g_fail += bad;
 }
 
 }  // namespace
 
 int main() {
+    {   // the pure rule (tq_i8_rule.hpp) before any device query: the switch's three states, the pair, the fold, the notice
+        const int unset = k::tq_i8_switch_state(nullptr), off = k::tq_i8_switch_state("0"), on = k::tq_i8_switch_state("1");
+        if (unset != -1 || off != 0 || on != 1) {
+            std::fprintf(stderr, "STRATA_TQ_I8: not set %d, \"0\" %d, \"1\" %d (want -1, 0, 1)\n", unset, off, on);
+            ++g_fail;
+        }
+        if (k::tq_i8_switch_state("") != -1 || k::tq_i8_switch_state("2") != 0 || k::tq_i8_switch_state("1x") != 0) {
+            std::fprintf(stderr, "STRATA_TQ_I8: \"\" must read not-set, \"2\" and \"1x\" must read off\n");
+            ++g_fail;
+        }
+        for (const auto& pr : std::vector<std::pair<int, int>>{{144, 144}, {145, 146}, {144, 146}, {146, 145}})
+            if (!k::tq_i8_pair(pr.first, pr.second)) { std::fprintf(stderr, "%s / %s must be a trellis pair\n", name_of(pr.first), name_of(pr.second)); ++g_fail; }
+        for (const auto& pr : std::vector<std::pair<int, int>>{{145, 22}, {8, 146}, {22, 42}, {147, 147}})
+            if (k::tq_i8_pair(pr.first, pr.second)) { std::fprintf(stderr, "%s / %s must not be a trellis pair\n", name_of(pr.first), name_of(pr.second)); ++g_fail; }
+        if (!k::tq_i8_fold_ok(128, true, true)) { std::fprintf(stderr, "the fold of block 128 on both roles is this path\n"); ++g_fail; }
+        for (const auto& f : std::vector<std::tuple<int, bool, bool>>{{64, true, true}, {128, true, false}, {128, false, true}, {0, false, false}})
+            if (k::tq_i8_fold_ok(std::get<0>(f), std::get<1>(f), std::get<2>(f))) {
+                std::fprintf(stderr, "fold block %d (gate %d, down %d) must not be this path\n", std::get<0>(f), (int) std::get<1>(f), (int) std::get<2>(f));
+                ++g_fail;
+            }
+        if (!k::tq_i8_takes(145, 146, 0, false, false, true)) { std::fprintf(stderr, "an unfolded trellis pair with the switch on is taken\n"); ++g_fail; }
+        if (!k::tq_i8_takes(145, 146, 128, true, true, true)) { std::fprintf(stderr, "the folded trellis pair with the switch on is taken\n"); ++g_fail; }
+        if (k::tq_i8_takes(145, 146, 128, true, false, true) || k::tq_i8_takes(145, 146, 64, true, true, true)) { std::fprintf(stderr, "a fold this path does not cover is not taken\n"); ++g_fail; }
+        if (k::tq_i8_takes(145, 22, 0, false, false, true) || k::tq_i8_takes(145, 146, 0, false, false, false)) { std::fprintf(stderr, "a mixed pair, or the switch off, is not taken\n"); ++g_fail; }
+        if (k::tq_i8_notice("1", false).empty()) { std::fprintf(stderr, "STRATA_TQ_I8=1 not taken must give a line\n"); ++g_fail; }
+        if (!k::tq_i8_notice("1", true).empty() || !k::tq_i8_notice("0", false).empty() || !k::tq_i8_notice(nullptr, false).empty()) { std::fprintf(stderr, "taken, off or not set must give no line\n"); ++g_fail; }
+    }
     int n = 0;
     if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no GPU device: skipped\n"); return 77; }
     {   // for the log: what the device reports (the call's own limit is one of its own to find: i8_smem_limit)
@@ -442,6 +508,35 @@ int main() {
         check(pr.first, pr.second, 512, 256, s, rng);
         check(pr.first, pr.second, 2048, 512, s, rng);
     }
+    // the trellis pairs with STRATA_TQ_I8=1 (tq_i8_rule.hpp): Gyro-S (TQK6 gate/up, TQK7 down), Gyro-M (TQ2_T both) and the mixes.
+    // The reference side (native_expert_grouped) has TQ2_T / TQK6 as gate/up and TQ2_T / TQK7 as down (STRATA_GU_FMTS /
+    // STRATA_D_FMTS), so only the pairs both kernels have are compared here; the tile kernel's other trellis roles
+    // (TQK7 gate/up, TQK6 down) it launches too, and native_expert_parity checks those formats against the float reference.
+    // Fold rows (the Gyro packs' fold of block 128): the tile kernel writes its h rows as FP32, the call rotates them with the
+    // pack's signs and requantizes them before the down launch (native_expert_i8_fold_h); the grouped kernels rotate h inside
+    // too, and the activations were rotated before both paths quantized them, so both sides read the same folded layer.
+    set_env("STRATA_TQ_I8", "1");
+    for (const auto& pr : std::vector<std::pair<int, int>>{{145, 146}, {144, 144}, {145, 144}, {144, 146}}) {
+        check(pr.first, pr.second, 512, 256, s, rng);
+        check(pr.first, pr.second, 2560, 640, s, rng);
+        check(pr.first, pr.second, 512, 256, s, rng, true);
+        check(pr.first, pr.second, 2560, 640, s, rng, true);
+    }
+    // the switch off: the trellis pairs are not covered in any shape, folded or not, so the layers keep the FP16 path.
+    // The fold path itself is a property of the layout (native_expert_i8_fold_h), and asking with the switch given
+    // (native_expert_i8_supported_ex) is the plan's question without the environment.
+    set_env("STRATA_TQ_I8", "0");
+    for (const auto& pr : std::vector<std::pair<int, int>>{{145, 146}, {144, 144}}) {
+        auto L = k::native_expert_layout(pr.first, pr.second, 2560, 640);
+        if (k::native_expert_i8_supported(L)) { std::fprintf(stderr, "STRATA_TQ_I8=0 must not cover %s / %s\n", name_of(pr.first), name_of(pr.second)); ++g_fail; }
+        L.had_block = 128;
+        if (k::native_expert_i8_supported(L)) { std::fprintf(stderr, "STRATA_TQ_I8=0 must not cover the folded %s / %s\n", name_of(pr.first), name_of(pr.second)); ++g_fail; }
+        if (!k::native_expert_i8_fold_h(L)) { std::fprintf(stderr, "the folded trellis layout must run the FP32-h epilogue (native_expert_i8_fold_h)\n"); ++g_fail; }
+        if (!k::native_expert_i8_supported_ex(L, true)) std::printf("%s/%-7s fold  skipped: the smallest tile does not fit this device's shared memory\n", name_of(pr.first), name_of(pr.second));
+    }
+    auto Lq = k::native_expert_layout(8, 8, 2560, 640);
+    Lq.had_block = 128;
+    if (k::native_expert_i8_fold_h(Lq)) { std::fprintf(stderr, "a Q8_0 fold is not the trellis fold path\n"); ++g_fail; }
     if (g_run == 0) { std::printf("native_i8_parity: nothing ran (%d skipped: not covered on this device)\n", g_skipped); return 77; }
     if (g_skipped) std::printf("native_i8_parity: %d format rows skipped: not covered on this device\n", g_skipped);
     std::printf("native_i8_parity: %s\n", g_fail ? "FAILED" : "all ok");

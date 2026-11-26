@@ -5,6 +5,12 @@
 // Generated from ggml-common.h (the tq2t codebook).
 #include <cstdint>
 #define TQ_LUT_I8_SCALE (3.984375f/127.0f)
+// the table as DEVICE data, as on main.  The grouped trellis decode reads it from device globals (iq_kernels.cu
+// tq_load / tq_load_tqp / stage_iq_grid, moe_fused_iq.cu grid_src).  nvcc rejects a host array read from device
+// code (HIP/clang quietly makes a device copy, seen reading aliased data on gfx1150), so this must stay
+// __device__.  native_expert_i8 does not read it here: i8_tq_lut_device() reads it back with cudaMemcpyFromSymbol
+// and stages that device buffer into shared memory.  Host readers (the trellis tests, the SYCL shim) blank
+// __device__.
 alignas(16) static const __device__ uint16_t tq_lut_i8[2048] = {
     0xecd6, 0x27f2, 0x76d3, 0xed2e, 0xf815, 0x2e1f, 0x25eb, 0x1bdb, 0xed27, 0x30e3, 0xe41a, 0x2dd5, 0x1ec7, 0x0df8, 0xfef8, 0x0b4f,
     0x16bb, 0x16cf, 0xe9eb, 0x2415, 0xd155, 0xd8f5, 0x41f8, 0x361e, 0x41f3, 0xcf1c, 0xf72d, 0xedee, 0x13f6, 0x0906, 0x1208, 0x13e7,

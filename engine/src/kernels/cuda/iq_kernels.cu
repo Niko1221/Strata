@@ -13,6 +13,7 @@
 #include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/i8_expert_rule.hpp"
+#include "strata/kernels/tq_i8_rule.hpp"   // STRATA_TQ_I8: the trellis pair's switch, fold rule and notice (pure functions)
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
@@ -28,6 +29,7 @@
 #include "ggml-common.h"
 #include "ggml-common-tq.h"   // APR trellis types (agention llama.cpp fork)
 #include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
+#include "tq_state.cuh"        // the trellis state window, shared by tq_load below and i8_expert.cuh's tile kernel (STRATA_TQ_I8)
 
 #include <algorithm>
 #include <atomic>
@@ -692,62 +694,8 @@ __device__ __forceinline__ float vec_dot_nvfp4_q8_1(const void* __restrict__ vbq
 // ---------------------------------------------------------------- APR trellis types (ggml 144 TQ2_T, 145 TQK6, 146 TQK7)
 // Transcribed from the agention llama.cpp fork's ggml-cuda/tq.cuh (6d3f2b1b8; format in ggml-common-tq.h).  A
 // 128-value block is 8 lanes of 4 trellis steps (16 values); the dot of lane l reads q8_1 block l/2, ints 4(l&1)..
-template<int TY> struct TqInfo;
-template<> struct TqInfo<144> { using block_t = block_tq2_t; };   // byte-aligned, no K
-template<> struct TqInfo<145> { using block_t = block_tqk6; static constexpr int K = 6; };
-template<> struct TqInfo<146> { using block_t = block_tqk7; static constexpr int K = 7; };
-// Gyro-L: pair trellis (64 steps x K bits, 2 weights per step), the TQ2_T codebook's first pair
-template<> struct TqInfo<147> { using block_t = block_tqp5; static constexpr int K = 5; };
-template<> struct TqInfo<148> { using block_t = block_tqp6; static constexpr int K = 6; };
-template<> struct TqInfo<149> { using block_t = block_tqp7; static constexpr int K = 7; };
-__device__ __forceinline__ float tq_h2f(uint32_t bits) { return __half2float(__ushort_as_half((unsigned short) bits)); }
-// the four unscaled weights of the step with state s: (a.x, a.y, b.x, b.y)
-__device__ __forceinline__ void tq_step(uint32_t s, float2& a, float2& b) {
-    const uint32_t* lut = (const uint32_t*) tq_lut_f16;
-    const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u;
-    const uint32_t pa = lut[x >> 21], pb = lut[(x >> 10) & 2047u];
-    a = make_float2(tq_h2f(pa & 0xFFFFu), tq_h2f(pa >> 16));
-    b = make_float2(tq_h2f(pb & 0xFFFFu), tq_h2f(pb >> 16));
-}
-// the states of steps 4l..4l+3 of one block (qs is 2-byte aligned: every trellis block has an even size)
-// Compute capability 6.0 (Tesla P100): the block's words are read with ld.global.nc (the weights are read-only; a generic
-// pointer made these LD.E), and TQK6's lane window needs only three words (34 bits from a bit offset of 0 or 8), TQK7's
-// four.  The same bits either way.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
-#define STRATA_TQ_LD16(p) ((uint32_t) __ldg((const unsigned short*) (p)))
-#else
-#define STRATA_TQ_LD16(p) ((uint32_t) *(p))
-#endif
-template<int TY>
-__device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[4]) {
-    const uint16_t* qs16 = (const uint16_t*) qs;
-    if constexpr (TY == 144) {   // s_t = qs[(t + 31) % 32] << 8 | qs[t]
-        const uint32_t w01 = STRATA_TQ_LD16(qs16 + 2 * l + 0), w23 = STRATA_TQ_LD16(qs16 + 2 * l + 1);
-        const uint32_t prev = qs[(4 * l + 31) & 31];
-        const uint32_t b0 = w01 & 0xFF, b1 = w01 >> 8, b2 = w23 & 0xFF, b3 = w23 >> 8;
-        s[0] = (prev << 8) | b0;
-        s[1] = (b0 << 8) | b1;
-        s[2] = (b1 << 8) | b2;
-        s[3] = (b2 << 8) | b3;
-    } else {
-        // step t's state: the 16 stream bits from bit (31 - t)*K, circular over 2K u16 words; steps 4l..4l+3 all
-        // lie in the four words from (28 - 4l)*K >> 4
-        constexpr int K = TqInfo<TY>::K, nwords = 2 * K;
-        const int off3 = (28 - 4 * l) * K, wb = off3 >> 4, r = off3 & 15;
-        const int wi1 = wb + 1 >= nwords ? wb + 1 - nwords : wb + 1;
-        const int wi2 = wb + 2 >= nwords ? wb + 2 - nwords : wb + 2;
-        const int wi3 = wb + 3 >= nwords ? wb + 3 - nwords : wb + 3;
-        uint64_t v = (uint64_t) STRATA_TQ_LD16(qs16 + wb) | ((uint64_t) STRATA_TQ_LD16(qs16 + wi1) << 16) |
-                     ((uint64_t) STRATA_TQ_LD16(qs16 + wi2) << 32);
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
-        if constexpr (K == 6) {   // r is 0 or 8 here: bits r .. r + 33 < 48, the fourth word is never read
-        } else
-#endif
-        v |= (uint64_t) STRATA_TQ_LD16(qs16 + wi3) << 48;
-#pragma unroll
-        for (int i = 0; i < 4; ++i) s[i] = (uint32_t) (v >> (r + (3 - i) * K)) & 0xFFFFu;
-    }
-}
+// TqInfo, tq_h2f, tq_step, STRATA_TQ_LD16 and tq_states4 are in src/kernels/cuda/tq_state.cuh (included above), so the
+// int8 tile kernel (STRATA_TQ_I8) decodes the same states as these kernels do.
 // lane iqs/4 of block kbx against the q8_1 blocks aligned with the block's start (4 per trellis block).  Split in
 // two, like the IQ types' decode-once kernels below: tq_load decodes the lane's 16 codebook values (weight side only),
 // tq_apply does the activation side.  vec_dot_tq_q8_1 is apply(load()), and the decode-once kernels call tq_load once
@@ -6945,14 +6893,37 @@ int native_expert_i8_few_rows_limit() noexcept {
     return i8_fewrows_limit(text, i8_fewrows_class_default(major, minor));
 }
 
-size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff) {
-    const size_t hqb = ((size_t) cap_entries * (size_t) (n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;   // as native_expert_i8 carves it
-    return hqb + (size_t) (cap_groups + 1) * sizeof(int32_t);
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff, bool fold_h) {
+    // as native_expert_i8 carves it: the FP32 h rows of a folded trellis layer (STRATA_TQ_I8), then the H blocks
+    // (q8_1, one per 32 features and entry), then the tile table (cap_groups + 1 ints)
+    const size_t hbb = fold_h ? ((size_t) cap_entries * (size_t) n_ff * sizeof(float) + 255) & ~(size_t) 255 : 0;
+    const size_t hqb = ((size_t) cap_entries * (size_t) (n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;
+    return hbb + hqb + (size_t) (cap_groups + 1) * sizeof(int32_t);
+}
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff) { return native_expert_i8_scratch_bytes(cap_entries, cap_groups, n_ff, false); }
+
+// Does this layout run the fold through the gate/up kernel's FP32-h epilogue?  The trellis pair of STRATA_TQ_I8 on
+// the pack's fold of block 128: the layout carries one fold (had_block and the signs), and prefill.cpp builds it
+// only for a pack whose fold covers every role (tq_i8_fold_ok).  Every other layout writes H as q8_1 inside the
+// kernel, as before.
+bool native_expert_i8_fold_h(const NativeExpertLayout& L) noexcept {
+    return i8_trellis_type(L.gu_type) && i8_trellis_type(L.d_type) && strata::kernels::tq_i8_fold_ok((int) L.had_block, L.had_block != 0, L.had_block != 0);
 }
 
-bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept {
-    return i8_gu_type(L.gu_type) && i8_d_type(L.d_type) && !L.gu_nib && L.tail_off == 0 && L.had_block == 0 && L.n_embd % 256 == 0 &&
-           L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
+bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept { return native_expert_i8_supported_ex(L, strata::kernels::tq_i8_switch_state(std::getenv("STRATA_TQ_I8")) == 1); }
+
+// The same test with the trellis switch's state given (a test or the plan asks it without the environment).  The
+// trellis formats (TQ2_T / TQK6 / TQK7) are covered only with STRATA_TQ_I8=1 (tq_i8_rule.hpp); with it their
+// Hadamard fold is too (had_block 128 on both roles), which the call runs as FP32 h rows, hadamard_rows and a
+// requantize before the down launch.  Everything else is exactly the rule before: no fold, no tail, no nibble.
+bool native_expert_i8_supported_ex(const NativeExpertLayout& L, bool tq_on) noexcept {
+    const bool fold_h = native_expert_i8_fold_h(L);
+    if (i8_trellis_type(L.gu_type) || i8_trellis_type(L.d_type)) {
+        if (!tq_on || !(i8_trellis_type(L.gu_type) && i8_trellis_type(L.d_type))) return false;
+        if (L.had_block != 0 && !fold_h) return false;   // a fold this path does not cover: the FP16 path keeps the layer
+    }
+    return i8_gu_type(L.gu_type) && i8_d_type(L.d_type) && !L.gu_nib && L.tail_off == 0 && (L.had_block == 0 || fold_h) &&
+           L.n_embd % 256 == 0 && L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
            i8_smem_bytes(L.gu_type, L.d_type, 2) <= i8_smem_limit();                  // the smallest tile fits the device's shared memory per block
 }
 
@@ -6982,6 +6953,26 @@ bool native_expert_i8_put_record(void* dst, const void* src, size_t bytes, void*
     return cudaGetLastError() == cudaSuccess;
 }
 
+namespace {
+// The int8 trellis codebook (tq_lut_i8.cuh, a __device__ table) as a device buffer, read back once on first use.
+// i8_kernel stages it into shared memory through this pointer, so the staging kernel needs no device global of its
+// own; the grouped decode paths still read the table directly, which is why it has to stay __device__ (nvcc rejects
+// a host array in device code, and HIP's promoted copy of one reads aliased data on gfx1150).
+const uint32_t* i8_tq_lut_device() {
+    static const uint32_t* d = nullptr;
+    if (!d) {
+        uint32_t* p = nullptr;
+        if (cudaMalloc((void**) &p, sizeof tq_lut_i8) != cudaSuccess ||
+            cudaMemcpyFromSymbol(p, tq_lut_i8, sizeof tq_lut_i8) != cudaSuccess) {
+            std::fprintf(stderr, "native_expert_i8: the trellis int8 codebook could not be copied to the device\n");
+            std::exit(1);
+        }
+        d = p;
+    }
+    return d;
+}
+}  // namespace
+
 void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
                       const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
                       void* scratch, float* out, void* stream) {
@@ -6997,7 +6988,14 @@ void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp
         std::exit(1);
     }
     cudaStream_t s = (cudaStream_t) stream;
-    // scratch: the H blocks (q8_1, one per 32 features and entry), then the tile table (cap_groups + 1 ints)
+    // scratch: the FP32 h rows of a folded trellis layer (STRATA_TQ_I8: native_expert_i8_fold_h), then the H blocks
+    // (q8_1, one per 32 features and entry), then the tile table (cap_groups + 1 ints); as native_expert_i8_scratch_bytes carves it
+    const bool fold_h = native_expert_i8_fold_h(L);
+    float* hbuf = nullptr;
+    if (fold_h) {
+        hbuf = (float*) scratch;
+        scratch = (void*) ((uint8_t*) scratch + (((size_t) cap_entries * (size_t) L.n_ff * sizeof(float) + 255) & ~(size_t) 255));
+    }
     block_q8_1* hq = (block_q8_1*) scratch;
     const size_t hqb = ((size_t) cap_entries * (size_t) (L.n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;
     int32_t* tile_off = (int32_t*) ((uint8_t*) scratch + hqb);
@@ -7025,8 +7023,10 @@ void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp
     while (tm > 2 && i8_smem_bytes(L.gu_type, L.d_type, tm, gg) > smem_limit) tm = tm == 8 || tm == 5 ? 4 : tm - 1;
     const int bm = tm == 8 ? 128 : tm == 5 ? 64 : 16 * tm;
     i8_tiles_kernel<<<1, 256, 0, s>>>(grp_start, n_groups, bm, tile_off);
-    I8Args a{grp_ptr, grp_start, n_groups, tile_off, ent_tok, ent_dst, (const block_q8_1*) x_q8_1, hq, out, L,
+    I8Args a{grp_ptr, grp_start, n_groups, tile_off, ent_tok, ent_dst, (const block_q8_1*) x_q8_1, hq, out, hbuf, L,   // field order of I8Args: x, hq, out, hbuf, L
              cap_entries / bm + cap_groups, i8_env_int("STRATA_I8_BISECT", 0), i8_n8_takes(i8_switch_parse(std::getenv("STRATA_I8_N8")), tm), gg};   // 8-entry slices: tile 2 by default, 2-4 with STRATA_I8_N8=1, none with 0
+    a.hf = fold_h;   // the gate/up launch writes its h rows as FP32 into hbuf (i8_kernel's HF); the fold below, then the down launch
+    if (i8_trellis_type(L.gu_type) || i8_trellis_type(L.d_type)) a.lut = i8_tq_lut_device();   // STRATA_TQ_I8: the codebook as a device buffer (see i8_tq_lut_device)
     switch (L.gu_type) {
         case 16: i8_launch<16, true>(tm, a, s); break;
         case 17: i8_launch<17, true>(tm, a, s); break;
@@ -7039,15 +7039,27 @@ void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp
         case 13: i8_launch<13, true>(tm, a, s); break;
         case 14: i8_launch<14, true>(tm, a, s); break;
         case 8: i8_launch<8, true>(tm, a, s); break;
+        case 144: i8_launch<144, true>(tm, a, s); break;   // STRATA_TQ_I8: TQ2_T gate/up (Gyro-M)
+        case 145: i8_launch<145, true>(tm, a, s); break;   // TQK6 gate/up (Gyro-S)
+        case 146: i8_launch<146, true>(tm, a, s); break;   // TQK7 gate/up
         default: i8_launch<22, true>(tm, a, s); break;
     }
     check("native_expert_i8/gu");
+    if (fold_h) {   // APR fold of a trellis layer: rotate the h rows in place (hadamard_rows, the pack's signs), quantize them into the kernels' own q8_1 image, then the down launch (moe_fused_iq.cu's pattern)
+        hadamard_rows(hbuf, hbuf, cap_entries, L.n_ff, L.had_block, L.d_signs, s);
+        native_expert_i8_quantize(hbuf, cap_entries, L.n_ff, hq, s);
+        a.hf = false;
+        check("native_expert_i8/fold");
+    }
     if (L.d_type == 20) i8_launch<20, false>(tm, a, s);
     else if (L.d_type == 6) i8_launch<6, false>(tm, a, s);
     else if (L.d_type == 8) i8_launch<8, false>(tm, a, s);
     else if (L.d_type == 7) i8_launch<7, false>(tm, a, s);
     else if (L.d_type == 13) i8_launch<13, false>(tm, a, s);
     else if (L.d_type == 14) i8_launch<14, false>(tm, a, s);
+    else if (L.d_type == 144) i8_launch<144, false>(tm, a, s);   // STRATA_TQ_I8: TQ2_T down (Gyro-M)
+    else if (L.d_type == 145) i8_launch<145, false>(tm, a, s);   // TQK6 down
+    else if (L.d_type == 146) i8_launch<146, false>(tm, a, s);   // TQK7 down (Gyro-S)
     else i8_launch<42, false>(tm, a, s);
     check("native_expert_i8/down");
 }

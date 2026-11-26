@@ -19,6 +19,9 @@
 //
 // Synthetic weights are random GGUF blocks with a sane scale (as prefill_fused_iq_test.cpp); 512 / 256 blobs at the engine's stride; routing is K distinct
 // experts per token, uniform (--skew=0, as the timing part of prefill_fused_iq_test.cpp) or Zipf-skewed (--skew=S: expert e has weight (e+1)^-S).
+// The trellis cells (TQK6 / TQK7, TQ2_T / TQ2_T - Gyro's experts) measure today's FP16 path; their int8 column appears with STRATA_TQ_I8=1
+// (include/strata/kernels/tq_i8_rule.hpp).  Their reference is the format definition (the fp16 codebook), not ggml's traits: the trellis ids
+// sit above GGML_TYPE_COUNT on the pinned ggml.  The blobs here are unfolded; a real Gyro pack's Hadamard fold is measured with --real.
 //
 //   prefill_expert_paths_bench [--shape=flash|q36|N,FF,E,K] [--tokens=2048,4096,8192,20000] [--only=NAME]... [--all] [--list]
 //       [--repeats=7] [--warm-ms=1000] [--skew=S] [--experts=E] [--sample=96] [--seed=N] [--grouped] [--no-mmq] [--no-fused] [--no-fp16] [--no-ref] [--quick]
@@ -44,6 +47,15 @@
 #include "ggml.h"
 #include "strata/quant/types.hpp"
 #include "../prefill/bench_blob_layout.hpp"
+
+// The trellis types' format definition and codebooks, for the FP32 reference of the trellis cells (STRATA_TQ_I8,
+// include/strata/kernels/tq_i8_rule.hpp): as in tests/cuda/prefill_fused_iq_test.cpp, the tables are host data here.
+#pragma push_macro("__device__")
+#undef __device__
+#define __device__
+#include "../../third_party/ggml/ggml-common-tq.h"   // (a HIP build compiles this file as HIP: the empty __device__ keeps both tables host data)
+#include "../../src/kernels/cuda/tq_lut_i8.cuh"
+#pragma pop_macro("__device__")
 
 #include <cuda_runtime.h>
 
@@ -105,8 +117,11 @@ struct Pair {
     const char* name;
 };
 
-size_t type_size(ggml_type t) { return ggml_type_size(t); }
-int64_t blck_size(ggml_type t) { return ggml_blck_size(t); }
+// The trellis types (TQ2_T 144, TQK6 145, TQK7 146: Gyro's experts) are outside the pinned ggml's type table
+// (GGML_TYPE_COUNT is 43): their size and block come from the format definition, as in prefill_fused_iq_test.cpp.
+bool tq_type(ggml_type t) { return (int) t >= 144 && (int) t <= 146; }
+size_t type_size(ggml_type t) { return (int) t == 144 ? 34 : (int) t == 145 ? 26 : (int) t == 146 ? 30 : ggml_type_size(t); }
+int64_t blck_size(ggml_type t) { return tq_type(t) ? 128 : ggml_blck_size(t); }
 size_t row_size(ggml_type t, int64_t n) { return (size_t) (n / blck_size(t)) * type_size(t); }
 bool fits_blocks(ggml_type t, int64_t n) { return n % blck_size(t) == 0; }
 
@@ -178,14 +193,53 @@ std::vector<uint8_t> make_blob(const Pair& p, const Geo& g, const Shape& s, std:
     return b;
 }
 
-// ggml's dequantized weights of one expert: gate [FF][N], up [FF][N] (rows 0..FF-1 and FF..2FF-1 of gu), down [N][FF]
+// IEEE half -> float (the pinned ggml has no trellis traits, so the trellis reference decodes the format itself)
+float fp16_bits(uint16_t h) {
+    const uint32_t s = (uint32_t) (h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023;
+    uint32_t f;
+    if (e == 0) return (h >> 15 ? -1.0f : 1.0f) * std::ldexp((float) m, -24);   // zero and subnormals
+    if (e == 31) f = s | 0x7f800000u | (m << 13);
+    else f = s | ((e + 112) << 23) | (m << 13);
+    float v;
+    std::memcpy(&v, &f, 4);
+    return v;
+}
+// one 128-weight trellis block from the format definition (third_party/ggml/ggml-common-tq.h's header comment): step t
+// (32 steps, 4 weights) has a 15-bit state - TQ2_T byte-aligned (s_t = qs[(t + 31) % 32] << 8 | qs[t]), TQK6 / TQK7
+// bit-packed LSB-first over the circular 32*K-bit stream, step t's window at bit (31 - t) * K.  x = state * 0x9e3779b1,
+// points x >> 21 and (x >> 10) & 2047 of the fp16 codebook, two weights each, times the block's d.  The kernels read the
+// int8 copy of the same codebook (tq_lut_i8 times TQ_LUT_I8_SCALE), so this is the float reference, not a model of them.
+void tq_block(int t, const uint8_t* b, float* out) {
+    uint16_t dh;
+    std::memcpy(&dh, b, 2);
+    const float d = fp16_bits(dh);
+    const uint8_t* qs = b + 2;
+    const int K = t == 145 ? 6 : t == 146 ? 7 : 8, nbits = 32 * K;
+    auto bit = [&](int i) { i %= nbits; return (qs[i >> 3] >> (i & 7)) & 1; };
+    for (int st = 0; st < 32; ++st) {
+        uint32_t s = 0;
+        if (t == 144) s = ((uint32_t) qs[(st + 31) % 32] << 8) | qs[st];
+        else for (int k = 0; k < 16; ++k) s |= (uint32_t) bit((31 - st) * K + k) << k;
+        const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u;
+        const uint32_t pt[2] = {x >> 21, (x >> 10) & 2047u};
+        for (int h = 0; h < 2; ++h)
+            for (int c = 0; c < 2; ++c) out[4 * st + 2 * h + c] = d * fp16_bits(tq_lut_f16[2 * pt[h] + c]);
+    }
+}
+
+// ggml's dequantized weights of one expert: gate [FF][N], up [FF][N] (rows 0..FF-1 and FF..2FF-1 of gu), down [N][FF].
+// The trellis types have no ggml traits (ids above GGML_TYPE_COUNT): tq_block above is their definition.
 void dequant(const Pair& p, const Geo& g, const Shape& s, const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
     gu.resize((size_t) 2 * s.FF * s.N);
     dn.resize((size_t) s.N * s.FF);
-    const auto* tg = ggml_get_type_traits(p.gu);
-    const auto* td = ggml_get_type_traits(p.d);
-    for (int r = 0; r < 2 * s.FF; ++r) tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * s.N, s.N);
-    for (int r = 0; r < s.N; ++r) td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * s.FF, s.FF);
+    auto decode_row = [&](ggml_type t, const uint8_t* src, float* dst, int64_t n) {
+        if (tq_type(t)) {
+            const size_t bs = type_size(t);
+            for (int64_t k = 0; k < n / 128; ++k) tq_block((int) t, src + (size_t) k * bs, dst + (size_t) k * 128);
+        } else ggml_get_type_traits(t)->to_float(src, dst, (int) n);
+    };
+    for (int r = 0; r < 2 * s.FF; ++r) decode_row(p.gu, b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * s.N, s.N);
+    for (int r = 0; r < s.N; ++r) decode_row(p.d, b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * s.FF, s.FF);
     if (g.tail_off) {   // NVFP4: each projection times its own per-expert scale
         float t[4];
         std::memcpy(t, b.data() + g.tail_off, 16);
@@ -660,7 +714,10 @@ const std::vector<Pair>& all_pairs() {
         {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, "Q4_K / Q5_K"},         {GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, "Q4_K / Q6_K"},
         {GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, "Q5_K / Q6_K"},
         // NVFP4 (ModelOpt packs: Strata's GPTQ pack, NVIDIA's): NVFP4 gate/up and down, the blob's tail = the per-expert scales
-        {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"}};
+        {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"},
+        // the trellis formats (APR): Gyro-S's TQK6 gate/up and TQK7 down, Gyro-M's TQ2_T both.  The int8 column appears with
+        // STRATA_TQ_I8=1 (include/strata/kernels/tq_i8_rule.hpp); without it the cell measures today's FP16 path alone.
+        {(ggml_type) 145, (ggml_type) 146, "TQK6 / TQK7"}, {(ggml_type) 144, (ggml_type) 144, "TQ2_T / TQ2_T"}};
     return pairs;
 }
 constexpr int kDefaultPairs = 4;   // pairs[0..3]
