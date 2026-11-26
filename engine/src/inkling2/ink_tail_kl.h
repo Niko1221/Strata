@@ -88,12 +88,13 @@ static inline bool tkl_load_corpus(const std::string& path, std::vector<TailKlSe
         if (cols.size() >= 4 && !cols[3].empty()) {
             std::vector<std::string> rg;
             tkl_split(cols[3], ',', rg);
-            int k = 0;
+            // a range is "a-b" (every stride-th position of it) or "a-b/s" (every s-th)
             for (const auto& r : rg) {
-                int a = 0, b = 0;
-                if (std::sscanf(r.c_str(), "%d-%d", &a, &b) != 2) continue;
-                for (int i = std::max(a, 0); i <= b && i < n - 1; ++i, ++k)
-                    if (k % s.stride == 0) s.rows.push_back(i);
+                int a = 0, b = 0, st = s.stride;
+                if (std::sscanf(r.c_str(), "%d-%d/%d", &a, &b, &st) < 2) continue;
+                st = std::max(1, st);
+                for (int i = std::max(a, 0), k = 0; i <= b && i < n - 1; ++i, ++k)
+                    if (k % st == 0) s.rows.push_back(i);
             }
             std::sort(s.rows.begin(), s.rows.end());
             s.rows.erase(std::unique(s.rows.begin(), s.rows.end()), s.rows.end());
