@@ -135,7 +135,9 @@ inline Config resolve_config(int dev, bool ep2_active, int peer_dev) noexcept {
     // Note: nt_mall defaults OFF in EXACT to guarantee 4/4 100% greedy bit-identity with OFF (verified on p620).
     cfg.nt_mall        = detail::parse_env_truthy("STRATA_INK_R9700_NT_MALL", !cfg.exact);
     cfg.spec_opt       = detail::parse_env_truthy("STRATA_INK_R9700_SPEC", true);
-    cfg.async_ckpt     = detail::parse_env_truthy("STRATA_INK_R9700_ASYNC_CKPT", true);
+    // Single-pass prefill computes the last prompt token inside the big batch instead of alone after the checkpoint; on HIP a row of a batch is not bit-identical to the same row alone,
+    // so it changes tokens. Off in EXACT (measured on p620: EXACT with it differs from off on 3 of 4 prompts, without it on 0 of 4); STRATA_INK_R9700_ASYNC_CKPT=1 forces it.
+    cfg.async_ckpt     = detail::parse_env_truthy("STRATA_INK_R9700_ASYNC_CKPT", !cfg.exact);
     cfg.cand_rows      = detail::parse_env_truthy("STRATA_INK_R9700_CAND", true);
 
     // Lossy features (STRICTLY OFF in EXACT mode, ON by default in FAST mode unless sub-switch=0):
