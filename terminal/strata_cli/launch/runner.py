@@ -328,6 +328,13 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
             del args[at:at + 2]
         is_ink = s.family == "inkling-2-mini" or str(cfg.get("arch") or "").lower() == "inkling2_loop"
         if is_ink:
+            # the picture reader (the Qwen rule, strata_control/vision_reader.py): off takes the engine's flag away with the Vision file, gpu / cpu are kept as asked;
+            # "on" keeps what setup resolved for the card
+            from strata_control import vision_reader as _VR
+            if s.vision in ("off", "no"):
+                args = _VR.set_reader_arg(args, None)
+            elif s.vision in ("gpu", "cpu") and "--vision" in args:
+                args = _VR.set_reader_arg(args, s.vision)
             if s.kv:
                 eff_kv, _ = S.safe_inkling_kv(s.kv, cfg.get("backend"))
                 if eff_kv:

@@ -4351,7 +4351,8 @@ class Service:
         self.inkling_budget_cap = os.environ.get("STRATA_INKLING_BUDGET_CAP", "").strip().lower() not in ("0", "false", "no", "off")
         self.inkling_budget_cap_said = False          # the line that says a client's budget was lowered is printed once
         self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
-        self.inkling_image_max_px = 0                 # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
+        self.inkling_cfg = {}                         # the run config (its inkling_image_max_mp and --vision-reader), for the cap that follows the engine's reader
+        self.inkling_image_max_px = 0                # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -5748,7 +5749,19 @@ class Service:
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
             sizes: list[int] = []
 
-            def picture(data, _cap=self.inkling_image_max_px if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
+            # the reader the engine really chose (its INFO line, `vision_reader=gpu|cpu`; the Qwen rule covers Inkling) decides the cap and the silence allowance:
+            # a CUDA card with the GPU reader is not capped, a small card that reads on the CPU is; an engine that does not say keeps the start-up setting
+            ink_cpu = self.inkling_cpu_pictures
+            ink_cap = self.inkling_image_max_px
+            if self.inkling and (getattr(self.engine, "info", None) or {}).get("vision_reader") in ("gpu", "cpu"):
+                ink_info = self.engine.info
+                ink_cpu = inkling_kind.cpu_picture_reader(self.inkling_cfg, ink_info)
+                try:
+                    ink_cap = inkling_kind.image_cap_pixels(self.inkling_cfg, info=ink_info)
+                except ValueError:
+                    pass
+
+            def picture(data, _cap=ink_cap if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
                 data = Vision.normalize(data)
                 if _cap:
                     data, note = inkling_kind.cap_picture(data, _cap)
@@ -5763,7 +5776,7 @@ class Service:
                 self.embeddings.inkling = written
                 # #7043: where the reader is the CPU, the engine says nothing while it reads a picture: this request may stay silent for as long as the
                 # pictures take (measured), at least engine_silence_s (StrataEngine.generate)
-                allow = inkling_kind.picture_allowance_s(sizes, self.inkling_image_max_px) if self.inkling_cpu_pictures else 0.0
+                allow = inkling_kind.picture_allowance_s(sizes, ink_cap) if ink_cpu else 0.0
                 self.embeddings.inkling_allow = allow
                 if allow > float(getattr(self.engine, "silence_s", 0) or 0):
                     print(f"[strata] {len(sizes)} picture(s), {sum(sizes) / 1e6:.2f} MP in all: the engine's CPU picture reader may take a while, "
@@ -9759,7 +9772,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
-    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (CUDA, cpu), its own setting, 0 = off
+    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (the reader the run config names, else CUDA and cpu), its own setting, 0 = off
+        svc.inkling_cfg = cfg
         svc.inkling_cpu_pictures = inkling_kind.cpu_picture_reader(cfg)
         try:
             svc.inkling_image_max_px = inkling_kind.image_cap_pixels(cfg)

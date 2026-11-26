@@ -10633,6 +10633,23 @@ def inkling_pc(gpu, ram) -> tuple:
     return effective_vram_gb(g), float(ram), False, False, arch
 
 
+def inkling_picture_reader(asked, gpu, backend, ink_gpus=None) -> str | None:
+    """The picture reader an Inkling-2-Mini install gets: "gpu", "cpu", or None when the card cannot be told (the engine's own rule then decides at start).
+    Owner 2026-11-26: the Qwen rule everywhere (strata_control/vision_reader.py inkling_reader): the CPU reader under 24 GB of VRAM (NVIDIA and AMD), the
+    GPU from 24 GB, the Mac's GPU whatever the memory, an Intel Arc on the CPU unless asked; --vision gpu / cpu are kept as asked, with a note on a small card.
+    The card is the first one the model runs on (the engine applies the same rule to its main card) and its total memory, as the Qwen path reads it; on a
+    machine whose GPU shares the RAM (Strix Halo, DGX Spark) that is the shared pool, so those read on the GPU.  Prints the plain-words lines."""
+    from strata_control import vision_reader as VR
+    main = (ink_gpus[0] if ink_gpus else gpu) or {}
+    mac = backend == "metal" or sys.platform == "darwin"
+    make = "intel" if backend == "sycl" else ""
+    vram = float(main.get("vram_gb") or 0.0) or float(main.get("unified_gb") or 0.0)
+    mode = VR.inkling_reader(asked, vram, make, mac=mac)
+    for is_warn, text in VR.inkling_lines(asked, mode, vram, make, mac=mac, backend=backend):
+        (warn if is_warn else ok)(text)
+    return mode if mode in ("gpu", "cpu") else None
+
+
 # A plan that fills the card and the RAM with every expert and leaves nothing for the SSD has its two caps equal to the plan.  The engine counts its experts a
 # little differently (each one's real bytes, and the 65-slot bounce ring the SSD-streaming mode takes out of the RAM cap), so a few percent of them do not fit
 # under caps with no room, the engine switches to GPU+SSD streaming and reads them from the SSD on every use: SQ-20 on an RX 7900 XT (20 GiB, 32K context) wrote
@@ -11040,6 +11057,9 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         args += ["--draft", "off"]
     if vision and vision_path is not None:
         args += ["--vision", str(vision_path)]
+        reader = inkling_picture_reader(a.vision, gpu, ink_backend, ink_gpus)        # the Qwen rule for the reader; the engine takes --vision-reader (strata-inkling --info: vision_reader=1)
+        if reader:
+            args += ["--vision-reader", reader]
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:

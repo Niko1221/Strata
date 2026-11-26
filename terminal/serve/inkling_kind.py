@@ -307,7 +307,60 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         del args[at:at + 2]
         if announce:
             print(f"[strata] {NO_IMAGES_NOTE}", flush=True)
+    args = fit_vision_reader(args, cfg, info, announce)
     return args
+
+
+def detected_reader(cfg: dict) -> tuple[str | None, float]:
+    """(the picture reader this machine's rule gives (strata_control/vision_reader.py inkling_reader) for a run config that has none, the card's memory in GiB):
+    from the backend and the card's total memory (NVML, the amdgpu files).  (None, 0.0) where it cannot be told: several cards, no reading, the CPU engine;
+    the engine's own rule decides."""
+    from strata_control import vision_reader as VR
+    backend = cfg.get("backend")
+    if backend == "metal":
+        return VR.inkling_reader(None, None, mac=True), 0.0
+    if backend == "sycl":
+        return VR.inkling_reader(None, None, "intel"), 0.0
+    if backend == "cpu":
+        return None, 0.0
+    try:
+        from serve.server_parts.engines import gpu_list
+        from serve.telemetry import gpu_reader
+        cards = gpu_list(cfg)
+        if len(cards) >= 2:
+            return None, 0.0
+        g = gpu_reader(cards[0] if cards else 0, amd=backend == "hip")
+        total = g.read().get("mem_total") if g.ok() else None
+    except Exception:                                   # noqa: BLE001 - a card that cannot be read leaves the decision to the engine
+        return None, 0.0
+    if not isinstance(total, (int, float)) or isinstance(total, bool) or total <= 0:
+        return None, 0.0
+    gib = float(total) / 2**30
+    return VR.inkling_reader(None, gib), gib
+
+
+def fit_vision_reader(args: list, cfg: dict, info: dict | None, announce: bool = True) -> list:
+    """`--vision-reader` for the engine that knows it (`--info` says vision_reader=1), dropped for one that does not (it refuses an option it does not know).
+    A run config with `--vision` and no reader flag (written before the rule, or by the app's Pictures step) gets the reader this machine's rule gives, when the
+    card can be read, so the server (picture size cap and silence allowance) and the engine agree; the person's own flag, in args or user_args, always stays."""
+    from strata_control import vision_reader as VR
+    if "--vision" not in args:
+        return VR.set_reader_arg(args, None)
+    knows = (info or {}).get("vision_reader") == "1"
+    have = VR.reader_arg(args)
+    if have is not None and not knows:
+        if announce:
+            print("[strata] Inkling-2-Mini: this engine does not take --vision-reader (its pictures are read as before); update Strata for the new rule", flush=True)
+        return VR.set_reader_arg(args, None)
+    if have is None and knows:
+        mode, gib = detected_reader(cfg)
+        if mode:
+            if announce:
+                for _warn, text in VR.inkling_lines(None, mode, gib, "intel" if cfg.get("backend") == "sycl" else "", mac=cfg.get("backend") == "metal",
+                                                    backend=str(cfg.get("backend") or "cuda")):
+                    print(f"[strata] {text}", flush=True)
+            return VR.set_reader_arg(args, mode)
+    return args                                          # "auto" (or no flag and no reading): the engine's own rule decides
 
 
 def encode_path(path) -> str:
@@ -319,6 +372,8 @@ def decode_path(text: str) -> str:
 
 
 # ---- #7043: the picture reader on the CPU --------------------------------------------------------------------------------------------
+# (Since the owner's decision of 2026-11-26 the reader follows the Qwen rule on every backend, CUDA included: the CPU reader under 24 GB, the card's from 24 GB; picture_reader()
+# below reads which one the engine chose.  The text that follows describes the CPU reader.)
 # strata-inkling reads a picture with its GPU encoder where it has one (HIP, SYCL, Metal) and otherwise, CUDA included, with the CPU one, which has
 # no size limit below 4096 x 4096 pixels: a 4535 x 3004 photo is 27,900 patches with full attention in 23 layers on one CPU thread of control, no
 # progress line and no cancel, minutes in which the engine answers nothing (and the 300 s watchdog ends it).  The engine has no option for the size,
@@ -326,18 +381,39 @@ def decode_path(text: str) -> str:
 # DEFAULT_MAX_PIXELS, 0.8 MP: where the measured CPU reader takes about a minute (a 1024 x 768 picture is not touched, a 1920 x 1080 screenshot is scaled to about 1190 x 670).  `inkling_image_max_mp` in the run config (or STRATA_INKLING_IMAGE_MAX_MP) sets
 # another size in megapixels, 0 turns the cap off; a value above 0 applies on every backend.
 DEFAULT_MAX_PIXELS = 800_000
-GPU_PICTURE_BACKENDS = ("hip", "sycl", "metal")
+GPU_PICTURE_BACKENDS = ("hip", "sycl", "metal")     # the old rule, kept for a config and an engine that say nothing about the reader (see picture_reader)
 
 
-def image_cap_pixels(cfg: dict | None, environ=None) -> int:
-    """The most pixels a picture may have when it is handed to the engine: 0 = no cap.  ValueError for a setting that is not a number >= 0."""
+def picture_reader(cfg: dict | None, info: dict | None = None) -> str | None:
+    """The reader that really reads this engine's pictures, "gpu" or "cpu"; None when nothing says (then the old backend rule applies, cpu_picture_reader).
+    Since the Qwen rule covers Inkling (owner 2026-11-26) the reader is no longer a fact of the backend: the engine's own INFO line says what it chose
+    (`vision_reader=gpu|cpu|off`, the engine that started), else the run config's `--vision-reader gpu|cpu` (Control wrote it for the card; "auto" says nothing)."""
+    said = str((info or {}).get("vision_reader") or "").strip().lower()
+    if said in ("gpu", "cpu"):
+        return said
+    from strata_control import vision_reader as VR
+    asked = VR.reader_arg((cfg or {}).get("args"))
+    return asked if asked in ("gpu", "cpu") else None
+
+
+def cpu_picture_reader(cfg: dict | None, info: dict | None = None) -> bool:
+    """True where the engine reads pictures on the CPU: the reader it chose (picture_reader), else the old rule (CUDA and cpu: the CPU; HIP, SYCL, Metal: the card)."""
+    rd = picture_reader(cfg, info)
+    if rd is not None:
+        return rd == "cpu"
+    return (cfg or {}).get("backend") not in GPU_PICTURE_BACKENDS
+
+
+def image_cap_pixels(cfg: dict | None, environ=None, info: dict | None = None) -> int:
+    """The most pixels a picture may have when it is handed to the engine: 0 = no cap.  ValueError for a setting that is not a number >= 0.
+    The default cap is for the CPU reader only (cpu_picture_reader: the reader the engine chose, `info` is its INFO line)."""
     environ = os.environ if environ is None else environ
     cfg = cfg or {}
     raw = cfg.get("inkling_image_max_mp")
     if raw is None or raw == "":
         raw = (environ.get("STRATA_INKLING_IMAGE_MAX_MP") or "").strip() or None
     if raw is None:
-        return DEFAULT_MAX_PIXELS if cfg.get("backend") not in GPU_PICTURE_BACKENDS else 0
+        return DEFAULT_MAX_PIXELS if cpu_picture_reader(cfg, info) else 0
     try:
         mp = float(raw)
         if isinstance(raw, bool) or mp != mp or mp < 0 or mp > 1e6:
@@ -391,11 +467,6 @@ READ_CURVE = ((0.04, 3.1), (0.25, 14.9), (0.499, 32.0), (0.749, 55.0), (0.999, 7
 ALLOW_MARGIN = 3.0
 ALLOW_BASE_S = 60.0
 ALLOW_MAX_S = 3 * 3600.0
-
-
-def cpu_picture_reader(cfg: dict | None) -> bool:
-    """True where the engine reads pictures on the CPU (CUDA, cpu); HIP, SYCL and Metal have a GPU encoder."""
-    return (cfg or {}).get("backend") not in GPU_PICTURE_BACKENDS
 
 
 def picture_pixels(data: bytes) -> int:

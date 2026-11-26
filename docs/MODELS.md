@@ -303,6 +303,12 @@ engine (`strata-inkling`). Strata offers five builds, in this order everywhere (
 supported on the same engine. Every build reads pictures with the Vision shard (`Inkling-2-Mini-Vision-v2.strata`, 0.64 GB) and drafts with DFlash 2
 (below) on every device.
 
+Pictures follow the same rule as Qwen3.8-Flash-Next ([Images (vision)](DETAILS.md#images-vision)): on a card under 24 GB the
+engine reads them on the CPU (a few seconds each) so the experts keep the card; from 24 GB it reads them on the card (about
+0.1-0.5 s each, about 1.1 GB of VRAM that the engine sets aside at start; on NVIDIA with one card the reader is put on the card
+by the first picture and taken off after 120 s without one); a Mac always uses its GPU; an Intel Arc uses the CPU unless you ask.
+`--vision gpu` or `--vision cpu` (Terminal, `strata launch`, the app) picks the reader and is kept, `--vision no` leaves pictures off.
+
 **Strata native `.strata` builds**
 
 | Build | File size | Typical hardware | In plain words |
