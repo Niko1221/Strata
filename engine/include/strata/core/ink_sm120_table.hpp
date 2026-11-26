@@ -9,7 +9,7 @@
 //                               STRATA_INK_SM120 unset it is the same as =1 with the lossless set.
 //   unset                       the default: kSm120FastDefault below (true since 11-26): a card with a MEASURED row (RTX 5090, RTX 5060 Ti 16 GB) runs its row's fast set, every other card the old path.
 //   STRATA_INK_SM120_<PART>=0|1 one part on or off (PF_ATTN FP8_TRUNK MOE_OPT DENSE_OPT DSPARK_OPT C64_SPEC COMPACT TC_SMALLM PLD PACK PREFILL
-//                               CORE_GRAPH L2PF); an explicit 1 turns the part on on any sm_120 card, an explicit 0 turns it off.
+//                               CORE_GRAPH L2PF TC_ATTN); an explicit 1 turns the part on on any sm_120 card, an explicit 0 turns it off.
 //   STRATA_INK_SM120_ROW=<id>   use the table row <id> although the card has no measured row of its own (own risk, a note is printed).
 // Old names, still accepted as aliases: STRATA_INK_RTX5090 (= STRATA_INK_SM120), STRATA_INK_RTX5090_EXACT, STRATA_INK_RTX5060TI,
 // STRATA_INK_RTX5060TI_EXACT, STRATA_INK_5060TI_<PART> / STRATA_INK_5060TI_<NUMBER>. The new name wins when both are set.
@@ -54,8 +54,9 @@ enum Sm120Part : uint32_t {
     P_COMPACT_XCODE = 1u << 13,  // compact: MX8 experts of layers 20-23 are transcoded to SF4 on load (without it SQ-20 does not fit and compact falls back)
     P_COMPACT_KV    = 1u << 14,  // compact: FP8 (E4M3) KV cache on a one-slot run
     P_FP8_INPLACE   = 1u << 15,  // the 5060 Ti hand-over's in-place FP8 trunk (known bad: FASTQ failed); in no fast set, explicit request only
+    P_TC_ATTN       = 1u << 16,  // tensor-core split-K decode attention of the global visits (FP16 tensor cores, FP32 accumulate; changes rounding: fast only, never in an exact set)
 };
-constexpr uint32_t kSm120AllParts = (1u << 16) - 1u;
+constexpr uint32_t kSm120AllParts = (1u << 17) - 1u;
 constexpr uint32_t kSm120CompactSubParts = P_COMPACT_XCODE | P_COMPACT_KV;
 
 // ONE FP8 trunk for every card: Cache = the 5090 implementation (a +641 MiB FP8 copy next to the BF16 / Q8_ROW trunk; it simply does not start when the card
@@ -121,7 +122,7 @@ struct Sm120Row {
     { {128, 16, Sm120Tc::Direct, Sm120Tc::Base, 128}, {160, 32, Sm120Tc::Direct, Sm120Tc::Base, 128}, \
       {1536, 64, Sm120Tc::Direct, Sm120Tc::Base, 128}, {1 << 30, 128, Sm120Tc::Tr128Bk128, Sm120Tc::Tr128, 128} }, 4
 
-constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;
+constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;   // P_TC_ATTN joins this set only after the long-context A/B and the KL check (PERF-LONGCTX)
 constexpr uint32_t kSm120BigExact = P_DSPARK_OPT;
 // The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
 // trunk on, fast mode lost 17 of 26 tool calls; with FP8_TRUNK=0 (attention in Q8_ROW) it is at or above off on every suite (report-5060ti-fp8t0.md). The in-place FP8 trunk is
@@ -274,6 +275,7 @@ inline const Sm120PartName* ink_sm120_part_names(int* n) {
         {P_COMPACT_XCODE, "COMPACT_XCODE", nullptr},
         {P_COMPACT_KV, "COMPACT_KV", nullptr},
         {P_FP8_INPLACE, "FP8_INPLACE", nullptr},
+        {P_TC_ATTN, "TC_ATTN", nullptr},
         {P_TC_SMALLM, "TC_SMALLM", "STRATA_INK_5060TI_TC_SMALLM"},
         {P_PLD, "PLD", "STRATA_INK_5060TI_PLD"},
         {P_PACK, "PACK", "STRATA_INK_5060TI_PACK"},
