@@ -527,10 +527,8 @@ inline int& force_ref() { static int v = -1; return v; }
 
 // Slices per KV head for the card in use: 8 heads x nsp blocks = two full waves of the resident blocks (2 per SM), so no wave is left part empty
 // (5090, 170 SMs: 85 slices = 680 blocks; 5070, 48 SMs: 24). STRATA_INK_TC_ATTN_SPLITS=<n> (16..96) overrides it for the A/B runs.
-inline int splits_cur() {
+inline int splits_dev(int dev) {
     static int per_dev[16] = {};
-    int dev = 0;
-    cudaGetDevice(&dev);
     if (dev < 0 || dev >= 16) dev = 0;
     if (per_dev[dev] == 0) {
         int sms = 0;
@@ -540,6 +538,11 @@ inline int splits_cur() {
         per_dev[dev] = n < 16 ? 16 : (n > kMaxSplits ? kMaxSplits : n);
     }
     return per_dev[dev];
+}
+inline int splits_cur() {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    return splits_dev(dev);
 }
 
 // K/V tile buffers in shared memory: 2 = one barrier per tile (35 KB per block, 2 blocks per SM), 1 = two barriers (18 KB). D = tiles of raw K/V in flight per

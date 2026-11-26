@@ -2827,7 +2827,7 @@ struct InkCudaRunner {
             const size_t rtx_extra_res =
                 ((s120_r.fp8_cache && !m.ls_active) ? ((size_t)s120_r.ws_extra_fp8_mib << 20) : 0ull) +
                 ((s120_r.dspark_opt && !s120_r.exact && max_slots >= 2 && m.man.has_dspark) ? ((size_t)s120_r.ws_extra_dspark_mib << 20) : 0ull) +
-                (s120_r.tc_attn ? (16ull << 20) : 0ull);   // TC_ATTN: the larger split-K partial buffers (tree_cap x 65 slots x 24 heads x 130 floats = 13 MiB at tree_cap 32)
+                (s120_r.tc_attn ? (size_t)tree_cap * (size_t)std::max(0, tcattn::splits_dev(m.primary_gpu) + 1 - kInkAttnMaxSplits) * kInkHeads * (kInkHeadDim + 2) * 4 : 0ull);   // TC_ATTN: the larger split-K partial buffers (a 5090: 32 x 54 x 24 x 130 x 4 = 13 MiB; a 5060 Ti: none)
             // RTX 5060 Ti row ("compact"): the all-VRAM expert set sizes the workspaces after the K/V itself, so its own, smaller reserve is used.
             // Every other case, with every switch off included, keeps the shipped reserve (the 5060 Ti hand-over applied the smaller one to every
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
@@ -3028,7 +3028,7 @@ struct InkCudaRunner {
 
         const size_t MB = (size_t)max_batch;
         const size_t sp_cap = std::max<size_t>(std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits),   // #6671: a tree uses the M == 1 split count
-                                               sm120_cfg(m.primary_gpu).tc_attn ? (size_t)tree_cap * (size_t)tcattn::kSlots : (size_t)0);   // TC_ATTN: up to 96 slices + the verify tail per head (85 on a 5090)
+                                               sm120_cfg(m.primary_gpu).tc_attn ? (size_t)tree_cap * (size_t)(tcattn::splits_dev(m.primary_gpu) + 1) : (size_t)0);   // TC_ATTN: the card's slices + the verify tail per head (85 on a 5090, 18 on a 5060 Ti)
         const size_t x_bf16_elems = m.all_sf4_vram
             ? std::max<size_t>(MB * (size_t)(3 * kInkHidden), 256ull * kInkDsparkInter)
             : (MB * (size_t)std::max(kInkDsparkInter, std::max(kInkQDim, kInkHidden)));
