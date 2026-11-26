@@ -55,7 +55,9 @@ int main() {
     CHECK(ink_sm120_match(r5080) && std::string(ink_sm120_match(r5080)->id) == "5080");
     CHECK(ink_sm120_match(pro6000) && std::string(ink_sm120_match(pro6000)->id) == "pro6000" && !ink_sm120_match(pro6000)->measured);
     CHECK(!ink_sm120_match(a4000) && !ink_sm120_match(rtx4090));    // not cc 12.0
-    CHECK(!ink_sm120_match(spark));                                  // cc 12.1 is another SASS family
+    CHECK(ink_sm120_match(spark) && std::string(ink_sm120_match(spark)->id) == "gb10" && !ink_sm120_match(spark)->measured && ink_sm120_match(spark)->cc_minor == 1);   // cc 12.1 is its own row
+    CHECK(!ink_sm120_match(dev("NVIDIA GB10", 12, 0, 48, 120)) && !ink_sm120_match(dev("NVIDIA GB10", 12, 1, 170, 32)));   // the GB10 row needs cc 12.1 and its silicon
+    CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 1, 170, 32)));                       // and an RTX name on cc 12.1 gets no row (the RTX rows are cc 12.0)
     CHECK(!ink_sm120_match(unknown));
     // the right name with the wrong silicon does not match (a 5090 name on a 36-SM, 16 GB device)
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 0, 36, 16)));
@@ -149,7 +151,7 @@ int main() {
         CHECK(!(ex.parts & P_FP8_TRUNK) && !(ex.parts & P_COMPACT) && !(ex.parts & P_TC_SMALLM) && !(ex.parts & P_MOE_OPT) && !(ex.parts & P_PF_ATTN));
     }
     // ---- a switch on a card that is not sm_120 is refused with one line, the default path runs ----
-    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark}) {
+    for (const Sm120Dev* d : {&a4000, &rtx4090}) {
         const Sm120Decision x = decide(*d, {{"STRATA_INK_RTX5060TI", "1"}});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.refused && !x.note.empty());
         CHECK(x.note.find("not an sm_120 card") != std::string::npos && x.note.find(d->name) != std::string::npos);
@@ -190,6 +192,38 @@ int main() {
         CHECK(s.moe[ink_sm120_moe_range(s, 128)].tile_rows == 16 && s.moe[ink_sm120_moe_range(s, 129)].tile_rows == 32);
         CHECK(s.moe[ink_sm120_moe_range(s, 160)].tile_rows == 32 && s.moe[ink_sm120_moe_range(s, 161)].tile_rows == 64);
         CHECK(s.moe[ink_sm120_moe_range(s, 1536)].tile_rows == 64 && s.moe[ink_sm120_moe_range(s, 1537)].tile_rows == 128);
+    }
+
+    // ---- the DGX Spark (GB10, cc 12.1): its own row, a placeholder until measured; never the 5090's row ----
+    {
+        // a switch alone is refused with the placeholder note that names the row; nothing is printed with no switch
+        const Sm120Decision x = decide(spark, {{"STRATA_INK_SM120", "1"}});
+        CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.refused && x.row && std::string(x.row->id) == "gb10");
+        CHECK(x.note.find("placeholder") != std::string::npos && x.note.find("gb10") != std::string::npos);
+        // the row asked for by name runs its fast set (the big set: FP8 trunk cache, NVFP4 MoE, PF_ATTN, drafting, C64 bspec), one line says so
+        const Sm120Decision f = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}});
+        CHECK(f.mode == Sm120Decision::Fast && f.forced_row && f.row && std::string(f.row->id) == "gb10" && f.parts == kSm120BigFast && !f.note.empty());
+        CHECK(!(f.parts & P_COMPACT) && !(f.parts & P_PACK) && !(f.parts & P_TC_ATTN) && !(f.parts & P_SPEC_ADAPT));   // no hybrid split, and the long-context parts only by name
+        const Sm120Decision e = decide(spark, {{"STRATA_INK_SM120_EXACT", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}});
+        CHECK(e.mode == Sm120Decision::Exact && e.parts == kSm120BigExact && (e.parts & ~f.parts) == 0);
+        // one part off in the row's fast set
+        const Sm120Decision o = decide(spark, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_ROW", "gb10"}, {"STRATA_INK_SM120_MOE_OPT", "0"}});
+        CHECK(o.mode == Sm120Decision::Fast && !(o.parts & P_MOE_OPT) && (o.parts & P_PF_ATTN));
+        // =0 is the old path, silently
+        const Sm120Decision z = decide(spark, {{"STRATA_INK_SM120", "0"}, {"STRATA_INK_SM120_ROW", "gb10"}});
+        CHECK(z.mode == Sm120Decision::Off && z.parts == 0 && z.note.empty());
+        // the row carries the numbers the engine reads: the FP8 cache trunk, the 5090's batched drafting, the 5090's MoE ranges
+        const Sm120Row& g = *ink_sm120_row_by_id("gb10");
+        CHECK(g.fp8_mode == Sm120Fp8::Cache && g.c64_mode == Sm120C64::Bspec && g.cc_minor == 1 && g.n_moe == 4);
+        CHECK(g.moe[ink_sm120_moe_range(g, 1)].tile_rows == 16 && g.moe[ink_sm120_moe_range(g, 100000)].tile_rows == 128);
+        // the RTX cards never take it, whatever a part switch says: the 5090 stays on its own row and an unmeasured RTX card on none
+        CHECK(std::string(decide(r5090, {{"STRATA_INK_SM120", "1"}}).row->id) == "5090");
+        // a placeholder that is measured later: the default applies only with measured AND default_on, so today nothing runs without a switch (the loop above)
+        CHECK(!g.measured && !g.default_on);
+        // an unknown cc 12.1 card (not a GB10) gets the "no measured table row" note and the old path
+        const Sm120Dev odd = dev("NVIDIA Something Else", 12, 1, 60, 24);
+        const Sm120Decision u = decide(odd, {{"STRATA_INK_SM120", "1"}});
+        CHECK(u.mode == Sm120Decision::Off && u.refused && !u.note.empty());
     }
 
     if (failed) { std::fprintf(stderr, "ink_sm120_table_test: %d failure(s)\n", failed); return 1; }

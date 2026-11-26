@@ -113,6 +113,10 @@ struct Sm120Row {
     // The row's fast set is the DEFAULT (no switch set) only when FASTQ passed on this card kind. A measured row can have default_on = false: the speed is measured
     // and fast mode is one switch away, but the old path stays the default because quality or speed did not pass (rows lane 11-26).
     bool default_on = false;
+
+    // The compute capability minor of the card kind the row is for: 0 for the RTX 50 / RTX PRO Blackwell cards (cc 12.0), 1 for the DGX Spark GB10 (cc 12.1). A row never
+    // matches a card of the other minor, so the 5090 row can not be taken by a GB10 and the GB10 row can not be taken by an RTX card.
+    int cc_minor = 0;
 };
 
 // Default knobs shared by rows (the 5090 and the 5060 Ti rows are the measured ones; the others copy the family they belong to and stay unmeasured).
@@ -202,6 +206,16 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
+        // ---- DGX Spark (NVIDIA GB10, cc 12.1, 48 SMs, 121 GB of memory shared with the CPU, about 273 GB/s) ----
+        // Matched by name + SM count + memory AND cc 12.1, so it never takes the 5090 row and the 5090 never takes it. The whole model sits in the unified memory (no hybrid split,
+        // no compact, no PACK), so the set is the 5090's "big" set: FP8 trunk with the cache copy (641 MiB, room for it), the NVFP4 tensor-core MoE, PF_ATTN, drafting.
+        // NOT measured and NOT default yet (measured = false: the old path runs unless STRATA_INK_SM120_ROW=gb10 or a part switch asks); the rows of the lane's tests
+        // (RESULTS.md of the DGX-SPARK lane) decide the tiles, the draft numbers and default_on. The numbers below are the 5090's, kept until measured:
+        // spec_cost 8 / beam 4 / 12 nodes are the 5090's after PDL, c64_draft_k 3; c1_chunk_big 4096 needs 4800 MiB of headroom, which the unified memory has.
+        {"gb10", "GB10", 44, 52, 100, 128, false, "placeholder: DGX Spark GB10 (cc 12.1, 48 SMs, 121 GB unified memory); numbers are the 5090's until measured",
+         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         4096, 4800, 0, 0, 512, 768, 1536, 0,
+         4, 12, 24, 3, 8.0f, 1.02f, 0.0f, false, 1},
     };
     if (n) *n = (int)(sizeof(rows) / sizeof(rows[0]));
     return rows;
@@ -217,17 +231,20 @@ struct Sm120Dev {
 
 // True only for cc 12.0 (GB202 / GB203 / GB205 / GB206 / GB207: the RTX 50 cards and the RTX PRO Blackwell cards). cc 12.1 (GB10) is another SASS family.
 inline bool ink_sm120_is_cc120(const Sm120Dev& d) { return d.cc_major == 12 && d.cc_minor == 0; }
+// cc 12.0 or 12.1: the cards a table row can exist for. Which one a row is for is the row's cc_minor (the GB10 is its own row, never the RTX rows).
+inline bool ink_sm120_is_cc12x(const Sm120Dev& d) { return d.cc_major == 12 && (d.cc_minor == 0 || d.cc_minor == 1); }
 
 inline int ink_sm120_vram_gib(uint64_t bytes) { return (int)((bytes + (512ull << 20)) >> 30); }
 
 // The first row whose name, SM window and VRAM window all match. nullptr when no row matches (an unknown cc 12.0 card).
 inline const Sm120Row* ink_sm120_match(const Sm120Dev& d) {
-    if (!ink_sm120_is_cc120(d)) return nullptr;
+    if (!ink_sm120_is_cc12x(d)) return nullptr;
     int n = 0;
     const Sm120Row* rows = ink_sm120_rows(&n);
     const int gib = ink_sm120_vram_gib(d.vram_bytes);
     for (int i = 0; i < n; ++i) {
         const Sm120Row& r = rows[i];
+        if (d.cc_minor != r.cc_minor) continue;
         if (d.name.find(r.name_has) == std::string::npos) continue;
         if (d.sm_count < r.sm_min || d.sm_count > r.sm_max) continue;
         if (gib < r.vram_gib_min || gib > r.vram_gib_max) continue;
@@ -335,7 +352,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     // card (placeholder rows: 5080, 5070 Ti, 5070, 5060 Ti 8 GB, 5060, 5050, RTX PRO; unknown cards; every non-RTX 50 card) keeps the old path and prints nothing.
     // A part switched OFF alone (STRATA_INK_SM120_<PART>=0) takes that part out of the default set.
     const Sm120Row* dflt_row = nullptr;
-    if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_is_cc120(dev)) {
+    if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_is_cc12x(dev)) {
         dflt_row = ink_sm120_match(dev);
         if (dflt_row && !(dflt_row->measured && dflt_row->default_on)) dflt_row = nullptr;
     }
@@ -344,7 +361,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     if (!out.asked) return out;
 
     char buf[400];
-    if (!ink_sm120_is_cc120(dev)) {
+    if (!ink_sm120_is_cc12x(dev)) {
         out.refused = true;
         std::snprintf(buf, sizeof(buf),
                       "[InkCUDA] RTX 50 switch ignored: GPU %d (%s, sm_%d%d) is not an sm_120 card; the default path runs",
