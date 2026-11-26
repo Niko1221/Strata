@@ -303,6 +303,8 @@ public:
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+            // --vram-reserve-mib: the global KV leaves this much free at init and when it grows
+            runner_->user_reserve_bytes = (opts.vram_reserve_mib > 0) ? ((size_t)opts.vram_reserve_mib << 20) : 0u;
             if (const char* ng = std::getenv("STRATA_INK_NO_GRAPH"); ng && ng[0] == '1' && runner_->use_cuda_graph) {
                 // diagnostic: launch every kernel of a step eagerly, as the layer-split / EP2 paths always do
                 runner_->use_cuda_graph = false;
