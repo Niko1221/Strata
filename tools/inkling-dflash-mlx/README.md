@@ -41,3 +41,9 @@ python launch.py "$ENGINE" "$INK_DFLASH_MODEL" "$INK_DFLASH_ASSETS"
 ```
 
 The launcher uses MLX and NumPy. Submit a greedy text request through the engine's native stdin protocol after `READY`. The target returns `BT` token records followed by `BDONE` with the number of offered and accepted drafts.
+
+## Single-slot streaming HTTP
+
+In the Strata server run configuration, set `exe` to the absolute path of `strata-inkling-dflash` in this directory. Export `DFLASH_ENGINE` (the patched target executable), `DFLASH_PYTHON` (the MLX environment's Python executable), and `INK_DFLASH_ASSETS` (the packed assets directory) before starting the server. Use the normal Inkling arguments with `--native MODEL --parallel 1 --draft off --kv fp8 --max-context 16384`. The external worker supplies the proposals. The launcher forwards model inspection and replaces itself with the native engine so the server manages the engine PID. Closing the engine closes the worker socket.
+
+Use greedy text requests. On streamed responses, read `timings.draft_n` and `timings.draft_n_accepted` from the final JSON event. An exact repeated prompt can reuse the target cache and generate with zero proposals.

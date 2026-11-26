@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+engine = os.environ['DFLASH_ENGINE']
+args = sys.argv[1:]
+if '--serve' not in args:
+    os.execv(engine, [engine, *args])
+if args[args.index('--parallel') + 1] != '1' or args[args.index('--draft') + 1] != 'off':
+    sys.exit('DFlash requires one slot and --draft off')
+os.environ['INK_DFLASH_MODEL'] = str(Path(args[args.index('--native') + 1]).resolve())
+sender, receiver = socket.socketpair()
+worker = subprocess.Popen([os.environ['DFLASH_PYTHON'], str(Path(__file__).with_name('worker.py')), str(receiver.fileno())], pass_fds=(receiver.fileno(),), stdout=subprocess.PIPE, text=True)
+receiver.close()
+if worker.stdout.readline().strip() != 'READY':
+    sys.exit('Draft worker initialization failed')
+sender.set_inheritable(True)
+os.environ['INK_DFLASH_FD'] = str(sender.fileno())
+os.execv(engine, [engine, *args])
