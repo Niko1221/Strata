@@ -8519,6 +8519,7 @@ def update_install(have: list, a) -> int:
             refresh_shared_draft_vocab(cfg, mtp_done)
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
+        inkling_dflash2_for_config(a, cfg)                  # the DFlash 2 drafter beside an Inkling .strata model (an update brings it to an install that predates it)
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
     ver = config_engine_version(json.loads(have[0].read_text(encoding="utf-8-sig")))
     say()
@@ -10739,6 +10740,61 @@ def inkling_fetch_drafter(a, folder: Path, own: bool, reads_mtp: bool = True) ->
     return inkling_fetch(a, names[1], folder, own)
 
 
+def inkling_fetch_dflash2(a, folder: Path, own: bool) -> Path | None:
+    """The DFlash 2 drafter's weights (dflash2.safetensors) beside an Inkling .strata model: the engine drafts with them by default (up to 16 slots) and uses DSpark without
+    them. A file that is there and checks out is kept. A folder the person owns (--gguf-dir) is never written to. A download that fails or does not check out (size, SHA-256)
+    leaves no file behind and returns None: DSpark is used, and the next setup / update tries again. The size is shown before the download starts."""
+    name = inkling_family.DFLASH2_FILE
+    dst = folder / name
+    if inkling_have(a, dst):
+        try:
+            inkling_verify(dst, name, own)
+        except SystemExit:
+            warn(f"{name} does not check out; DSpark is used")
+            return None
+        ok(f"drafter: DFlash 2 ({name}) already downloaded")
+        return dst
+    if own:
+        return None
+    say(f"  drafter: DFlash 2 ({name}, {inkling_family.size_of(name) / 1e6:.0f} MB): the faster drafter; DSpark is used when it is missing")
+    global fail
+    real_fail = fail
+
+    def soft_fail(msg, hint=None, **detail):                  # a failed download is not the end of setup: no "Setup stopped", no error event
+        warn(f"{msg}" + (f" ({hint})" if hint else ""))
+        sys.exit(1)
+    fail = soft_fail
+    try:
+        return inkling_fetch(a, name, folder, own)
+    except SystemExit:
+        warn(f"{name} could not be fetched; DSpark is used (setup and update try again)")
+        for junk in (dst, dst.with_name(dst.name + ".part")):
+            try:
+                junk.unlink()
+            except OSError:
+                pass
+        return None
+    finally:
+        fail = real_fail
+
+
+def inkling_dflash2_for_config(a, cfg: dict) -> Path | None:
+    """update_install: the DFlash 2 sidecar for one installed Inkling .strata model (one that Strata downloaded: its folder is the models folder)."""
+    if cfg.get("arch") != inkling_family.ARCH:
+        return None
+    args = [str(x) for x in cfg.get("args") or []]
+    if "--native" not in args[:-1]:
+        return None
+    model = Path(args[args.index("--native") + 1])
+    if model.suffix.lower() != ".strata" or not model.parent.is_dir():
+        return None
+    try:
+        own = model.parent.resolve() != inkling_folder(a).resolve()
+    except OSError:
+        own = True
+    return inkling_fetch_dflash2(a, model.parent, own)
+
+
 def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool, *, data: Path | None = None) -> Path | None:
     """Build serve's o200k tokenizer directory from Section 0 manifest, --export-tokenizer, companion files, or public HF fallback."""
     sys.path.insert(0, str(ROOT / "tools"))
@@ -10881,6 +10937,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         drafter = []
         if is_gguf and want_dspark and not any(inkling_have(a, folder / d) for d in (inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE)):
             drafter = [inkling_family.MTP_FILE]
+        if not is_gguf and want_dspark:
+            drafter.append(inkling_family.DFLASH2_FILE)           # the DFlash 2 sidecar (setup fetches it after the model; a failed fetch is not an error)
         for n in files + drafter:
             p = folder / n
             if not inkling_have(a, p):
@@ -10922,6 +10980,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
         reads_mtp = inkling_engine_reads_mtp(engine_program, model_file, lib_dirs) if (is_gguf and want_dspark) else True
         dspark_path = inkling_fetch_drafter(a, folder, own, reads_mtp) if (is_gguf and want_dspark) else None
+        if not is_gguf and want_dspark and not own:
+            inkling_fetch_dflash2(a, folder, own)
         if dspark_path is not None:
             ok(f"drafter: DSpark ({dspark_path.name})")
         ok(f"model file: {model_file}")
