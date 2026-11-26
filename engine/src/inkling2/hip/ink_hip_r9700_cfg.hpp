@@ -145,7 +145,9 @@ inline Config resolve_config(int dev, bool ep2_active, int peer_dev) noexcept {
 
     // Lossy features (STRICTLY OFF in EXACT mode, ON by default in FAST mode unless sub-switch=0):
     if (!cfg.exact) {
-        cfg.fixed_swa_ring = detail::parse_env_truthy("STRATA_INK_R9700_FIXED_SWA", true);
+        // FIXED_SWA keeps swa_ring_ at the window (1024) with no margin: a later row of a small batch (DFlash verify rows, prompt chunks under 64) overwrites a key an earlier row still reads.
+        // Measured on p620 (2047 real tokens, KLD vs the one-token path): width 16 = 0.0144 prose / 0.0090 code with it, 0.000000 without; PPL 6.80 against 7.22. Opt-in only now.
+        cfg.fixed_swa_ring = detail::parse_env_truthy("STRATA_INK_R9700_FIXED_SWA", false);
         cfg.fp8_trunk      = detail::parse_env_truthy("STRATA_INK_R9700_FP8_TRUNK", true);
         cfg.fp8_moe        = detail::parse_env_truthy("STRATA_INK_R9700_FP8_MOE", true);
         cfg.tree_fp8_moe   = detail::parse_env_truthy("STRATA_INK_R9700_TREE_FP8_MOE", false);

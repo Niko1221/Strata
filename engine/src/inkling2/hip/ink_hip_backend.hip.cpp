@@ -827,9 +827,6 @@ public:
                     // Conserve VRAM for C16..C64 KV pools so maximum Global/SWA FP8 KV stays in GDDR6!
                     r9700_->cfg.prefill_chunk = std::min(r9700_->cfg.prefill_chunk, 512);
                     guard_.max_prefill_chunk = std::min(guard_.max_prefill_chunk, 512);
-                    if (r9700_->cfg.exact && !std::getenv("STRATA_INK_R9700_FIXED_SWA")) {
-                        r9700_->cfg.fixed_swa_ring = true;
-                    }
                 } else if (rcfg.prefill_chunk > 0) {
                     const int cap_c = (opts.parallel > 1) ? std::min(rcfg.prefill_chunk, 2048) : rcfg.prefill_chunk;
                     r9700_->cfg.prefill_chunk = cap_c;
