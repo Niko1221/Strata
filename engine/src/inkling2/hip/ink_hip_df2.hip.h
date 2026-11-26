@@ -994,7 +994,7 @@ struct InkHipDFlash2 {
             var = df2_variant(h.small_vram);
             // HIP default: Q8 block weights on every card (333 MiB, no loss against bf16 that the acceptance shows); bf16 / q4 by STRATA_INK_DFLASH2_WQ
             if (!std::getenv("STRATA_INK_DFLASH2_WQ") && !std::getenv("STRATA_INK_DFLASH2_W4") && df2_file_variant(df2_resolve_path(df2_model_path())).empty())
-                var.attn = var.ffn = 1;
+            { var.attn = 1; var.ffn = h.small_vram ? 2 : 1; }   // cards below 24 GB: 8-bit attention, 4-bit feed-forward (-105 MiB); larger cards: Q8
             if (var.attn == 3 || var.ffn == 3) {
                 err = "the HIP DFlash 2 port has no SF4 block weights: use the bf16 checkpoint, or a q8 / q4 sidecar";
                 return false;
@@ -1155,6 +1155,13 @@ struct InkHipDFlash2 {
             if (!ensure_slot(s)) { err = "not enough GPU memory for the DFlash 2 context rings"; return false; }
         ready = true;
         return true;
+    }
+
+    // what the drafter holds on the card: weights, scratch and the rings taken so far
+    size_t footprint_bytes() const {
+        size_t n = bytes_weights + bytes_scratch;
+        for (auto* p : ring_k_h) if (p) n += ring_bytes_per_slot();
+        return n;
     }
 
     size_t ring_bytes_per_slot() const { return (size_t)2 * hdf2::kLayers * hdf2::kRingCap * hdf2::kKV * sizeof(half_t); }

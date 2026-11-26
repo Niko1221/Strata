@@ -1008,6 +1008,7 @@ int main(int argc, char** argv) {
         } else if (a == "--draft") {
             cfg.draft_mode = next();
             cfg.bopts.enable_dspark = (cfg.draft_mode != "off");
+            cfg.bopts.draft_forced = (cfg.draft_mode == "on");
         } else if (a == "--draft-beam") {
             cfg.bopts.spec_beam = std::atoi(next().c_str());
         } else if (a == "--draft-cost") {

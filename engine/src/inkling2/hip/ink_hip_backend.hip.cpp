@@ -1026,6 +1026,7 @@ public:
         expert_sf4_outer_.assign(n_dir, {1.0f, 1.0f});
 
         size_t vram_budget = 0;
+        bool budget_free_limited = false;   // the budget is what is free now (so the drafter loaded above took it from the experts)
         if (opts.vram_experts_gb >= 0.0) {
             vram_budget = static_cast<size_t>(opts.vram_experts_gb * 1073741824.0);
         } else {
@@ -1058,6 +1059,7 @@ public:
                                  static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(by_free) / 1073741824.0,
                                  static_cast<double>(eff_fr) / 1073741824.0);
                     vram_budget = by_free;
+                    budget_free_limited = true;
                 }
             }
         }
@@ -1070,6 +1072,22 @@ public:
             const size_t aligned = (dir[idx].body_bytes + 63u) & ~size_t(63u);
             total_all_exp_bytes += aligned;
             max_exp_bytes = std::max(max_exp_bytes, aligned);
+        }
+        // Residency first (coordinator, 11-26): a drafter whose VRAM takes the model out of full residency (every expert in the card) costs more than it brings (the engine leaves the
+        // all-GPU path for the hybrid one: 7900 XT, SQ-20: decode -20%, prefill -54%). Then DFlash 2 is not loaded unless `--draft on` (or STRATA_INK_DFLASH2_FORCE=1) asks for it.
+        if (has_df2_ && budget_free_limited && opts.vram_experts_gb < 0.0 && !opts.draft_forced && !std::getenv("STRATA_INK_DFLASH2_FORCE") && total_all_exp_bytes > vram_budget) {
+            const size_t df2_bytes = df2_->footprint_bytes();
+            if (total_all_exp_bytes <= vram_budget + df2_bytes) {
+                std::fprintf(stderr,
+                             "[ink-hip] DFlash 2 not loaded: it would move part of the model off the card (the experts need %.2f GiB, %.2f GiB fit with the drafter's %.0f MiB, %.2f GiB without it): "
+                             "decode and prompt reading get slower than the drafter's gain. `--draft on` loads it anyway.\n",
+                             static_cast<double>(total_all_exp_bytes) / 1073741824.0, static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(df2_bytes) / 1048576.0,
+                             static_cast<double>(vram_budget + df2_bytes) / 1073741824.0);
+                df2_->free_all();
+                df2_.reset();
+                has_df2_ = false;
+                vram_budget += df2_bytes;
+            }
         }
         size_t hybrid_cache_budget = 0;
         size_t static_vram_budget = vram_budget;
