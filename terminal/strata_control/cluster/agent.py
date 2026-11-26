@@ -136,7 +136,7 @@ class Agent:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Strata cluster control-plane agent")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8791)
+    parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--token-env", default="STRATA_CLUSTER_TOKEN")
     args = parser.parse_args()
     token = os.environ.get(args.token_env, "")

@@ -70,7 +70,7 @@ export function validateNode(raw) {
   const id = validName(raw.id);
   const address = String(raw.address ?? '').trim();
   if (!address || address.length > 253 || /\s/.test(address)) throw new Error('Enter a valid address.');
-  const port = Number(raw.port ?? 8791);
+  const port = Number(raw.port ?? 8899);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535.');
   const backend = String(raw.backend ?? 'cuda');
   if (!BACKENDS.has(backend)) throw new Error('Unknown backend.');

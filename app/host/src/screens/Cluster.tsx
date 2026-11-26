@@ -23,7 +23,7 @@ export function ClusterScreen() {
   const [name, setName] = useState('');
   const [nodeId, setNodeId] = useState('');
   const [address, setAddress] = useState('');
-  const [port, setPort] = useState('8791');
+  const [port, setPort] = useState('8899');
   const [backend, setBackend] = useState('cuda');
   const [selected, setSelected] = useState('');
 
