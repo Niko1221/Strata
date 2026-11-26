@@ -428,11 +428,11 @@ public:
 
     // Like wait_next, for at most ms milliseconds: 1 = a line was read, 0 = nothing came in time, -1 = the input has ended.
     int wait_next_for(std::string& out, int ms) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait_for(lk, std::chrono::milliseconds(std::max(1, ms)), [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return eof_ ? -1 : 0;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::unique_lock<std::mutex> lk(st_->m);
+        st_->cv.wait_for(lk, std::chrono::milliseconds(std::max(1, ms)), [this] { return !st_->q.empty() || st_->eof; });
+        if (st_->q.empty()) return st_->eof ? -1 : 0;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
         return 1;
     }
 
