@@ -4844,7 +4844,8 @@ struct InkCudaRunner {
             const bool mc_bspec = (mode == 3 && d_bspec_k && d_bspec_v && d_bspec_sconv);
             if (!use_rtx_pf_attn && !use_fp16_flash && !use_mc_fp8rel) {
                 const int rel_md = (mode == 3 && !mc_bspec) ? std::min(kInkRelExtent, cur_max_pos + 1) : kInkRelExtent;
-                k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M, rel_md);
+                if (rel_md == kInkRelExtent) k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
+                else                         k_ink_rel_table_md<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M, rel_md);
             }
             if (use_fp16_flash) {
                 const __half2* rp_T = fp8_sm.d_rel_proj_T + (size_t)ip * kInkRelExtent * 8u;
