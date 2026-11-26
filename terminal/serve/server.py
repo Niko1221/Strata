@@ -1156,11 +1156,11 @@ class StrataEngine:
                     "ended. The next request starts it again. If this repeats, please report it at github.com/Niko1221/Strata/issues "
                     "with the log.")
         rc = self.exit_code()
-        if rc is not None and rc >= 0 and self.last_err:  # its own last words on stdout: they say why
+        if rc is not None and rc >= 0 and not engine_crashed(rc) and self.last_err:  # its own last words on stdout: they say why
             return (f"The engine exited (code {rc}) after it reported: {self.last_err} - please report it at "
                     "github.com/Niko1221/Strata/issues with the log.")
         last = next((x.strip() for x in reversed(tail.splitlines()) if x.strip().startswith(("strata", "ERR"))), "")
-        if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
+        if rc is not None and rc >= 0 and not engine_crashed(rc) and last:          # it ended by itself: its own last words say why (#215)
             return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
                     "report it at github.com/Niko1221/Strata/issues with the log.")
         card = next((x.strip() for x in reversed(tail.splitlines())
@@ -1174,6 +1174,22 @@ class StrataEngine:
             return ("The engine was ended by signal 9. " + rt_note + " If dmesg (sudo dmesg | grep -i -E 'killed "
                     "process|out of memory') shows an out-of-memory kill instead, close other programs or use a smaller "
                     "model (Q2_0 / IQ2_XS).")
+        # #7245: RAM is named only where something points at it: the engine's own log (bad_alloc ...), the kernel's kill (signal 9) or, on Linux and
+        # macOS, an exit nobody can read. A crash the system itself reports (an access violation, a stack overrun, an illegal instruction, a SIGSEGV) is
+        # a fault in the engine, and on Windows memory never ends a process by itself (it slows down): the 0.1.69 host-copy overrun died with
+        # 0xC0000005 and this text told the reporter to close programs.
+        ram_in_log = re.search(r"bad_alloc|cannot allocate memory|not enough memory|out of memory", tail, re.I)
+        windows = sys.platform == "win32"
+        if rc != -9 and not ram_in_log and engine_crashed(rc):
+            return ("The engine crashed (" + engine_exit_words(rc) + "). That is a fault in the engine itself, not a lack of memory: closing other "
+                    "programs or choosing a smaller model will not help. Please report it at github.com/Niko1221/Strata/issues with the engine log"
+                    + (" and the Application error entry of Windows Event Viewer (Windows Logs, Application: the faulting module and offset)."
+                       if windows else "."))
+        if windows and not ram_in_log:
+            return ("The engine ended and Windows gave no exit status, so the cause is not known. It is not known to be a memory problem: "
+                    "Windows slows down when it runs short of memory, it does not end programs. If it repeats, please report it at "
+                    "github.com/Niko1221/Strata/issues with the engine log and the Application error entry of Windows Event Viewer "
+                    "(Windows Logs, Application: the faulting module and offset).")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -5887,8 +5903,7 @@ class Service:
             effort = kwargs.get("reasoning_effort")
             off = kwargs.get("enable_thinking") is False        # render_prompt's rule for #458's effort_end
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
-                  if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
-            kw["add_generation_prompt"] = False
+                  if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))             kw["add_generation_prompt"] = False
             if self.inkling:
                 marked = inkling_dialect.prepare_messages(marked)
                 kw = inkling_dialect.template_kwargs(kw)

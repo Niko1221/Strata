@@ -6247,7 +6247,72 @@ class SilentEngine(unittest.TestCase):
             fake.getrlimit.return_value = (-1, -1)               # unlimited: the old RAM hint stays
             self.assertIn("running out of RAM", engine.death_note())
             fake.getrlimit.return_value = (0, 0)
-            engine.proc.poll.return_value = -11                  # another signal: not this cause
+            engine.proc.poll.return_value = -11                  # another signal: not this cause, and not RAM either (#7245: a SIGSEGV is a crash)
+            note = engine.death_note()
+            self.assertNotIn("RLIMIT_RTTIME", note)
+            self.assertNotIn("running out of RAM", note)
+            self.assertIn("SIGSEGV", note)
+
+    def test_a_crash_the_system_reports_is_not_blamed_on_ram(self):
+        # #7245: the 0.1.69 Windows host-copy overrun ended the engine with 0xC0000005 (an access violation); the note told the reporter it was
+        # "running out of RAM" and to close programs. A crash code, a signal that is a crash and an exit nobody can read on Windows are not RAM.
+        import tempfile
+        engine = self.bare(0.3)
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = os.path.join(d, "e.log")
+            with open(engine.log_path, "w", encoding="utf-8") as f:
+                f.write("strata prefill: layer-major (layers 0..48): 6440 tokens in 1 super-chunk(s)\n")
+            for rc, words in ((0xC0000005, "access violation"), (0xC0000409, "stack buffer overrun"), (0xC000001D, "illegal instruction"),
+                              (-11, "SIGSEGV"), (-4, "SIGILL")):
+                engine.proc.poll.return_value = rc
+                note = engine.death_note()
+                with self.subTest(rc=rc):
+                    self.assertIn("The engine crashed", note)
+                    self.assertIn(words, note)
+                    self.assertIn("not a lack of memory", note)
+                    self.assertNotIn("running out of RAM", note)
+                    self.assertNotIn("dmesg", note)
+                    self.assertIn("github.com/Niko1221/Strata/issues", note)
+            # a Windows crash code also says where the system keeps the proof
+            engine.proc.poll.return_value = 0xC0000005
+            self.assertIn("Event Viewer", engine.death_note() if sys.platform == "win32" else self._on_windows(engine))
+
+    def _on_windows(self, engine):
+        from unittest import mock
+        with mock.patch.object(sys, "platform", "win32"):
+            return engine.death_note()
+
+    def test_an_exit_nobody_can_read_is_not_called_ram_on_windows(self):
+        # the reporter's text said "status unavailable": nothing points at memory, and Windows does not end programs for it
+        import tempfile
+        engine = self.bare(0.3)
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = os.path.join(d, "e.log")
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = None
+            engine.proc.wait.return_value = None                 # the engine's exit status was never read (the report's "status unavailable")
+            engine._last_exit_code = None
+            win = self._on_windows(engine)
+            self.assertIn("not known to be a memory problem", win)
+            self.assertNotIn("running out of RAM", win)
+            self.assertIn("Event Viewer", win)
+            self.assertIn("running out of RAM", engine.death_note() if sys.platform != "win32" else "running out of RAM")   # Linux keeps its hint
+
+    def test_ram_is_still_named_when_the_log_or_the_kill_says_so(self):
+        import tempfile
+        engine = self.bare(0.3)
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = os.path.join(d, "e.log")
+            with open(engine.log_path, "w", encoding="utf-8") as f:
+                f.write("terminate called after throwing an instance of 'std::bad_alloc'\n")
+            for rc in (0xC0000005, -11, None):
+                engine.proc.poll.return_value = rc
+                engine.proc.wait.return_value = None
+                engine._last_exit_code = None
+                with self.subTest(rc=rc, windows=True):
+                    self.assertIn("running out of RAM", self._on_windows(engine))        # the engine's own log says bad_alloc
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = -9                                          # the kernel's kill (the OOM killer) stays the RAM story
             self.assertIn("running out of RAM", engine.death_note())
 
     def test_prompt_chunks_set_the_wait(self):
