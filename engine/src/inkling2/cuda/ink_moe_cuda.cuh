@@ -1056,6 +1056,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
     const uint8_t* body = sec4_base + ex.body_off;
     const InkGgufExpertHeader* hdr = reinterpret_cast<const InkGgufExpertHeader*>(body);
     if (skip_q80 && hdr->gu_type == 8u) return;   // done by k_ink_moe_q80_tc
+    if ((skip_q80 & 2) && hdr->gu_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<true, 20>
     const size_t rb = ink_gguf_row_bytes(hdr->gu_type, kInkHidden);
     const uint8_t* base = body + sizeof(InkGgufExpertHeader);
     const uint8_t* rg = base + (size_t)f * rb;
@@ -1110,6 +1111,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
     const uint8_t* body = sec4_base + ex.body_off;
     const InkGgufExpertHeader* hdr = reinterpret_cast<const InkGgufExpertHeader*>(body);
     if (skip_q80 && hdr->dn_type == 8u) return;   // done by k_ink_moe_q80_tc
+    if ((skip_q80 & 2) && hdr->dn_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<false, 20>
     const size_t rb = ink_gguf_row_bytes(hdr->dn_type, kInkInter);
     const uint8_t* rr = body + ex.dn_off + (size_t)r * rb;
     constexpr int NBH = kInkInter >> 5;
@@ -1146,7 +1148,9 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
 // 8 accumulators the dp4a kernel keeps (block b into accumulator b % 8, fmaf(d_w * d_x, sum, acc), blocks ascending) and the same
 // reduction tree (a0+a4)+(a2+a6) + (a1+a5)+(a3+a7) as its warp_sum, so the output is bit for bit the same.
 // ============================================================================
-template <bool GU>
+// WT = 8: Q8_0 (34-byte blocks); WT = 20: IQ4_NL (18-byte blocks; the fragment of a lane is one 4-byte load: its low nibbles are k = 4*tig..+3 and its high nibbles
+// k = 16 + 4*tig..+3, each mapped through the table by byte permutes). The accumulation order is the same as the dp4a kernel's for both.
+template <bool GU, int WT = 8>
 __global__ void __launch_bounds__(128) k_ink_moe_q80_tc(
     const uint8_t* __restrict__ sec4_base,
     const InkExpertDev* __restrict__ experts,
@@ -1162,14 +1166,15 @@ __global__ void __launch_bounds__(128) k_ink_moe_q80_tc(
     if ((GU ? ex.gu_code : ex.dn_code) != FMT_GGUF_RAW) return;
     const uint8_t* body = sec4_base + ex.body_off;
     const InkGgufExpertHeader* hdr = reinterpret_cast<const InkGgufExpertHeader*>(body);
-    if ((GU ? hdr->gu_type : hdr->dn_type) != 8u) return;
+    if ((GU ? hdr->gu_type : hdr->dn_type) != (uint32_t)WT) return;
     constexpr int K  = GU ? kInkHidden : kInkInter;
     constexpr int NB = K >> 5;
     constexpr int NMAT = GU ? 2 : 1;
+    constexpr size_t BB = (WT == 8) ? 34u : 18u;   // bytes of a 32-value weight block
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int g = lane >> 2, tig = lane & 3;
     const int r0 = (blockIdx.x * 4 + warp) * 16;
-    const size_t rb = (size_t)NB * 34u;
+    const size_t rb = (size_t)NB * BB;
     const uint8_t* wr[NMAT][2];
     if constexpr (GU) {
         const uint8_t* base = body + sizeof(InkGgufExpertHeader);
@@ -1216,12 +1221,21 @@ __global__ void __launch_bounds__(128) k_ink_moe_q80_tc(
                 const float xd1 = v1 ? pc1[b].d : 0.0f;
 #pragma unroll
                 for (int mt = 0; mt < NMAT; ++mt) {
-                    const uint8_t* pa = wr[mt][0] + (size_t)b * 34u;
-                    const uint8_t* pa8 = wr[mt][1] + (size_t)b * 34u;
-                    const uint32_t a0 = ld32_u(pa + 2 + 4 * tig);
-                    const uint32_t a1 = ld32_u(pa8 + 2 + 4 * tig);
-                    const uint32_t a2 = ld32_u(pa + 18 + 4 * tig);
-                    const uint32_t a3 = ld32_u(pa8 + 18 + 4 * tig);
+                    const uint8_t* pa = wr[mt][0] + (size_t)b * BB;
+                    const uint8_t* pa8 = wr[mt][1] + (size_t)b * BB;
+                    uint32_t a0, a1, a2, a3;
+                    if constexpr (WT == 8) {
+                        a0 = ld32_u(pa + 2 + 4 * tig);
+                        a1 = ld32_u(pa8 + 2 + 4 * tig);
+                        a2 = ld32_u(pa + 18 + 4 * tig);
+                        a3 = ld32_u(pa8 + 18 + 4 * tig);
+                    } else {
+                        const uint32_t q0 = ld32_u(pa + 2 + 4 * tig), q1 = ld32_u(pa8 + 2 + 4 * tig);
+                        a0 = ink_iq4nl_lut4(q0 & 0x0F0F0F0Fu);
+                        a1 = ink_iq4nl_lut4(q1 & 0x0F0F0F0Fu);
+                        a2 = ink_iq4nl_lut4((q0 >> 4) & 0x0F0F0F0Fu);
+                        a3 = ink_iq4nl_lut4((q1 >> 4) & 0x0F0F0F0Fu);
+                    }
                     const float dl0 = f16_to_f32(ld16_u(pa));
                     const float dl1 = f16_to_f32(ld16_u(pa8));
                     int32_t c[4] = {0, 0, 0, 0};
@@ -4004,8 +4018,12 @@ inline void launch_ink_moe_dispatch_only(
         // UD-Q4_K_XL file on an RTX 4090 goes from 2,805 to 3,370 ppts; below that (decode batches) the dp4a kernels are faster (8 slots 2.3 against
         // 4.6 ms, 64 slots 12.7 against 17.1 ms). STRATA_INK_Q80_TC = N: from N tokens, 0 = never.
         static const int q80_tc_min = [] { const char* e = std::getenv("STRATA_INK_Q80_TC"); return e ? std::atoi(e) : 256; }();
-        const int skip_q80 = (q80_tc_min > 0 && M >= q80_tc_min && ink_has_int8_tc()) ? 1 : 0;
+        // IQ4_NL experts (the down projections of the GSQ-RCO files) take the same tensor-core path; STRATA_INK_IQ4NL_TC=0 keeps them on the dp4a kernels (for A/B runs)
+        static const int nl_tc_on = [] { const char* e = std::getenv("STRATA_INK_IQ4NL_TC"); return !(e && e[0] == '0'); }();
+        const int skip_tc = (q80_tc_min > 0 && M >= q80_tc_min && ink_has_int8_tc()) ? 1 : 0;
+        const int skip_q80 = skip_tc ? (1 | (nl_tc_on ? 2 : 0)) : 0;   // bit 0: Q8_0, bit 1: IQ4_NL
         if (skip_q80) k_ink_moe_q80_tc<true><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+        if (skip_q80 & 2) k_ink_moe_q80_tc<true, 20><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         if (gmt == 1) {
             k_ink_moe_gu_gguf_dp4a<1><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
         } else if (gmt == 2) {
@@ -4021,6 +4039,7 @@ inline void launch_ink_moe_dispatch_only(
         const int nblk_h = P * (kInkInter / 32);
         k_ink_quant_q8_1_g32<<<(nblk_h + 7) / 8, 256, 0, st>>>(ws.h_f32, ws.hq_g32, P, kInkInter);
         if (skip_q80) k_ink_moe_q80_tc<false><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
+        if (skip_q80 & 2) k_ink_moe_q80_tc<false, 20><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
         if (gmt == 1) {
             k_ink_moe_dn_gguf_dp4a<1><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
         } else if (gmt == 2) {
