@@ -806,7 +806,10 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         elif "--prompt-cache-spread" not in cfg["args"]:
             cfg["args"] = [*cfg["args"], "--prompt-cache-spread"]
     word_flags = S.WORD_VALUE_FLAGS
-    a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags, word_flags) if s.extra else ({}, {})
+    extra = s.extra
+    if "--draft" in extra and not is_inkling:                # --draft on|off is Inkling-2-Mini's engine option: the other engines do not take it
+        extra = {k: v for k, v in extra.items() if k != "--draft"}
+    a_changes, e_changes = S.as_argv_changes(extra, bool_flags, word_flags) if extra else ({}, {})
     server_set = take_server_options(a_changes)              # a server setting (--set idle-unload=...) never rides to the engine
     arg_layers.layer(cfg, a_changes, prev, bool_flags)       # the one place that decides which value an option has
     if e_changes:

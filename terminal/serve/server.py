@@ -1002,7 +1002,11 @@ class StrataEngine:
             pass
         try:                                            # which drafter runs, and in plain words why not the one that was asked for
             if self.inkling_engine:
-                self.info.update(inkling_kind.drafting_info(args, self.info))
+                ink_log = start_log_text(log, log_start)
+                self.info.update(inkling_kind.drafting_info(args, self.info, ink_log))
+                left_out = inkling_kind.veto_line(ink_log)
+                if left_out:                            # the engine kept DFlash 2 out to keep the model on the card: say it where the person reads the start (Terminal, app log)
+                    print(f"[strata] {left_out}", flush=True)
             else:
                 self.info.update(drafting.engine_info(args, start_log_text(log, log_start), drafting.take_note()))
         except Exception:                               # noqa: BLE001 - a note must never stop a start

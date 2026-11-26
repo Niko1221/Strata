@@ -353,6 +353,9 @@ DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.99 GB,
 drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
 without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,
 `--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 port, MIT).
+The engine also leaves DFlash 2 out by itself where loading it would move part of the model off the card (a model that fits whole would run in the slower hybrid mode, or lose a
+noticeable part of the experts' room). It then prints one line, `DFlash 2 not loaded: it would move part of the model off the card (...)`, which the Terminal start and the app's
+start log show as it is, and the Monitor's drafting note repeats. `strata launch --draft on` (or `--set draft=on`; for a start by hand `STRATA_INK_DFLASH2_FORCE=1`) asks for it by name and loads it anyway.
 The first measurements (RTX 5090 and RTX 5060 Ti, the DFlash 2 lane's results of 11-26): faster in 24 of 36 cells, level in 5, slower in 7.
 Its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
 

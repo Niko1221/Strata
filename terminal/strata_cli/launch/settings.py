@@ -386,7 +386,9 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
 
 
 #: Options whose value is a WORD the engine reads (on, off, auto, none): the word goes through as typed (none since DeepSeek's --dspark left, #3959).
-WORD_VALUE_FLAGS: frozenset[str] = frozenset()
+#: --draft (Inkling-2-Mini): `on` asks for DFlash 2 by name, so the engine never leaves it out to keep the model on the card; without this the word "on" read as "the flag is present"
+#: and the engine got a bare `--draft` (`strata launch --set draft=on`, the Advanced screen).
+WORD_VALUE_FLAGS: frozenset[str] = frozenset({"--draft"})
 
 
 def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str],

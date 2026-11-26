@@ -102,6 +102,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
                         "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
                         "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
+    g.add_argument("--draft", choices=("on", "off"), metavar="on|off",
+                   help="Inkling-2-Mini only: on asks for the DFlash 2 drafter by name, so the engine loads it even where it would leave it out to keep the whole model "
+                        "on the card (the start then says nothing about it); off starts without it. Same as --set draft=on. The other models ignore it")
     g.add_argument("--draft-vocab", type=_choice("a draft vocabulary", S.DRAFT_VOCAB_MODES), metavar="cjk|en|cyrillic|fr|latin",
                    help="which tokens the drafter may guess: cjk (the default: with Chinese, Japanese and Korean), en (English and code), "
                         "cyrillic, fr or latin (each with English and code). Without it Strata picks from this computer's languages")
@@ -307,6 +310,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if getattr(a, "draft", None):
+        s.extra = {**s.extra, "--draft": a.draft}
     if getattr(a, "turbo", False) or getattr(a, "turbo_max", False):
         if a.turbo and a.turbo_max:
             raise ValueError("--turbo and --turbo-max cannot be used together: choose one.")

@@ -135,8 +135,20 @@ def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
     return out
 
 
-def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
-    """Metrics/status view of Inkling-2-Mini's drafter (`drafting`: `"dflash2"` | `"off"`). DFlash 2 is the one drafter; the engine's own INFO line still says `dspark` for "a drafter runs"."""
+def veto_line(log_text: str | None) -> str:
+    """The engine's own line when it leaves DFlash 2 out to keep the model on the card ("[ink-hip] DFlash 2 not loaded: it would move part of the model off the card (...):
+    decode and prompt reading get slower than the drafter's gain. `--draft on` loads it anyway."), without its bracketed prefix; "" when the start log has none.  The last one wins."""
+    found = ""
+    for line in str(log_text or "").splitlines():
+        at = line.find("DFlash 2 not loaded")
+        if at >= 0:
+            found = line[at:].strip()
+    return found
+
+
+def drafting_info(args: list, info: dict | None = None, log_text: str | None = None) -> dict[str, str]:
+    """Metrics/status view of Inkling-2-Mini's drafter (`drafting`: `"dflash2"` | `"off"`). DFlash 2 is the one drafter; the engine's own INFO line still says `dspark` for "a drafter runs".
+    `log_text`: what this engine start wrote to its log; the engine's own "DFlash 2 not loaded: ..." line (its residency rule, with the way to force it) becomes the note."""
     items = [str(a) for a in (args or ())]
     mode = None
     for i in range(len(items) - 1):
@@ -145,6 +157,7 @@ def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
     text, _NOTE["text"] = _NOTE["text"], ""
     if mode == "off":
         return {"drafting": "off", "drafting_note": text}
+    left_out = veto_line(log_text)
     # #6741: the engine says what it started with (INFO ... drafting=dspark|off). It leaves DSpark off when the CUDA layers are split across
     # cards (and when it has no drafter or no room for it); the status used to repeat what was asked for and say "dspark" over an engine
     # that ran without it. An older engine that does not say falls back to the asked mode, as before.
@@ -152,11 +165,13 @@ def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
     if said in ("dspark", "dflash2"):                                    # the engine says a drafter runs (its INFO line still spells that "dspark")
         return {"drafting": "dflash2", "drafting_note": text}
     if said == "off":
-        asked = mode in ("dspark", "dflash2") or (info or {}).get("drafter") == "dspark"
+        asked = mode in ("dspark", "dflash2", "on") or (info or {}).get("drafter") == "dspark"
+        if left_out:                                                     # the engine said why itself (and how to force it): that sentence, as it wrote it
+            return {"drafting": "off", "drafting_note": left_out}
         return {"drafting": "off", "drafting_note": _drafting_off_note(items, info) if asked else text}
-    if mode in ("dspark", "dflash2") or (info or {}).get("drafter") == "dspark":
+    if mode in ("dspark", "dflash2", "on") or (info or {}).get("drafter") == "dspark":
         return {"drafting": "dflash2", "drafting_note": text}
-    return {"drafting": "off", "drafting_note": text}
+    return {"drafting": "off", "drafting_note": left_out or text}
 
 
 DRAFTING_SPLIT_NOTE = ("Drafting is off: the drafter does not run yet when the model's layers are split across several cards (CUDA). "
