@@ -19,7 +19,7 @@
 // STRATA_METAL_ARENA_GB sets the arena outright (the engine says when that goes over the cap; it is the user's choice).
 // The arena is placed just before it is filled, and the memory macOS can give is asked again then: when it has dropped
 // (another program), the arena shrinks (arena_shrink).
-// "Available" (arena_avail) counts free and purgeable pages and the file cache macOS drops without writing anything:
+// "Available" counts free and purgeable pages and the file cache macOS drops without writing anything:
 // inactive pages, but no more of them than there are file-backed pages.  Inactive anonymous memory (other programs')
 // is left out: macOS frees it only by compressing or swapping it (the soak's 93 MB swapped out while an arena planned
 // with every inactive page filled).  Free + purgeable alone is too little: at the engine's start the model file's own
@@ -37,7 +37,7 @@ struct ArenaMem {
     double phys = 0;          // bytes of RAM
     double working_set = 0;   // the Metal device's recommended working set
     double allocated = 0;     // already allocated by the engine (Metal buffers)
-    double available = 0;     // what macOS can give now without paging anything out (arena_avail)
+    double available = 0;     // estimated reclaimable bytes from mac_available_pages and the Mach page size
     double ple_mapped = 0;    // the n-gram table's bytes when it is mapped whole in RAM, else 0
     double proc_footprint = 0;   // what the process holds right now, whatever it is (task_info phys_footprint); 0: unknown
     double filecache_min = 0;    // sysctl vm.vm_page_filecache_min in bytes: the file cache macOS keeps before it compresses (0: unknown)
@@ -99,12 +99,6 @@ inline double resident_cap(const ArenaMem& m) {
 /// What the engine holds before the arena: the Metal buffers (alloc + wrap) or, when the process holds more, all of it
 /// (host memory, mapped tables).
 inline double footprint_base(const ArenaMem& m) { return std::max(m.allocated, m.proc_footprint); }
-
-/// Bytes macOS can give without compressing or swapping: free + purgeable + the clean file cache (inactive and
-/// speculative pages, at most the file-backed ones).
-inline double arena_avail(double free_b, double purgeable_b, double inactive_b, double speculative_b, double file_b) {
-    return free_b + purgeable_b + std::min(inactive_b + speculative_b, file_b);
-}
 
 inline double arena_ple_reserve(const ArenaMem& m) { return m.ple_mapped > 0 ? m.ple_mapped : 0.5 * kGB; }
 

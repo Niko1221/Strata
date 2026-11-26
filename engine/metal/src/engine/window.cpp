@@ -17,6 +17,7 @@
 #include "resource_path.h"
 #include "ref_quant.h"
 #include "arena_budget.h"
+#include "strata/platform/mac_memory.hpp"
 #include "ple_conv_kw.h"
 #include "stream.h"
 #include "geo.h"
@@ -1734,15 +1735,13 @@ bool Window::stream_arena(std::string& err) {
                              "Metal window)\n", g / 1e9);
     }
     const double used = (double) cx_->allocated();
-    // what macOS gives now without paging anything out (arena_avail: free, purgeable, the clean file cache; not other
-    // programs' inactive memory, freed only by compressing or swapping it)
     auto avail_now = [&]() -> double {
         vm_statistics64_data_t vs;
         mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
         if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS) {
             const double pg = (double) vm_page_size;
-            return arena_avail(vs.free_count * pg, vs.purgeable_count * pg, vs.inactive_count * pg, vs.speculative_count * pg,
-                               vs.external_page_count * pg);
+            return strata::platform::mac_available_pages(vs.free_count, vs.purgeable_count, vs.inactive_count,
+                                                         vs.speculative_count, vs.external_page_count) * pg;
         }
         return (double) phys - (double) cx_->allocated();
     };
