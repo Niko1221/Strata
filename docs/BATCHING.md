@@ -14,6 +14,24 @@ It is opt-in and changes nothing when the options are absent (#465; the engine p
 whole history again; the second slot holds the side request instead. On Inkling-2-Mini it costs about 164 MiB of video memory (measured at 64K
 context on an RTX PRO 5000; the slot's fixed state is the same size on a 12 GB card). The default stays one slot.
 
+**Two long conversations at once (Inkling-2-Mini, `--parallel 2`, #7226).** An agent client that alternates its main conversation with a large
+request of its own (Claude Code's auto mode sends a safety check between two steps) used to evict each chat from slot 0 on every request, so every
+request read its whole prompt again while slot 1 stayed empty. Now a request that continues nothing takes an empty or the least recently used
+slot, whatever its size, while slot 0 holds a chat of 2,048 tokens or more that was used in the last 10 minutes; both chats keep their slots. This
+also holds with the DSpark drafter, which used to prefer slot 0 for every such request. The price: the chat in slot 1 decodes without drafts (the
+drafter works in slot 0 only). With two slots a third conversation (a title request) still takes the least recently used one; `--parallel 3` keeps three.
+`STRATA_INKLING_KEEP_CHATS=0` brings back the earlier routing; `STRATA_INKLING_KEEP_IDLE_S` changes the 10 minutes.
+
+> **Measured on:** RTX A4000 16 GB, Inkling-2-Mini SQ-15, strata-inkling 0.1.67 (CUDA 13), `--parallel 2`, context 16,384, one GPU, 62 GB RAM. Workload:
+> two chats of about 2,500 tokens and a new one of about 8,700 tokens alternating, two short title requests, thinking off, temperature 0, 128 new tokens,
+> through the Strata server. Five runs per case, old and new routing alternating, drafter on and off (individual runs in the 0221 triage notes). New routing:
+> the 5 requests that could continue a chat read 2,611 to 8,861 cached tokens (old: 0 of every request); first token 2.2 to 2.4 s became 0.17 to 0.22 s at
+> 2,500 tokens and 7.4 to 7.8 s became 0.41 to 0.70 s at 8,700; the workload read 19.4K prompt tokens instead of 45.5K and its first tokens summed to 18 s
+> instead of 38 to 40 s. Decode of the chat in slot 1 against the same request in slot 0 with the old routing: 0.95 to 0.97 with the drafter off;
+> with the drafter on 0.72 on the first request, about 1.0 on the next, and 1.3 to 1.4 for the 8,700-token chat (on this card the drafter was slower than
+> no drafter at that length). Random-word text gives the drafter little to accept, so the cost on text a drafter predicts well, or on a card where DSpark
+> doubles decode speed, is not measured here.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
