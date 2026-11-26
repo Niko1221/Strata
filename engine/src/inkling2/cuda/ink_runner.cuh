@@ -384,8 +384,8 @@ struct InkCudaModel {
             };
             est_map(man.trunk);
             est_map(man.dspark);
-            // the loader holds a 64 MiB staging buffer and the amax word next to the trunk while it converts, then the all-VRAM branch below asks for 640 MiB after the experts
-            const size_t compact_margin = (640ull << 20) + (64ull << 20);
+            // the loader holds a 64 MiB staging buffer and the amax word next to the trunk while it converts, then the all-VRAM branch below asks for 768 MiB after the experts (ballast tests: with 713 MiB left the engine died at its first top-k, with 39-43 MiB left at the end it was on the edge: lazy module loads need free VRAM)
+            const size_t compact_margin = (768ull << 20) + (64ull << 20);
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
             if (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin) {
@@ -768,7 +768,7 @@ struct InkCudaModel {
                 }
             }
         }
-        if (do_compact_vram && all_sf4_or_mx8 && vfree > compact_sec4_bytes + (640ull << 20)) {
+        if (do_compact_vram && all_sf4_or_mx8 && vfree > compact_sec4_bytes + (768ull << 20)) {
             // 100.0% ALL-3,072-EXPERT GDDR7 RESIDENCY on 16 GB RTX 5060 Ti (0 host misses, GPU MX8->SF4 transcode < 20 ms)!
             sec4_bytes = compact_sec4_bytes;
             INK_CK(cudaMalloc(&d_sec4, sec4_bytes));
@@ -2828,7 +2828,7 @@ struct InkCudaRunner {
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
             // the small compact reserve was sized with the FP8 KV: COMPACT_KV=0 (FP16 KV) left 43 MiB and crashed at the first top-k, so it takes the shipped reserve
             const size_t ws_reserve = (opt5060_r.compact_vram && opt5060_r.compact_kv && m.all_sf4_vram)
-                ? ((size_t)max_batch * (size_t)(520ull << 10) + (192ull << 20))
+                ? ((size_t)max_batch * (size_t)(520ull << 10) + (320ull << 20))
                 : (strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark) + (wddm_fl / 2) + rtx_extra_res);
             swa_in_host = (opt5060_r.compact_vram && max_slots >= 16 && !m.ls_active);
             std::memset(swa_pinned, 0, sizeof(swa_pinned));
