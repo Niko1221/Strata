@@ -1772,6 +1772,17 @@ def vision_threads(logical: int | None = None) -> int:
     return max(1, min((logical if logical is not None else (os.cpu_count() or 8)) // 2, VISION_THREADS_CAP))
 
 
+def _win_cpu_name_registry() -> str:
+    """Windows: the first CPU's name from HKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0 ("ProcessorNameString", the string
+    Win32_Processor.Name returns), "" when it cannot be read.  No process is started (#7183: PowerShell took 1 to 2 s here)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            return " ".join(str(winreg.QueryValueEx(key, "ProcessorNameString")[0] or "").split())
+    except (ImportError, OSError, ValueError):
+        return ""
+
+
 def cpu_info():
     """(name, avx2, avx512): avx512 means everything Strata's fast AVX-512 kernels use (F, BW, VL, VNNI, VBMI),
     the same test the engine makes (cpu_avx512_ok), not just AVX-512F."""
@@ -1779,7 +1790,9 @@ def cpu_info():
     if WIN:
         pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
         avx2 = bool(pf(40)) or _cpuid_avx2()      # PF_AVX2_INSTRUCTIONS_AVAILABLE, else the CPU itself (#159)
-        n = out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]).strip()
+        n = _win_cpu_name_registry()          # #7183: the registry (0 ms), not a PowerShell start (about 1 to 2 s)
+        if not n:
+            n = (out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]) or "").strip()
         name = n or name
         avx512 = bool(pf(41)) and _cpuid_avx512_full()
     else:
@@ -5100,21 +5113,52 @@ _WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),               
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
-def _win_display_adapters() -> list[dict]:
-    """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
+_VIDEO_SCOPE = threading.local()
+
+
+class win_video_scope:
+    """`with win_video_scope():` makes every win_video_rows() call inside it (this thread) share ONE Win32_VideoController read.  The Windows
+    hardware read asked for it four times, each a fresh PowerShell start of about a second (#7183).  Outside a scope nothing is remembered,
+    so a caller that wants a new answer (and a test that changes its mock) always gets one."""
+
+    def __enter__(self):
+        self._outer = getattr(_VIDEO_SCOPE, "rows", None)
+        if self._outer is None:
+            _VIDEO_SCOPE.rows = {}
+        return self
+
+    def __exit__(self, *exc):
+        if self._outer is None:
+            _VIDEO_SCOPE.rows = None
+        return False
+
+
+def win_video_rows() -> list[dict]:
+    """Every Windows display adapter, one dict each: name, pnp (PNPDeviceID), ram (AdapterRAM bytes, 0 = unknown), driver (DriverVersion) and
+    res (CurrentHorizontalResolution, 0 = no monitor on it).  One PowerShell start; inside a win_video_scope the answer is read once."""
+    scope = getattr(_VIDEO_SCOPE, "rows", None)
+    if scope is not None and "rows" in scope:
+        return [dict(r) for r in scope["rows"]]
     ps = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "      # the pipe is read as UTF-8 (#4675)
           "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
-          "$_.AdapterRAM + '|' + $_.DriverVersion }")
+          "$_.AdapterRAM + '|' + $_.DriverVersion + '|' + $_.CurrentHorizontalResolution }")
     text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
-    found = []
+    rows = []
     for line in (text or "").splitlines():
-        parts = line.strip().split("|")
-        if len(parts) >= 2 and parts[1]:
-            ram = parts[2] if len(parts) > 2 else ""
-            found.append({"name": parts[0].strip(), "pnp": parts[1].strip(),
-                          "ram": int(ram) if ram.strip().isdigit() else 0,
-                          "driver": parts[3].strip() if len(parts) > 3 else ""})
-    return found
+        parts = [p.strip() for p in line.strip().split("|")]
+        if len(parts) < 2 or not (parts[0] or parts[1]):
+            continue
+        num = lambda k: int(parts[k]) if len(parts) > k and parts[k].isdigit() else 0           # noqa: E731
+        rows.append({"name": parts[0], "pnp": parts[1], "ram": num(2),
+                     "driver": parts[3] if len(parts) > 3 else "", "res": num(4)})
+    if scope is not None:
+        scope["rows"] = rows
+    return [dict(r) for r in rows]
+
+
+def _win_display_adapters() -> list[dict]:
+    """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
+    return [{"name": r["name"], "pnp": r["pnp"], "ram": r["ram"], "driver": r["driver"]} for r in win_video_rows() if r["pnp"]]
 
 
 def _win_display_registry() -> list[dict]:

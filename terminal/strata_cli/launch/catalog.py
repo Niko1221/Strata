@@ -384,7 +384,9 @@ class Catalog:
             hw = dict(self._hardware_override)
             hw.setdefault("disk_free_gb", self.strata.disk_free(self.strata.data_dir()))
             return hw
-        hw = dict(self.strata.hardware(fresh=fresh))
+        # #7183: a screen that lives for hours never waits for a re-read: an answer older than ten minutes is shown at once and the PC is read
+        # again in the background (a read is 12 s on a Windows PC with a slow PowerShell start-up)
+        hw = dict(self.strata.hardware(fresh=fresh, stale_ok=True))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
         if not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()

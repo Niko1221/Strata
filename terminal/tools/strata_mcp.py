@@ -586,6 +586,9 @@ class Strata:
         self._setup = None
         self._setup_tried = False
         self._hw_cache = None
+        self._hw_lock = threading.Lock()                # hardware(): one background refresh at a time (#7183)
+        self._hw_refreshing = False
+        self._hw_thread: threading.Thread | None = None
         # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
         self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
@@ -1117,15 +1120,44 @@ class Strata:
                 "draft_layer": mtp.exists()}
 
     # ---- the PC
-    def hardware(self, fresh=False) -> dict:
-        if self._hw_cache and not fresh and time.time() - self._hw_cache[0] < 600:
-            hw = dict(self._hw_cache[1])
+    HW_TTL_S = 600
+
+    def hardware(self, fresh=False, stale_ok=False) -> dict:
+        """The PC, read at most once per HW_TTL_S.  stale_ok (a long-lived screen, `strata launch`): an answer older than that is returned AT ONCE
+        and a background thread reads the PC again for the next call, so no key press ever waits for the read (#7183: the first value-changing
+        key after ten idle minutes froze the Terminal for 12 s on Windows).  The first read has nothing to return and is waited for; fresh=True
+        always reads now."""
+        cached = self._hw_cache
+        if cached and not fresh and time.time() - cached[0] < self.HW_TTL_S:
+            hw = dict(cached[1])
+        elif cached and not fresh and stale_ok:
+            self._refresh_hardware_later()
+            hw = dict(cached[1])
         else:
             hw = self._hardware()
             self._hw_cache = (time.time(), hw)
             hw = dict(hw)
         hw["disk_free_gb"] = self.disk_free(self.data_dir())
         return hw
+
+    def _refresh_hardware_later(self) -> threading.Thread | None:
+        """One background re-read of the PC (never two at once); the result replaces the cache.  A read that fails keeps the old answer."""
+        with self._hw_lock:
+            if self._hw_refreshing:
+                return None
+            self._hw_refreshing = True
+
+        def work():
+            try:
+                self._hw_cache = (time.time(), self._hardware())
+            except Exception:                           # noqa: BLE001 - the answer from before stays
+                pass
+            finally:
+                self._hw_refreshing = False
+        t = threading.Thread(target=work, name="strata-hardware-refresh", daemon=True)
+        self._hw_thread = t
+        t.start()
+        return t
 
     @staticmethod
     def disk_free(p: Path) -> float | None:
@@ -1138,7 +1170,23 @@ class Strata:
             return None
 
     def _hardware(self) -> dict:
+        """One read of this PC.  On Windows the display adapters are read ONCE for the whole read (setup.win_video_scope) instead of by four
+        PowerShell starts, one for each consumer (#7183: 12 s on a Ryzen 7 5700X + R9700, mostly PowerShell start-up)."""
         S = self.setup_module()
+        scope = getattr(S, "win_video_scope", None) if (S is not None and WIN) else None
+        if scope is None:
+            return self._hardware_read(S)
+        with scope():
+            try:
+                _HW_VIDEO.rows = S.win_video_rows()
+            except Exception:                           # noqa: BLE001 - each consumer then asks for itself, as before
+                _HW_VIDEO.rows = None
+            try:
+                return self._hardware_read(S)
+            finally:
+                _HW_VIDEO.rows = None
+
+    def _hardware_read(self, S) -> dict:
         hw = {"os": f"{platform.system()} {platform.release()}", "os_version": platform.version(),
               "machine": platform.machine(), "python": platform.python_version()}
         if not WIN and Path("/proc/version").exists():
@@ -2122,8 +2170,19 @@ def nvidia_display_active() -> dict:
     return found
 
 
+_HW_VIDEO = threading.local()
+
+
+def _hardware_video_rows():
+    """The display adapters of the hardware read in progress on this thread (setup.win_video_rows, read once: #7183), or None outside one."""
+    return getattr(_HW_VIDEO, "rows", None)
+
+
 def windows_desktop_adapters() -> list:
     """The PNPDeviceIDs of the Windows display adapters that have a desktop resolution (a monitor is attached to them)."""
+    rows = _hardware_video_rows()
+    if rows is not None:
+        return [r["pnp"] for r in rows if r.get("pnp") and int(r.get("res") or 0) > 0]
     out = []
     for line in run_quiet(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                            "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.CurrentHorizontalResolution }"]
@@ -2161,6 +2220,9 @@ def mark_display(gpus: list, nvidia_active: dict, desktop_pnp: list) -> None:
 
 
 def windows_video_controllers() -> list:
+    rows = _hardware_video_rows()
+    if rows is not None:
+        return [{"name": r.get("name"), "driver": r.get("driver")} for r in rows if r.get("name")]
     s = run_quiet(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                    "Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | ConvertTo-Json -Compress"])
     try:
