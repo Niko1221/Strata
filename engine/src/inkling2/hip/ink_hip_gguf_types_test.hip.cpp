@@ -41,12 +41,9 @@ static float h_f16(uint16_t h) {
     else v = std::ldexp(1.0 + m / 1024.0, (int)e - 15);
     return (float)(s ? -v : v);
 }
-static uint16_t f16_bits(float f) {   // round to nearest, normal range only (test scales are 1e-3 .. 0.1)
-    int ex; double fr = std::frexp((double)std::fabs(f), &ex);
-    int e = ex - 1 + 15;
-    int m = (int)std::lround((fr * 2.0 - 1.0) * 1024.0);
-    if (m == 1024) { m = 0; ++e; }
-    return (uint16_t)((f < 0 ? 0x8000u : 0u) | ((uint32_t)e << 10) | (uint32_t)m);
+static uint16_t f16_bits(float f) {   // round to nearest even, every value (the compiler's _Float16 conversion)
+    const half_t h = static_cast<half_t>(f);
+    return __builtin_bit_cast(uint16_t, h);
 }
 
 struct Tabs {
@@ -313,11 +310,146 @@ static void bench_all() {
     }
 }
 
+// ./ink_hip_gguf_types_test gemm: the dense BF16 GEMM of the cards without matrix cores, 64 x 64 tiles (k_bf16_fdot2_tiled64) against the old 16 x 32 kernel: results must be bit-identical; timing in TFLOPs
+static int run_gemm_test(bool bench_too) {
+    struct Shape { int M, N, K; };
+    const Shape shapes[] = {{256, 12288, 2304}, {256, 2304, 4096}, {100, 1000, 2304}, {33, 65, 64}, {512, 4096, 2304}};
+    int fails = 0;
+    std::mt19937 rng(7);
+    std::normal_distribution<float> dn(0.0f, 1.0f);
+    for (const Shape& s : shapes) {
+        std::vector<uint16_t> w((size_t)s.N * s.K);
+        for (auto& v : w) { float f = dn(rng) * 0.03f; uint32_t u; std::memcpy(&u, &f, 4); v = (uint16_t)(u >> 16); }
+        std::vector<float> x((size_t)s.M * s.K), bias(s.N);
+        for (auto& v : x) v = dn(rng);
+        for (auto& v : bias) v = dn(rng);
+        uint16_t* d_w = nullptr; float *d_x = nullptr, *d_b = nullptr, *d_y1 = nullptr, *d_y2 = nullptr;
+        TCK(hipMalloc(&d_w, w.size() * 2)); TCK(hipMalloc(&d_x, x.size() * 4)); TCK(hipMalloc(&d_b, s.N * 4));
+        TCK(hipMalloc(&d_y1, (size_t)s.M * s.N * 4)); TCK(hipMalloc(&d_y2, (size_t)s.M * s.N * 4));
+        TCK(hipMemcpy(d_w, w.data(), w.size() * 2, hipMemcpyHostToDevice)); TCK(hipMemcpy(d_x, x.data(), x.size() * 4, hipMemcpyHostToDevice)); TCK(hipMemcpy(d_b, bias.data(), s.N * 4, hipMemcpyHostToDevice));
+        const dim3 g1((s.N + 31) / 32, (s.M + 15) / 16), g2((s.N + 63) / 64, (s.M + 63) / 64);
+        k_bf16_fdot2_tiled<16, 32><<<g1, 128>>>(d_w, d_x, d_b, d_y1, s.M, s.N, s.K);
+        k_bf16_fdot2_tiled64<<<g2, 256>>>(d_w, d_x, d_b, d_y2, s.M, s.N, s.K);
+        TCK(hipGetLastError()); TCK(hipDeviceSynchronize());
+        std::vector<float> y1((size_t)s.M * s.N), y2(y1.size());
+        TCK(hipMemcpy(y1.data(), d_y1, y1.size() * 4, hipMemcpyDeviceToHost)); TCK(hipMemcpy(y2.data(), d_y2, y2.size() * 4, hipMemcpyDeviceToHost));
+        size_t diff = 0;
+        for (size_t i = 0; i < y1.size(); ++i) if (std::memcmp(&y1[i], &y2[i], 4) != 0) ++diff;
+        std::printf("  gemm M=%d N=%d K=%d: %zu of %zu outputs differ from the old kernel %s\n", s.M, s.N, s.K, diff, y1.size(), diff ? "FAIL" : "ok");
+        fails += diff ? 1 : 0;
+        if (bench_too && s.M >= 100 && s.N >= 2304) {
+            hipEvent_t e0, e1; TCK(hipEventCreate(&e0)); TCK(hipEventCreate(&e1));
+            for (int v = 0; v < 2; ++v) {
+                TCK(hipEventRecord(e0, 0));
+                for (int i = 0; i < 10; ++i) { if (v == 0) k_bf16_fdot2_tiled<16, 32><<<g1, 128>>>(d_w, d_x, d_b, d_y1, s.M, s.N, s.K); else k_bf16_fdot2_tiled64<<<g2, 256>>>(d_w, d_x, d_b, d_y2, s.M, s.N, s.K); }
+                TCK(hipEventRecord(e1, 0)); TCK(hipEventSynchronize(e1));
+                float ms = 0; TCK(hipEventElapsedTime(&ms, e0, e1)); ms /= 10;
+                std::printf("    %s: %.3f ms, %.2f TFLOPs\n", v == 0 ? "16x32 tile (old)" : "64x64 tile (new)", ms, 2.0 * s.M * s.N * s.K / (ms * 1e-3) / 1e12);
+            }
+        }
+        hipFree(d_w); hipFree(d_x); hipFree(d_b); hipFree(d_y1); hipFree(d_y2);
+    }
+    return fails;
+}
+
+// ./ink_hip_gguf_types_test moe: the grouped MoE kernels in their tiled form (k_moe_grouped_w13_situ_wmma / k_moe_grouped_w2_wmma: WMMA on RDNA3, fdot2 on RDNA2) against the per-row kernels
+// (k_moe_grouped_w13_situ / k_moe_grouped_w2) on one synthetic GGUF expert with 100 tokens (D = 2304, inter = 1152)
+static int run_moe_test(int gt, int dt, std::mt19937& rng, bool bench_too) {
+    const int D = 2304, inter = 1152, P = 100, NE = 128;
+    std::vector<uint8_t> wgu, wdn; size_t rb_gu, rb_dn;
+    make_rows(gt, D, 2 * inter, rng, wgu, rb_gu);
+    make_rows(dt, inter, D, rng, wdn, rb_dn);
+    const size_t dn_off = (32 + wgu.size() + 31) & ~(size_t)31;
+    std::vector<uint8_t> body(dn_off + wdn.size() + 64, 0);
+    HipGgufExpertHeader hdr{0x47475546u, (uint32_t)gt, (uint32_t)dt, 1u, 1.0f, 1.0f, 1.0f, 0u};
+    std::memcpy(body.data(), &hdr, sizeof(hdr));
+    std::memcpy(body.data() + 32, wgu.data(), wgu.size());
+    std::memcpy(body.data() + dn_off, wdn.data(), wdn.size());
+    uint8_t* d_body = nullptr; TCK(hipMalloc(&d_body, body.size())); TCK(hipMemcpy(d_body, body.data(), body.size(), hipMemcpyHostToDevice));
+    std::vector<GpuExpertDesc> ex(NE, GpuExpertDesc{nullptr, 0, 0, 0, 0});
+    ex[0] = GpuExpertDesc{d_body, (uint32_t)dn_off, (uint8_t)CODE_GGUF_RAW, (uint8_t)CODE_GGUF_RAW, 0};
+    GpuExpertDesc* d_ex = nullptr; TCK(hipMalloc(&d_ex, NE * sizeof(GpuExpertDesc))); TCK(hipMemcpy(d_ex, ex.data(), NE * sizeof(GpuExpertDesc), hipMemcpyHostToDevice));
+    std::vector<int32_t> off(NE + 1, P); off[0] = 0;
+    std::vector<int32_t> btk(P); for (int i = 0; i < P; ++i) btk[i] = i;
+    int32_t *d_off = nullptr, *d_btk = nullptr;
+    TCK(hipMalloc(&d_off, off.size() * 4)); TCK(hipMemcpy(d_off, off.data(), off.size() * 4, hipMemcpyHostToDevice));
+    TCK(hipMalloc(&d_btk, P * 4)); TCK(hipMemcpy(d_btk, btk.data(), P * 4, hipMemcpyHostToDevice));
+    std::normal_distribution<float> dn(0.0f, 1.0f);
+    std::vector<uint16_t> xh((size_t)P * D);
+    for (auto& v : xh) v = f16_bits(dn(rng));
+    half_t* d_x = nullptr; half_t *d_a1 = nullptr, *d_a2 = nullptr; float *d_y1 = nullptr, *d_y2 = nullptr;
+    TCK(hipMalloc(&d_x, xh.size() * 2)); TCK(hipMemcpy(d_x, xh.data(), xh.size() * 2, hipMemcpyHostToDevice));
+    TCK(hipMalloc(&d_a1, (size_t)P * inter * 2)); TCK(hipMalloc(&d_a2, (size_t)P * inter * 2));
+    TCK(hipMalloc(&d_y1, (size_t)P * D * 4)); TCK(hipMalloc(&d_y2, (size_t)P * D * 4));
+    TCK(hipMemset(d_a1, 0, (size_t)P * inter * 2)); TCK(hipMemset(d_a2, 0, (size_t)P * inter * 2)); TCK(hipMemset(d_y1, 0, (size_t)P * D * 4)); TCK(hipMemset(d_y2, 0, (size_t)P * D * 4));
+    launch_moe_w13_rdna2(d_ex, d_off, d_btk, d_x, d_a1, 64, D, inter, NE, 4.0f, 25.0f, 0);     // B < 96: the per-row kernel
+    launch_moe_w13_rdna2(d_ex, d_off, d_btk, d_x, d_a2, 128, D, inter, NE, 4.0f, 25.0f, 0);    // tiles
+    launch_moe_w2_rdna2(d_ex, d_off, d_a1, d_y1, 64, D, inter, NE, 0);
+    launch_moe_w2_rdna2(d_ex, d_off, d_a1, d_y2, 128, D, inter, NE, 0);
+    TCK(hipGetLastError()); TCK(hipDeviceSynchronize());
+    std::vector<uint16_t> a1((size_t)P * inter), a2(a1.size());
+    std::vector<float> y1((size_t)P * D), y2(y1.size());
+    TCK(hipMemcpy(a1.data(), d_a1, a1.size() * 2, hipMemcpyDeviceToHost)); TCK(hipMemcpy(a2.data(), d_a2, a2.size() * 2, hipMemcpyDeviceToHost));
+    TCK(hipMemcpy(y1.data(), d_y1, y1.size() * 4, hipMemcpyDeviceToHost)); TCK(hipMemcpy(y2.data(), d_y2, y2.size() * 4, hipMemcpyDeviceToHost));
+    double ss = 0, worst = 0, ssy = 0, worsty = 0;
+    for (size_t i = 0; i < a1.size(); ++i) ss += (double)h_f16(a1[i]) * h_f16(a1[i]);
+    for (size_t i = 0; i < a1.size(); ++i) worst = std::max(worst, std::fabs((double)h_f16(a1[i]) - h_f16(a2[i])));
+    for (size_t i = 0; i < y1.size(); ++i) { ssy += (double)y1[i] * y1[i]; worsty = std::max(worsty, std::fabs((double)y1[i] - y2[i])); }
+    const double rms = std::sqrt(ss / a1.size()), rmsy = std::sqrt(ssy / y1.size());
+    const bool ok = rms > 0 && rmsy > 0 && worst / rms < 5e-3 && worsty / rmsy < 5e-3;
+    std::printf("  moe tiles vs per-row kernels, gate/up %s + down %s, %d tokens: w13 max diff %.3g of rms %.3g, w2 max diff %.3g of rms %.3g %s\n", tname(gt), tname(dt), P, worst, rms, worsty, rmsy, ok ? "ok" : "FAIL");
+    if (bench_too) {
+        hipEvent_t e0, e1; TCK(hipEventCreate(&e0)); TCK(hipEventCreate(&e1));
+        for (int v = 0; v < 2; ++v) {
+            const int Bsel = v == 0 ? 64 : 128;
+            launch_moe_w13_rdna2(d_ex, d_off, d_btk, d_x, d_a2, Bsel, D, inter, NE, 4.0f, 25.0f, 0); TCK(hipDeviceSynchronize());
+            TCK(hipEventRecord(e0, 0));
+            for (int i = 0; i < 10; ++i) { launch_moe_w13_rdna2(d_ex, d_off, d_btk, d_x, d_a2, Bsel, D, inter, NE, 4.0f, 25.0f, 0); launch_moe_w2_rdna2(d_ex, d_off, d_a1, d_y2, Bsel, D, inter, NE, 0); }
+            TCK(hipEventRecord(e1, 0)); TCK(hipEventSynchronize(e1));
+            float ms = 0; TCK(hipEventElapsedTime(&ms, e0, e1)); ms /= 10;
+            std::printf("    %s: w13 + w2 of one expert with %d tokens %.3f ms\n", v == 0 ? "per-row kernels" : "tiled kernels  ", P, ms);
+        }
+    }
+    hipFree(d_body); hipFree(d_ex); hipFree(d_off); hipFree(d_btk); hipFree(d_x); hipFree(d_a1); hipFree(d_a2); hipFree(d_y1); hipFree(d_y2);
+    return ok ? 0 : 1;
+}
+
+// ./ink_hip_gguf_types_test pcie: host <-> device copy bandwidth with pinned memory (what the hybrid expert streaming gets on this card)
+static void bench_pcie() {
+    const size_t n = 256ull << 20;
+    void* h = nullptr; void* d = nullptr;
+    TCK(hipHostMalloc(&h, n, hipHostMallocDefault)); TCK(hipMalloc(&d, n));
+    std::memset(h, 1, n);
+    hipEvent_t e0, e1; TCK(hipEventCreate(&e0)); TCK(hipEventCreate(&e1));
+    for (int dir = 0; dir < 2; ++dir) {
+        TCK(hipMemcpy(dir == 0 ? d : h, dir == 0 ? h : d, n, dir == 0 ? hipMemcpyHostToDevice : hipMemcpyDeviceToHost));
+        TCK(hipEventRecord(e0, 0));
+        for (int i = 0; i < 8; ++i) TCK(hipMemcpyAsync(dir == 0 ? d : h, dir == 0 ? h : d, n, dir == 0 ? hipMemcpyHostToDevice : hipMemcpyDeviceToHost, 0));
+        TCK(hipEventRecord(e1, 0)); TCK(hipEventSynchronize(e1));
+        float ms = 0; TCK(hipEventElapsedTime(&ms, e0, e1));
+        std::printf("pinned %s: %.2f GB/s (8 x 256 MiB)\n", dir == 0 ? "host -> device" : "device -> host", 8.0 * n / (ms * 1e-3) / 1e9);
+    }
+    // small copies, the size of one expert body (3.1 MB), 64 in a row
+    const size_t eb = 3ull << 20;
+    TCK(hipEventRecord(e0, 0));
+    for (int i = 0; i < 64; ++i) TCK(hipMemcpyAsync((char*)d + (size_t)i * eb, (char*)h + (size_t)i * eb, eb, hipMemcpyHostToDevice, 0));
+    TCK(hipEventRecord(e1, 0)); TCK(hipEventSynchronize(e1));
+    float ms = 0; TCK(hipEventElapsedTime(&ms, e0, e1));
+    std::printf("pinned host -> device in 3 MiB pieces: %.2f GB/s\n", 64.0 * eb / (ms * 1e-3) / 1e9);
+}
+
 int main(int argc, char** argv) {
     hipDeviceProp_t dp{};
     TCK(hipGetDeviceProperties(&dp, 0));
     std::printf("Device: %s (%s)\n", dp.name, dp.gcnArchName);
     if (argc > 1 && std::strcmp(argv[1], "bench") == 0) { bench_all(); return 0; }
+    if (argc > 1 && std::strcmp(argv[1], "pcie") == 0) { bench_pcie(); return 0; }
+    if (argc > 1 && std::strcmp(argv[1], "moe") == 0) {
+        std::mt19937 r(11); int f = 0;
+        f += run_moe_test(21, 20, r, true); f += run_moe_test(16, 20, r, false); f += run_moe_test(18, 42, r, false); f += run_moe_test(17, 20, r, false); f += run_moe_test(22, 20, r, false); f += run_moe_test(19, 20, r, false);
+        std::printf(f ? "MOE FAILED\n" : "MOE OK\n"); return f ? 1 : 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "gemm") == 0) { const int f = run_gemm_test(true); std::printf(f ? "GEMM FAILED\n" : "GEMM OK\n"); return f ? 1 : 0; }
     Tabs T;
     T.kmask.assign(kmask_iq2xs, kmask_iq2xs + 8);
     T.ksigns.assign(ksigns_iq2xs, ksigns_iq2xs + 128);
