@@ -7,6 +7,7 @@
 
 #include "strata/kernels/gfx_arch.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -245,19 +246,27 @@ std::vector<std::pair<std::string, std::string>> parallel_default_env(const char
     return parallel_stack_table();
 }
 
-std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots) {
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots, bool piped_mtp) {
     if (!linux_cuda || batch_slots < 2) return {};
-    return parallel_stack_table();
+    auto t = parallel_stack_table();
+    if (piped_mtp)   // #6160: STRATA_BATCH_SELF_COMMIT turns STRATA_PIPED_MTP off
+        t.erase(std::remove_if(t.begin(), t.end(), [](const auto& kv) { return kv.first == "STRATA_BATCH_SELF_COMMIT"; }), t.end());
+    return t;
 }
 
-std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots) {
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots, bool piped_mtp) {
     std::vector<std::string> set;
-    for (const auto& kv : parallel_default_env_cuda(linux_cuda, batch_slots)) {
+    for (const auto& kv : parallel_default_env_cuda(linux_cuda, batch_slots, piped_mtp)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
         set_default(kv);
         set.push_back(kv.first);
     }
     return set;
+}
+
+void apply_self_commit_default() {
+    for (const auto& kv : parallel_stack_table())
+        if (kv.first == "STRATA_BATCH_SELF_COMMIT" && std::getenv(kv.first.c_str()) == nullptr) set_default(kv);
 }
 
 std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda) {

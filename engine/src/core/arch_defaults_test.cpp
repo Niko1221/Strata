@@ -8,6 +8,7 @@
 #include "strata/prefill/own_only_switches.hpp"
 #include "strata/core/spill_gate.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +56,22 @@ int main() {
     CHECK(parallel_default_env_cuda(true, 0).empty());
     CHECK(parallel_default_env_cuda(false, 4).empty());            // HIP, Windows, Metal, SYCL builds
     for (const auto& kv : parallel_default_env_cuda(true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    {   // #6160: with STRATA_PIPED_MTP asked the stack leaves STRATA_BATCH_SELF_COMMIT out, and only that
+        const auto all = parallel_default_env_cuda(true, 4), pm = parallel_default_env_cuda(true, 4, true);
+        CHECK(pm.size() == all.size() - 1);
+        for (const auto& kv : pm) CHECK(kv.first != "STRATA_BATCH_SELF_COMMIT");
+        for (const auto& kv : pm) CHECK(std::find(all.begin(), all.end(), kv) != all.end());
+        CHECK(parallel_default_env_cuda(true, 1, true).empty());
+        CHECK(parallel_default_env_cuda(false, 4, true).empty());
+        CHECK(parallel_default_env("gfx1151", true, 4).size() == 9);   // (the Windows gfx1151 table is not touched here)
+        unset("STRATA_BATCH_SELF_COMMIT");
+        apply_self_commit_default();                                    // put back when PIPED_MTP does not run
+        CHECK(std::getenv("STRATA_BATCH_SELF_COMMIT") != nullptr && std::strcmp(std::getenv("STRATA_BATCH_SELF_COMMIT"), "1") == 0);
+        put("STRATA_BATCH_SELF_COMMIT", "0");
+        apply_self_commit_default();                                    // the user's =0 stays
+        CHECK(std::strcmp(std::getenv("STRATA_BATCH_SELF_COMMIT"), "0") == 0);
+        unset("STRATA_BATCH_SELF_COMMIT");
+    }
     {
         const auto cuda = parallel_default_env_cuda(true, 4), gfx = parallel_default_env("gfx1151", true, 4);
         CHECK(cuda == gfx);                                         // one table for both
