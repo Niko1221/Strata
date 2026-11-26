@@ -545,10 +545,13 @@ struct InkDFlash2 {
         __half *k = nullptr, *v = nullptr;
         // The first 8 slots' rings are inside the start-up reserve. A later slot takes its ring only while 1 GiB stays free for the rest of the engine (the multi-slot paths allocate
         // working buffers lazily: at 64 slots on a 32 GB card the rings took everything and the engine died, 11-26); a slot that cannot has no drafts and decodes plainly.
+        // Slots 1..7 (start-up) take their ring only while a 256 MiB crash margin stays free after it: "as many as fit" ended a --parallel 8 start on a 5060 Ti with 13 MiB free and
+        // the first launch probe died with out of memory (11-26); slot 0's ring is always taken (no ring, no drafter).
         bool room = true;
-        if (s >= 8) {
+        if (s >= 1) {
             size_t vf = 0, vt = 0;
-            room = ink_cuda_mem_info(&vf, &vt) == cudaSuccess && vf > 2 * one + (1024ull << 20);
+            const size_t margin = (s >= 8) ? (1024ull << 20) : (256ull << 20);
+            room = ink_cuda_mem_info(&vf, &vt) == cudaSuccess && vf > 2 * one + margin;
         }
         if (!room || cudaMalloc(&k, one) != cudaSuccess || cudaMalloc(&v, one) != cudaSuccess) {
             (void)cudaGetLastError();
