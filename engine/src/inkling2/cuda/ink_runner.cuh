@@ -2212,6 +2212,17 @@ struct InkCudaModel {
                 h_exp0[key] = d0;
                 h_exp1[key] = d1;
             }
+            if (moe_info[il].has_gguf) {   // one ggml type pair for the whole layer -> the type-specialised decode kernels
+                uint32_t gt = 0, dt = 0; bool uni = true, first = true;
+                for (int r = 0; r < E; ++r) {
+                    if (layer_gu_code[r] != FMT_GGUF_RAW || layer_bodies[r].size() < sizeof(InkGgufExpertHeader)) { uni = false; break; }
+                    InkGgufExpertHeader gh{};
+                    std::memcpy(&gh, layer_bodies[r].data(), sizeof(gh));
+                    if (first) { gt = gh.gu_type; dt = gh.dn_type; first = false; }
+                    else if (gh.gu_type != gt || gh.dn_type != dt) { uni = false; break; }
+                }
+                if (uni && !first) { moe_info[il].gguf_gu_t = gt; moe_info[il].gguf_dn_t = dt; }
+            }
         }
         INK_CK(cudaSetDevice(primary_gpu));
         if (n_host_experts > 0) {

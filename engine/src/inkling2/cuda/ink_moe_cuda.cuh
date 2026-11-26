@@ -1041,7 +1041,7 @@ __device__ __forceinline__ bool ink_rco_tc_skips(int skip, uint32_t t) {
 }
 
 // Grouped GGUF_RAW Gate+Up+SITU DP4A kernel with multi-token activation reuse (MAX_M = 1, 4, 16)!
-template <int MAX_M>
+template <int MAX_M, int GT = 0>
 __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
     const uint8_t* __restrict__ sec4_base,
     const InkExpertDev* __restrict__ experts,
@@ -1065,7 +1065,9 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
     if (skip_q80 && hdr->gu_type == 8u) return;   // done by k_ink_moe_q80_tc
     if ((skip_q80 & 2) && hdr->gu_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<true, 20>
     if (ink_rco_tc_skips(skip_q80, hdr->gu_type)) return;   // k_ink_moe_iq_tc
-    const size_t rb = ink_gguf_row_bytes(hdr->gu_type, kInkHidden);
+    if (GT != 0 && hdr->gu_type != (uint32_t)GT) return;   // a specialised launch for a layer of that type only
+    const uint32_t gtype = GT != 0 ? (uint32_t)GT : hdr->gu_type;
+    const size_t rb = ink_gguf_row_bytes(gtype, kInkHidden);
     const uint8_t* base = body + sizeof(InkGgufExpertHeader);
     const uint8_t* rg = base + (size_t)f * rb;
     const uint8_t* ru = base + (size_t)(kInkInter + f) * rb;
@@ -1081,8 +1083,8 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
             xf_ptrs[m] = x_f32  + (size_t)ti * kInkHidden;
         }
         float ga[MAX_M] = {}, ua[MAX_M] = {};
-        ink_gguf_row_dot_multi<MAX_M>(hdr->gu_type, rg, xq_ptrs, xf_ptrs, n_e, kInkHidden, lane, ga);
-        ink_gguf_row_dot_multi<MAX_M>(hdr->gu_type, ru, xq_ptrs, xf_ptrs, n_e, kInkHidden, lane, ua);
+        ink_gguf_row_dot_multi<MAX_M>(gtype, rg, xq_ptrs, xf_ptrs, n_e, kInkHidden, lane, ga);
+        ink_gguf_row_dot_multi<MAX_M>(gtype, ru, xq_ptrs, xf_ptrs, n_e, kInkHidden, lane, ua);
         if (lane == 0) {
 #pragma unroll
             for (int m = 0; m < MAX_M; ++m) {
@@ -1096,7 +1098,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_gu_gguf_dp4a(
 }
 
 // Grouped GGUF_RAW Down DP4A kernel with multi-token activation reuse (MAX_M = 1, 4, 16)!
-template <int MAX_M>
+template <int MAX_M, int GT = 0>
 __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
     const uint8_t* __restrict__ sec4_base,
     const InkExpertDev* __restrict__ experts,
@@ -1121,7 +1123,9 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
     if (skip_q80 && hdr->dn_type == 8u) return;   // done by k_ink_moe_q80_tc
     if ((skip_q80 & 2) && hdr->dn_type == 20u) return;   // IQ4_NL: k_ink_moe_q80_tc<false, 20>
     if (ink_rco_tc_skips(skip_q80, hdr->dn_type)) return;   // Q2_0: k_ink_moe_iq_tc<false, 42>
-    const size_t rb = ink_gguf_row_bytes(hdr->dn_type, kInkInter);
+    if (GT != 0 && hdr->dn_type != (uint32_t)GT) return;
+    const uint32_t dtype = GT != 0 ? (uint32_t)GT : hdr->dn_type;
+    const size_t rb = ink_gguf_row_bytes(dtype, kInkInter);
     const uint8_t* rr = body + ex.dn_off + (size_t)r * rb;
     constexpr int NBH = kInkInter >> 5;
     for (int k0 = 0; k0 < cnt; k0 += MAX_M) {
@@ -1135,7 +1139,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_dn_gguf_dp4a(
             hf_ptrs[m] = h_in   + (size_t)row_i * kInkInter;
         }
         float va[MAX_M] = {};
-        ink_gguf_row_dot_multi<MAX_M>(hdr->dn_type, rr, hq_ptrs, hf_ptrs, n_e, kInkInter, lane, va);
+        ink_gguf_row_dot_multi<MAX_M>(dtype, rr, hq_ptrs, hf_ptrs, n_e, kInkInter, lane, va);
         if (lane == 0) {
 #pragma unroll
             for (int m = 0; m < MAX_M; ++m) {
@@ -3994,11 +3998,38 @@ struct InkLayerMoeInfo {
     bool has_mx8  = false;
     bool has_sk   = false;
     bool has_gguf = false;
+    uint32_t gguf_gu_t = 0;     // the ggml type of the gate/up (down) matrices of every GGUF_RAW expert of the layer, 0 when they differ or are unknown
+    uint32_t gguf_dn_t = 0;
     uint32_t sk_gu_mask = 0;
     uint32_t sk_dn_mask = 0;
 };
 
 #include "ink_moe_prefill.cuh"   // k_ink_moe_pf_fp16tc: the 64-token-tile prefill MoE (sm_80..89), see the header
+
+
+// GGUF expert dp4a kernels specialised by type (decode and verify batches): the layer's type is known on the host (InkLayerMoeInfo::gguf_gu_t / gguf_dn_t)
+template <int MM>
+inline void launch_gu_gguf_spec(dim3 g, cudaStream_t st, uint32_t gt, const uint8_t* s4, const InkExpertDev* ex, const InkMoeTables& tb,
+                                const InkQ8_1_G32* xq, const float* xf, float* h, int skip) {
+    switch (gt) {
+        case 16: k_ink_moe_gu_gguf_dp4a<MM, 16><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        case 17: k_ink_moe_gu_gguf_dp4a<MM, 17><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        case 18: k_ink_moe_gu_gguf_dp4a<MM, 18><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        case 19: k_ink_moe_gu_gguf_dp4a<MM, 19><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        case 21: k_ink_moe_gu_gguf_dp4a<MM, 21><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        case 22: k_ink_moe_gu_gguf_dp4a<MM, 22><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+        default: k_ink_moe_gu_gguf_dp4a<MM><<<g, 128, 0, st>>>(s4, ex, tb, xq, xf, h, skip); break;
+    }
+}
+template <int MM>
+inline void launch_dn_gguf_spec(dim3 g, cudaStream_t st, uint32_t dt, const uint8_t* s4, const InkExpertDev* ex, const InkMoeTables& tb,
+                                const InkQ8_1_G32* hq, const float* hf, const float* tw, float* y, int skip) {
+    switch (dt) {
+        case 20: k_ink_moe_dn_gguf_dp4a<MM, 20><<<g, 128, 0, st>>>(s4, ex, tb, hq, hf, tw, y, skip); break;
+        case 42: k_ink_moe_dn_gguf_dp4a<MM, 42><<<g, 128, 0, st>>>(s4, ex, tb, hq, hf, tw, y, skip); break;
+        default: k_ink_moe_dn_gguf_dp4a<MM><<<g, 128, 0, st>>>(s4, ex, tb, hq, hf, tw, y, skip); break;
+    }
+}
 
 template <int MAX_M>
 inline void launch_ink_moe_gu_sk_mask(
@@ -4251,10 +4282,11 @@ inline void launch_ink_moe_dispatch_only(
             if (rco_mask & 16u) k_ink_moe_iq_tc<true, 21><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
             if (rco_mask & 32u) k_ink_moe_iq_tc<true, 22><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         }
+        static const int spec_on = [] { const char* e = std::getenv("STRATA_INK_GGUF_SPEC"); return !(e && e[0] == '0'); }();
         if (gmt == 1) {
-            k_ink_moe_gu_gguf_dp4a<1><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            launch_gu_gguf_spec<1>(g_gu, st, spec_on ? info.gguf_gu_t : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
         } else if (gmt == 2) {
-            k_ink_moe_gu_gguf_dp4a<2><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            launch_gu_gguf_spec<2>(g_gu, st, spec_on ? info.gguf_gu_t : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
         } else if (gmt == 4) {
             k_ink_moe_gu_gguf_dp4a<4><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
         } else if (gmt == 8) {
@@ -4269,9 +4301,9 @@ inline void launch_ink_moe_dispatch_only(
         if (skip_q80 & 2) k_ink_moe_q80_tc<false, 20><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
         if ((skip_q80 & 4) && (rco_mask & 64u)) k_ink_moe_iq_tc<false, 42><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
         if (gmt == 1) {
-            k_ink_moe_dn_gguf_dp4a<1><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            launch_dn_gguf_spec<1>(g_dn, st, spec_on ? info.gguf_dn_t : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
         } else if (gmt == 2) {
-            k_ink_moe_dn_gguf_dp4a<2><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            launch_dn_gguf_spec<2>(g_dn, st, spec_on ? info.gguf_dn_t : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
         } else if (gmt == 4) {
             k_ink_moe_dn_gguf_dp4a<4><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
         } else if (gmt == 8) {
