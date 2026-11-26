@@ -1262,7 +1262,9 @@ struct InkHipDFlash2 {
         constexpr int kKeep = hdf2::kRingCap - 16;
         for (int s = 0; s < max_slots; ++s) {
             if (mx[s] < 0) continue;
-            if (mn[s] != hi[s]) lo[s] = mn[s];
+            // rows below mn that the ring already holds stay valid when the batch continues or re-starts inside them (a cached prompt prefix reused without a rollback call);
+            // a gap above what was ingested, or a start below the oldest valid row, means nothing before mn is known
+            if (mn[s] > hi[s] || mn[s] < lo[s]) lo[s] = mn[s];
             hi[s] = mx[s] + 1;
             lo[s] = std::max<int64_t>(lo[s], hi[s] - kKeep);
         }
