@@ -211,6 +211,7 @@ __global__ void __launch_bounds__(128) k_ink_post_qkv_fused(
     bool is_global,
     int mode,                              // 0 = single-tok M=1, 1 = batched B=1..64, 2 = Tree-16 verify
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.y;
     const int blk = blockIdx.x;
     const int tid = threadIdx.x;  // 0..127
@@ -318,6 +319,7 @@ __global__ void __launch_bounds__(256) k_ink_rel_table(
     const float* __restrict__ rel_proj,   // [16, 1024] F32 (note: col 1024 is implicitly 0.0f!)
     float* __restrict__ table,            // [M, 24, 1025] F32
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.y;
     const int h = blockIdx.x;  // 0..23
     if (m >= M || h >= kInkHeads) return;
@@ -345,6 +347,7 @@ __global__ void __launch_bounds__(256) k_ink_rel_table_md(
     float* __restrict__ table,
     int M,
     int max_dist) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.y;
     const int h = blockIdx.x;
     if (m >= M || h >= kInkHeads) return;

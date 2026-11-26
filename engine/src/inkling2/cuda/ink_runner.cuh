@@ -16,6 +16,7 @@
 #include "ink_rtx5090_kernels.cuh"
 #include "ink_rtx5090_fp8.cuh"
 #include "ink_rtx5090_bspec_kernels.cuh"
+#include "ink_pdl_kernels.cuh"   // PERF-STEP: programmatic dependent launch of the decode graphs
 
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_kv_grow.hpp"
@@ -6368,7 +6369,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 0, slot0, p0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6506,7 +6507,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 2, slot0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6552,7 +6553,7 @@ struct InkCudaRunner {
                         emit_visits_prefix_to(fhc, M, 2, slot0, 0, want_taps);
                         ge = cudaStreamEndCapture(st, &gr);
                         if (ge == cudaSuccess && gr) {
-                            ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                            ge = pdl::instantiate(&exec, gr, "decode");
                             cudaGraphDestroy(gr);
                         }
                     }
@@ -6610,7 +6611,7 @@ struct InkCudaRunner {
                     emit_48_visits(B, 1, 0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }
@@ -6673,7 +6674,7 @@ struct InkCudaRunner {
                     emit_48_visits(M, 3, 0, 0, want_taps);
                     ge = cudaStreamEndCapture(st, &gr);
                     if (ge == cudaSuccess && gr) {
-                        ge = cudaGraphInstantiate(&exec, gr, nullptr, nullptr, 0);
+                        ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
                     }
                 }

@@ -1853,6 +1853,7 @@ __global__ void __launch_bounds__(256) k_ink_f32_to_h2(
     const float* __restrict__ src,
     __half2* __restrict__ dst,
     size_t n_pairs) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const size_t i = (size_t)blockIdx.x * 256 + threadIdx.x;
     if (i < n_pairs) {
         const float2 f = reinterpret_cast<const float2*>(src)[i];
@@ -2517,7 +2518,8 @@ __global__ void __launch_bounds__(256) k_ink_moe_gu_m1_l1(
     const InkExpertDev* __restrict__ experts,
     const int32_t* __restrict__ topk_idx,   // [8]
     const __half2* __restrict__ x_h2,       // [1152] L1-resident (4.6 KB!)
-    __half2* __restrict__ h_h2_out) {       // [8, 576] (output directly in __half2 for DN!)
+    __half2* __restrict__ h_h2_out) { // [8, 576] (output directly in __half2 for DN!)
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int slot = blockIdx.y;            // 0..7
     const int tid  = threadIdx.x;           // 0..255
     const int sub  = tid >> 4;              // 0..15 features/CTA
@@ -2619,7 +2621,8 @@ __global__ void __launch_bounds__(256) k_ink_moe_dn_m1_l1(
     const int32_t* __restrict__ topk_idx,   // [8]
     const float* __restrict__ topk_w,       // [8]
     const __half2* __restrict__ h_h2,       // [8, 576] L1-resident!
-    float* __restrict__ y_pair) {           // [8, 2304]
+    float* __restrict__ y_pair) { // [8, 2304]
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int slot   = blockIdx.y;          // 0..7
     const int tid    = threadIdx.x;
     const int sub    = tid >> 4;            // 0..15 row-pairs/CTA
@@ -3284,6 +3287,7 @@ __global__ void __launch_bounds__(128) k_ink_router_gemv_fp16(
     const __half2* __restrict__ gate_w_h2,    // [128, 1152]
     float* __restrict__ r_logits,             // [M, 128]
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int e = blockIdx.x;
     if (e >= kInkExperts) return;
     const int tid  = threadIdx.x;

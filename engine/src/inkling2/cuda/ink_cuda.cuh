@@ -15,6 +15,7 @@
 #endif
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include "ink_pdl_dev.cuh"
 
 // MERGED from kuraneko1/Strata (MIT, kuraneko1/_ryu15_): two-axis SM x VRAM
 // automatic profile selection. Credit: kuraneko1 (_ryu15_), kuraneko1/Strata (MIT).
