@@ -1151,7 +1151,7 @@ struct InkHipDFlash2 {
             d_rk_tab = t;
             d_rv_tab = t + max_slots;
         }
-        for (int s = 0; s < std::min(max_slots, 8); ++s)
+        for (int s = 0; s < std::min(max_slots, 1); ++s)
             if (!ensure_slot(s)) { err = "not enough GPU memory for the DFlash 2 context rings"; return false; }
         ready = true;
         return true;
@@ -1173,7 +1173,7 @@ struct InkHipDFlash2 {
         const size_t one = (size_t)hdf2::kLayers * hdf2::kRingCap * hdf2::kKV * sizeof(half_t);
         half_t *k = nullptr, *v = nullptr;
         bool room = true;
-        if (s >= 8) {
+        if (s >= 1) {
             size_t vf = 0, vt = 0;
             room = hipMemGetInfo(&vf, &vt) == hipSuccess && vf > 2 * one + (1024ull << 20);
         }
