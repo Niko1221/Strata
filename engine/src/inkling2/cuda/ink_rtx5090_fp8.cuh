@@ -1376,7 +1376,7 @@ struct Rtx5090Fp8Engine {
     }
 
     template <typename ModelT>
-    void init(const ModelT& m, int max_batch, cudaStream_t st) {
+    void init(const ModelT& m, int max_batch, cudaStream_t st, size_t later_bytes = 0) {
         if (!fp8_trunk_on() || m.ls_active) return;
         size_t vf = 0, vt = 0;
         INK_CK(ink_cuda_mem_info(&vf, &vt, m.primary_gpu));
@@ -1389,7 +1389,8 @@ struct Rtx5090Fp8Engine {
         constexpr size_t kCtrlDnBytes = (size_t)kInkGateRank * (2 * kInkHidden);
         constexpr size_t kCtrlGfBytes = (size_t)(2 * kInkHidden) * kInkGateRank;
         const size_t total_w = (size_t)m.man.c.n_phys * kLayerBytes + (size_t)n_core * 4 * (kCtrlDnBytes + kCtrlGfBytes);
-        const size_t need_b = total_w + ws_bytes + (size_t)max_batch * 4608 * 6 + (512ull << 20);
+        // later_bytes: what the drafter (DFlash 2) and the crash margin still take after the runner; a card whose free memory cannot carry both the copy and them runs without the copy (the old path of the trunk)
+        const size_t need_b = total_w + ws_bytes + (size_t)max_batch * 4608 * 6 + (512ull << 20) + later_bytes;
         if (vf < need_b) return;
 
         static const char* kAttnNames[6] = {

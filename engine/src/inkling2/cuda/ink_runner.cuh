@@ -3299,7 +3299,14 @@ struct InkCudaRunner {
             INK_CK(cudaStreamSynchronize(st));
         }
         if (rtx5090::fp8_trunk_on() && !m.ls_active) {
-            fp8_eng.init(m, max_batch, st);
+            // the FP8 copy is built only when what comes after it still fits: DFlash 2's weights, rings and scratch (the drafter is built after the runner) and a 256 MiB crash margin
+            size_t fp8_later = 0;
+            if (m.man.has_dspark && df2_replaces_dspark(m.path)) {
+                size_t vf_l = 0, vt_l = 0;
+                if (ink_cuda_mem_info(&vf_l, &vt_l, m.primary_gpu) == cudaSuccess)
+                    fp8_later = (df2_total_mib(df2_variant(vt_l < (24ull << 30)), max_slots) + 256ull) << 20;
+            }
+            fp8_eng.init(m, max_batch, st, fp8_later);
         }
         if (rtx5090::moe_opt_on() && !rtx5090::exact_mode_on() && !m.ls_active && !m.ep2_active && !m.hybrid.active) {
             rtx5090::transcode_mx8_to_sf4_inplace(m, st);
