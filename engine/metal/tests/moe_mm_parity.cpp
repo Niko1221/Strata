@@ -36,6 +36,7 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 64, SG = 2, DTN = -1, DTK = -1, DSG = -1;
     bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false, v6 = false, tile_given = false;
+    bool m8_tail = false;
     int MS = 1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -48,6 +49,7 @@ int main(int argc, char** argv) {
         else if (a == "--dtile") std::sscanf(argv[++i], "%d,%d,%d", &DTN, &DTK, &DSG);   // the down kernel's TN,TK,SG
         else if (a == "--bench") bench = true;
         else if (a == "--v2") v2 = true;
+        else if (a == "--m8-tail") m8_tail = v2 = true;
         else if (a == "--v3") v2 = v3 = true;   // v2's gather + the register-operand GEMMs (TN per simdgroup)
         else if (a == "--v4") { v2 = v3 = v4 = true; MS = std::atoi(argv[++i]); }   // mm_gu4 with MS 16-row subtiles
         else if (a == "--v6") { v2 = v3 = true; v6 = true; MS = std::atoi(argv[++i]); }   // mm_gu6 / mm_down6 / mm_scan6: groups of MS 16-row subtiles
@@ -76,6 +78,10 @@ int main(int argc, char** argv) {
         if (DTN < 0) { DTN = dtn; DTK = dtk; DSG = dsg; }   // an explicit --dtile stays
     }
     mtl::Context cx;
+    if (m8_tail && (v3 || TM != 16)) {
+        std::fprintf(stderr, "--m8-tail requires the v2 M16 plan\n");
+        return 2;
+    }
     // the host defines STRATA_KQ_DOWN only for a model whose downs are K-quant / IQ4_XS / IQ3_S (window.cpp kq_down_prelude)
     const bool kq_dn = dn == ref::Q2_K || dn == ref::Q3_K || dn == ref::Q4_K || dn == ref::Q5_K || dn == ref::Q6_K || dn == ref::IQ3_S || dn == ref::IQ4_XS;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"}, kq_dn ? "#define STRATA_KQ_DOWN 1\n" : "");
@@ -115,7 +121,9 @@ int main(int argc, char** argv) {
         }
         for (int k = 0; k < TOPK; ++k) w.as<float>()[t * TOPK + k] /= s;
     }
-    mtl::Pipeline phist = cx.pipeline(lib, "mm_hist"), pscan = cx.pipeline(lib, v6 ? "mm_scan6" : "mm_scan"), pplace = cx.pipeline(lib, "mm_place"),
+    mtl::Constants tail;
+    if (m8_tail) tail.b(26, true);
+    mtl::Pipeline phist = cx.pipeline(lib, "mm_hist"), pscan = cx.pipeline(lib, v6 ? "mm_scan6" : "mm_scan", tail), pplace = cx.pipeline(lib, "mm_place"),
                   pclear = cx.pipeline(lib, "mm_clear"), pcomb = cx.pipeline(lib, "mm_combine");
     if (DTN < 0) { DTN = TN; DTK = TK; DSG = SG; }
     if ((dn == ref::IQ4_NL || dn == ref::Q5_0 || dn == ref::Q2_K || dn == ref::Q3_K) && DTK < 32) DTK = 32;   // 32-value units (the v2 / v3 down tiles of IQ4_NL / Q5_0 / Q2_K / Q3_K need TK >= 32)
@@ -124,6 +132,7 @@ int main(int argc, char** argv) {
     std::string v6_gu, v6_dn;
     mtl::Constants probe;
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
+    if (m8_tail) probe.b(26, true);
     const bool k4 = coop_k4(cx);
     if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
     if (v6) {   // the ragged-tile kernels: names carry MS, TN, TK, SG (TM is the plan's 16-row padding)
@@ -139,7 +148,7 @@ int main(int argc, char** argv) {
                       : v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr))
                            : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
                   pdn = v6 ? cx.pipeline(lib, v6_dn, mtl::Constants().b(7, k4)) : v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
-                           : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
+                           : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl), tail),
                   pgat = cx.pipeline(lib, "mm_gather");
     // the two grids mm_scan publishes for the GEMMs of one layer: the tile's TN (and, for v3, its SG) decides them
     MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)(v6 ? MS : TM), (uint32_t)nblk,
@@ -179,7 +188,8 @@ int main(int argc, char** argv) {
         cx.run(ds);   // the plan first: the GEMMs' grid is the tile count
     }
     const uint32_t ntiles = meta.as<uint32_t>()[0];
-    std::printf("plan: %u tiles of %d, %u padded rows for %d entries\n", ntiles, TM, meta.as<uint32_t>()[1], nent);
+    std::printf("plan: %u %s tiles, %u padded rows for %d entries\n", ntiles,
+                m8_tail ? "M16/M8" : std::to_string(TM).c_str(), meta.as<uint32_t>()[1], nent);
     if (!bench) {
         // the plan: every entry placed once, rows of an expert contiguous and in entry order
         bool ok_plan = true;
