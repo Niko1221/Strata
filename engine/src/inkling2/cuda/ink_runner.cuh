@@ -385,10 +385,18 @@ struct InkCudaModel {
             est_map(man.trunk);
             est_map(man.dspark);
             // the loader holds a 64 MiB staging buffer and the amax word next to the trunk while it converts, then the all-VRAM branch below asks for 768 MiB after the experts (ballast tests: with 713 MiB left the engine died at its first top-k, with 39-43 MiB left at the end it was on the edge: lazy module loads need free VRAM)
+            {
+                const int plan_slots = sm120_plan_slots_ref().load();
+                if (plan_slots >= 2 && plan_slots < 16) {
+                    std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: this run asks for %d slots and compact leaves room for one slot (or 16 and more); the old path (every RTX 50 part off) runs\n", plan_slots);
+                    do_compact_vram = false;
+                    sm120_compact_refuse(primary_gpu);
+                }
+            }
             const size_t compact_margin = (768ull << 20) + (64ull << 20);
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
-            if (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin) {
+            if (do_compact_vram && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
                 std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: %s (free %zu MiB, needs about %zu MiB for the compact trunk %zu MiB + all experts in VRAM %zu MiB + %zu MiB headroom); the old path (every RTX 50 part off) runs\n",
                              all_sf4_or_mx8_pre ? "not enough free VRAM" : "the model has experts that are not SF4 / MX8",
                              vfree_pre >> 20, (est_trunk + est_sec4 + compact_margin) >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20);

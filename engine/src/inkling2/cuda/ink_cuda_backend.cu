@@ -353,6 +353,7 @@ public:
         const size_t min_reserve_bytes = plan.min_reserve_bytes;
         const auto& opt5060 = *plan_in.c5060;
 
+        strata::ink::sm120_plan_slots_ref().store(max_slots_);
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
                                          min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,

@@ -301,6 +301,14 @@ inline const InkRtx5060TiCfg& ink_rtx5060ti_cfg(int dev = 0) noexcept {
 /// The loader found that the card cannot hold COMPACT right now (free VRAM, a model with other expert formats). The rest of the small-card fast set (PACK, PREFILL, ...) was
 /// measured only together with COMPACT and is slower than the old path without it, so the whole device goes back to the old path: every flag off, exactly as with
 /// STRATA_INK_SM120=0. Called once, single-threaded, at the start of the model load, before any consumer of the flags runs.
+/// The slot count of the run that is being loaded (set by the backend before the model load; the loader's COMPACT check reads it). COMPACT leaves about 1 GiB free on a
+/// 16 GB card: that holds one slot (or the 16-64 slot host-KV mode) but not 2..15 slots (rows lane 11-26: --parallel 4 on a 5080 died with "not enough free GPU memory for the
+/// working buffers"; the engine must then take the old path instead).
+inline std::atomic<int>& sm120_plan_slots_ref() noexcept {
+    static std::atomic<int> v{1};
+    return v;
+}
+
 inline void sm120_compact_refuse(int dev) noexcept {
     Sm120Cfg& s = const_cast<Sm120Cfg&>(sm120_cfg(dev));   // static, non-const storage underneath
     s = Sm120Cfg{};

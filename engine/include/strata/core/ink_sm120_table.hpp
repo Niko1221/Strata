@@ -107,6 +107,10 @@ struct Sm120Row {
     int   spec_beam, c1_max_nodes, c1_pld_max_m, c64_draft_k;
     float spec_cost, spec_plain;
     float pcie_share;
+
+    // The row's fast set is the DEFAULT (no switch set) only when FASTQ passed on this card kind. A measured row can have default_on = false: the speed is measured
+    // and fast mode is one switch away, but the old path stays the default because quality or speed did not pass (rows lane 11-26).
+    bool default_on = false;
 };
 
 // Default knobs shared by rows (the 5090 and the 5060 Ti rows are the measured ones; the others copy the family they belong to and stay unmeasured).
@@ -144,11 +148,11 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         {"5090", "RTX 5090", 160, 192, 30, 34, true, "measured on a 32 GB RTX 5090 (hand-over 11-26)",
          kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
+         4, 12, 24, 3, 12.0f, 1.02f, 0.28f, true},
         {"5060ti-16", "RTX 5060 Ti", 34, 38, 15, 17, true, "measured on a 16 GB RTX 5060 Ti (hand-over 11-26)",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 512, 768, 0, 1,   // the 5090's FP8 cache: 512 MiB headroom, 768 MiB reserved for it in the K/V sizing (PLACEHOLDER: measure on a 5060 Ti)
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
+         1, 12, 24, 2, 2.0f, 1.02f, 0.28f, true},
         // ---- placeholders: not measured, the old path runs unless STRATA_INK_SM120_ROW names a row ----
         {"5080", "RTX 5080", 80, 88, 15, 17, false, "placeholder: 16 GB, 84 SMs; rental later",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
@@ -327,7 +331,7 @@ inline Sm120Decision ink_sm120_decide(const Sm120Dev& dev, Getenv&& env_get) {
     const Sm120Row* dflt_row = nullptr;
     if (!asked_switch && master < 0 && kSm120FastDefault && ink_sm120_is_cc120(dev)) {
         dflt_row = ink_sm120_match(dev);
-        if (dflt_row && !dflt_row->measured) dflt_row = nullptr;
+        if (dflt_row && !(dflt_row->measured && dflt_row->default_on)) dflt_row = nullptr;
     }
     const bool want_default = (dflt_row != nullptr);
     out.asked = asked_switch || want_default;
