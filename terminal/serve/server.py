@@ -5221,13 +5221,16 @@ class Service:
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
-        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+        lad = getattr(self, "session_ladder", None)
+        if lad is not None and lad.cfg.enabled:
             # Task 8, the FIFO held (this method's contract): the fresh engine parks nothing - the ladder
             # resets every park flag while keeping its tracked entries and file_paths (the next switch
             # back is restore-eligible) - and, unless a restore is already pending below (the image job's
             # restore_after_load owns this start, never overwritten or doubled), queues the last active
             # conversation's checkpoint for the warm restore the very next line performs.
-            self.session_ladder.on_start(self)
+            # The getattr shape mirrors the request-path hook's (b7ba1d29a): upstream's crash-loop test
+            # (#6896) binds this real method to a stub Service that carries no ladder attribute.
+            lad.on_start(self)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
