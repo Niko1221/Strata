@@ -4041,7 +4041,7 @@ struct InkCudaRunner {
                         return;
                     }
                     const int nblk = M * (K / 64);
-                    const size_t xq_cap = (size_t)(m.all_sf4_vram ? 64u : (size_t)cur_moe_ws->cap_M) * (kInkHidden / 64);
+                    const size_t xq_cap = cur_moe_ws ? (size_t)(m.all_sf4_vram ? 64u : (size_t)cur_moe_ws->cap_M) * (kInkHidden / 64) : 0u;   // (null stays guarded as in the shipped code)
                     if (cur_moe_ws && (size_t)nblk <= xq_cap) {
                         k_ink_quant_q8_1<<<(nblk + 7) / 8, 256, 0, st>>>(X, cur_moe_ws->xq_sk, M, K);
                         if (M == 1)      k_ink_gemv_multi_q8row_preq<1><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
