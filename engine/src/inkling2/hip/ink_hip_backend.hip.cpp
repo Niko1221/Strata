@@ -1948,6 +1948,7 @@ public:
         if (const char* e = std::getenv("STRATA_INK_DFLASH2_RATIO"); e && *e && std::atof(e) > 0.0) df2_ratio_ = std::atof(e);
         else if (opts.spec_cost > 0.0) df2_ratio_ = opts.spec_cost;
         if (opts.spec_plain > 0.0) df2_plain_ = opts.spec_plain;
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_PLAIN"); e && *e) df2_plain_ = std::atof(e);
         size_t f0 = 0, t0 = 0, f1 = 0, t1 = 0;
         (void)hipMemGetInfo(&f0, &t0);
         std::string e2;
