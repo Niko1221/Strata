@@ -34,6 +34,14 @@ inline std::string df2_drafter_env() {
     return s;
 }
 
+// NV-OLDER: set by the backend when the primary card is below sm_80 (V100, RTX 20, GTX 10, P100). DFlash 2 then runs its FP32 form: the BF16 matrices are held as FP32
+// (the checkpoint's values, exactly) and multiplied with cuBLAS FP32, the block weights are never BF16, the head screen on sm_60 is a dp4a kernel instead of the cuBLAS INT8 GEMM,
+// and the skinny GEMVs use 4 activation rows per block where 8 would not fit 48 KB of shared memory. The drafter still only proposes: the target verifies.
+inline bool& df2_f32_path() {
+    static bool b = false;
+    return b;
+}
+
 // STRATA_INK_DRAFTER=dspark: the dormant DSpark drafter is asked for by name
 inline bool df2_dspark_selected() { return df2_drafter_env() == "dspark"; }
 
@@ -98,6 +106,9 @@ inline Df2Variant df2_variant(bool small_vram) {
     // a pre-quantized sidecar decides its own format
     const std::string fv = df2_file_variant(df2_resolve_path(df2_model_path()));
     if (!fv.empty()) df2_parse_variant(fv, v);
+    // NV-OLDER: no BF16 block weights on a card below sm_80 (the BF16 GEMM of kind 0 is not there): Q8 instead; the other kinds are dp4a GEMVs and run everywhere
+    if (df2_f32_path() && v.attn == 0) v.attn = 1;
+    if (df2_f32_path() && v.ffn == 0) v.ffn = 1;
     return v;
 }
 
@@ -112,7 +123,7 @@ inline double df2_big_mib(Df2Variant v) {
 
 // what the drafter holds on a small card: the bf16 rest (fc, K/V, convolutions, selector, norms: 112 MiB), the block weights, rings (42 MiB a slot, up to 8), scratch and a margin
 inline size_t df2_total_mib(Df2Variant v, int slots) {
-    return (size_t)(112.0 + df2_big_mib(v) + 42.0 * (double)(slots < 8 ? slots : 8) + 120.0);
+    return (size_t)((df2_f32_path() ? 224.0 : 112.0) + df2_big_mib(v) + 42.0 * (double)(slots < 8 ? slots : 8) + 120.0);
 }
 
 // STRATA_INK_DFLASH2 (a file, or a folder holding model.safetensors / dflash2.safetensors), else a sidecar in the model's folder. "" = none found.

@@ -91,17 +91,18 @@ __global__ void __launch_bounds__(256) k_df2_quant_act(const float* __restrict__
 // One warp per output row, the 8 activation rows of a chunk in shared memory, dp4a. Block 256 = 8 output rows.
 // Grid 1D: chunk (m / 8) varies fastest, so the CTAs that read the same weight rows run together (one DRAM read, the rest hit L2).
 constexpr int kGemvMR = 8;
+template <int MR>
 __global__ void __launch_bounds__(256) k_df2_gemv_q8(const int8_t* __restrict__ W, const float* __restrict__ wsc,
                                                      const int8_t* __restrict__ xq, const float* __restrict__ xs,
                                                      float* __restrict__ Y, int M, int N, int K, int n_chunks) {
     extern __shared__ __align__(16) uint8_t g_smem[];
     const int nb = K >> 5;
     int8_t* sq = reinterpret_cast<int8_t*>(g_smem);                                   // [8][K]
-    float* ss = reinterpret_cast<float*>(g_smem + (size_t)kGemvMR * K);               // [8][K/32]
+    float* ss = reinterpret_cast<float*>(g_smem + (size_t)MR * K);               // [8][K/32]
     const int mc = blockIdx.x % n_chunks;
     const int rb = blockIdx.x / n_chunks;
-    const int m0 = mc * kGemvMR;
-    const int mrows = min(kGemvMR, M - m0);
+    const int m0 = mc * MR;
+    const int mrows = min(MR, M - m0);
     {
         const int4* src = reinterpret_cast<const int4*>(xq + (size_t)m0 * K);
         int4* dst = reinterpret_cast<int4*>(sq);
@@ -115,14 +116,14 @@ __global__ void __launch_bounds__(256) k_df2_gemv_q8(const int8_t* __restrict__ 
     const int n = rb * 8 + warp;
     if (n >= N) return;
     const uint4* w16 = reinterpret_cast<const uint4*>(W + (size_t)n * K);
-    float acc[kGemvMR];
+    float acc[MR];
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) acc[m] = 0.0f;
+    for (int m = 0; m < MR; ++m) acc[m] = 0.0f;
     const int nc = K >> 4;
     for (int c = lane; c < nc; c += 32) {
         const uint4 w = w16[c];
 #pragma unroll
-        for (int m = 0; m < kGemvMR; ++m) {
+        for (int m = 0; m < MR; ++m) {
             if (m < mrows) {
                 const uint4 a = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + c * 16);
                 int p = dp4a_i8(w.x, a.x, 0);
@@ -135,7 +136,7 @@ __global__ void __launch_bounds__(256) k_df2_gemv_q8(const int8_t* __restrict__ 
     }
     const float sc = wsc[n];
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) {
+    for (int m = 0; m < MR; ++m) {
         const float s = warp_sum(acc[m]);
         if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s * sc;
     }
@@ -167,16 +168,17 @@ __global__ void __launch_bounds__(256) k_df2_bf16_to_q4(const uint16_t* __restri
     }
 }
 
+template <int MR>
 __global__ void __launch_bounds__(256) k_df2_gemv_q4(const uint8_t* __restrict__ W, const __half* __restrict__ wsc, const int8_t* __restrict__ xq,
                                                      const float* __restrict__ xs, float* __restrict__ Y, int M, int N, int K, int n_chunks) {
     extern __shared__ __align__(16) uint8_t g_smem[];
     const int nb = K >> 5;
     int8_t* sq = reinterpret_cast<int8_t*>(g_smem);
-    float* ss = reinterpret_cast<float*>(g_smem + (size_t)kGemvMR * K);
+    float* ss = reinterpret_cast<float*>(g_smem + (size_t)MR * K);
     const int mc = blockIdx.x % n_chunks;
     const int rb = blockIdx.x / n_chunks;
-    const int m0 = mc * kGemvMR;
-    const int mrows = min(kGemvMR, M - m0);
+    const int m0 = mc * MR;
+    const int mrows = min(MR, M - m0);
     {
         const int4* src = reinterpret_cast<const int4*>(xq + (size_t)m0 * K);
         int4* dst = reinterpret_cast<int4*>(sq);
@@ -191,16 +193,16 @@ __global__ void __launch_bounds__(256) k_df2_gemv_q4(const uint8_t* __restrict__
     if (n >= N) return;
     const uint4* w16 = reinterpret_cast<const uint4*>(W + (size_t)n * (K / 2));
     const __half* wsr = wsc + (size_t)n * nb;
-    float acc[kGemvMR];
+    float acc[MR];
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) acc[m] = 0.0f;
+    for (int m = 0; m < MR; ++m) acc[m] = 0.0f;
     for (int b = lane; b < nb; b += 32) {
         const uint4 w = w16[b];
         const float ws = __half2float(wsr[b]) * (1.0f / 16.0f);
         const uint32_t lo0 = (w.x << 4) & 0xF0F0F0F0u, lo1 = (w.y << 4) & 0xF0F0F0F0u, lo2 = (w.z << 4) & 0xF0F0F0F0u, lo3 = (w.w << 4) & 0xF0F0F0F0u;
         const uint32_t hi0 = w.x & 0xF0F0F0F0u, hi1 = w.y & 0xF0F0F0F0u, hi2 = w.z & 0xF0F0F0F0u, hi3 = w.w & 0xF0F0F0F0u;
 #pragma unroll
-        for (int m = 0; m < kGemvMR; ++m) {
+        for (int m = 0; m < MR; ++m) {
             if (m < mrows) {
                 const uint4 a0 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32);
                 const uint4 a1 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32 + 16);
@@ -217,7 +219,7 @@ __global__ void __launch_bounds__(256) k_df2_gemv_q4(const uint8_t* __restrict__
         }
     }
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) {
+    for (int m = 0; m < MR; ++m) {
         const float s = warp_sum(acc[m]);
         if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s;
     }
@@ -268,13 +270,14 @@ __global__ void __launch_bounds__(256) k_df2_bf16_to_sf4(const uint16_t* __restr
 }
 
 // E2M1 values times 2 are the integers 0 1 2 3 4 6 8 12; two nibbles of a byte -> two int8 through a 256-entry table in shared memory, then dp4a with the int8 activations.
+template <int MR>
 __global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict__ Wp, const uint8_t* __restrict__ Ws, float w_outer, const int8_t* __restrict__ xq,
                                                       const float* __restrict__ xs, float* __restrict__ Y, int M, int N, int K, int n_chunks) {
     extern __shared__ __align__(16) uint8_t g_smem[];
     __shared__ uint16_t lut[256];
     const int nb = K >> 5;
     int8_t* sq = reinterpret_cast<int8_t*>(g_smem);
-    float* ss = reinterpret_cast<float*>(g_smem + (size_t)kGemvMR * K);
+    float* ss = reinterpret_cast<float*>(g_smem + (size_t)MR * K);
     {
         const int mag[8] = {0, 1, 2, 3, 4, 6, 8, 12};
         const int lo = threadIdx.x & 15, hi = threadIdx.x >> 4;
@@ -284,8 +287,8 @@ __global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict_
     }
     const int mc = blockIdx.x % n_chunks;
     const int rb = blockIdx.x / n_chunks;
-    const int m0 = mc * kGemvMR;
-    const int mrows = min(kGemvMR, M - m0);
+    const int m0 = mc * MR;
+    const int mrows = min(MR, M - m0);
     {
         const int4* src = reinterpret_cast<const int4*>(xq + (size_t)m0 * K);
         int4* dst = reinterpret_cast<int4*>(sq);
@@ -300,9 +303,9 @@ __global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict_
     if (n >= N) return;
     const uint4* w16 = reinterpret_cast<const uint4*>(Wp + (size_t)n * (K / 2));
     const uint8_t* wsr = Ws + (size_t)n * (K / 16);
-    float acc[kGemvMR];
+    float acc[MR];
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) acc[m] = 0.0f;
+    for (int m = 0; m < MR; ++m) acc[m] = 0.0f;
     for (int b = lane; b < nb; b += 32) {
         const uint4 w = w16[b];
         __nv_fp8_e4m3 f0, f1;
@@ -317,7 +320,7 @@ __global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict_
             d[2 * j + 1] = (uint32_t)lut[(wv[j] >> 16) & 0xFF] | ((uint32_t)lut[(wv[j] >> 24) & 0xFF] << 16);
         }
 #pragma unroll
-        for (int m = 0; m < kGemvMR; ++m) {
+        for (int m = 0; m < MR; ++m) {
             if (m < mrows) {
                 const uint4 a0 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32);
                 const uint4 a1 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32 + 16);
@@ -334,7 +337,7 @@ __global__ void __launch_bounds__(256) k_df2_gemv_sf4(const uint8_t* __restrict_
         }
     }
 #pragma unroll
-    for (int m = 0; m < kGemvMR; ++m) {
+    for (int m = 0; m < MR; ++m) {
         const float s = warp_sum(acc[m]);
         if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s * 0.5f * w_outer;
     }
@@ -826,6 +829,62 @@ __global__ void __launch_bounds__(512) k_df2_select(const int32_t* __restrict__ 
             }
         }
         __syncthreads();
+    }
+}
+
+// ---- NV-OLDER: the FP32 / dp4a form of what needs sm_80 elsewhere (V100, RTX 20, GTX 10, P100) -----------------------------------------------------------------------
+
+// [M][4 * 2304] fp32 from four fp32 tap planes (the same gather as k_df2_gather_taps, without the bf16 rounding); row i reads plane row src_rows[i] (or i when src_rows is null).
+__global__ void __launch_bounds__(256) k_df2_gather_taps_f32(const float* __restrict__ t0, const float* __restrict__ t1,
+                                                             const float* __restrict__ t2, const float* __restrict__ t3,
+                                                             const int32_t* __restrict__ src_rows, int row0, int M, float* __restrict__ out) {
+    const int i = blockIdx.x;
+    if (i >= M) return;
+    const int src = src_rows ? src_rows[row0 + i] : (row0 + i);
+    const float* tp[4] = {t0, t1, t2, t3};
+    float* dst = out + (size_t)i * kTargets * kHidden;
+#pragma unroll
+    for (int t = 0; t < kTargets; ++t) {
+        const float4* s4 = reinterpret_cast<const float4*>(tp[t] + (size_t)src * kHidden);
+        float4* d4 = reinterpret_cast<float4*>(dst + t * kHidden);
+        for (int d = threadIdx.x; d < kHidden / 4; d += 256) d4[d] = s4[d];
+    }
+}
+
+// The head screen of the draft where the cuBLAS INT8 GEMM does not exist (sm_60): tile[c][v] = sum_k W[v][k] * h[c][k] (int8 x int8 -> int32) for v < vt, c < ncols, the layout and
+// values of the GEMM the other cards call. One warp per weight row, the row read once per group of 8 columns; dp4a_i8 (the exact integer emulation on sm_60).
+constexpr int kScreenCols = 8;
+__global__ void __launch_bounds__(256) k_df2_screen_gemm(const int8_t* __restrict__ W, const int8_t* __restrict__ hq, int32_t* __restrict__ tile, int vt, int ncols) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int v = blockIdx.x * 8 + warp;
+    if (v >= vt) return;
+    const uint4* w16 = reinterpret_cast<const uint4*>(W + (size_t)v * kHidden);
+    constexpr int kNC = kHidden / 16;   // 144 chunks of 16 bytes
+    for (int c0 = 0; c0 < ncols; c0 += kScreenCols) {
+        int acc[kScreenCols];
+#pragma unroll
+        for (int j = 0; j < kScreenCols; ++j) acc[j] = 0;
+        for (int c = lane; c < kNC; c += 32) {
+            const uint4 w = w16[c];
+#pragma unroll
+            for (int j = 0; j < kScreenCols; ++j) {
+                if (c0 + j < ncols) {
+                    const uint4 a = *reinterpret_cast<const uint4*>(hq + (size_t)(c0 + j) * kHidden + (size_t)c * 16);
+                    int p = dp4a_i8(w.x, a.x, 0);
+                    p = dp4a_i8(w.y, a.y, p);
+                    p = dp4a_i8(w.z, a.z, p);
+                    p = dp4a_i8(w.w, a.w, p);
+                    acc[j] += p;
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < kScreenCols; ++j) {
+            int s = acc[j];
+#pragma unroll
+            for (int o = 16; o >= 1; o >>= 1) s += __shfl_xor_sync(0xFFFFFFFFu, s, o);
+            if (lane == 0 && c0 + j < ncols) tile[(size_t)(c0 + j) * vt + v] = s;
+        }
     }
 }
 

@@ -432,6 +432,7 @@ public:
             return false;
         }
         const int sm_cc = prop.major * 10 + prop.minor;
+        if (sm_cc < 80) strata::ink::df2_f32_path() = true;   // NV-OLDER: DFlash 2 runs its FP32 / dp4a form below sm_80 (sizing below needs to know)
 
         // A binary built without code for this card (the CUDA 13 packages hold sm_75 and newer) loads fine, then every kernel launch
         // fails with "no kernel image" without a message and the logits stay 0: token id 0 forever (#6759). Say so before anything loads.
