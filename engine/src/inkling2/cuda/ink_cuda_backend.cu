@@ -172,6 +172,29 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
            : ((in.total_vram >= (20ull << 30)) ? (960ull << 20)
             : (in.total_vram <= (13ull << 30)) ? (512ull << 20)
                                                : (832ull << 20))) + p.dspark_pad);
+    // LCTX (PERF-LONGCTX), "K/V before experts" (STRATA_INK_KV_FIRST=1, off by default): on a card whose experts do not all fit, the K/V of the WHOLE chosen context, the
+    // DSpark state of every context token and a growth margin are set aside before the experts get the rest, so the global K/V stays in VRAM (no host tail: 64K 9.9 -> 28.5 tok/s,
+    // 128K 5.6 -> 23.0 on a 5060 Ti 16 GB, f-lctx RESULTS-LCTX.md section 3). The rule keeps at least 1.5 GiB for the experts; when the K/V does not fit with that, the shipped
+    // window rule stays (a partial window is never planned). kv_offload on keeps its host K/V; one slot only.
+    if (in.kv_offload_mode != 1 && in.max_slots == 1 && !p.c64_host_kv && in.total_vram <= (20ull << 30) && strata::ink::sm120_cfg_detail::env_get("STRATA_INK_KV_FIRST") &&
+        strata::ink::sm120_cfg_detail::env_get("STRATA_INK_KV_FIRST")[0] == '1') {
+        const size_t ctx = (size_t)std::max(256, opts.max_ctx);
+        const size_t glob_all = (size_t)8 * ctx * p.per_visit_pos;
+        const size_t glob_rest = (size_t)8 * (ctx > (size_t)p.init_glob ? ctx - (size_t)p.init_glob : 0) * p.per_visit_pos;
+        const size_t dspark_ctx = in.build_screen ? ctx * 4096ull : 0ull;
+        const size_t margin = glob_all / 8 + (256ull << 20);
+        const size_t kv_extra = glob_rest + dspark_ctx + margin;
+        // what the card keeps for everything else, from LCTX's measured rule: dense trunk 3.67 GB, driver 1.30, hybrid workspace 0.85 (decimal GB), experts floor 1.5 GiB
+        const size_t fixed = (size_t)((3.67 + 1.30 + 0.85) * 1e9);
+        const size_t floor_experts = 3ull << 29;
+        if (in.total_vram > fixed + p.min_kv_bytes + p.ws_pad + kv_extra + floor_experts) {
+            p.min_kv_bytes += kv_extra;
+            std::fprintf(stderr, "[InkCUDA] STRATA_INK_KV_FIRST: %.2f GiB reserved for the K/V of the whole %zu-token context (+ DSpark state and growth margin) before the experts\n",
+                         (double)kv_extra / 1073741824.0, ctx);
+        } else {
+            std::fprintf(stderr, "[InkCUDA] STRATA_INK_KV_FIRST: the %zu-token context does not fit next to at least 1.5 GiB of experts on this card; the shipped placement stays\n", ctx);
+        }
+    }
     p.min_reserve_bytes = p.min_kv_bytes + p.ws_pad;
     if (opts.vram_reserve_mib >= 0) {
         p.min_reserve_bytes = std::max(p.min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);

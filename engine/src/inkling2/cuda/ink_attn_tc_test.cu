@@ -79,10 +79,10 @@ static double now_ms_between(cudaEvent_t a, cudaEvent_t b) { float ms = 0; cudaE
 
 // Bandwidth probe: the same access pattern as the TC kernel (a block per (KV head, slice), 32-key tiles, 16-byte pieces, depth-D register prefetch), no arithmetic but an XOR.
 template <int FMT, int D>
-__global__ void __launch_bounds__(128, 2) k_bw_probe(InkKvVisitDesc kv, int nc, uint32_t* sink) {
+__global__ void __launch_bounds__(128, 2) k_bw_probe(InkKvVisitDesc kv, int nc, int nsp, uint32_t* sink) {
     using namespace strata::ink::tcattn;
     const int kh = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
-    const int per = slice_len(nc, kSplits);
+    const int per = slice_len(nc, nsp);
     const int lo = sp * per, hi = min(nc, lo + per);
     if (lo >= hi) return;
     RawTile<FMT> r0, r1, r2;
@@ -111,9 +111,9 @@ static void run_probe(Bufs& b, int fmt, int nc) {
     const double bytes = (double)nc * kInkKVHeads * ((fmt == 0 ? 256.0 : 128.0 + 4.0) * 2);
     for (int D = 1; D <= 3; ++D) {
         auto go = [&]() {
-            const dim3 grid(kInkKVHeads, strata::ink::tcattn::kSplits);
-            if (fmt == 1) { if (D == 1) k_bw_probe<1, 1><<<grid, 128>>>(b.kv, nc, sink); else if (D == 2) k_bw_probe<1, 2><<<grid, 128>>>(b.kv, nc, sink); else k_bw_probe<1, 3><<<grid, 128>>>(b.kv, nc, sink); }
-            else { if (D == 1) k_bw_probe<0, 1><<<grid, 128>>>(b.kv, nc, sink); else if (D == 2) k_bw_probe<0, 2><<<grid, 128>>>(b.kv, nc, sink); else k_bw_probe<0, 3><<<grid, 128>>>(b.kv, nc, sink); }
+            const dim3 grid(kInkKVHeads, strata::ink::tcattn::splits_cur());
+            if (fmt == 1) { if (D == 1) k_bw_probe<1, 1><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); else if (D == 2) k_bw_probe<1, 2><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); else k_bw_probe<1, 3><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); }
+            else { if (D == 1) k_bw_probe<0, 1><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); else if (D == 2) k_bw_probe<0, 2><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); else k_bw_probe<0, 3><<<grid, 128>>>(b.kv, nc, strata::ink::tcattn::splits_cur(), sink); }
         };
         for (int i = 0; i < 3; ++i) go();
         cudaDeviceSynchronize();
@@ -248,11 +248,14 @@ int main(int argc, char** argv) {
         for (int c : ctxs) {
             if (c > ctx) continue;
             for (int M : Ms) {
-                char tag[96];
-                const bool tree = M > 1;
-                std::snprintf(tag, sizeof tag, "%s %s nc=%d M=%d", fmt ? "fp8 " : "fp16", tree ? "tree" : "plain", c, M);
-                if (quick && !(M == 1 || M == 5 || M == 10 || M == 16)) continue;
-                fails += run_case(b, fmt, M, c, tree, 100 + M, tag);
+                for (int pass = 0; pass < 2; ++pass) {   // pass 0: verify tree, pass 1: plain rows (mode 0 with M <= 16, mode 1)
+                    const bool tree = (pass == 0) && M > 1;
+                    if (pass == 1 && (M == 1 || M > 16 || (quick && M != 5))) continue;
+                    char tag[96];
+                    std::snprintf(tag, sizeof tag, "%s %s nc=%d M=%d", fmt ? "fp8 " : "fp16", tree ? "tree" : "plain", c, M);
+                    if (quick && pass == 0 && !(M == 1 || M == 5 || M == 10 || M == 16)) continue;
+                    fails += run_case(b, fmt, M, c, tree, 100 + M, tag);
+                }
             }
         }
     }

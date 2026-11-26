@@ -37,8 +37,8 @@ constexpr int kTile = 32;                 // keys per tile
 constexpr int kLd = 136;                  // padded FP16 row stride (272 B): ldmatrix rows land on different banks
 constexpr float kPScale = 32768.0f;       // 2^15, probabilities x kPScale go into the FP16 PV operand
 constexpr int kMinSlice = 128;            // smallest key slice of a block (keys)
-constexpr int kSplits = 64;           // slices of the committed keys per KV head
-constexpr int kSlots = kSplits + 1;   // + the verify tail
+constexpr int kMaxSplits = 96;        // most slices of the committed keys per KV head (the buffers are sized for this)
+constexpr int kSlots = kMaxSplits + 1;   // + the verify tail
 #define kNegInf __int_as_float(0xff800000)   // -inf (the INFINITY macro warns on MSVC)
 
 __device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
@@ -478,8 +478,8 @@ __global__ void __launch_bounds__(128) k_ink_tc_merge(
     const int count = n_act + (tree ? 1 : 0);
     const int slots = nsp + 1;
     const size_t base = ((size_t)m * kInkHeads + h) * slots;
-    __shared__ float s_w[kSplits + 1], s_l[kSplits + 1];
-    __shared__ int s_slot[kSplits + 1];
+    __shared__ float s_w[kMaxSplits + 1], s_l[kMaxSplits + 1];
+    __shared__ int s_slot[kMaxSplits + 1];
     if (d < count) {
         const int slot = (d < n_act) ? d : nsp;
         s_slot[d] = slot;
@@ -517,6 +517,23 @@ __global__ void __launch_bounds__(128) k_ink_tc_merge(
 }
 
 
+// Slices per KV head for the card in use: 8 heads x nsp blocks = two full waves of the resident blocks (2 per SM), so no wave is left part empty
+// (5090, 170 SMs: 85 slices = 680 blocks; 5070, 48 SMs: 24). STRATA_INK_TC_ATTN_SPLITS=<n> (16..96) overrides it for the A/B runs.
+inline int splits_cur() {
+    static int per_dev[16] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 16) dev = 0;
+    if (per_dev[dev] == 0) {
+        int sms = 0;
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+        int n = (sms * 2 * 2) / kInkKVHeads;
+        if (const char* e = std::getenv("STRATA_INK_TC_ATTN_SPLITS")) n = std::atoi(e);
+        per_dev[dev] = n < 16 ? 16 : (n > kMaxSplits ? kMaxSplits : n);
+    }
+    return per_dev[dev];
+}
+
 // K/V tile buffers in shared memory: 2 = one barrier per tile (35 KB per block, 2 blocks per SM), 1 = two barriers (18 KB). D = tiles of raw K/V in flight per
 // thread (registers). STRATA_INK_TC_ATTN_NBUF=1|2 and STRATA_INK_TC_ATTN_DEPTH=1|2|3 pick them for the A/B runs.
 inline int nbuf_cfg() {
@@ -544,8 +561,9 @@ inline void launch_one(cudaStream_t st, const float* q, const float* rel, const 
         cudaFuncSetAttribute(k_ink_attn_tc<FMT, NBUF, D>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)kSmem);
         attr = true;
     }
-    const dim3 grid(kInkKVHeads, kSplits + 1, (M + rows_per_cta - 1) / rows_per_cta);
-    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, pm, pl, po, M, rows_per_cta, nslab, kSplits);
+    const int nsp = splits_cur();
+    const dim3 grid(kInkKVHeads, nsp + 1, (M + rows_per_cta - 1) / rows_per_cta);
+    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, pm, pl, po, M, rows_per_cta, nslab, nsp);
 }
 
 // Returns false when the kernel does not apply (the caller keeps the old one). tree = verify step (tk / tv / anc / dep set); else a plain step / batched rows.
@@ -575,8 +593,8 @@ inline bool launch(cudaStream_t st, const float* q, const float* rel, const floa
 inline void merge(cudaStream_t st, const float* pm, const float* pl, const float* po, const float* gate, float* out, __half2* out_h2, const int32_t* q_pos, bool tree,
                   int cap_pos, int M) {
     const dim3 grid(kInkHeads, M);
-    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, cap_pos, M, kSplits);
-    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, cap_pos, M, kSplits);
+    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, cap_pos, M, splits_cur());
+    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, cap_pos, M, splits_cur());
 }
 
 }  // namespace tcattn

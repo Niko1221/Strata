@@ -3028,7 +3028,7 @@ struct InkCudaRunner {
 
         const size_t MB = (size_t)max_batch;
         const size_t sp_cap = std::max<size_t>(std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits),   // #6671: a tree uses the M == 1 split count
-                                               sm120_cfg(m.primary_gpu).tc_attn ? (size_t)tree_cap * (size_t)tcattn::kSlots : (size_t)0);   // TC_ATTN: 64 slices + the verify tail per head
+                                               sm120_cfg(m.primary_gpu).tc_attn ? (size_t)tree_cap * (size_t)tcattn::kSlots : (size_t)0);   // TC_ATTN: up to 96 slices + the verify tail per head (85 on a 5090)
         const size_t x_bf16_elems = m.all_sf4_vram
             ? std::max<size_t>(MB * (size_t)(3 * kInkHidden), 256ull * kInkDsparkInter)
             : (MB * (size_t)std::max(kInkDsparkInter, std::max(kInkQDim, kInkHidden)));
@@ -4988,7 +4988,7 @@ struct InkCudaRunner {
                 dim3 gsp(kInkKVHeads, n_sp, M);
                 // fast only (STRATA_INK_SM120_TC_ATTN): tensor-core split-K for the global visits; falls back to the old kernels for K8V8 / K8V4 KV, SWA visits and prefill chunks
                 bool tc_done = false;
-                if (!is_swa && sm120_cfg(m.primary_gpu).tc_attn && (mode == 2 || (mode == 0 && M == 1) || mode == 1)) {
+                if (!is_swa && sm120_cfg(m.primary_gpu).tc_attn && (mode == 2 || (mode == 0 && M <= 16) || mode == 1)) {
                     const bool deep = (mode == 2 && d_tree_anc32 != nullptr);
                     tc_done = tcattn::launch(st, d_q, d_rel_table, d_sinks, kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
                                              (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr,
