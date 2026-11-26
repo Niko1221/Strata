@@ -714,11 +714,14 @@ public:
 #endif
         );
 
-        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU OR on <= 13 GiB discrete GPUs (8/10/12 GB)
+        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU. The K/V stays FP16 on the 8 / 10 / 12 GB cards (it was FP8 there before 0.2.23: the teacher-forced
+        // KL of the CUDA 8 / 12 GB rows shows the FP8 K/V is the costly part of a small-card setup); the post-load check below still picks FP8 when the FP16 K/V does not fit.
+        // STRATA_HIP_KV_FP8_SMALL=1 brings the old default back.
         default_kv_dtype_ = opts.kv_dtype;
+        const bool kv_fp8_small = std::getenv("STRATA_HIP_KV_FP8_SMALL") && std::getenv("STRATA_HIP_KV_FP8_SMALL")[0] == '1';
         if (opts.kv_dtype_auto &&
             ((opts.parallel >= 16 && mem_info_.effective_total_bytes <= 36ULL * 1073741824ULL) ||
-             (!mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL))) {
+             (kv_fp8_small && !mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL))) {
             default_kv_dtype_ = KvDtype::FP8_E4M3;
         }
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
