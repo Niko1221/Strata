@@ -39,7 +39,7 @@ DEFAULT_CELLS = "512:0:256,4096:0:256,4096:0.7:256,16384:0:256,16384:0.7:256,327
 WORDS = ("river stone market lantern copper winter garden signal harbor needle orbit velvet canyon ember ledger quartz "
          "meadow anchor violet thunder cedar marble piston ribbon cobalt falcon glacier hollow ivory juniper kernel "
          "lattice mirror nectar oasis pepper quarry raven saddle tundra umber vessel willow xenon yellow zephyr "
-         "birch cinder dune elm fjord granite heather inlet jetty kiln lagoon mesa niche opal prairie quill").split()
+         "basalt cinder dune elm fjord granite heather inlet jetty kiln lagoon mesa niche opal prairie quill").split()
 
 
 def build_prompt(target_tokens: int, nonce: str) -> str:
