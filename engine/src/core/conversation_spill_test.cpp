@@ -412,6 +412,106 @@ int main() {
         }
         sp.close();
     }
+    {   // R9 fix + ladder: keep_serial spares the picked entry; the default sweep is unchanged; anchor table
+        auto im = [](std::vector<int32_t> ids, std::vector<std::vector<int32_t>> cks = {}) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.assign(1 << 20, 5);
+            s.cvec = true;
+            for (auto& v : cks) { ConversationCheckpoint c; c.ids = v; s.checkpoints.push_back(c); }
+            return s;
+        };
+        auto seq = [](int n) { std::vector<int32_t> v(n); for (int i = 0; i < n; ++i) v[i] = 1 + i; return v; };
+        std::string e3;
+        const SessionFileIdentity ID{0xc3, 7};
+        {   // keep_serial semantics
+            const fs::path kroot = fs::temp_directory_path() / ("strata-spill-r9-" + std::to_string(std::random_device{}()));
+            ConversationSpill s;
+            check(s.open(kroot, uint64_t(64) << 20, e3), "R9: spill opens");
+            uint64_t xs = 0;
+            check(s.put(im(seq(10)), ID, e3, &xs), "R9: park X");
+            check(s.put(im(seq(12)), ID, e3, nullptr, xs) && s.find(xs) && s.size() == 2, "R9: keep_serial spares the picked entry through a grown park");
+            check(s.put(im(seq(14)), ID, e3) && !s.find(xs) && s.size() == 1, "R9: the default sweep (keep 0) still supersedes it: baseline unchanged");
+            s.close();
+            fs::remove_all(kroot, ec);
+        }
+        {   // R10: full tier, foreign park: the LRU fallback spares keep_serial and evicts the other entry instead
+            const fs::path troot = fs::temp_directory_path() / ("strata-spill-r10-" + std::to_string(std::random_device{}()));
+            ConversationSpill s;
+            const uint64_t cap = uint64_t(4) << 20;   // two entries at the cap, the third forces the sweep
+            check(s.open(troot, cap, e3), "R10: full-tier spill opens");
+            uint64_t xs = 0, ws = 0;
+            check(s.put(im(seq(10)), ID, e3, &xs) && s.put(im({50, 51, 52, 53, 54, 55}), ID, e3, &ws), "R10: two unrelated entries at the cap");
+            check(s.put(im(seq(12)), ID, e3, nullptr, xs), "R10: a foreign park at the full tier still writes with a keep");
+            check(s.find(xs) && !s.find(ws) && s.size() == 2, "R10: the LRU fallback spared the kept entry and evicted the other");
+            s.close();
+            fs::remove_all(troot, ec);
+        }
+        {   // R10: only the kept entry is left: the park fails cleanly, the kept entry stays
+            const fs::path oroot = fs::temp_directory_path() / ("strata-spill-r10b-" + std::to_string(std::random_device{}()));
+            ConversationSpill s;
+            const uint64_t cap = uint64_t(3) << 20;   // one entry at the cap
+            check(s.open(oroot, cap, e3), "R10: single-entry tier opens");
+            uint64_t xs = 0;
+            check(s.put(im(seq(10)), ID, e3, &xs), "R10: the single entry parks");
+            std::string e4;
+            check(!s.put(im(seq(12)), ID, e4, nullptr, xs) && s.find(xs) && s.size() == 1, "R10: park fails cleanly with no victim but the kept entry: it stays");
+            s.close();
+            fs::remove_all(oroot, ec);
+        }
+        {   // R10: a pick (touch) refreshes recency: the LRU fallback takes the NOT-recently-matched entry
+            const fs::path uroot = fs::temp_directory_path() / ("strata-spill-r10c-" + std::to_string(std::random_device{}()));
+            ConversationSpill s;
+            const uint64_t cap = uint64_t(4) << 20;   // two entries at the cap, the third forces the sweep
+            check(s.open(uroot, cap, e3), "R10: recency spill opens");
+            uint64_t xs = 0, ws = 0;
+            check(s.put(im(seq(10)), ID, e3, &xs) && s.put(im({50, 51, 52, 53, 54, 55}), ID, e3, &ws), "R10: two unrelated entries parked (X older)");
+            s.touch(xs);
+            check(s.put(im({90, 91, 92, 93}), ID, e3), "R10: a third foreign park at the full tier");
+            check(s.find(xs) && !s.find(ws) && s.size() == 2, "R10: the touched entry is now the freshest: the older one goes");
+            s.close();
+            fs::remove_all(uroot, ec);
+        }
+        // R11: seam-tolerant supersede (BPE re-tokenization is not append-stable) - one fresh spill per case
+        auto grow = [](int m){ std::vector<int32_t> v(m); for (int i = 0; i < m; ++i) v[i] = i; return v; };
+        for (int rc = 0; rc < 5; ++rc) {
+            const fs::path sroot = fs::temp_directory_path() / ("strata-spill-r11-" + std::to_string(rc) + "-" + std::to_string(std::random_device{}()));
+            ConversationSpill s;
+            check(s.open(sroot, uint64_t(64) << 20, e3), "R11: seam spill opens");
+            if (rc == 0) {   // (a) exact growth still supersedes
+                uint64_t a1 = 0;
+                check(s.put(im(grow(500)), ID, e3, &a1) && s.put(im(grow(700)), ID, e3) && s.size() == 1 && !s.find(a1),
+                      "R11(a): exact growth still retires the older park");
+            } else if (rc == 1) {   // (b) seam-different tail: agree for 500, 60-token seam, image grows past it
+                std::vector<int32_t> e = grow(560), g = grow(560);
+                for (int i = 500; i < 560; ++i) g[i] = i + 10000;
+                g.insert(g.end(), 120, 20000);
+                uint64_t b1 = 0;
+                check(s.put(im(e), ID, e3, &b1) && s.put(im(g), ID, e3) && s.size() == 1 && !s.find(b1),
+                      "R11(b): a seam-different tail still retires - the zombies go");
+            } else if (rc == 2) {   // (c) genuine divergence deeper than the seam window: NOT superseded
+                std::vector<int32_t> e = grow(3000), g = grow(3100);
+                for (int i = 400; i < 3100; ++i) g[i] = i + 100000;
+                uint64_t c1 = 0;
+                check(s.put(im(e), ID, e3, &c1) && s.put(im(g), ID, e3) && s.find(c1) && s.size() == 2,
+                      "R11(c): divergence deeper than the seam window is a real branch: its entry stays");
+            } else if (rc == 3) {   // (d) keep_serial still spares the entry in both scans
+                std::vector<int32_t> e = grow(560), g = grow(560);
+                for (int i = 520; i < 560; ++i) g[i] = i + 50000;
+                g.insert(g.end(), 40, 60000);
+                uint64_t d1 = 0;
+                check(s.put(im(e), ID, e3, &d1) && s.put(im(g), ID, e3, nullptr, d1) && s.find(d1) && s.size() == 2,
+                      "R11(d): the kept (picked) entry is spared from the seam sweep too");
+            } else {          // (e) a shorter new park never supersedes a longer old one
+                std::vector<int32_t> e = grow(900), g = grow(300);
+                uint64_t f1 = 0;
+                check(s.put(im(e), ID, e3, &f1) && s.put(im(g), ID, e3) && s.find(f1) && s.size() == 2,
+                      "R11(e): a shorter park (a rewind snapshot) does not retire the longer one");
+            }
+            s.close();
+            fs::remove_all(sroot, ec);
+        }
+    }
     fs::remove_all(root, ec);
     std::printf("conversation_spill_test: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

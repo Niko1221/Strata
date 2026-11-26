@@ -276,7 +276,7 @@ public:
         std::filesystem::path file;
         uint64_t bytes = 0;
         bool cvec = false;
-        uint64_t used = 0;                               // last use (written, matched-and-read): the least recently used goes first
+        mutable uint64_t used = 0;                         // last use (written, matched-and-read, and picked): the least recently used goes first
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
     };
@@ -307,6 +307,15 @@ public:
     SpillBudget budget() const { std::lock_guard<std::mutex> lk(mu_); return budget_; }
     Entry entry(size_t i) const { std::lock_guard<std::mutex> lk(mu_); return entries_.at(i); }
     /// the entry `serial` (a copy), if it is still listed
+    /// Recency bookkeeping (R10): a pick is a matched-and-read, so it refreshes the entry's `used` - without it a
+    /// picked-but-unread entry looks stale to the budget LRU fallback at a full tier and is evicted before its own
+    /// restore (the observed field failure: the picked serial was the least recently used and went first). Purely additive.
+    void touch(uint64_t serial) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (entries_[i].serial == serial) { entries_[i].used = ++tick_; return; }
+    }
+
     std::optional<Entry> find(uint64_t serial) const {
         std::lock_guard<std::mutex> lk(mu_);
         const size_t i = index_locked(serial);
@@ -317,7 +326,12 @@ public:
     /// Writes `image` as an entry (its serial in `*serial_out`).  False (with `error`) when the tier is off, the image is larger
     /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
     /// lock, under a budget reserved for it.
-    bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
+    /// `keep_serial`: this entry's serial is excluded from the supersede sweep. The serve loop can park an
+    /// outgoing conversation mid-request, between pick and restore; the picked entry is often an older
+    /// snapshot of that very conversation and the sweep would otherwise delete it before its own read (the
+    /// pick/restore race of the resume ladder). Default 0: every caller behaves as before.
+    bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr,
+             uint64_t keep_serial = 0) {
         const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
         uint64_t serial = 0;
         std::filesystem::path f;
@@ -329,8 +343,10 @@ public:
                 if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
                 size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
                 for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
-                    if (superseded_by(entries_[i], image)) victim = i;
-                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
+                    if (entries_[i].serial != keep_serial && superseded_by(entries_[i], image)) victim = i;
+                const size_t lru = lru_locked(keep_serial);
+                if (victim == SIZE_MAX && lru == SIZE_MAX) { error = "the tier holds only the kept entry: no room to park"; return false; }
+                drop_locked(victim != SIZE_MAX ? victim : lru);
             }
             serial = next_serial_++;
             f = ns_.file_for(serial);
@@ -360,9 +376,9 @@ public:
         e.used = ++tick_;
         // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
         for (size_t i = entries_.size(); i-- > 0;)
-            if (superseded_by(entries_[i], image)) drop_locked(i);
+            if (entries_[i].serial != keep_serial && superseded_by(entries_[i], image)) drop_locked(i);
         entries_.push_back(std::move(e));
-        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
+        while (budget_.over()) { const size_t v = lru_locked(keep_serial); if (v == SIZE_MAX) break; drop_locked(v); }   // (a file larger than its estimate)
         if (serial_out) *serial_out = serial;
         return true;
     }
@@ -474,17 +490,42 @@ private:
     }
     bool persistent_now() const { std::lock_guard<std::mutex> lk(mu_); return ns_.persistent(); }
     static std::filesystem::path meta_path(std::filesystem::path f) { return f.replace_extension(".meta"); }
-    size_t lru_locked() const {
-        size_t b = 0;
-        for (size_t i = 1; i < entries_.size(); ++i)
-            if (entries_[i].used < entries_[b].used) b = i;
+    /// the least recently used, sparing `keep_serial` when given (R10: a park between pick and restore must not
+    /// budget-evict the entry the incoming request is about to read - at a full tier the supersede victim scan comes
+    /// up empty for a foreign conversation and the LRU fallback used to eat the picked entry). Default 0: unchanged.
+    size_t lru_locked(uint64_t keep_serial = 0) const {
+        size_t b = SIZE_MAX;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].serial == keep_serial) continue;
+            if (b == SIZE_MAX || entries_[i].used < entries_[b].used) b = i;
+        }
         return b;
     }
-    /// `e` is a prefix (equal or shorter) of `image`'s live tokens, same steering and pictures: `image` serves every resume `e` could
+    /// `e` is a prefix (equal or shorter) of `image`'s live tokens up to a re-tokenization seam, same steering and
+    /// pictures: `image` serves every deep resume `e` could. The prefix test is SEAM-TOLERANT (R11): the harness
+    /// re-tokenizes the whole context every turn and BPE is not append-stable - the seam near the previous last reply
+    /// and the new turn merges differently - so the ids of a grown conversation disagree with its own older park in a
+    /// narrow window near its end. An exact prefix never matched on real traffic: parks accumulated as per-turn
+    /// zombies of one live session (observed: 38 coexisting copies, the tier flooded, the budget sweep then ate idle
+    /// sessions' only entries). We retire when the ids agree for everything outside that seam window: the common
+    /// prefix reaches n - kSeamSlack. The slack is far below the 8704-row set ring on purpose: divergence deeper
+    /// than the seam window is a real branch or rewind, and that entry is kept. Caveat, accepted: two different
+    /// conversations that differ ONLY inside a trailing slack-sized window (and one continues the other) can retire
+    /// each other; a continuation past such a window diverges by more than the seam from the sibling and keeps its
+    /// entry by the same rule.
+    static constexpr size_t kSeamSlack = 2048;   // re-tokenization seam window; << the 8704-row set ring
     static bool superseded_by(const Entry& e, const SavedConversation& image) {
         const size_t n = e.live.ids.size();
-        if (n == 0 || e.cvec != image.cvec || n > image.live.ids.size() ||
-            !std::equal(e.live.ids.begin(), e.live.ids.end(), image.live.ids.begin())) return false;
+        if (n == 0 || e.cvec != image.cvec || n > image.live.ids.size()) return false;
+        {
+            size_t p = 0;   // the common prefix must cover all but a seam window at e's end
+            while (p < n && e.live.ids[p] == image.live.ids[p]) ++p;
+            if (p + kSeamSlack < n) return false;
+            // A seam can never swallow most of an entry: require the shared prefix to cover more than half of it.
+            // Without this, short parks (n below the slack window) would retire each other on a token of overlap -
+            // unrelated conversations deleted one another's only entry.
+            if (p * 2 < n) return false;
+        }
         for (const auto& k : e.live.imgs) {   // its pictures are the first ones of the image's
             bool found = false;
             for (const auto& m : image.live.imgs) if (m == k) { found = true; break; }
@@ -624,7 +665,8 @@ private:
     SpillNamespace ns_;
     SpillBudget budget_;
     std::vector<Entry> entries_;
-    uint64_t next_serial_ = 1, tick_ = 0;
+    uint64_t next_serial_ = 1;
+    mutable uint64_t tick_ = 0;
 };
 
 /// The best prefix a parked image gives `prompt`, by the RAM cache's rule (its live state or a checkpoint, same pictures, same
