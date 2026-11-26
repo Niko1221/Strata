@@ -1122,6 +1122,10 @@ int main(int argc, char** argv) {
         const char* q8e = std::getenv("STRATA_INK_Q8_0_DENSE");
         ink2::gguf_detail::keep_q8_0_dense() = !(q8e && q8e[0] == '0');
     }
+    // One CUDA GPU (sm_61 or newer: the Q8_ROW kernels): a GSQ-RCO file may compact its trunk (the loader decides per file; STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty() && ink2::ink_cuda_compact_trunk_supported(cfg.bopts.gpu_index)) {
+        ink2::gguf_detail::compact_trunk_allowed() = true;
+    }
 #endif
 
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);

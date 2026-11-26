@@ -1514,6 +1514,18 @@ struct InkCudaModel {
         std::vector<uint8_t> sec1;
         if (!mf.read_section1(sec1, err)) return false;
         trunk_bytes = sec1.size();
+        if (mf.m.embed_host_tail && !ls_active && !ep2_active) {
+            // GGUF compact trunk (GSQ-RCO files, see ink_gguf_loader.h): the embedding is the last tensor; it stays in pinned mapped host RAM (0 MiB of VRAM)
+            const auto& ei_h = man.get("model.llm.embed.weight");
+            if ((size_t)ei_h.off + (size_t)ei_h.bytes == trunk_bytes) {
+                INK_CK(cudaHostAlloc(&h_embed_raw, (size_t)ei_h.bytes, cudaHostAllocMapped));
+                std::memcpy(h_embed_raw, sec1.data() + ei_h.off, (size_t)ei_h.bytes);
+                void* dp = nullptr;
+                INK_CK(cudaHostGetDevicePointer(&dp, h_embed_raw, 0));
+                d_embed_mapped = static_cast<uint8_t*>(dp);
+                trunk_bytes = (size_t)ei_h.off;
+            }
+        }
         INK_CK(cudaMalloc(&d_trunk, std::max<size_t>(256, trunk_bytes)));
         if (trunk_bytes > 0) INK_CK(cudaMemcpy(d_trunk, sec1.data(), trunk_bytes, cudaMemcpyHostToDevice));
         double t_trunk = now_s() - t0;
@@ -2211,6 +2223,17 @@ struct InkCudaModel {
                 h_exp0[key] = d0;
                 h_exp1[key] = d1;
             }
+            if (moe_info[il].has_gguf) {   // one ggml type pair for the whole layer -> the type-specialised decode kernels
+                uint32_t gt = 0, dt = 0; bool uni = true, first = true;
+                for (int r = 0; r < E; ++r) {
+                    if (layer_gu_code[r] != FMT_GGUF_RAW || layer_bodies[r].size() < sizeof(InkGgufExpertHeader)) { uni = false; break; }
+                    InkGgufExpertHeader gh{};
+                    std::memcpy(&gh, layer_bodies[r].data(), sizeof(gh));
+                    if (first) { gt = gh.gu_type; dt = gh.dn_type; first = false; }
+                    else if (gh.gu_type != gt || gh.dn_type != dt) { uni = false; break; }
+                }
+                if (uni && !first) { moe_info[il].gguf_gu_t = gt; moe_info[il].gguf_dn_t = dt; }
+            }
         }
         INK_CK(cudaSetDevice(primary_gpu));
         if (n_host_experts > 0) {
@@ -2307,6 +2330,15 @@ struct InkCudaModel {
                 INK_CK(cudaDeviceSynchronize());
                 unembed_screen.ready = true;
             }
+        } else if (ui.fmt == FMT_Q8ROW) {
+            // the loader's compact trunk (GGUF, GSQ-RCO): Q8_ROW unembed shared as the screen, as the .strata compact trunk does (0 MiB duplicate)
+            unembed_screen.V        = man.c.vocab_unpadded;
+            unembed_screen.V_pad    = (int)ui.rows();
+            unembed_screen.sc       = reinterpret_cast<float*>(d_trunk + ui.off);
+            unembed_screen.q8       = reinterpret_cast<int8_t*>(d_trunk + ui.off + (size_t)ui.rows() * 4u);
+            unembed_screen.eps      = nullptr;
+            unembed_screen.borrowed = true;
+            unembed_screen.ready    = true;
         }
 
         if (ls_active) {

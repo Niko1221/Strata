@@ -193,6 +193,9 @@ struct InkManifest {
     std::unordered_map<std::string, TInfo> dspark_tensors;
     std::string chat_template;
     std::string tokenizer_json;  // optional in v1.1 (may be empty if external tokenizer.json)
+    // GGUF trunk compacted for a 12 GB card (CUDA, single GPU; see ink_gguf_loader.h): the token embedding is the LAST tensor of Section 1 and stays in
+    // pinned host RAM, the dense attention matrices are Q8_0 (fragment order), the unembed is Q8_ROW. False for every other file.
+    bool embed_host_tail = false;
 
     const TInfo* find_trunk(const std::string& n) const {
         auto it = trunk.find(n);

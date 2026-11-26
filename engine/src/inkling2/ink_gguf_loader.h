@@ -45,6 +45,55 @@ inline bool& keep_q8_0_dense() {
     return v;
 }
 
+// Set by the CUDA front end (one GPU, sm_80+) next to keep_q8_0_dense: allow the compact trunk for a file of the GSQ-RCO kind (experts of mixed IQ types).
+// The loader then decides per file (compact_trunk_wanted below). STRATA_INK_GGUF_COMPACT=0 / 1 forces off / on for such a front end.
+inline bool& compact_trunk_allowed() {
+    static bool v = false;
+    return v;
+}
+
+// A GGUF file whose routed experts use the GSQ-RCO types (IQ1_S, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_S gate/up, Q2_0 down): about 9.5 GB of experts, which only fit
+// a 12 GB card when the trunk is compact (host embedding, Q8_0 attention, Q8_ROW unembed) instead of 3.9 GB of BF16.
+inline bool type_is_rco_only(uint32_t t) noexcept { return t == 16 || t == 17 || t == 19 || t == 21 || t == 22 || t == 42; }
+
+// ggml's Q8_0 row quantiser: per 32 values d = amax / 127 (stored fp16), q = round(x / d). out = cols / 32 blocks of 34 bytes.
+inline void quantize_row_q8_0_bytes(const float* x, uint8_t* out, int64_t cols) {
+    for (int64_t b = 0; b < cols / 32; ++b) {
+        const float* xb = x + b * 32;
+        float amax = 0.0f;
+        for (int j = 0; j < 32; ++j) amax = std::max(amax, std::fabs(xb[j]));
+        const float d = amax / 127.0f;
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        const uint16_t h = f32_to_fp16(d);
+        uint8_t* ob = out + static_cast<size_t>(b) * 34;
+        std::memcpy(ob, &h, 2);
+        for (int j = 0; j < 32; ++j) {
+            const float q = std::round(xb[j] * id);
+            ob[2 + j] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127.0f, std::min(127.0f, q))));
+        }
+    }
+}
+
+// STRATA_INK_DRAFTER=dflash2 and its weights found: STRATA_INK_DFLASH2 (a file or a folder with model.safetensors / dflash2.safetensors), else a sidecar in the model's folder
+// (the same lookup as cuda/ink_dflash2_path.cuh).
+inline bool dflash2_sidecar_wanted(const std::string& model_path) {
+    const char* d = std::getenv("STRATA_INK_DRAFTER");
+    if (!d) return false;
+    std::string s(d);
+    for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (s != "dflash2") return false;
+    auto exists = [](const std::string& p) { std::FILE* f = std::fopen(p.c_str(), "rb"); if (f) { std::fclose(f); return true; } return false; };
+    if (const char* e = std::getenv("STRATA_INK_DFLASH2")) {
+        const std::string v(e);
+        return exists(v) || exists(v + "/model.safetensors") || exists(v + "/dflash2.safetensors");
+    }
+    std::string dir = model_path;
+    const size_t sl = dir.find_last_of("/\\");
+    dir = (sl == std::string::npos) ? std::string(".") : dir.substr(0, sl);
+    return exists(dir + "/dflash2.safetensors") || exists(dir + "/Inkling-2-Mini-DFlash2.safetensors") ||
+           exists(dir + "/Inkling-2-Mini-DFlash2/model.safetensors") || exists(dir + "/Inkling-2-Mini-DFlash2/dflash2.safetensors");
+}
+
 inline bool has_gguf_magic(const std::string& path) {
     std::FILE* fp = std::fopen(path.c_str(), "rb");
     if (!fp) return false;
@@ -348,10 +397,25 @@ struct GgufAdapter {
         is_rewrite_layout = (model->find("blk.0.ffn_gate_up_exps.weight") != nullptr);
         is_merged_layout  = is_rewrite_layout && (model->find("loop_res_query.weight") == nullptr);
 
+        // Compact trunk (CUDA, one GPU): only for a file with GSQ-RCO expert types, unless STRATA_INK_GGUF_COMPACT says otherwise.
+        bool compact_trunk = false;
+        if (gguf_detail::compact_trunk_allowed() && is_rewrite_layout) {
+            bool rco = false;
+            for (int il = 0; il < 64; ++il) {
+                const strata::TensorInfo* tg = model->find("blk." + std::to_string(il) + ".ffn_gate_up_exps.weight");
+                const strata::TensorInfo* td = model->find("blk." + std::to_string(il) + ".ffn_down_exps.weight");
+                if (!tg || !td) break;
+                if (gguf_detail::type_is_rco_only(tg->type) || gguf_detail::type_is_rco_only(td->type)) rco = true;
+            }
+            const char* ce = std::getenv("STRATA_INK_GGUF_COMPACT");
+            compact_trunk = (ce && ce[0] == '0') ? false : ((ce && ce[0] == '1') ? true : rco);
+        }
+
         // 1. Parse InkCfg from GGUF metadata (supports BOTH llama.cpp master & PR #32187 keys)
         m = ManifestT{};
         m.format = "gguf";
         m.arch = "inkling2_loop";
+        m.embed_host_tail = compact_trunk;
         {
             const std::string ap = arch_v->s + ".";
             auto get_num = [&](const std::vector<const char*>& keys, double def) -> double {
@@ -494,12 +558,54 @@ struct GgufAdapter {
             return true;
         };
 
+        // FMT_Q8ROW ([n_pad] fp32 row scales, then [n_pad][cols] int8; rows past n_src are zero), built from any dequantisable source type:
+        // scale = row absmax / 127, q = round-to-nearest-even of w / scale (what the runner's BF16 -> Q8_ROW kernel does).
+        auto copy_mat_q8row = [&](const std::string& gguf_name, const std::string& canon_name, int64_t n_src, int64_t n_pad, int64_t cols) -> bool {
+            const strata::TensorInfo* ti = nullptr;
+            const uint8_t* ptr = tensor_ptr(*model, gguf_name, ti);
+            if (!ti || !ptr) { err = "GGUF: missing tensor " + gguf_name; return false; }
+            const size_t rbs = gguf_detail::gguf_row_bytes(ti->type, cols);
+            if (rbs == 0) { err = "GGUF: unsupported dense type " + std::string(ti->type_name()) + " for " + gguf_name; return false; }
+            const size_t nb = static_cast<size_t>(n_pad) * 4u + static_cast<size_t>(n_pad) * static_cast<size_t>(cols);
+            size_t off = align64(sec1_arena.size());
+            sec1_arena.resize(off + nb, 0);
+            float* sc = reinterpret_cast<float*>(sec1_arena.data() + off);
+            int8_t* qd = reinterpret_cast<int8_t*>(sec1_arena.data() + off + static_cast<size_t>(n_pad) * 4u);
+            std::vector<float> rowf(static_cast<size_t>(cols));
+            for (int64_t r = 0; r < n_src; ++r) {
+                if (!gguf_detail::gguf_dequant_row_f32(ti->type, ptr + static_cast<size_t>(r) * rbs, rowf.data(), cols)) {
+                    err = "GGUF: dequant failed for " + gguf_name;
+                    return false;
+                }
+                float amax = 0.0f;
+                for (int64_t j = 0; j < cols; ++j) amax = std::max(amax, std::fabs(rowf[static_cast<size_t>(j)]));
+                const float s = amax > 0.0f ? amax * (1.0f / 127.0f) : 0.0f;
+                const float inv = s > 0.0f ? 1.0f / s : 0.0f;
+                sc[r] = s;
+                int8_t* qr = qd + static_cast<size_t>(r) * static_cast<size_t>(cols);
+                for (int64_t j = 0; j < cols; ++j) {
+                    const float q = std::nearbyint(rowf[static_cast<size_t>(j)] * inv);
+                    qr[j] = static_cast<int8_t>(std::max(-127.0f, std::min(127.0f, q)));
+                }
+            }
+            TInfoT out_ti;
+            out_ti.name = canon_name;
+            out_ti.fmt = 100;   // F_Q8ROW
+            out_ti.shape = {n_pad, cols};
+            out_ti.off = off;
+            out_ti.bytes = nb;
+            m.trunk[canon_name] = std::move(out_ti);
+            return true;
+        };
+
         // A dense matrix: a Q8_0 one stays Q8_0 when the CUDA front end asked for it, anything else goes through copy_mat_bf16.
         //   frag == false (the embedding table): fmt 104, as stored, row by row: [rows][cols/32] fp16 scales, then [rows][cols] int8.
         //   frag == true (the attention matrices): fmt 105, in the order the int8 tensor-core GEMM reads (k_ink_gemm_q8f in
         //   cuda/ink_kernels.cuh): per 16-row tile and 32-wide block 512 bytes, one 16-byte A fragment per lane, then the scales
         //   [rows/16][cols/32][16] fp16.
         auto copy_mat_dense = [&](const std::string& gguf_name, const std::string& canon_name, int64_t rows, int64_t cols, bool frag) -> bool {
+            // compact trunk (GSQ-RCO files): every attention matrix becomes FMT_Q8ROW, the layout the SQ packs use and the sm_120 kernels are tuned for
+            if (compact_trunk && frag) return copy_mat_q8row(gguf_name, canon_name, rows, rows, cols);
             const strata::TensorInfo* ti = nullptr;
             const uint8_t* ptr = gguf_detail::keep_q8_0_dense() ? tensor_ptr(*model, gguf_name, ti) : nullptr;
             if (!ptr || !ti || ti->type != 8 || (cols % 32) != 0 || ((rows * cols) % 256) != 0 || (frag && (rows % 16) != 0)) {
@@ -570,13 +676,22 @@ struct GgufAdapter {
         const int kv_dim = c.n_kv * c.head_dim;
 
         // the CUDA embedding kernel finds the int8 plane of a Q8_0 table at 201,024 rows (kInkVocabPad, as for Q8_ROW)
-        if (c.vocab_padded == 201024) {
+        if (compact_trunk) {
+            // the embedding goes last in Section 1 (below), the runner keeps it in pinned host RAM
+        } else if (c.vocab_padded == 201024) {
             if (!copy_mat_dense("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D, false)) return false;
         } else if (!copy_mat_bf16("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D)) {
             return false;
         }
         if (!copy_vec_f32("token_embd_norm.weight", "model.llm.embed_norm.weight", {D})) return false;
-        if (!copy_mat_bf16("output.weight", "model.llm.unembed.weight", c.vocab_padded, D)) return false;
+        if (compact_trunk) {
+            // unembed -> FMT_Q8ROW (rows past the unpadded vocab are zero), the layout the runner's Q8_ROW unembed and argmax kernels read
+            const int64_t n_src = std::min<int64_t>(c.vocab_padded, c.vocab_unpadded);
+            const int64_t n_pad = (static_cast<int64_t>(c.vocab_unpadded) + 3) & ~static_cast<int64_t>(3);
+            if (!copy_mat_q8row("output.weight", "model.llm.unembed.weight", n_src, n_pad, D)) return false;
+        } else if (!copy_mat_bf16("output.weight", "model.llm.unembed.weight", c.vocab_padded, D)) {
+            return false;
+        }
         if (!copy_vec_f32("output_norm.weight", "model.llm.norm.weight", {D})) return false;
         if (!copy_vec_f32(nm("", "output_res_score.weight"), "model.llm.attn_res.output_query", {D})) return false;
 
@@ -860,6 +975,12 @@ struct GgufAdapter {
                 }
             }
         }
+        // A GGUF has no drafter of its own (GSQ-RCO files ship none). With STRATA_INK_DRAFTER=dflash2 and its sidecar file at hand the model is marked as having one:
+        // the CUDA engine's DFlash 2 drafter brings its own weights, so there are no DSpark tensors to load (opt-in; the CUDA backend reads the same switch).
+        if (!m.dspark.present && gguf_detail::dflash2_sidecar_wanted(path)) m.dspark.present = true;
+
+        // Compact trunk: the embedding is the last tensor of Section 1 (BF16, 0.93 GB), the runner keeps it in pinned host RAM and uploads the rest.
+        if (compact_trunk && !copy_mat_bf16("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D)) return false;
 
         // The trunk, drafter and vision tensors are copied into sec1_arena by now: drop their mapped pages (everything but the routed experts).
         for (size_t si = 0; si < model->size(); ++si)
