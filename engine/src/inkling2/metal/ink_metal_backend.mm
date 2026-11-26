@@ -250,6 +250,10 @@ public:
         const auto& c = mod_.man.c;
         const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
         runner_.restore_slot(slot, ck.sconv);
+        // The target is back at the prompt boundary. Rebuild the external
+        // drafter from the retained target rows before asking for candidates.
+        auto history = runner_.feature_history.find(slot);
+        if (history != runner_.feature_history.end()) history->second.sent = -1;
         for (int v = 0; v < c.n_visits; ++v) {
             if (ck.swa_k[v].empty()) continue;
             const size_t stride = (size_t)runner_.visit_kv_stride[v];
@@ -397,7 +401,11 @@ public:
             const bool reset=history.sent<0;
             const int start=std::max({0,history.sent,anchor_pos-2047});
             const int kept=anchor_pos-start;
-            for(int pos=start;pos<anchor_pos;++pos) if(history.positions[pos%history.capacity]!=pos){err="missing DFlash prefix feature";return -1;}
+            // Generation can evict prompt features from the ring. Continue
+            // ordinary decoding until the whole draft window is available.
+            for (int pos = start; pos < anchor_pos; ++pos) {
+                if (history.positions[pos % history.capacity] != pos) return 0;
+            }
             auto transfer = [&](void* data, size_t bytes, bool sending) {
                 char* cursor = static_cast<char*>(data);
                 while (bytes) {
