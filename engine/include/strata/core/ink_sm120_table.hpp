@@ -138,12 +138,25 @@ struct Sm120Row {
     { {128, 16, Sm120Tc::Direct, Sm120Tc::Base, 128}, {160, 32, Sm120Tc::Direct, Sm120Tc::Base, 128}, \
       {1536, 64, Sm120Tc::Direct, Sm120Tc::Base, 128}, {1 << 30, 128, Sm120Tc::Tr128Bk128, Sm120Tc::Tr128, 128} }, 4
 
+// 16 GB cards other than the 5060 Ti (RTX 5080, 5070 Ti; rows lane 11-26): the same tiles as the small rows, but Bk128 for the SF4 and MX8 experts below M = 1536: +7-9% mean steps/s on both cards.
+#define STRATA_SM120_SMALL_MOE_BK \
+    { {128, 16, Sm120Tc::Bk128, Sm120Tc::Bk128, 128}, {160, 32, Sm120Tc::Bk128, Sm120Tc::Bk128, 128}, \
+      {1536, 64, Sm120Tc::Bk128, Sm120Tc::Bk128, 128}, {1 << 30, 128, Sm120Tc::Tr128Bk128, Sm120Tc::Tr128, 128} }, 4
+
 constexpr uint32_t kSm120BigFast = P_PF_ATTN | P_FP8_TRUNK | P_MOE_OPT | P_DENSE_OPT | P_DSPARK_OPT | P_C64_SPEC;   // P_TC_ATTN joins this set only after the long-context A/B and the KL check (PERF-LONGCTX)
 // The 5090 row's default set: the big set plus TC_ATTN (11-26: FASTQ tools 24/26 and 24/26, code 11/11 both, math 146/150 and 148/150, needles 20/20 both with and without it, KL at the engine's noise floor,
 // 128K decode 84 -> 238 tok/s; STRATA_INK_SM120_TC_ATTN=0 takes it out). The other big rows (placeholders, DGX Spark) keep the big set until they are measured.
 constexpr uint32_t kSm120Fast5090 = kSm120BigFast | P_TC_ATTN;
 // The exact form must not change the DRAFTING POLICY against off (tree shape, window, beam, node count, spec_cost, slot cap): with DFlash 2 as the only drafter DSPARK_OPT (deep verify tree, 2-block chain, row spec numbers) does, and the Spark and the R9700 saw exact differ from off for that reason, so the 5090 exact set is EMPTY: only the bit-identical kernels that have their own switches (PDL, PFQ, the sm_120a build) differ from off.
 constexpr uint32_t kSm120BigExact = 0;
+// The RTX PRO cards (rows lane 11-26): the 5090 set plus TC_ATTN. With the 5090 row alone the PRO 5000 72 GB, the PRO 6000 and the PRO 4500 / 4000 decoded SLOWER than off at 32K
+// (PRO 5000 72 GB, DSpark: 150 off, 111 fast; DFlash 2: 152 off, 119 fast); fast + TC_ATTN gives 186 (DSpark) and 146 (DFlash 2), the 4K numbers do not move, and its teacher-forced KL
+// against off is the fast set's (0.006-0.011 for both, fast against fast + TC_ATTN 0.0007-0.0026, decode path, 1024 tokens x 4 sequences).
+constexpr uint32_t kSm120ProFast = kSm120BigFast | P_TC_ATTN;
+// The 8 and 12 GB cards (experts do not all fit): COMPACT with the compact trunk and the hybrid expert placement (the adaptive tier gets the 2.3 GiB the trunk frees), FP16 KV (the rule in
+// ink_sm120_compact_subparts), the tensor-core small-M kernels. PACK, PREFILL, PLD and CORE_GRAPH are out: measured on the RTX 5060 8 GB they made it slower (wider verify trees cost CPU
+// reads: 10-30 tok/s against 28-37). The batched cold-expert split between the CPU lane and PCIe comes from the card's own launch probe.
+constexpr uint32_t kSm120HybridFast = P_COMPACT | P_COMPACT_XCODE | P_COMPACT_KV | P_COMPACT_HYBRID | P_TC_SMALLM | P_L2PF;
 // The 5060 Ti fast set = COMPACT (MX8 -> SF4 transcode + FP8 KV + single slab, attention weights Q8_ROW) + the rest, WITHOUT any FP8 trunk. FASTQ 11-26: with the in-place FP8
 // trunk on, fast mode lost 17 of 26 tool calls; with FP8_TRUNK=0 (attention in Q8_ROW) it is at or above off on every suite (report-5060ti-fp8t0.md). The in-place FP8 trunk is
 // explicit-only (STRATA_INK_SM120_FP8_INPLACE=1); FP8_TRUNK (the 5090 cache engine) cannot start next to compact (no room), so it is not in this set either.
@@ -180,46 +193,46 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          0, 0, 256, 20, 512, 768, 0, 1,   // the 5090's FP8 cache: 512 MiB headroom, 768 MiB reserved for it in the K/V sizing (PLACEHOLDER: measure on a 5060 Ti)
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f, true},
         // ---- placeholders: not measured, the old path runs unless STRATA_INK_SM120_ROW names a row ----
-        {"5080", "RTX 5080", 80, 88, 15, 17, false, "placeholder: 16 GB, 84 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+        {"5080", "RTX 5080", 80, 88, 15, 17, true, "measured (rows lane 11-26, Vast 5080 16 GB): fast = compact; +60% C1 decode, 4K prefill 2.7x; 32K prefill and decode LOSE (K/V in host memory): default off, STRATA_INK_SM120=1 turns it on",
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE_BK,
          0, 0, 256, 20, 0, 0, 0, 1,
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
-        {"5070ti", "RTX 5070 Ti", 66, 74, 15, 17, false, "placeholder: 16 GB, 70 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false},
+        {"5070ti", "RTX 5070 Ti", 66, 74, 15, 17, true, "measured (rows lane 11-26, Vast 5070 Ti 16 GB): fast = compact; C1 decode +50%, 4K prefill 2.4x; 32K prefill loses: default off, STRATA_INK_SM120=1 turns it on",
+         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE_BK,
          0, 0, 256, 20, 0, 0, 0, 1,
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
-        {"5070", "RTX 5070", 44, 52, 11, 13, false, "PLACEHOLDER: 12 GB, 48 SMs; the owner's card, numbers from a rental later (compact does not fit: pack path)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+         1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false},
+        {"5070", "RTX 5070", 44, 52, 11, 13, true, "measured (rows lane 11-26, Vast 5070 12 GB, Ryzen 9 7900X, 31 GB): COMPACT_HYBRID with FP16 KV; C1 decode +30-60%, 4K prefill +37%; FASTQ within noise, KL at the engine floor",
+         kSm120HybridFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
+         1, 12, 24, 2, 2.0f, 1.02f, 0.28f, true},
         {"5060ti-8", "RTX 5060 Ti", 34, 38, 7, 9, false, "placeholder: 8 GB variant of the 5060 Ti",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
-        {"5060", "RTX 5060", 28, 32, 7, 9, false, "placeholder: 8 GB, 30 SMs; rental later",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
+        {"5060", "RTX 5060", 28, 32, 7, 9, true, "measured (rows lane 11-26, Vast 5060 8 GB, Ryzen 5 7600X, 31 GB): COMPACT_HYBRID with FP16 KV; C1 decode 2.2x on prose / tool, 1.5x on code",
+         kSm120HybridFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
+         1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false},
         {"5050", "RTX 5050", 18, 22, 7, 9, false, "PLACEHOLDER: 8 GB, 20 SMs; numbers from a rental later",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 0,
          1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
-        {"pro6000", "RTX PRO 6000", 180, 200, 90, 100, false, "placeholder: RTX PRO 6000 Blackwell (96 GB, 188 SMs)",
-         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+        {"pro6000", "RTX PRO 6000", 180, 200, 90, 100, true, "measured (rows lane 11-26, Vast PRO 6000 WS, 500 W; the Max-Q has a lower power limit): 4K / 32K prefill 2.1x / 2.2x, C4 +60%, C8 +82%",
+         kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
-        {"pro5000", "RTX PRO 5000", 100, 120, 40, 80, false, "placeholder: RTX PRO 5000 Blackwell (48 or 72 GB, 110 SMs)",
-         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
+        {"pro5000", "RTX PRO 5000", 100, 120, 40, 80, true, "measured (rows lane 11-26, 72 GB on l620 at 300 W; 48 GB on Vast): 4K / 32K prefill 2.0x / 2.5x, C4 +67%, C8 +96%",
+         kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
-        {"pro4500", "RTX PRO 4500", 76, 90, 30, 34, false, "placeholder: RTX PRO 4500 Blackwell (32 GB, 82 SMs)",
-         kSm120BigFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
+        {"pro4500", "RTX PRO 4500", 76, 90, 30, 34, true, "measured (rows lane 11-26, Vast PRO 4500 32 GB, 200 W): 4K / 32K prefill 2.1x / 2.6x, C4 +73%, C8 +102%",
+         kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 12.0f, 1.02f, 0.28f},
-        {"pro4000", "RTX PRO 4000", 66, 74, 22, 26, false, "placeholder: RTX PRO 4000 Blackwell (24 GB, 70 SMs)",
-         kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
-         0, 0, 256, 20, 0, 0, 0, 0,
-         1, 12, 24, 2, 2.0f, 1.02f, 0.28f},
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
+        {"pro4000", "RTX PRO 4000", 66, 74, 22, 26, true, "measured (rows lane 11-26, Vast PRO 4000 24 GB, 145 W): 4K / 32K prefill 1.7x / 2.2x, C4 +36%, C8 +39%; peak 23.4 GB of 24.4 (the 5090 row, not compact)",
+         kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         4096, 4800, 0, 0, 512, 768, 1536, 0,
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, false},
         {"pro2000", "RTX PRO 2000", 24, 32, 15, 17, false, "placeholder: RTX PRO 2000 Blackwell (16 GB)",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,

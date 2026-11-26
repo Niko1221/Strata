@@ -51,10 +51,10 @@ int main() {
     CHECK(ink_sm120_match(r5090) && std::string(ink_sm120_match(r5090)->id) == "5090" && ink_sm120_match(r5090)->measured);
     CHECK(ink_sm120_match(r5060ti) && std::string(ink_sm120_match(r5060ti)->id) == "5060ti-16" && ink_sm120_match(r5060ti)->measured);
     CHECK(ink_sm120_match(r5060ti8) && std::string(ink_sm120_match(r5060ti8)->id) == "5060ti-8" && !ink_sm120_match(r5060ti8)->measured);
-    CHECK(ink_sm120_match(r5070) && std::string(ink_sm120_match(r5070)->id) == "5070" && !ink_sm120_match(r5070)->measured);
+    CHECK(ink_sm120_match(r5070) && std::string(ink_sm120_match(r5070)->id) == "5070" && ink_sm120_match(r5070)->measured);
     CHECK(ink_sm120_match(r5070ti) && std::string(ink_sm120_match(r5070ti)->id) == "5070ti");   // not the 5070 row: the name is a prefix of it
     CHECK(ink_sm120_match(r5080) && std::string(ink_sm120_match(r5080)->id) == "5080");
-    CHECK(ink_sm120_match(pro6000) && std::string(ink_sm120_match(pro6000)->id) == "pro6000" && !ink_sm120_match(pro6000)->measured);
+    CHECK(ink_sm120_match(pro6000) && std::string(ink_sm120_match(pro6000)->id) == "pro6000" && ink_sm120_match(pro6000)->measured);
     CHECK(ink_sm120_match(a4000) && std::string(ink_sm120_match(a4000)->id) == "a4000" && !ink_sm120_match(a4000)->measured);   // the Ada / Ampere rows (NV-ADA-AMPERE)
     CHECK(ink_sm120_match(rtx4090) && std::string(ink_sm120_match(rtx4090)->id) == "4090" && ink_sm120_match(rtx4090)->cc == 89);
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 4090", 12, 0, 128, 24)));   // a row matches only its own family
@@ -71,16 +71,30 @@ int main() {
         int n = 0, measured = 0;
         const Sm120Row* rows = ink_sm120_rows(&n);
         for (int i = 0; i < n; ++i) if (rows[i].measured) ++measured;
-        CHECK(measured == 2);
+        CHECK(measured == 10);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26)
         // the placeholders for the cards still to rent are in the table
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));
     }
 
     CHECK(kSm120FastDefault);   // the owner's 11-26 decision: fast mode is the default on the measured rows
     // ---- nothing set: the old path on every card without a measured row, and nothing printed ----
-    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5070, &r5080, &r5070ti, &r5060ti8, &pro6000}) {   // (the Ada / Ampere rows are unmeasured too)
+    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5080, &r5070ti, &r5060ti8}) {   /* measured rows with default_on false (5080, 5070 Ti) keep the old path too; the Ada / Ampere rows are unmeasured too */
         const Sm120Decision x = decide(*d, {});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.note.empty() && !x.asked && !x.refused);
+    }
+    // ---- rows lane 11-26: the 12 GB card (COMPACT_HYBRID, FP16 KV) and the PRO cards (the 5090 set + TC_ATTN) are default on; the 16 GB 5080 / 5070 Ti are measured but default off ----
+    {
+        const Sm120Decision h = decide(r5070, {});
+        CHECK(h.mode == Sm120Decision::Fast && h.default_on_applied && (h.parts & P_COMPACT) && (h.parts & P_COMPACT_HYBRID) && !(h.parts & P_COMPACT_KV) && (h.parts & P_COMPACT_XCODE));
+        CHECK(!(h.parts & (P_PACK | P_PREFILL | P_PLD | P_CORE_GRAPH)));
+        const Sm120Decision h2 = decide(r5070, {{"STRATA_INK_SM120", "1"}, {"STRATA_INK_SM120_COMPACT_KV", "1"}});   // the FP8 KV only when named
+        CHECK((h2.parts & P_COMPACT_KV));
+        const Sm120Decision p = decide(pro6000, {});
+        CHECK(p.mode == Sm120Decision::Fast && p.default_on_applied && (p.parts & P_TC_ATTN) && (p.parts & P_FP8_TRUNK) && !(p.parts & P_COMPACT));
+        const Sm120Decision q = decide(r5090, {});
+        CHECK(!(q.parts & P_TC_ATTN));                                                         // the 5090 row is unchanged
+        const Sm120Decision e = decide(r5080, {{"STRATA_INK_SM120", "1"}});                   // one switch away
+        CHECK(e.mode == Sm120Decision::Fast && (e.parts & P_COMPACT) && !e.default_on_applied);
     }
     // ---- nothing set on the two measured rows: their fast set is the default, with one line saying so ----
     {
@@ -103,7 +117,7 @@ int main() {
         CHECK(e1.mode == Sm120Decision::Exact && e1.parts == P_L2PF);
         const Sm120Decision e2 = decide(r5090, {{"STRATA_INK_RTX5090_EXACT", "1"}});
         CHECK(e2.mode == Sm120Decision::Exact && e2.parts == 0);   // exact never changes the drafting policy
-        const Sm120Decision f1 = decide(r5070, {{"STRATA_INK_SM120_ROW", "5060ti-16"}});   // a row id alone does not turn anything on for a placeholder card
+        const Sm120Decision f1 = decide(r5080, {{"STRATA_INK_SM120_ROW", "5060ti-16"}});   // a row id alone does not turn anything on
         CHECK(f1.mode == Sm120Decision::Off && f1.parts == 0);
     }
 
@@ -179,7 +193,7 @@ int main() {
         CHECK(ink_sm120_arch_parts(120) == kSm120AllPartsMask && !(ink_sm120_arch_parts(89) & P_TC_SMALLM) && (ink_sm120_arch_parts(89) & P_FP8_TRUNK) && !(ink_sm120_arch_parts(86) & P_FP8_TRUNK) && ink_sm120_arch_parts(70) == 0);
     }
     // ---- cc 12.0 cards without a measured row keep the old path, with a note; ROW forces a row at the user's risk ----
-    for (const Sm120Dev* d : {&r5070, &r5080, &pro6000, &unknown, &r5060ti8}) {
+    for (const Sm120Dev* d : {&unknown, &r5060ti8}) {
         const Sm120Decision x = decide(*d, {{"STRATA_INK_SM120", "1"}});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && !x.note.empty() && x.refused);
     }
