@@ -366,6 +366,26 @@ class InklingGgufImportTests(unittest.TestCase):
         self.assertIn("--gguf-dir", argv)
         self.assertIn(str(gguf), argv)
 
+    def test_strata_mcp_install_plan_reports_the_inkling_family_folder(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import strata_mcp
+
+        install_dir = self.root / "mcp-install-family"
+        install_dir.mkdir()
+        strata = strata_mcp.Strata(install_dir, ROOT)
+        tools = strata_mcp.Tools(strata)
+        target = self.root / "Strata-data-family"
+        folder = target / "models" / "inkling-2-mini"
+        folder.mkdir(parents=True)
+        (folder / "Inkling-2-Mini-SQ-15.strata").write_bytes(b"not the pinned size")
+        with mock.patch.object(strata, "hardware", return_value={"ram_gb": 32, "gpus": [{"index": 0, "name": "RTX 5070", "vram_gb": 12.0, "usable": True, "vendor": "nvidia"}]}), \
+             mock.patch.object(strata, "inkling_visible", return_value=True), \
+             mock.patch.object(strata, "disk_free", return_value=1000.0):
+            plan, argv = tools.install_plan("inkling-2-mini", "SQ-15", 32768, "no", None, None, None, None, None, None, str(target))
+        self.assertEqual(plan["model_folder"], str(folder))
+        self.assertTrue(plan["partly_downloaded"])
+        self.assertIn("--data-dir", argv)
+
 
 if __name__ == "__main__":
     unittest.main()
