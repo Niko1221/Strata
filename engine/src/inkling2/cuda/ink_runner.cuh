@@ -345,9 +345,54 @@ struct InkCudaModel {
         const auto& opt5060_ld = ink_rtx5060ti_cfg(primary_gpu);
         size_t vfree_pre = 0, vtot_pre = 0;
         INK_CK(ink_cuda_mem_info(&vfree_pre, &vtot_pre));
-        const bool do_compact_vram = opt5060_ld.compact_vram && !ssd_experts && vram_experts_gb <= 0.0 &&
+        bool do_compact_vram = opt5060_ld.compact_vram && !ssd_experts && vram_experts_gb <= 0.0 &&
                                      ram_experts_gb != 0.0 && sm_cc >= 120 &&
                                      ink_elastic_ram_cap_bytes() == 0 && vtot_pre <= ((size_t)std::max(1, sm120_cfg(primary_gpu).compact_max_vram_gib) << 30);   // the table row says how big a card "compact" is tried on
+        if (do_compact_vram) {
+            // COMPACT is the default on the 16 GB 5060 Ti, so it must refuse BEFORE it converts anything when the card cannot hold it (a desktop or another program on
+            // the card, the Windows WDDM reserve, a smaller free size): the plain path then runs exactly as with COMPACT off. Size of the compact trunk and of the
+            // all-SF4 expert section are computed here from the manifest and the directory, without touching the card.
+            size_t est_trunk = 0, est_sec4 = 0;
+            bool all_sf4_or_mx8_pre = true;
+            const size_t sf4_dn_off_pre = 16u + (size_t)(2 * kInkInter) * (kInkHidden / 2) + (size_t)(2 * kInkInter) * (kInkHidden / 16);
+            const size_t sf4_body_pre   = sf4_dn_off_pre + (size_t)kInkHidden * (kInkInter / 2) + (size_t)kInkHidden * (kInkInter / 16);
+            for (const auto& e : rd.expert_directory()) {
+                if (e.gu_code_id == FMT_SF4 && e.dn_code_id == FMT_SF4) est_sec4 += e.body_bytes;
+                else if (e.gu_code_id == FMT_MX8 && e.dn_code_id == FMT_MX8) est_sec4 += sf4_body_pre;
+                else { all_sf4_or_mx8_pre = false; break; }
+            }
+            auto est_map = [&](const std::unordered_map<std::string, TensorInfo>& tmap) {
+                for (const auto& kv : tmap) {
+                    const std::string& nm = kv.first;
+                    const TensorInfo& ti = kv.second;
+                    if (nm == "model.llm.embed.weight") continue;   // mapped host memory
+                    const bool is_unemb = (nm == "model.llm.unembed.weight" && ti.fmt == FMT_BF16);
+                    const bool is_attn_bf16 = (ti.fmt == FMT_BF16 && ti.shape.size() == 2 && nm.find(".attn.") != std::string::npos && ti.bytes > 100000);
+                    const bool is_dspark_bf16 = (ti.fmt == FMT_BF16 && ti.shape.size() == 2 && nm.rfind("dspark.layers.", 0) == 0 && ti.bytes > 100000);
+                    const bool is_mw1_bf16 = (nm == "dspark.markov_head.markov_w1.weight" && ti.fmt == FMT_BF16 && ti.shape.size() == 2 && (int)ti.rows() == kInkVocabPad);
+                    const bool is_ctrl_f32 = (ti.fmt == FMT_F32 && ti.shape.size() == 2 && nm.find(".controllers.") != std::string::npos);
+                    est_trunk = (est_trunk + 255ull) & ~255ull;
+                    if (is_unemb || is_attn_bf16 || is_dspark_bf16 || is_mw1_bf16 || is_ctrl_f32) {
+                        const int K = (int)ti.cols();
+                        const int N_src = is_unemb ? std::min((int)ti.rows(), man.c.vocab_unpadded) : (int)ti.rows();
+                        const int N_pad = is_unemb ? ((man.c.vocab_unpadded + 3) & ~3) : N_src;
+                        est_trunk += (size_t)N_pad * 4u + (size_t)N_pad * K;
+                    } else {
+                        est_trunk += ti.bytes;
+                    }
+                }
+            };
+            est_map(man.trunk);
+            est_map(man.dspark);
+            const size_t compact_margin = 640ull << 20;   // the same margin the all-VRAM branch below asks for
+            if (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin) {
+                std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: %s (free %zu MiB, needs about %zu MiB for the compact trunk %zu MiB + all experts in VRAM %zu MiB + %zu MiB headroom); the old path (every RTX 50 part off) runs\n",
+                             all_sf4_or_mx8_pre ? "not enough free VRAM" : "the model has experts that are not SF4 / MX8",
+                             vfree_pre >> 20, (est_trunk + est_sec4 + compact_margin) >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20);
+                do_compact_vram = false;
+                sm120_compact_refuse(primary_gpu);
+            }
+        }
         if (do_compact_vram) {
             // Opt-in RTX 5060 Ti 16 GB 100%-VRAM Compact Trunk Loader:
             //   - embed.weight (883 MiB BF16)       -> pinned mapped host RAM (0 MiB VRAM!)

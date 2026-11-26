@@ -298,6 +298,17 @@ inline const InkRtx5060TiCfg& ink_rtx5060ti_cfg(int dev = 0) noexcept {
     return cfgs[d];
 }
 
+/// The loader found that the card cannot hold COMPACT right now (free VRAM, a model with other expert formats). The rest of the small-card fast set (PACK, PREFILL, ...) was
+/// measured only together with COMPACT and is slower than the old path without it, so the whole device goes back to the old path: every flag off, exactly as with
+/// STRATA_INK_SM120=0. Called once, single-threaded, at the start of the model load, before any consumer of the flags runs.
+inline void sm120_compact_refuse(int dev) noexcept {
+    Sm120Cfg& s = const_cast<Sm120Cfg&>(sm120_cfg(dev));   // static, non-const storage underneath
+    s = Sm120Cfg{};
+    s.ready = true;
+    InkRtx5060TiCfg& c = const_cast<InkRtx5060TiCfg&>(ink_rtx5060ti_cfg(dev));
+    c = InkRtx5060TiCfg{};
+}
+
 inline bool ink_5060ti_env_flag(const char* name, bool def_val) noexcept {
     const char* e = std::getenv(name);
     if (!e || !*e) return def_val;
