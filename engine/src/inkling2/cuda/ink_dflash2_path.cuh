@@ -16,22 +16,30 @@ inline std::string& df2_model_path() {
     return p;
 }
 
-// The default drafter when STRATA_INK_DRAFTER is not set: DFlash 2 (owner decision 2026-11-26, after the measurements in phaseA-tests/rel0223/dflash2/RESULTS.md), only up to 16
-// parallel slots and only when its sidecar file is found (else DSpark, with one line saying so). STRATA_INK_DRAFTER=dspark always selects DSpark, =dflash2 always asks for DFlash 2.
+// The drafter when STRATA_INK_DRAFTER is not set: DFlash 2, the only drafter of Inkling 2 Mini (owner decision 2026-11-26), for every slot count. Without its sidecar file
+// (dflash2.safetensors beside the model, or STRATA_INK_DFLASH2) the run has no drafter, and the engine says so; it does not fall back to DSpark. The DSpark code is
+// dormant: only STRATA_INK_DRAFTER=dspark selects it (measurements, and a model file that carries it).
 inline constexpr bool kDflash2Default = true;
 
-// The number of parallel slots the engine was started with (set by the backend before anything loads): the default drafter is DFlash 2 only up to 16 of them (its
-// per-slot context rings do not scale to 64 slots; DSpark's multi-user path does).
+// The number of parallel slots the engine was started with (set by the backend before anything loads).
 inline int& df2_parallel() {
     static int n = 1;
     return n;
 }
 
-inline bool df2_requested() {
+inline std::string df2_drafter_env() {
     const char* e = std::getenv("STRATA_INK_DRAFTER");
-    if (!e || !*e) return kDflash2Default && df2_parallel() <= 16;
-    std::string s(e);
+    std::string s = e ? e : "";
     for (auto& ch : s) ch = (char)std::tolower((unsigned char)ch);
+    return s;
+}
+
+// STRATA_INK_DRAFTER=dspark: the dormant DSpark drafter is asked for by name
+inline bool df2_dspark_selected() { return df2_drafter_env() == "dspark"; }
+
+inline bool df2_requested() {
+    const std::string s = df2_drafter_env();
+    if (s.empty()) return kDflash2Default;
     return s == "dflash2";
 }
 
@@ -42,19 +50,54 @@ struct Df2Variant {
     int attn = 1, ffn = 1;
 };
 
+inline std::string df2_resolve_path(const std::string& model_path);
+inline bool df2_parse_variant(const std::string& s, Df2Variant& v) {
+    if (s == "bf16") v.attn = v.ffn = 0;
+    else if (s == "q8") v.attn = v.ffn = 1;
+    else if (s == "q4") v.attn = v.ffn = 2;
+    else if (s == "sf4") v.attn = v.ffn = 3;
+    else if (s == "mix") { v.attn = 1; v.ffn = 3; }
+    else if (s == "mixq4") { v.attn = 1; v.ffn = 2; }
+    else return false;
+    return true;
+}
+
+// the "variant" of a pre-quantized sidecar (strata-dflash2-q1): found in the safetensors header's __metadata__; "" for the original bf16 checkpoint
+inline std::string df2_file_variant(const std::string& file) {
+    if (file.empty()) return "";
+    FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) return "";
+    unsigned char len8[8];
+    std::string out;
+    if (std::fread(len8, 1, 8, f) == 8) {
+        uint64_t n = 0;
+        for (int k = 7; k >= 0; --k) n = (n << 8) | len8[k];
+        if (n > 0 && n < (64u << 20)) {
+            std::string text(n, '\0');
+            if (std::fread(&text[0], 1, n, f) == n) {
+                const size_t fm = text.find("\"format\":\"strata-dflash2-q1\"");
+                const size_t vp = text.find("\"variant\":\"");
+                if (fm != std::string::npos && vp != std::string::npos) {
+                    const size_t b = vp + 11, e = text.find('"', b);
+                    if (e != std::string::npos) out = text.substr(b, e - b);
+                }
+            }
+        }
+    }
+    std::fclose(f);
+    return out;
+}
+
 inline Df2Variant df2_variant(bool small_vram) {
     Df2Variant v;
-    v.attn = v.ffn = small_vram ? 2 : 1;   // what shipped first: 4-bit groups on cards below 24 GB, Q8 above
+    // The format of the block weights when the file is the original BF16 checkpoint: BF16 on cards of 24 GB and more (the fastest at 4 and 8 slots in fast mode, measured), the mix
+    // (Q8 attention, SF4 feed-forward: the same bits as the pre-quantized sidecar) below 24 GB, where it is what fits and keeps acceptance.
+    if (small_vram) { v.attn = 1; v.ffn = 3; } else { v.attn = v.ffn = 0; }
     if (const char* e = std::getenv("STRATA_INK_DFLASH2_W4")) v.attn = v.ffn = (std::string(e) == "1") ? 2 : 1;
-    if (const char* e = std::getenv("STRATA_INK_DFLASH2_WQ")) {
-        const std::string s(e);
-        if (s == "bf16") v.attn = v.ffn = 0;
-        else if (s == "q8") v.attn = v.ffn = 1;
-        else if (s == "q4") v.attn = v.ffn = 2;
-        else if (s == "sf4") v.attn = v.ffn = 3;
-        else if (s == "mix") { v.attn = 1; v.ffn = 3; }
-        else if (s == "mixq4") { v.attn = 1; v.ffn = 2; }
-    }
+    if (const char* e = std::getenv("STRATA_INK_DFLASH2_WQ")) df2_parse_variant(std::string(e), v);
+    // a pre-quantized sidecar decides its own format
+    const std::string fv = df2_file_variant(df2_resolve_path(df2_model_path()));
+    if (!fv.empty()) df2_parse_variant(fv, v);
     return v;
 }
 

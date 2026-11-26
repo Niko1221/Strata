@@ -1182,18 +1182,24 @@ struct InkDSpark {
         const std::string path = InkDFlash2::resolve_path(df2_model_path());
         if (path.empty()) {
             std::fprintf(stderr, "[InkDFlash2] DFlash 2 is the drafter, but no weights file was found (STRATA_INK_DFLASH2, or dflash2.safetensors next to "
-                                 "the model); the DSpark drafter is used\n");
+                                 "the model)\n");
             return false;
         }
         int slots = std::max(1, r.max_slots);
         if (const char* e = std::getenv("STRATA_INK_DFLASH2_SLOTS")) slots = std::max(1, std::min(slots, std::atoi(e)));
-        else slots = std::min(slots, 16);
+        else {
+            size_t vf_s = 0, vt_s = 0;
+            (void)ink_cuda_mem_info(&vf_s, &vt_s);
+            const bool small_card = m.all_sf4_vram || (vt_s > 0 && vt_s < (24ull << 30));
+            slots = std::min(slots, small_card ? 16 : 64);   // rings are 42 MiB a slot; a 16 GB card keeps its memory for the experts, slots above 16 of it decode without a drafter
+        }
         auto d = std::make_unique<InkDFlash2>(r);
         std::string err;
         size_t vf0 = 0, vt0 = 0, vf1 = 0;
         (void)ink_cuda_mem_info(&vf0, &vt0);
+        const auto t_load0 = std::chrono::steady_clock::now();
         if (!d->load(path, slots, err)) {
-            std::fprintf(stderr, "[InkDFlash2] %s; the DSpark drafter is used\n", err.c_str());
+            std::fprintf(stderr, "[InkDFlash2] %s\n", err.c_str());
             d->free_all();
             return false;
         }
@@ -1203,9 +1209,10 @@ struct InkDSpark {
         ready = true;
         // the 5060 Ti family's multi-user chain verify asks for this flag (it was DSpark's mapped-host multi-slot mode)
         if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16 && m.all_sf4_vram) multislot_ready = true;
-        std::fprintf(stderr, "[InkDFlash2] DFlash 2 drafter on: %s, %d slot(s), weights %.0f MiB + scratch %.0f MiB (GPU memory taken %.0f MiB), codebooks on the %s, %s block weights\n",
+        std::fprintf(stderr, "[InkDFlash2] DFlash 2 drafter on: %s, %d slot(s), weights %.0f MiB + scratch %.0f MiB (GPU memory taken %.0f MiB), codebooks on the %s, %s block weights, loaded in %.2f s\n",
                      path.c_str(), df2->max_slots, (double)df2->bytes_weights / 1048576.0, (double)df2->bytes_scratch / 1048576.0,
-                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->var.attn == 0 ? "bf16" : (df2->var.attn == 1 && df2->var.ffn == 1 ? "Q8" : (df2->var.attn == 2 ? "4-bit groups" : (df2->var.ffn == 3 ? (df2->var.attn == 1 ? "mix Q8 + SF4" : "SF4") : "mixed"))));
+                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->var.attn == 0 ? "bf16" : (df2->var.attn == 1 && df2->var.ffn == 1 ? "Q8" : (df2->var.attn == 2 ? "4-bit groups" : (df2->var.ffn == 3 ? (df2->var.attn == 1 ? "mix Q8 + SF4" : "SF4") : "mixed"))),
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load0).count());
         return true;
     }
 
@@ -1213,11 +1220,16 @@ struct InkDSpark {
         if (!m.man.has_dspark) return;
         if (InkDFlash2::requested()) {
             if (init_dflash2(ctx)) return;
-            if (df2_replaces_dspark(df2_model_path())) {   // DSpark's weights were left off the card for it: there is no drafter to fall back to
-                std::fprintf(stderr, "[InkDFlash2] the drafter could not start; this run has no drafter\n");
-                ready = false;
-                return;
-            }
+        }
+        if (!df2_dspark_selected()) {   // DFlash 2 is the only drafter (owner, 2026-11-26): no sidecar, or it could not start, means no drafter, not DSpark
+            std::fprintf(stderr, "[InkDFlash2] this run has no drafter (DFlash 2 is the only drafter; STRATA_INK_DRAFTER=dspark selects the dormant DSpark)\n");
+            ready = false;
+            return;
+        }
+        if (m.man.dspark.empty()) {
+            std::fprintf(stderr, "[InkDSpark] the model file carries no DSpark weights; this run has no drafter\n");
+            ready = false;
+            return;
         }
         max_ctx = ctx;
         K_cand = m.all_sf4_vram ? std::min(k_cand, 128) : k_cand;

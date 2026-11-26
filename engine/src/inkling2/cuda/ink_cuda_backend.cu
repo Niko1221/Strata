@@ -264,6 +264,7 @@ public:
     }
 
     bool init(const InkModelFile& mf, const BackendOpts& opts, std::string& err) override {
+        strata::ink::df2_model_path() = mf.path;   // where DFlash 2 looks for its sidecar: needed by the reserves below as well
         if (const char* e = std::getenv("STRATA_INK_SPEC_BEAM")) spec_cfg_.beam = std::atoi(e);
         if (const char* e = std::getenv("STRATA_INK_SPEC_COST")) spec_cfg_.cost = (float)std::atof(e);
         if (const char* e = std::getenv("STRATA_INK_SPEC_PLAIN")) spec_cfg_.plain = (float)std::atof(e);
@@ -348,7 +349,7 @@ public:
         plan_in.total_vram = prop.totalGlobalMem;
         plan_in.max_slots = max_slots_;
         plan_in.kv_offload_mode = kv_offload_mode;
-        plan_in.build_screen = opts.enable_dspark && mf.m.dspark.present;
+        plan_in.build_screen = opts.enable_dspark && (mf.m.dspark.present || strata::ink::df2_replaces_dspark(mf.path));
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
         const VramPlan plan = plan_vram_reserve(plan_in);

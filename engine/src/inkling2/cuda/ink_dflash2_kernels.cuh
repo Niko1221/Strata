@@ -5,12 +5,10 @@
 //
 // The drafter's design (non-causal sliding-window block layers wrapped in 2-tap group-16 dynamic causal convolutions, a rank-256 bilinear
 // candidate selector over the exact top-16 of the target's head, and the full-vocabulary tail used for the confidence) follows the checkpoint
-// incoai/Inkling-2-Mini-DFlash2 (Apache-2.0) and the Basalt implementation of it in jesdga95/basalt pull request 763 by tjm8874 (MIT):
+// incoai/Inkling-2-Mini-DFlash2 (Apache-2.0) and tjm8874's implementation of it (MIT). The two kernels k_df2_tile_part and k_df2_select are adapted
+// from that implementation, so its MIT notice is kept in notices/DFLASH2-TJM8874-MIT.txt.
 //
-//   Basalt: MIT License. Copyright (c) 2026 jesdga95 and the Basalt contributors (code adapted for the top-16 / selector kernels below).
-//
-// The kernels here are written for Strata's runner (fp32 activations, Q8 row-scaled weights, cuBLAS for the BF16 matrices); the selector's and
-// the top-16 / tail-LSE extraction's logic is adapted from Basalt's dflash2.cu. Nothing here changes what the target model computes: a draft only
+// The kernels here are written for Strata's runner (fp32 activations, Q8 row-scaled weights, cuBLAS for the BF16 matrices). Nothing here changes what the target model computes: a draft only
 // decides which tokens are verified, and the verification is the target's own greedy argmax.
 #pragma once
 
@@ -610,7 +608,7 @@ __device__ __forceinline__ bool df2_strict(float a, int ia, int ja, float b, int
     return a > b || (a == b && (ia < ib || (ia == ib && ja < jb)));
 }
 
-// Stage 1 (adapted from Basalt's top16_part_kernel): grid (chunks of this tile, rows), 256 threads = 8 warps. Each warp extracts its top-16
+// Stage 1 (adapted from tjm8874's top-16 part kernel, MIT): grid (chunks of this tile, rows), 256 threads = 8 warps. Each warp extracts its top-16
 // by warp shuffles; 128 threads rank the 128 warp winners. Also the softcapped chunk (max, sum exp) over every column.
 // tile_i32 [R_pad][vt] int8 dot products of the target head rows [v0, v0 + vt) with the quantized draft hidden of row r.
 __global__ void __launch_bounds__(256) k_df2_tile_part(const int32_t* __restrict__ tile_i32, const float* __restrict__ head_sc,
@@ -765,7 +763,7 @@ __global__ void __launch_bounds__(512) k_df2_top16_merge(const float2* __restric
     }
 }
 
-// The bilinear candidate selector (adapted from Basalt's select_kernel): one CTA of 512 threads (16 warps = 16 candidates) per slot, the 7 draft
+// The bilinear candidate selector (adapted from tjm8874's select kernel, MIT): one CTA of 512 threads (16 warps = 16 candidates) per slot, the 7 draft
 // steps one after the other: score(c) = raw(c) + sum_k pred[prev][k] * g[k] * succ[c][k]; the best candidate is the step's token and the next step's
 // prev; conf = softmax probability of the winner over the softcapped scores plus the tail.
 // pred / succ: bf16 [V][256]. meta[b * 4 + 3] = the anchor token (the first step's prev).

@@ -504,7 +504,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
     bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
     if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
-    const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
+    const bool use_dspark = (cfg.draft_mode != "off") && backend.dspark_ready();   // the backend says whether a drafter runs: DSpark from the model file, or the DFlash 2 sidecar beside it
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
     const bool spec_tree = !(spec_env && std::string(spec_env) == "block");
@@ -562,7 +562,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
           P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
-          mf.m.dspark.present ? "dspark" : "none",
+          (mf.m.dspark.present || backend.dspark_ready()) ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
           images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots);
     proto("READY %d stop hold holdb", eff_max_ctx);

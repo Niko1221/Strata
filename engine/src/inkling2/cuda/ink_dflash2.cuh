@@ -3,9 +3,8 @@
 // MIT License
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 //
-// Basalt: MIT License. Copyright (c) 2026 jesdga95 and the Basalt contributors.
-// The drafter follows Basalt's DFlash 2 support (jesdga95/basalt pull request 763 by tjm8874, MIT) for the checkpoint incoai/Inkling-2-Mini-DFlash2
-// (Apache-2.0); see notices/. Strata's own parts: the loader of the sidecar safetensors file, Q8 row-scaled block weights with a dp4a skinny GEMV, per-slot
+// The drafter follows tjm8874's DFlash 2 implementation for the checkpoint incoai/Inkling-2-Mini-DFlash2 (Apache-2.0); the licence notices are in notices/.
+// Strata's own parts: the loader of the sidecar safetensors file, Q8 row-scaled block weights with a dp4a skinny GEMV, per-slot
 // sliding-window rings, the batched block attention and the hooks into the existing drafting paths.
 //
 // What it is: 5 non-causal sliding-window (2048) transformer layers (32 query / 8 KV heads of 128, SwiGLU 6912, RoPE theta 1e4), each of whose two
@@ -158,6 +157,17 @@ struct InkDFlash2 {
             if (!e.empty()) { err = "dflash2 file: " + e; return false; }
             return true;
         };
+        // raw tensor of any type (the pre-quantized sidecar's NAME.q / .s / .o), exactly want_bytes long
+        auto getraw = [&](const std::string& name, size_t want_bytes, const char* dtype) -> bool {
+            auto it = st.tensors.find(name);
+            if (it == st.tensors.end() || (size_t)(it->second.end - it->second.begin) != want_bytes || it->second.dtype != dtype) {
+                err = "dflash2 file: tensor " + name + " is missing or has another type or size";
+                return false;
+            }
+            const std::string e = strata::image::st_read_tensor(path, st, it->second, host);
+            if (!e.empty()) { err = "dflash2 file: " + e; return false; }
+            return true;
+        };
         auto up_bf16 = [&](const std::string& name, size_t n, uint16_t*& dst, size_t dst_off = 0, bool alloc = true, size_t alloc_n = 0) -> bool {
             if (!get(name, n * 2)) return false;
             if (alloc) dst = wal<uint16_t>(alloc_n ? alloc_n : n);
@@ -165,6 +175,15 @@ struct InkDFlash2 {
             return true;
         };
         auto up_f32 = [&](const std::string& name, size_t n, float*& dst) -> bool {
+            {
+                auto itf = st.tensors.find(name);
+                if (itf != st.tensors.end() && itf->second.dtype == "F32") {   // a pre-quantized sidecar keeps the norms as f32
+                    if (!getraw(name, n * 4, "F32")) return false;
+                    dst = wal<float>(n);
+                    INK_CK(cudaMemcpy(dst, host.data(), n * 4, cudaMemcpyHostToDevice));
+                    return true;
+                }
+            }
             if (!get(name, n * 2)) return false;
             std::vector<float> f(n);
             const uint16_t* b = reinterpret_cast<const uint16_t*>(host.data());
@@ -182,7 +201,25 @@ struct InkDFlash2 {
         }
         uint16_t* tmp = dalloc<uint16_t>((size_t)df2::kFF * df2::kHidden);   // the largest matrix, bf16, before it is quantized
         d_amax = dalloc<uint32_t>(1);
-        auto up_q8 = [&](const std::string& name, int N, int K, int kind, void*& q, void*& sc, float& outer) -> bool {
+        auto up_q8 = [&](const std::string& name, int N, int K, int& kind, void*& q, void*& sc, float& outer) -> bool {
+            if (st.tensors.count(name + ".q")) {   // pre-quantized: the format follows the tensors
+                const auto& ts = st.tensors.at(name + ".s");
+                const bool has_o = st.tensors.count(name + ".o") != 0;
+                kind = has_o ? 3 : (ts.dtype == "F16" ? 2 : 1);
+                const size_t qb = kind == 1 ? (size_t)N * K : (size_t)N * K / 2;
+                const size_t sb = kind == 1 ? (size_t)N * 4 : (size_t)N * K / 16;
+                if (!getraw(name + ".q", qb, kind == 1 ? "I8" : "U8")) return false;
+                q = wal<uint8_t>(qb);
+                INK_CK(cudaMemcpy(q, host.data(), qb, cudaMemcpyHostToDevice));
+                if (!getraw(name + ".s", sb, kind == 1 ? "F32" : (kind == 2 ? "F16" : "U8"))) return false;
+                sc = wal<uint8_t>(sb);
+                INK_CK(cudaMemcpy(sc, host.data(), sb, cudaMemcpyHostToDevice));
+                if (kind == 3) {
+                    if (!getraw(name + ".o", 4, "F32")) return false;
+                    std::memcpy(&outer, host.data(), 4);
+                }
+                return true;
+            }
             if (!get(name, (size_t)N * K * 2)) return false;
             INK_CK(cudaMemcpy(tmp, host.data(), (size_t)N * K * 2, cudaMemcpyHostToDevice));
             if (kind == 0) {
@@ -269,7 +306,90 @@ struct InkDFlash2 {
             INK_CK(cudaStreamSynchronize(r.st));
             cudaFree(d_t);
         }
-        return alloc_scratch(err);
+        if (!alloc_scratch(err)) return false;
+        if (const char* dump = std::getenv("STRATA_INK_DFLASH2_DUMP")) {
+            if (!dump_sidecar(dump)) std::fprintf(stderr, "[InkDFlash2] could not write %s\n", dump);
+            else std::fprintf(stderr, "[InkDFlash2] wrote the pre-quantized sidecar %s\n", dump);
+        }
+        return true;
+    }
+
+    // Writes the weights as they sit on the card (the engine's own quantization) as a safetensors file: format "strata-dflash2-q1".
+    // bf16 / f32 tensors under the checkpoint's names; a quantized matrix NAME as NAME.q (I8 or U8 codes), NAME.s (F32 row scales, F16 scales per 32, or UE4M3 scales per 16),
+    // NAME.o (F32 tensor scale, SF4 only); __metadata__ {"format": "strata-dflash2-q1", "variant": "q8" | "q4" | "sf4" | "mix" | "mixq4" | "bf16"}.
+    bool dump_sidecar(const std::string& path_out) {
+        struct It { std::string name, dtype; std::vector<int64_t> shape; const void* dev; const void* host; size_t bytes; };
+        std::vector<It> its;
+        std::vector<float> outers;
+        outers.reserve(32);
+        auto add = [&](const std::string& n, const char* dt, std::vector<int64_t> sh, const void* d, size_t b) { its.push_back({n, dt, sh, d, nullptr, b}); };
+        const int64_t H = df2::kHidden;
+        add("fc.weight", "BF16", {H, 4 * H}, fc, (size_t)H * 4 * H * 2);
+        add("hidden_norm.weight", "F32", {H}, hidden_norm, (size_t)H * 4);
+        add("norm.weight", "F32", {H}, norm, (size_t)H * 4);
+        add("candidate_selector.hidden_projection.weight", "BF16", {df2::kRank, H}, sel_h, (size_t)df2::kRank * H * 2);
+        add("candidate_selector.predecessor_codebook", "BF16", {V, df2::kRank}, pred, (size_t)V * df2::kRank * 2);
+        add("candidate_selector.successor_codebook", "BF16", {V, df2::kRank}, succ, (size_t)V * df2::kRank * 2);
+        for (int l = 0; l < df2::kLayers; ++l) {
+            const Layer& y = L[l];
+            const std::string p = "layers." + std::to_string(l) + ".";
+            add(p + "self_attn.k_proj.weight", "BF16", {df2::kKV, H}, y.wkv, (size_t)df2::kKV * H * 2);
+            add(p + "self_attn.v_proj.weight", "BF16", {df2::kKV, H}, y.wkv + (size_t)df2::kKV * H, (size_t)df2::kKV * H * 2);
+            add(p + "attention_conv.kernel_projection.weight", "BF16", {df2::kDyn, H}, y.conv_a, (size_t)df2::kDyn * H * 2);
+            add(p + "mlp_conv.kernel_projection.weight", "BF16", {df2::kDyn, H}, y.conv_f, (size_t)df2::kDyn * H * 2);
+            add(p + "attention_conv.base_kernel", "F32", {2, 2, H}, y.base_a, (size_t)4 * H * 4);
+            add(p + "mlp_conv.base_kernel", "F32", {2, 2, H}, y.base_f, (size_t)4 * H * 4);
+            add(p + "input_layernorm.weight", "F32", {H}, y.attn_norm, (size_t)H * 4);
+            add(p + "post_attention_layernorm.weight", "F32", {H}, y.post_norm, (size_t)H * 4);
+            add(p + "self_attn.q_norm.weight", "F32", {df2::kHeadDim}, y.q_norm, (size_t)df2::kHeadDim * 4);
+            add(p + "self_attn.k_norm.weight", "F32", {df2::kHeadDim}, y.k_norm, (size_t)df2::kHeadDim * 4);
+            struct Big { const char* nm; int64_t N, K; int kind; const void* w; const void* sc; float outer; };
+            const Big bigs[5] = {{"self_attn.q_proj.weight", df2::kQ, H, y.kq, y.wq, y.sq, y.oq}, {"self_attn.o_proj.weight", H, df2::kQ, y.ko, y.wo, y.so, y.oo},
+                                 {"mlp.gate_proj.weight", df2::kFF, H, y.kg, y.wg, y.sg, y.og}, {"mlp.up_proj.weight", df2::kFF, H, y.ku, y.wu, y.su, y.ou},
+                                 {"mlp.down_proj.weight", H, df2::kFF, y.kd, y.wd, y.sd, y.od}};
+            for (const Big& b : bigs) {
+                const std::string n = p + b.nm;
+                if (b.kind == 0) add(n, "BF16", {b.N, b.K}, b.w, (size_t)b.N * b.K * 2);
+                else if (b.kind == 1) { add(n + ".q", "I8", {b.N * b.K}, b.w, (size_t)b.N * b.K); add(n + ".s", "F32", {b.N}, b.sc, (size_t)b.N * 4); }
+                else if (b.kind == 2) { add(n + ".q", "U8", {b.N * b.K / 2}, b.w, (size_t)b.N * b.K / 2); add(n + ".s", "F16", {b.N * b.K / 32}, b.sc, (size_t)b.N * b.K / 16); }
+                else {
+                    add(n + ".q", "U8", {b.N * b.K / 2}, b.w, (size_t)b.N * b.K / 2);
+                    add(n + ".s", "U8", {b.N * b.K / 16}, b.sc, (size_t)b.N * b.K / 16);
+                    outers.push_back(b.outer);
+                    its.push_back({n + ".o", "F32", {1}, nullptr, &outers.back(), 4});
+                }
+            }
+        }
+        const char* names[] = {"bf16", "q8", "q4", "sf4"};
+        std::string vname;
+        if (var.attn == var.ffn) vname = names[var.attn];
+        else vname = (var.attn == 1 && var.ffn == 3) ? "mix" : ((var.attn == 1 && var.ffn == 2) ? "mixq4" : "mixed");
+        std::string js = "{\"__metadata__\":{\"format\":\"strata-dflash2-q1\",\"variant\":\"" + vname + "\"}";
+        size_t off = 0;
+        for (const It& it : its) {
+            js += ",\"" + it.name + "\":{\"dtype\":\"" + it.dtype + "\",\"shape\":[";
+            for (size_t i = 0; i < it.shape.size(); ++i) js += (i ? "," : "") + std::to_string(it.shape[i]);
+            js += "],\"data_offsets\":[" + std::to_string(off) + "," + std::to_string(off + it.bytes) + "]}";
+            off += it.bytes;
+        }
+        js += "}";
+        while (js.size() % 8) js += ' ';
+        std::FILE* f = std::fopen(path_out.c_str(), "wb");
+        if (!f) return false;
+        unsigned char len8[8];
+        uint64_t n = js.size();
+        for (int k = 0; k < 8; ++k) len8[k] = (unsigned char)((n >> (8 * k)) & 0xFF);
+        bool ok = std::fwrite(len8, 1, 8, f) == 8 && std::fwrite(js.data(), 1, js.size(), f) == js.size();
+        std::vector<unsigned char> buf;
+        for (const It& it : its) {
+            if (!ok) break;
+            buf.resize(it.bytes);
+            if (it.host) std::memcpy(buf.data(), it.host, it.bytes);
+            else if (cudaMemcpy(buf.data(), it.dev, it.bytes, cudaMemcpyDeviceToHost) != cudaSuccess) { ok = false; break; }
+            ok = std::fwrite(buf.data(), 1, it.bytes, f) == it.bytes;
+        }
+        std::fclose(f);
+        return ok;
     }
 
     bool alloc_scratch(std::string& err) {

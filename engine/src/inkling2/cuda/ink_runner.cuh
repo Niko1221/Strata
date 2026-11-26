@@ -529,7 +529,7 @@ struct InkCudaModel {
                 }
             };
             add_map(man.trunk);
-            if (!df2_replaces_dspark(path)) add_map(man.dspark);   // DFlash 2 (STRATA_INK_DRAFTER=dflash2) is the drafter: DSpark's weights stay off the card
+            if (df2_dspark_selected()) add_map(man.dspark);   // DFlash 2 is the only drafter (owner, 2026-11-26): DSpark's weights stay off the card unless STRATA_INK_DRAFTER=dspark
             if (fp8_layout_ok) {
                 new_trunk_bytes = (new_trunk_bytes + 255ull) & ~255ull;
                 for (int ip = 0; ip < man.c.n_phys; ++ip) {
@@ -1479,7 +1479,7 @@ struct InkCudaModel {
         man.c.situ_lb        = mf.m.c.situ_lb;
         man.c.logit_softcap  = mf.m.c.logit_softcap;
         man.c.is_swa.assign(mf.m.c.is_swa.begin(), mf.m.c.is_swa.end());
-        man.has_dspark       = mf.m.dspark.present;
+        man.has_dspark       = mf.m.dspark.present || df2_replaces_dspark(mf.path);   // "has a drafter": the model file carries DSpark, or DFlash 2's sidecar is beside it
         for (const auto& kv : mf.m.trunk) {
             TensorInfo ti;
             ti.name = kv.second.name;
