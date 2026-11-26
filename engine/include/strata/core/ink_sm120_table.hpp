@@ -127,8 +127,9 @@ constexpr uint32_t kSm120BigExact = P_DSPARK_OPT;
 // into this set only after a FASTQ run passes. Until then STRATA_INK_SM120_COMPACT=1 asks for it by name (the hand-over speed numbers need it).
 constexpr uint32_t kSm120SmallFast = P_FP8_TRUNK | P_TC_SMALLM | P_PLD | P_PACK | P_PREFILL | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
 // Exact set of the small cards, trimmed by measurement (5060 Ti, new SQ-20 hybrid load, 2026-11-26): PACK (moves experts between the CPU and the GPU lane: rounding differs)
-// and PREFILL (layer-major prefill: tokens differ from gen:9000 on) are out; with only C64_SPEC + L2PF on, tokens were identical at 30 and 9000.
-constexpr uint32_t kSm120SmallExact = P_PLD | P_CORE_GRAPH | P_C64_SPEC | P_L2PF;
+// and PREFILL (layer-major prefill: tokens differ from gen:9000 on) are out. Then PLD (tokens differ at gen:9000, 2 of 2 runs) and CORE_GRAPH (differ at gen:30 from token 67 when
+// combined with the others) are out too. C64_SPEC + L2PF: tokens identical to off at 30, 9000 and 12000 (2 rounds each), speed equal to off. The speed-ups of the others are fast-only.
+constexpr uint32_t kSm120SmallExact = P_C64_SPEC | P_L2PF;
 
 // The table. Order matters: the first row that matches wins, so the more specific names come first (" Ti" before the plain name).
 // PLACEHOLDER rows (measured = false): 5070, 5050 (their numbers come from a rental later), and every other cc 12.0 card. They are listed so
