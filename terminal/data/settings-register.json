@@ -17186,6 +17186,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_PROMPT_CKPT_SLOTS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 374,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "4518331ef8",
+   "first_date": "2026-11-25",
+   "since": null,
+   "last_commit": "4518331ef8",
+   "last_date": "2026-11-25",
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA backend only (the HIP backend keeps its 8-slot cutoff): prompt-end checkpoints above 8 slots. A number, not on/off. Up to 8 slots every slot keeps one (unchanged). Above 8, unset or 0 (default) keeps none, as before; N > 0 keeps up to N at once (least recently used first out), each ~80 MiB host RAM with fp8 K/V (~160 MiB fp16), so a follow-up agent turn resumes instead of re-prefilling. Non-numeric values mean 0.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_Q80_TC",
    "backends": [
     "cuda-hip"
