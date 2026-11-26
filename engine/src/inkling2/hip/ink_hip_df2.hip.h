@@ -20,6 +20,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1258,7 +1259,7 @@ struct InkHipDFlash2 {
     bool draft(int slot, int32_t anchor, int32_t pos0, int32_t* out_ids, float* out_conf, std::string& err) {
         using namespace hdf2;
         if (!ready || slot < 0 || slot >= max_slots || !ensure_slot(slot)) return false;
-        const int R = kBlock, R7 = kDraft;
+        if (prof) t_draft0 = std::chrono::steady_clock::now();
         const int64_t lo_eff0 = std::max<int64_t>(lo[slot], (int64_t)pos0 - (kWindow - 1));
         int64_t hc = std::min<int64_t>((int64_t)pos0, hi[slot]);
         int64_t lo_eff = lo_eff0 > pos0 ? pos0 : lo_eff0;
@@ -1311,8 +1312,15 @@ struct InkHipDFlash2 {
         std::memcpy(out_ids, h_ids, hdf2::kDraft * 4);
         std::memcpy(out_conf, h_conf, hdf2::kDraft * 4);
         ++n_drafts_run;
+        if (prof) {
+            prof_draft_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_draft0).count();
+            if (n_drafts_run % 50 == 0)
+                std::fprintf(stderr, "[InkHipDFlash2 prof] %ld drafts, %.2f ms per draft (wall, incl. launch and sync), %ld ingest rows\n", n_drafts_run,
+                             prof_draft_ms / (double)n_drafts_run, n_ingest_rows);
+        }
         return true;
     }
+    std::chrono::steady_clock::time_point t_draft0;
 
     void drop_graph() {
         if (g_draft) { (void)hipGraphExecDestroy(g_draft); g_draft = nullptr; }

@@ -2012,6 +2012,13 @@ public:
             if (rate > best_rate) { best_rate = rate; best_m = mb; }
         }
         const int nd = best_m - 1;
+        if (df2_trace_) {
+            std::fprintf(stderr, "[df2] pos %d anchor %d -> nd %d  conf", anchor_pos, anchor_tok, nd);
+            for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %.2f", conf[i]);
+            std::fprintf(stderr, "  ids");
+            for (int i = 0; i < 7; ++i) std::fprintf(stderr, " %d", ids[i]);
+            std::fprintf(stderr, "\n");
+        }
         for (int i = 0; i < nd; ++i) out_ids[i] = ids[i];
         return nd;
     }
@@ -6003,7 +6010,8 @@ private:
     bool has_df2_ = false;                                   // DFlash 2 is the drafter (ink_hip_df2.hip.h)
     std::unique_ptr<strata::ink::InkHipDFlash2> df2_;
     double df2_ratio_ = 4.2;                                 // MoE share of a verify step in the window-size model (--draft-cost / STRATA_INK_DFLASH2_RATIO)
-    double df2_plain_ = 0.0;                                 // > 0: a plain step is allowed when the window does not pay (--draft-plain)
+    bool df2_trace_ = std::getenv("STRATA_INK_DFLASH2_TRACE") != nullptr;   // one line per draft: position, window, confidences, ids
+    double df2_plain_ = 0.0;                               // > 0: a plain step is allowed when the window does not pay (--draft-plain)
     int max_slots_ = 1;
     int max_ctx_ = 32768;
     int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)
