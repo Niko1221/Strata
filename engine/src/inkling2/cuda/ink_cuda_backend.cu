@@ -94,6 +94,7 @@ struct VramPlanIn {
     int max_slots = 1;
     int kv_offload_mode = 0;    // 1 on, -1 off, 0 auto
     bool build_screen = false;  // the DSpark drafter will be built
+    bool compact_gguf = false;  // a GGUF with the compact trunk (GSQ-RCO file): on a card of 13 GB or less the prefill chunk is 256 so that every expert fits (the plan with 512 left 212 on the host)
     const strata::ink::Sm120Cfg* sm120 = nullptr;
     const strata::ink::InkRtx5060TiCfg* c5060 = nullptr;
 };
@@ -148,7 +149,8 @@ static VramPlan plan_vram_reserve(const VramPlanIn& in) {
     };
     p.cuda_kvd = map_kvd(p.kv_dtype);
 
-    p.eff_chunk = (opt5060.prefill_lm && in.max_slots == 1 && opts.chunk_auto) ? 256 : std::max(64, opts.chunk);
+    const bool gguf_small_card = in.compact_gguf && in.max_slots == 1 && opts.chunk_auto && in.total_vram <= (13ull << 30);
+    p.eff_chunk = ((opt5060.prefill_lm && in.max_slots == 1 && opts.chunk_auto) || gguf_small_card) ? 256 : std::max(64, opts.chunk);
     p.swa_r = (in.max_slots >= 16) ? (size_t)(strata::ink::kInkSwaWin + 32)
                                    : (size_t)(strata::ink::kInkSwaWin + std::max(p.eff_chunk, 64));
     p.per_visit_pos = strata::ink::InkCudaRunner::kv_bytes_per_visit_pos(p.cuda_kvd);
@@ -202,8 +204,10 @@ static int plan_prefill_chunk(const VramPlanIn& in, const VramPlan& p, bool all_
     } else if (opt5060.prefill_lm && !all_sf4_vram && in.max_slots == 1 && opts.chunk_auto) {
         chunk_try = 256;
     }
+    const bool gguf_small_card = in.compact_gguf && in.max_slots == 1 && opts.chunk_auto && in.total_vram <= (13ull << 30);
+    if (gguf_small_card) chunk_try = 256;
     // No --chunk: the memory left after the experts decides (strata/core/ink_chunk.hpp); STRATA_INK_CHUNK_AUTO=0 keeps the old 512.
-    if (opts.chunk_auto && !ls_active && !opt5060.prefill_lm) {
+    if (opts.chunk_auto && !ls_active && !opt5060.prefill_lm && !gguf_small_card) {
         const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
         if (!(auto_env && std::atoi(auto_env) == 0)) {
             // the K/V still to be allocated for every slot to reach the context stays free of the chunk's working memory (kv offload on: it is host RAM)
@@ -344,6 +348,7 @@ public:
         plan_in.max_slots = max_slots_;
         plan_in.kv_offload_mode = kv_offload_mode;
         plan_in.build_screen = opts.enable_dspark && mf.m.dspark.present;
+        plan_in.compact_gguf = mf.m.embed_host_tail && !(std::getenv("STRATA_INK_GGUF_CHUNK256") && std::getenv("STRATA_INK_GGUF_CHUNK256")[0] == '0');
         plan_in.sm120 = &strata::ink::sm120_cfg(gpu_id_);
         plan_in.c5060 = &strata::ink::ink_rtx5060ti_cfg(gpu_id_);
         const VramPlan plan = plan_vram_reserve(plan_in);
