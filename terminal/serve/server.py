@@ -3659,6 +3659,15 @@ def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
             known = b"--tail-role-token" in f.read()
     except OSError:
         known = False
+    if inkling_kind.is_inkling_exe(exe):         # #7241: the thinking level of Inkling-2-Mini at the end of the prompt, its own system turn
+        role = tok.encode(inkling_dialect.TAIL_ROLE_TEXT, parse_special=True)
+        if not known or len(role) != 1:
+            print("[strata] effort_position \"end\" for Inkling-2-Mini needs an Inkling engine that keeps a checkpoint in front of the trailing "
+                  "level turn (--tail-role-token); this engine has none, so the thinking level stays at the top of the prompt", flush=True)
+            return None
+        print("[strata] effort_position end: the thinking level of a request that is not the default goes right before the answer, so changing "
+              "it keeps the cached conversation (the level then blends with the default one: it is not the same answer as at the top)", flush=True)
+        return ["--tail-role-token", str(role[0])]
     role = tok.encode("system", parse_special=True)
     if not known or len(role) != 1:
         print("[strata] effort_position \"end\" needs engine 0.1.39 or newer (--tail-role-token): the reasoning "
@@ -5573,8 +5582,15 @@ class Service:
         if self.inkling:                               # Inkling-2-Mini: the request's thinking level reaches the template; level 0 skips the thinking turn at the prompt boundary (#6612, #6620, #6627)
             tk = inkling_dialect.template_kwargs(kwargs)
             on = bool(tk["enable_thinking"])
+            tail = ""
+            if getattr(self, "effort_end", False) and not (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"):
+                # #7241 (opt-in, "effort_position": "end"): the history at the constant level, the request's own level as the last system turn (a
+                # prefilled reply keeps the level at the top: a turn after it would cut the reply off)
+                head, tail = inkling_dialect.effort_tail(kwargs)
+                if tail:                    # enable_thinking too: the frontend renders the history differently when it is false
+                    tk = {**tk, "reasoning_effort": head, "enable_thinking": inkling_dialect.effort_of({"reasoning_effort": head})[1] > 0.0}
             rendered = self.template.render(inkling_dialect.prepare_messages(messages, has_tools=bool(tools), thinking=on), tools=tools, **tk)
-            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools), thinking=on)
+            return inkling_dialect.finish_prompt(rendered + tail, has_tools=bool(tools), thinking=on)
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -5903,7 +5919,8 @@ class Service:
             effort = kwargs.get("reasoning_effort")
             off = kwargs.get("enable_thinking") is False        # render_prompt's rule for #458's effort_end
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
-                  if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))             kw["add_generation_prompt"] = False
+                  if self.effort_end and (self.inkling or off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))   # #7241: Inkling's history is always at the constant level
+            kw["add_generation_prompt"] = False
             if self.inkling:
                 marked = inkling_dialect.prepare_messages(marked)
                 kw = inkling_dialect.template_kwargs(kw)
