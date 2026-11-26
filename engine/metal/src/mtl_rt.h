@@ -66,6 +66,55 @@ struct Dispatch {
     bool barrier = true;              // run_graph: a buffer memory barrier before this dispatch
 };
 
+// Zero-heap-allocation flat dispatch representation (opt-in fast path, avoids per-step std::vector mallocs).
+struct FlatArg {
+    const Buffer* buf = nullptr;
+    size_t off = 0;
+    uint8_t val_len = 0;
+    uint8_t val[64]{};
+
+    static FlatArg B(const Buffer& b, size_t off = 0) noexcept {
+        FlatArg a;
+        a.buf = &b;
+        a.off = off;
+        return a;
+    }
+    template <class T> static FlatArg V(const T& v) noexcept {
+        static_assert(sizeof(T) <= sizeof(val), "FlatArg inline value exceeds 64 bytes");
+        FlatArg a;
+        a.val_len = (uint8_t)sizeof(T);
+        std::memcpy(a.val, &v, sizeof(T));
+        return a;
+    }
+    static FlatArg from_arg(const Arg& src) noexcept {
+        FlatArg a;
+        if (src.buf) {
+            a.buf = src.buf;
+            a.off = src.off;
+        } else if (!src.bytes.empty() && src.bytes.size() <= sizeof(val)) {
+            a.val_len = (uint8_t)src.bytes.size();
+            std::memcpy(a.val, src.bytes.data(), src.bytes.size());
+        }
+        return a;
+    }
+};
+
+struct FlatDispatch {
+    const Pipeline* p = nullptr;
+    FlatArg args[16]{};
+    uint8_t n_args = 0;
+    uint32_t grid[3] = {1, 1, 1};
+    uint32_t tg[3] = {32, 1, 1};
+    uint32_t tg_mem = 0;
+    const Buffer* indirect = nullptr;
+    size_t ind_off = 0;
+    bool barrier = true;
+
+    void push_arg(const FlatArg& a) noexcept {
+        if (n_args < 16) args[n_args++] = a;
+    }
+};
+
 // A pipeline whose maxTotalThreadsPerThreadgroup is below the threadgroup size a dispatch asks for is NOT executed by
 // Metal and raises no error (0.1.44, #2323: gdn_step needs 512 threads, an M2 Max gave 448 for the GDN_NTOK >= 2
 // specializations - the layers silently kept their old outputs and every answer was garbage).  So every dispatch is
@@ -83,8 +132,16 @@ public:
     std::string device_name() const;
     bool has_family_apple(int n) const;          // MTLGPUFamilyApple<n>
     bool supports_metal4() const;
+    int gpu_core_count() const;                  // Apple Silicon GPU core count via IORegistry (0 if unknown)
+    uint64_t physical_memory_bytes() const;      // Total host unified memory (hw.memsize)
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
+    // Opt-in macOS 15+ MTLResidencySet attached to the command queue (zero effect unless called).
+    void enable_residency_set();
+    // Opt-in untracked shared buffer (MTLResourceHazardTrackingModeUntracked) for explicit-barrier scratch.
+    Buffer alloc_untracked(size_t bytes);
+    // Opt-in zero-malloc concurrent command-buffer submission over a flat dispatch tape.
+    double run_graph_flat(const FlatDispatch* ds, size_t count);
     // Zero-copy weights: the GPU address of host memory [p, p + bytes) (file-backed pages of the model, RAM slots) through a
     // no-copy buffer over the pages it spans, made resident.  0: not mappable (the cap on buffers is reached, or the pages are not
     // ours).  The first dispatch that reads cold pages waits for them (the buffer is wired on use).

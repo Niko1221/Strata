@@ -39,24 +39,33 @@ bool InkMetalRunner::compile_shaders(const std::string& kernel_dir, std::string&
         }
         return {};
     };
-    auto compile_one = [&](const char* fname, int& out_lib) -> bool {
+    auto compile_one = [&](const char* fname, int& out_lib, const std::string& prefix = {}) -> bool {
         std::string src = find_emb(fname);
         if (src.empty()) { err = std::string("missing embedded shader ") + fname; return false; }
         std::string why;
-        out_lib = cx->compile_try({}, src, false, &why);
+        out_lib = cx->compile_try({}, prefix + src, false, &why);
         if (out_lib < 0) { err = std::string("MSL compile failed (") + fname + "): " + why; return false; }
         return true;
     };
-    if (!compile_one("ink_metal_codecs.metal", lib_codecs)) return false;
+    const std::string iq_src = find_emb("ink_metal_iq_grids.metal");
+    if (!compile_one("ink_metal_codecs.metal", lib_codecs, iq_src)) return false;
     if (!compile_one("ink_metal_ops.metal", lib_ops)) return false;
     if (!compile_one("ink_metal_dspark.metal", lib_dspark)) return false;
     if (!compile_one("ink_metal_vision.metal", lib_vis)) return false;
+    {
+        std::string d2src = find_emb("ink_metal_dflash2.metal");
+        if (!d2src.empty()) {
+            std::string dwhy;
+            lib_dflash2 = cx->compile_try({}, d2src, false, &dwhy);
+            if (lib_dflash2 < 0) fprintf(stderr, "[ink_metal] DFlash 2 optional compile skipped: %s\n", dwhy.c_str());
+        }
+    }
     lib_mpp = -1;
     if (cx->supports_metal4()) {
         std::string msrc = find_emb("ink_metal_mpp.metal");
         if (!msrc.empty()) {
             std::string mwhy;
-            lib_mpp = cx->compile_try({}, msrc, false, &mwhy);
+            lib_mpp = cx->compile_try({}, iq_src + msrc, false, &mwhy);
             if (lib_mpp < 0) fprintf(stderr, "[ink_metal] Metal 4 MPP optional compile skipped: %s\n", mwhy.c_str());
         }
     }
@@ -69,15 +78,28 @@ bool InkMetalRunner::compile_shaders(const std::string& kernel_dir, std::string&
         if (out_lib < 0) { err = "MSL compile failed (" + p + "): " + why; return false; }
         return true;
     };
-    if (!compile_file("ink_metal_codecs.metal", lib_codecs)) return false;
+    {
+        std::string iq = kernel_dir.empty() ? "ink_metal_iq_grids.metal" : (kernel_dir + "/ink_metal_iq_grids.metal");
+        std::string cp = kernel_dir.empty() ? "ink_metal_codecs.metal" : (kernel_dir + "/ink_metal_codecs.metal");
+        std::string why;
+        lib_codecs = cx->compile_try({iq, cp}, "", false, &why);
+        if (lib_codecs < 0) { err = "MSL compile failed (" + cp + "): " + why; return false; }
+    }
     if (!compile_file("ink_metal_ops.metal", lib_ops)) return false;
     if (!compile_file("ink_metal_dspark.metal", lib_dspark)) return false;
     if (!compile_file("ink_metal_vision.metal", lib_vis)) return false;
+    {
+        std::string d2p = kernel_dir.empty() ? "ink_metal_dflash2.metal" : (kernel_dir + "/ink_metal_dflash2.metal");
+        std::string dwhy;
+        lib_dflash2 = cx->compile_try({d2p}, "", false, &dwhy);
+        if (lib_dflash2 < 0) fprintf(stderr, "[ink_metal] DFlash 2 optional compile skipped: %s\n", dwhy.c_str());
+    }
     lib_mpp = -1;
     if (cx->supports_metal4()) {
+        std::string iq = kernel_dir.empty() ? "ink_metal_iq_grids.metal" : (kernel_dir + "/ink_metal_iq_grids.metal");
         std::string mp = kernel_dir.empty() ? "ink_metal_mpp.metal" : (kernel_dir + "/ink_metal_mpp.metal");
         std::string mwhy;
-        lib_mpp = cx->compile_try({mp}, "", false, &mwhy);
+        lib_mpp = cx->compile_try({iq, mp}, "", false, &mwhy);
         if (lib_mpp < 0) fprintf(stderr, "[ink_metal] Metal 4 MPP optional compile skipped: %s\n", mwhy.c_str());
     }
     return true;

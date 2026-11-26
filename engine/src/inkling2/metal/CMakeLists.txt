@@ -16,9 +16,11 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}" "${_ink_gen_hdr}"
   DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_iq_grids.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_codecs.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_ops.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_dspark.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_dflash2.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_vision.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/ink_metal_mpp.metal"
   COMMENT "Embedding Inkling-2-Mini Metal shaders"
