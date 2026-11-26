@@ -4893,11 +4893,20 @@ struct InkCudaRunner {
                 opt5060::k_flash_gqa_pf_fp16acc<64><<<gfa, 128, 0, st>>>(
                     d_q, d_r, rp_T, d_sinks, d_gate_attn, kv_desc[visit], slot0, p0_val, M, d_attn_out);
             } else if (mc_bspec) {
+                // fast only (TC_ATTN): batched drafting (C2..C16) at long context: one group per slot, the slot's K chain rows share every K/V tile; the chain's own K/V (d_k, d_v) is the tail
+                bool tc_done = false;
+                if (!is_swa && sm120_cfg(m.primary_gpu).tc_attn && tcattn::force_ref() != 0 && bspec_k_slot > 0 && M <= tree_cap) {
+                    tc_done = tcattn::launch(st, d_q, d_rel_table, d_sinks, kv_desc[visit], d_slots, 0, d_pos, d_k, d_v, nullptr, nullptr, 0,
+                                             d_attn_pm, d_attn_pl, d_attn_po, M, bspec_k_slot);
+                    if (tc_done) tcattn::merge(st, d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, nullptr, d_pos, true, kv_desc[visit].cap_pos, M, bspec_k_slot);
+                }
+                if (!tc_done) {
                 dim3 g3(kInkKVHeads, M);
                 rtx5090::k_ink_flash_gqa_bspec<<<g3, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks, d_gate_attn,
                     kv_desc[visit], d_slots, d_pos,
                     d_k, d_v, d_attn_out, bspec_k_slot, M);
+                }
             } else if (mode == 3) {
                 dim3 gmc(kInkKVHeads, mc_cur_B);
                 const __half2* rp_T = use_mc_fp8rel ? (fp8_sm.d_rel_proj_T + (size_t)ip * kInkRelExtent * 8u) : nullptr;
@@ -4993,7 +5002,7 @@ struct InkCudaRunner {
                     tc_done = tcattn::launch(st, d_q, d_rel_table, d_sinks, kv_desc[visit], (mode == 1) ? d_slots : nullptr, slot0, d_pos,
                                              (mode == 2) ? d_k : nullptr, (mode == 2) ? d_v : nullptr,
                                              (mode == 2) ? (deep ? d_tree_anc32 : d_tree_anc) : nullptr, (mode == 2) ? d_tree_dep : nullptr,
-                                             deep ? (int)kInkMaxTree : (int)kInkMaxTreeDepth, d_attn_pm, d_attn_pl, d_attn_po, M, tcattn::nbuf_cfg());
+                                             deep ? (int)kInkMaxTree : (int)kInkMaxTreeDepth, d_attn_pm, d_attn_pl, d_attn_po, M);
                 }
                 if (tc_done) {
                 } else if (mode == 2 && d_tree_anc32 != nullptr) {

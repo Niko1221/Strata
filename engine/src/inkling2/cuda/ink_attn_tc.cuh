@@ -184,24 +184,24 @@ struct alignas(16) TcSmem {
 
 // Tail of a verify row: the row's ancestors (FP32 K/V of the uncommitted tree nodes), exact, with the sink. One warp per query head, a lane per ancestor.
 __device__ __forceinline__ void tail_rows(const float* q, const float* rel_table, const float* sinks, const int32_t* q_pos, const float* tree_k, const float* tree_v,
-                                          const uint8_t* tree_anc, const uint8_t* tree_dep, int anc_stride, int kh, int r0, int nrows, float* part_m, float* part_l,
+                                          const uint8_t* tree_anc, const uint8_t* tree_dep, int anc_stride, int chain_k, int kh, int r0, int nrows, float* part_m, float* part_l,
                                           float* part_o, int slots_per_head, int tail_slot) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     if (warp >= 3) return;
-    const int tp0 = q_pos[0];
+    const int tp0 = chain_k > 0 ? q_pos[r0] : q_pos[0];   // chain (batched drafting): the group is one slot and its K chain rows; node j of the chain is row r0 + j
     const float scale = 0.08838834764831845f;
     for (int rr = 0; rr < nrows; ++rr) {
         const int m = r0 + rr;
         const int h = 3 * kh + warp;
         const int qp = q_pos[m];
-        const int dep = (int)tree_dep[m];
+        const int dep = chain_k > 0 ? rr : (int)tree_dep[m];
         const float* qh = q + ((size_t)m * kInkHeads + h) * kInkHeadDim;
         const float* rt = rel_table + ((size_t)m * kInkHeads + h) * (kInkRelExtent + 1);
         int node = 0;
         float s = kNegInf;
         const bool valid = lane <= dep;
         if (valid) {
-            node = (int)tree_anc[(size_t)m * anc_stride + lane];
+            node = chain_k > 0 ? (r0 + lane) : (int)tree_anc[(size_t)m * anc_stride + lane];
             const float4* kp = reinterpret_cast<const float4*>(tree_k + ((size_t)node * kInkKVHeads + kh) * kInkHeadDim);
             const float4* q4 = reinterpret_cast<const float4*>(qh);
             float acc = 0.0f;
@@ -252,6 +252,7 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
     const uint8_t* __restrict__ tree_anc, // [M, anc_stride]
     const uint8_t* __restrict__ tree_dep, // [M]
     int anc_stride,
+    int chain_k,                          // > 0: batched drafting, groups of chain_k consecutive rows = one slot (anc / dep are null)
     float* __restrict__ part_m,           // [M, 24, nsp + 1]
     float* __restrict__ part_l,
     float* __restrict__ part_o,           // [M, 24, nsp + 1, 128]
@@ -265,12 +266,12 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
     if (nrows <= 0) return;
     const int slots_per_head = nsp + 1;
     if (sp == nsp) {   // verify tail
-        if (tree) tail_rows(q, rel_table, sinks, q_pos, tree_k, tree_v, tree_anc, tree_dep, anc_stride, kh, r0, nrows, part_m, part_l, part_o, slots_per_head, nsp);
+        if (tree) tail_rows(q, rel_table, sinks, q_pos, tree_k, tree_v, tree_anc, tree_dep, anc_stride, chain_k, kh, r0, nrows, part_m, part_l, part_o, slots_per_head, nsp);
         return;
     }
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
-    const int sl = (!tree && slots) ? slots[r0] : slot0;
-    int nc = tree ? q_pos[0] : (q_pos[r0] + 1);
+    const int sl = ((!tree || chain_k > 0) && slots) ? slots[r0] : slot0;
+    int nc = chain_k > 0 ? q_pos[r0] : (tree ? q_pos[0] : (q_pos[r0] + 1));
     nc = min(nc, kv.cap_pos);
     const int per = slice_len(nc, nsp);
     const int lo = sp * per;
@@ -468,10 +469,10 @@ __global__ void __launch_bounds__(128, 2) k_ink_attn_tc(
 template <bool H2>
 __global__ void __launch_bounds__(128) k_ink_tc_merge(
     const float* __restrict__ part_m, const float* __restrict__ part_l, const float* __restrict__ part_o, const float* __restrict__ gate_attn,
-    float* __restrict__ out, __half2* __restrict__ out_h2, const int32_t* __restrict__ q_pos, bool tree, int cap_pos, int M, int nsp) {
+    float* __restrict__ out, __half2* __restrict__ out_h2, const int32_t* __restrict__ q_pos, bool tree, int chain_k, int cap_pos, int M, int nsp) {
     const int h = blockIdx.x, m = blockIdx.y, d = threadIdx.x;
     if (h >= kInkHeads || m >= M) return;
-    int nc = tree ? q_pos[0] : (q_pos[m] + 1);
+    int nc = chain_k > 0 ? q_pos[m - m % chain_k] : (tree ? q_pos[0] : (q_pos[m] + 1));
     nc = min(nc, cap_pos);
     const int per = slice_len(nc, nsp);
     const int n_act = (nc + per - 1) / per;
@@ -553,8 +554,8 @@ inline int depth_cfg() {
 
 template <int FMT, int NBUF, int D>
 inline void launch_one(cudaStream_t st, const float* q, const float* rel, const float* sinks, const InkKvVisitDesc& kv, const int32_t* slots, int slot0, const int32_t* q_pos,
-                       const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int rows_per_cta,
-                       int nslab) {
+                       const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, int chain_k, float* pm, float* pl, float* po, int M,
+                       int rows_per_cta, int nslab) {
     constexpr size_t kSmem = sizeof(TcSmem<NBUF>);
     static bool attr = false;
     if (!attr) {
@@ -563,24 +564,28 @@ inline void launch_one(cudaStream_t st, const float* q, const float* rel, const 
     }
     const int nsp = splits_cur();
     const dim3 grid(kInkKVHeads, nsp + 1, (M + rows_per_cta - 1) / rows_per_cta);
-    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, pm, pl, po, M, rows_per_cta, nslab, nsp);
+    k_ink_attn_tc<FMT, NBUF, D><<<grid, 128, kSmem, st>>>(q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, pm, pl, po, M, rows_per_cta, nslab, nsp);
 }
 
 // Returns false when the kernel does not apply (the caller keeps the old one). tree = verify step (tk / tv / anc / dep set); else a plain step / batched rows.
 inline bool launch(cudaStream_t st, const float* q, const float* rel, const float* sinks, const InkKvVisitDesc& kv, const int32_t* slots, int slot0, const int32_t* q_pos,
-                   const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int nbuf = nbuf_cfg(),
-                   int depth = depth_cfg()) {
+                   const float* tk, const float* tv, const uint8_t* anc, const uint8_t* dep, int anc_stride, float* pm, float* pl, float* po, int M, int chain_k = 0,
+                   int nbuf = nbuf_cfg(), int depth = depth_cfg()) {
     if (kv.is_swa || (kv.kv_fmt != 0 && kv.kv_fmt != 1) || M < 1) return false;
     const bool tree = (tk != nullptr);
     int nslab = 1, rows = 1;
-    if (tree) {
+    if (chain_k > 0) {   // batched drafting: M = slots x chain_k rows, one group per slot
+        if (!tree || chain_k > 16 || M % chain_k != 0) return false;
+        nslab = (3 * chain_k + 15) / 16;
+        rows = chain_k;
+    } else if (tree) {
         if (M <= 5) { nslab = 1; rows = 5; }
         else if (M <= 10) { nslab = 2; rows = 10; }
         else { nslab = 3; rows = 16; }
     }
 #define INK_TC_CASE(F, NB, DD)                                                                                                          \
     if (kv.kv_fmt == F && nbuf == NB && depth == DD) {                                                                                  \
-        launch_one<F, NB, DD>(st, q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, pm, pl, po, M, rows, nslab);    \
+        launch_one<F, NB, DD>(st, q, rel, sinks, kv, slots, slot0, q_pos, tk, tv, anc, dep, anc_stride, chain_k, pm, pl, po, M, rows, nslab);    \
         return true;                                                                                                                    \
     }
     INK_TC_CASE(1, 2, 1) INK_TC_CASE(1, 2, 2) INK_TC_CASE(1, 2, 3) INK_TC_CASE(1, 1, 1) INK_TC_CASE(1, 1, 2) INK_TC_CASE(1, 1, 3)
@@ -591,10 +596,10 @@ inline bool launch(cudaStream_t st, const float* q, const float* rel, const floa
 
 // The merge that goes with launch(): tree = verify step (the same flag as tk != nullptr), cap_pos = kv.cap_pos.
 inline void merge(cudaStream_t st, const float* pm, const float* pl, const float* po, const float* gate, float* out, __half2* out_h2, const int32_t* q_pos, bool tree,
-                  int cap_pos, int M) {
+                  int cap_pos, int M, int chain_k = 0) {
     const dim3 grid(kInkHeads, M);
-    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, cap_pos, M, splits_cur());
-    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, cap_pos, M, splits_cur());
+    if (out_h2) k_ink_tc_merge<true><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, out_h2, q_pos, tree, chain_k, cap_pos, M, splits_cur());
+    else        k_ink_tc_merge<false><<<grid, 128, 0, st>>>(pm, pl, po, gate, out, nullptr, q_pos, tree, chain_k, cap_pos, M, splits_cur());
 }
 
 }  // namespace tcattn

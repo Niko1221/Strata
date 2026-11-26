@@ -8,6 +8,7 @@
 #include "ink_attn.cuh"
 #include "ink_attn_tc.cuh"
 #include "ink_cuda.cuh"
+#include "ink_rtx5090_bspec_kernels.cuh"
 
 #include <cmath>
 #include <cstdio>
@@ -127,6 +128,61 @@ static void run_probe(Bufs& b, int fmt, int nc) {
     cudaFree(sink);
 }
 
+
+// batched drafting: B slots x K chain rows, against k_ink_flash_gqa_bspec (the K/V of the chain rows is the tail)
+static int run_chain(Bufs& b, int fmt, int B, int K, int nc, const char* tag) {
+    const int M = B * K;
+    std::vector<int32_t> hp(M), hs(M, 0);
+    for (int s = 0; s < B; ++s) for (int k = 0; k < K; ++k) hp[s * K + k] = nc - 37 * s + k;
+    int32_t* dslots = nullptr;
+    cudaMalloc(&dslots, 64 * 4);
+    cudaMemcpy(b.pos, hp.data(), M * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(dslots, hs.data(), M * 4, cudaMemcpyHostToDevice);
+    k_fill_f32<<<256, 256>>>(b.q, (size_t)M * kInkHeads * kInkHeadDim, 901, 3.0f, 0.0f);
+    k_fill_f32<<<256, 256>>>(b.rel, (size_t)M * kInkHeads * (kInkRelExtent + 1), 902, 2.0f, 0.0f);
+    k_fill_f32<<<4, 256>>>(b.sinks, (size_t)M * kInkHeads, 903, 4.0f, 0.0f);
+    k_fill_f32<<<64, 256>>>(b.tk, (size_t)M * kInkKVHeads * kInkHeadDim, 904, 4.0f, 0.0f);
+    k_fill_f32<<<64, 256>>>(b.tv, (size_t)M * kInkKVHeads * kInkHeadDim, 905, 4.0f, 0.0f);
+    cudaDeviceSynchronize();
+    b.kv.kv_fmt = (uint8_t)fmt;
+    auto old_path = [&](cudaStream_t st) {
+        rtx5090::k_ink_flash_gqa_bspec<<<dim3(kInkKVHeads, M), 128, 0, st>>>(b.q, b.rel, b.sinks, nullptr, b.kv, dslots, b.pos, b.tk, b.tv, b.out[0], K, M);
+    };
+    auto new_path = [&](cudaStream_t st) -> bool {
+        const bool ok = strata::ink::tcattn::launch(st, b.q, b.rel, b.sinks, b.kv, dslots, 0, b.pos, b.tk, b.tv, nullptr, nullptr, 0, b.pm, b.pl, b.po, M, K, g_nbuf, g_depth);
+        if (ok) strata::ink::tcattn::merge(st, b.pm, b.pl, b.po, nullptr, b.out[1], nullptr, b.pos, true, b.kv.cap_pos, M, K);
+        return ok;
+    };
+    old_path(0);
+    if (!new_path(0)) { std::printf("%-34s  NOT APPLICABLE\n", tag); cudaFree(dslots); return 1; }
+    cudaError_t e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) { std::printf("%-34s  CUDA ERROR %s\n", tag, cudaGetErrorString(e)); return 1; }
+    const size_t n = (size_t)M * kInkHeads * kInkHeadDim;
+    std::vector<float> r(n), c(n);
+    cudaMemcpy(r.data(), b.out[0], n * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(c.data(), b.out[1], n * 4, cudaMemcpyDeviceToHost);
+    double d2 = 0, r2 = 0;
+    bool finite = true;
+    for (size_t i = 0; i < n; ++i) { if (!std::isfinite(c[i])) finite = false; const double d = (double)c[i] - r[i]; d2 += d * d; r2 += (double)r[i] * r[i]; }
+    const double rel_l2 = std::sqrt(d2 / std::max(r2, 1e-30));
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0); cudaEventCreate(&e1);
+    for (int i = 0; i < 3; ++i) { old_path(0); new_path(0); }
+    cudaDeviceSynchronize();
+    cudaEventRecord(e0);
+    for (int i = 0; i < g_reps; ++i) old_path(0);
+    cudaEventRecord(e1); cudaEventSynchronize(e1);
+    const double t_old = now_ms_between(e0, e1) / g_reps;
+    cudaEventRecord(e0);
+    for (int i = 0; i < g_reps; ++i) new_path(0);
+    cudaEventRecord(e1); cudaEventSynchronize(e1);
+    const double t_new = now_ms_between(e0, e1) / g_reps;
+    cudaFree(dslots);
+    const bool pass = finite && rel_l2 < 2e-3;
+    std::printf("%-34s  relL2 %.2e  old %.3f ms  new %.3f ms  x%.2f  %s\n", tag, rel_l2, t_old, t_new, t_old / t_new, pass ? "ok" : "FAIL");
+    return pass ? 0 : 1;
+}
+
 // returns 0 ok, 1 error above bound
 static int run_case(Bufs& b, int fmt, int M, int nc, bool tree, uint32_t seed, const char* tag) {
     Tree t = make_tree(M, nc, seed);
@@ -153,7 +209,7 @@ static int run_case(Bufs& b, int fmt, int M, int nc, bool tree, uint32_t seed, c
     };
     auto new_path = [&](cudaStream_t st) -> bool {
         const bool ok = strata::ink::tcattn::launch(st, b.q, b.rel, b.sinks, b.kv, nullptr, 0, b.pos, tree ? b.tk : nullptr, tree ? b.tv : nullptr, tree ? b.anc : nullptr,
-                                                    tree ? b.dep : nullptr, kInkMaxTreeDepth, b.pm, b.pl, b.po, M, g_nbuf, g_depth);
+                                                    tree ? b.dep : nullptr, kInkMaxTreeDepth, b.pm, b.pl, b.po, M, 0, g_nbuf, g_depth);
         if (ok) strata::ink::tcattn::merge(st, b.pm, b.pl, b.po, nullptr, b.out[1], nullptr, b.pos, tree, b.kv.cap_pos, M);
         return ok;
     };
@@ -256,6 +312,17 @@ int main(int argc, char** argv) {
                     if (quick && pass == 0 && !(M == 1 || M == 5 || M == 10 || M == 16)) continue;
                     fails += run_case(b, fmt, M, c, tree, 100 + M, tag);
                 }
+            }
+        }
+    }
+    for (int fmt = 1; fmt >= 0; --fmt) {
+        for (int c : {4099, 32768, 131072}) {
+            if (c > ctx) continue;
+            const int BK[][2] = {{2, 3}, {4, 3}, {4, 4}, {8, 3}, {3, 5}};
+            for (auto& bk : BK) {
+                char tag[96];
+                std::snprintf(tag, sizeof tag, "chain %s nc=%d B=%d K=%d", fmt ? "fp8 " : "fp16", c, bk[0], bk[1]);
+                fails += run_chain(b, fmt, bk[0], bk[1], c, tag);
             }
         }
     }
