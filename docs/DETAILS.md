@@ -844,6 +844,20 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   Set `limit.context` to the context you chose in setup and keep `limit.output` well under it. `strata connect` writes
   configurations for these apps for you.
 - **Codex CLI:** [below](#the-responses-api-and-codex-cli).
+- **Model limits from the server (#545).** With the [models-discovery plugin](https://github.com/yuhp/opencode-models-discovery)
+  you do not write those numbers: `/v1/models` publishes them, and the plugin's `modelInfoFormat: "llama-swap"` reader
+  maps them to `limit.context` and `limit.output`. `meta.n_ctx` is the context you chose less the 8-token slack the
+  engine refuses on (`CTX_SLACK`), and `meta.llamaswap.max_output_tokens` is the Chat settings' `max_tokens` when you
+  set one - the cap this server already hands to clients that do not ask for one - else the run config's top-level
+  `"max_tokens"` (a server key, kept with the model and not passed to the engine: the engine has no default output
+  cap), else an eighth of the context, the ratio in the example above. Either cap is also what a request that asks for
+  none gets, so the published number and the applied one are the same. Without them the plugin guesses 200000/32000,
+  and a long prompt plus that output cap is what the `#545` refusal below is about.
+- **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
+  `max_tokens` would run past the context is answered with `max_tokens` shortened to the room left (agents such as
+  Claude Code ask for 32,000 on every request); the thinking budget follows the shortened cap. For the strict llama.cpp
+  behaviour (400) set `"fit_max_tokens": false` in `strata-<model>.json` or pass `--no-fit-max-tokens` to
+  `serve/server.py`. A prompt that leaves no room at all is always refused.
 
 ### Conversation cache
 

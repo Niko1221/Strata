@@ -4307,6 +4307,7 @@ class Service:
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
+        self.config_output_cap = None                 # the config's "max_tokens": the cap a request that asks for none gets, and /v1/models' limit.output
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
@@ -4714,6 +4715,8 @@ class Service:
         shared = self.shared.get("max_tokens")
         if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
             room = min(room, shared)
+        if self.config_output_cap:                       # the config's "max_tokens", checked at start (max_tokens_from_config)
+            room = min(room, self.config_output_cap)
         return room
 
     def has_vision(self) -> bool:
@@ -5278,14 +5281,16 @@ class Service:
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
-        """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        """The request with the shared thinking level and max tokens filled in where it has none of its own (the Chat
+        settings first, then the config's "max_tokens")."""
         s = self.shared
         effort = self.effort_default()
-        if not s and not effort:
+        cap = s["max_tokens"] if "max_tokens" in s else self.config_output_cap
+        if not s and not effort and not cap:
             return req
         req = dict(req)
-        if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
-            req["max_tokens"] = s["max_tokens"]
+        if cap and not req.get("max_tokens") and not req.get("max_completion_tokens"):
+            req["max_tokens"] = cap
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
@@ -9188,6 +9193,20 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 pass
 
 
+def max_tokens_from_config(cfg: dict):
+    """The run config's optional top-level "max_tokens": the output cap a request gets when it asks for none, and
+    the number /v1/models publishes as the model's limit.output, so a discovering client never asks past it. A
+    positive whole number; anything else refuses to start the server (a typo'd cap should not quietly vanish).
+    Absent or null: no cap, as before - a request that asks for none may use the rest of the context."""
+    value = cfg.get("max_tokens")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or value <= 0:
+        raise SystemExit(f'[strata] config max_tokens={value!r}: expected a positive whole number of tokens '
+                         f'(or leave the key out)')
+    return int(value)
+
+
 def _autocorrect_shape_config(cfg: dict) -> None:
     """Auto-correct misconfigured Hy4-Flash or Inkling-2-Mini run configs whose `--native` / `--model` points to a
     shape-engine `.strata`/`.gguf` file while `arch` / `exe` were left as the generic `strata-engine`."""
@@ -9699,6 +9718,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    svc.config_output_cap = max_tokens_from_config(cfg)  # a bad cap refuses to start instead of quietly vanishing
     if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (CUDA, cpu), its own setting, 0 = off
         svc.inkling_cpu_pictures = inkling_kind.cpu_picture_reader(cfg)
         try:
