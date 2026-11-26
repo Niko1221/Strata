@@ -498,14 +498,15 @@ print(r.choices[0].message.content)
   has no sample. With an API key, the scraper sends it as a bearer token. Ready-made files are in `docs/monitoring/`:
   `prometheus.yml`, `servicemonitor.yaml` and `grafana-strata.json`.
 - **Metadata.** `/models` and `/v1/models` list only the loaded model: the OpenAI fields (`id`, `object`, `created`,
-  `owned_by`), its context limit (`max_model_len`, `context_length`, `max_context_length`, `meta.n_ctx`), the answer cap
-  (`limit.output` and `meta.llamaswap.max_output_tokens`: the context less the engine's margin, lowered by a smaller
-  `max_tokens` from the app's Chat settings, else by the run config's top-level `"max_tokens"` (a server key, kept with
-  the model and never passed to the engine) and its input modalities. That cap is also what a request that names none
-  gets, on all three APIs (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`), and `/props` reports it as
-  `n_predict`, so the published number and the applied one are the same. A request with thinking on and no cap of its
-  own gets that cap too, so the `answer_room` rule gets its quarter from that cap rather than from the whole context.
-  The `"max_tokens"` inside a `vision` block is a different key: it caps the tokens of a picture, not the answer. `/props` exposes
+  `owned_by`), its context limit (`max_model_len`, `context_length`, `max_context_length`, `meta.n_ctx`), its input
+  modalities and the answer cap (`limit.output` and `meta.llamaswap.max_output_tokens`). The answer cap is the context
+  less the engine's margin, lowered by the app's Chat setting `max_tokens` when it is a positive number, else by the
+  run config's top-level `"max_tokens"` (a server key, kept with the model and never passed to the engine).
+  That cap is also what a request that names none gets, on all three APIs (`/v1/chat/completions`, `/v1/messages`,
+  `/v1/responses`), and `/props` reports it as `n_predict`, so the published number and the applied one are the same.
+  A request with thinking on and no cap of its own gets that cap too, so the `answer_room` rule takes its quarter
+  from that cap rather than from the whole context. The `"max_tokens"` inside a `vision` block is a different key:
+  it caps the tokens of a picture, not the answer. `/props` exposes
   the chat template, context limit, configured generation defaults, model path and engine version. `n_predict: -1` means no
   fixed output cap. `/slots` uses llama.cpp's names (`n_ctx`, `n_prompt_tokens`). `total_slots` is the number of `--batch` slots
   (1 without). These endpoints require the API key when one is configured and never load, unload or restart models.
@@ -556,7 +557,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
 | `sampling` | the model card | Defaults for requests that leave sampling fields out, for example `{"temperature": 1.0, "top_p": 0.95, "top_k": 20}`. |
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
-| `max_tokens` | none | The answer cap, in tokens, for a request that names none: the number `/v1/models` publishes as `limit.output` and `/props` reports as `n_predict`, and the number such a request gets on all three APIs. A smaller Chat setting from the web app wins over it; a request's own `max_tokens`, `max_completion_tokens` or `max_output_tokens` wins over both. A cap above the context room changes nothing. Anything but a positive whole number stops the server at start, so a typo does not vanish. Not passed to the engine: it has no default output cap. The `"max_tokens"` inside a `vision` block is another key and caps a picture's tokens. |
+| `max_tokens` | none | The answer cap, in tokens, for a request that names none: the number `/v1/models` publishes as `limit.output` and `/props` reports as `n_predict`, and the number such a request gets on all three APIs. A positive Chat setting from the web app wins over it; a request's own `max_tokens`, `max_completion_tokens` or `max_output_tokens` wins over both. A cap above the context room changes nothing. Anything but a positive whole number stops the server at start, so a typo does not vanish. Not passed to the engine: it has no default output cap. The `"max_tokens"` inside a `vision` block is another key and caps a picture's tokens. |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_ready_s` | `900` | How long the engine may start without a sign of life, in seconds (`STRATA_ENGINE_READY_S` in the environment does the same; `0` = wait forever). A sign of life is a new line in the engine log or more bytes read from disk by the engine, and each one gives it another full period, so a big model read from a slow hard disk is not ended after 15 minutes while it is still loading; an engine that goes quiet for this long is ended (`the engine did not report READY within ... s`). The whole start ends after 2 hours (or 4 times this number if that is longer) whatever it prints. A start from the Terminal gives a model above 40 GB more (about 8 s per GB, at most 30 minutes) by writing this key into its run config. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |

@@ -3737,7 +3737,10 @@ class ConfigReasoningEffort(unittest.TestCase):
 
 
 class ConfigMaxTokens(unittest.TestCase):
-    """The config's top-level "max_tokens": the cap a request that asks for none gets, and the /v1/models limit.output."""
+    """The config's top-level "max_tokens": the cap a request that asks for none gets, and the /v1/models limit.output.
+    One reader, default_output_cap(), is behind /v1/models, /props and the three request paths: a Chat setting that is
+    a positive number wins over the config's key; a Chat setting of 0, null or a non-number asks for no cap, so the
+    config's applies."""
 
     def svc(self, cap=None, shared=None):
         tok = ByteTokenizer()
@@ -3749,25 +3752,36 @@ class ConfigMaxTokens(unittest.TestCase):
     def test_no_cap_changes_nothing(self):
         req = {"messages": []}
         self.assertIs(self.svc().with_shared(req, "openai"), req)
+        self.assertIsNone(self.svc().default_output_cap())
 
     def test_the_cap_fills_a_request_that_asks_for_none(self):
         for api in ("openai", "anthropic"):
             self.assertEqual(self.svc(512).with_shared({}, api)["max_tokens"], 512)
+        self.assertEqual(self.svc(512).default_output_cap(), 512)
 
     def test_a_request_with_its_own_cap_keeps_it(self):
         self.assertEqual(self.svc(512).with_shared({"max_tokens": 5}, "openai")["max_tokens"], 5)
         self.assertEqual(self.svc(512).with_shared({"max_completion_tokens": 7}, "openai")["max_completion_tokens"], 7)
 
-    def test_the_chat_settings_win_over_the_config(self):
+    def test_a_positive_chat_setting_wins_over_the_config_even_when_larger(self):
         self.assertEqual(self.svc(512, {"max_tokens": 77}).with_shared({}, "openai")["max_tokens"], 77)
+        self.assertEqual(self.svc(512, {"max_tokens": 77}).default_output_cap(), 77)
+        self.assertEqual(self.svc(512, {"max_tokens": 4096}).default_output_cap(), 4096)
+
+    def test_a_chat_setting_that_means_no_cap_falls_through_to_the_config(self):
+        for shared in ({"max_tokens": 0}, {"max_tokens": None}, {"max_tokens": "512"}):
+            with self.subTest(shared=shared):
+                self.assertEqual(self.svc(512, shared).default_output_cap(), 512)
 
     def test_the_value_is_checked(self):
-        for bad in (0, -1, 1.5, True, "512"):
-            with self.assertRaises(SystemExit):
-                max_tokens_from_config({"max_tokens": bad})
+        for bad in (0, -1, 1.5, True, "512", float("inf"), float("-inf"), float("nan")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(SystemExit):
+                    max_tokens_from_config({"max_tokens": bad})
         self.assertIsNone(max_tokens_from_config({}))
         self.assertIsNone(max_tokens_from_config({"max_tokens": None}))
         self.assertEqual(max_tokens_from_config({"max_tokens": 512}), 512)
+        self.assertEqual(max_tokens_from_config({"max_tokens": 512.0}), 512)
 
 
 class ConfigCapInModelLimit(unittest.TestCase):
@@ -3789,33 +3803,6 @@ class ConfigCapInModelLimit(unittest.TestCase):
         svc = self.svc()
         svc.config_output_cap = CTX * 4
         self.assertEqual(svc.output_cap(), CTX - CTX_SLACK)
-
-
-class ConfigCapReader(unittest.TestCase):
-    """One reader, default_output_cap(), behind /v1/models, /props and the three request paths: the Chat settings'
-    max_tokens wins when it is a positive number, else the config's. A Chat setting of 0, null or a non-number asks
-    for no cap, so the config's applies (#7243: the reviewer's corner, made explicit instead of copied through)."""
-
-    def svc(self, cap=None, shared=None):
-        tok = ByteTokenizer()
-        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
-        svc.config_output_cap = cap
-        svc.shared = shared or {}
-        return svc
-
-    def test_the_chat_settings_win_when_they_are_a_cap(self):
-        self.assertEqual(self.svc(512, {"max_tokens": 77}).default_output_cap(), 77)
-
-    def test_the_config_cap_applies_when_nothing_else_names_one(self):
-        self.assertEqual(self.svc(512).default_output_cap(), 512)
-
-    def test_a_chat_setting_that_means_no_cap_falls_through_to_the_config(self):
-        for shared in ({"max_tokens": 0}, {"max_tokens": None}, {"max_tokens": "512"}):
-            with self.subTest(shared=shared):
-                self.assertEqual(self.svc(512, shared).default_output_cap(), 512)
-
-    def test_no_cap_anywhere_is_no_cap(self):
-        self.assertIsNone(self.svc().default_output_cap())
 
 
 class ConfigCapOnEveryApi(unittest.TestCase):
@@ -5134,6 +5121,22 @@ class ThinkingBudget(unittest.TestCase):
         msg = b["choices"][0]["message"]
         self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
         self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        self.assertLess(len(msg["reasoning_content"]), 1024 - 256)
+        self.assertEqual(len(self.engine.prompts), 2)              # the wrap-up continuation
+
+    def test_the_config_cap_is_the_cap_the_answer_room_works_from(self):
+        """A request with thinking on and no cap of its own gets the config's "max_tokens", so the answer room (a
+        quarter of the cap) works from it and not from the whole context."""
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40    # 1,800 reasoning tokens
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}]}      # no cap of its own
+        self.svc.config_output_cap = 1024
+        try:
+            code, b = self.post("/v1/chat/completions", body)
+        finally:
+            self.svc.config_output_cap = None
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
         self.assertLess(len(msg["reasoning_content"]), 1024 - 256)
         self.assertEqual(len(self.engine.prompts), 2)              # the wrap-up continuation
 

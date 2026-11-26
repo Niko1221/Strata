@@ -9209,7 +9209,9 @@ def max_tokens_from_config(cfg: dict):
     value = cfg.get("max_tokens")
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or value <= 0:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value))     # json accepts Infinity and NaN
+            or value != int(value) or value <= 0):
         raise SystemExit(f'[strata] config max_tokens={value!r}: expected a positive whole number of tokens '
                          f'(or leave the key out)')
     return int(value)
