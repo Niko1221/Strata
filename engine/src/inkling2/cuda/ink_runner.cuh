@@ -2778,7 +2778,8 @@ struct InkCudaRunner {
             // RTX 5060 Ti row ("compact"): the all-VRAM expert set sizes the workspaces after the K/V itself, so its own, smaller reserve is used.
             // Every other case, with every switch off included, keeps the shipped reserve (the 5060 Ti hand-over applied the smaller one to every
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
-            const size_t ws_reserve = (opt5060_r.compact_vram && m.all_sf4_vram)
+            // the small compact reserve was sized with the FP8 KV: COMPACT_KV=0 (FP16 KV) left 43 MiB and crashed at the first top-k, so it takes the shipped reserve
+            const size_t ws_reserve = (opt5060_r.compact_vram && opt5060_r.compact_kv && m.all_sf4_vram)
                 ? ((size_t)max_batch * (size_t)(520ull << 10) + (192ull << 20))
                 : (strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark) + (wddm_fl / 2) + rtx_extra_res);
             swa_in_host = (opt5060_r.compact_vram && max_slots >= 16 && !m.ls_active);
