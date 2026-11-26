@@ -508,7 +508,12 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(low_vram_rules_test PRIVATE include)
   add_test(NAME low_vram_rules_test COMMAND low_vram_rules_test)
 
-  # the 4-row dot kernels of the native expert path are opt-in (STRATA_DOT_X4=1; #6552): header-only rule
+  # the Turing (sm_75) kernel series is on by default, STRATA_SM75_PERF=0 turns it off (#7041, #7076): header-only rule
+  add_executable(sm75_series_test src/core/sm75_series_test.cpp)
+  target_include_directories(sm75_series_test PRIVATE include)
+  add_test(NAME sm75_series_test COMMAND sm75_series_test)
+
+  # the 4-row dot kernels of the native expert path follow the token count (STRATA_DOT_X4=1 / 0 force them; #6552, #7075): header-only rule
   add_executable(dot_x4_policy_test src/core/dot_x4_policy_test.cpp)
   target_include_directories(dot_x4_policy_test PRIVATE include)
   add_test(NAME dot_x4_policy_test COMMAND dot_x4_policy_test)
