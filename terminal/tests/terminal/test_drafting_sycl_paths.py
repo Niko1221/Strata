@@ -24,14 +24,27 @@ class SyclContainerPaths(unittest.TestCase):
                                 "the container's /work path checked through STRATA_SYCL_ROOT")
 
     def test_a_missing_layer_under_the_mount_is_still_missing(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"STRATA_SYCL_ROOT": d}):
-            self.assertFalse(drafting.mtp_ready(["--mtp", "/work/Strata-data/mtp/rt"]))
+        # The 0.2.17 fallback also tries the checkout and the folder above it: isolate them in the temp dir, or a
+        # standard install's real Strata-data beside the checkout answers instead of the empty mount.
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "Strata" / "terminal" / "strata_control" / "drafting.py"
+            fake_file.parent.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"STRATA_SYCL_ROOT": d}), \
+                 mock.patch.object(drafting, "__file__", str(fake_file)):
+                self.assertFalse(drafting.mtp_ready(["--mtp", "/work/Strata-data/mtp/rt"]))
 
     def test_the_default_mount_is_the_folder_above_the_checkout(self):
-        here = Path(drafting.__file__).resolve().parents[1].parent
-        env = {k: v for k, v in os.environ.items() if k != "STRATA_SYCL_ROOT"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(drafting._sycl_host_path("/work/Strata-data/mtp/rt"), here / "Strata-data" / "mtp" / "rt")
+        # Same isolation: with the real checkout, a standard install's sibling Strata-data is found by the 0.2.17
+        # fallback, and the assertion reads the real data folder instead of the default (checkout) answer.
+        with tempfile.TemporaryDirectory() as d:
+            checkout = Path(d).resolve() / "Strata"
+            fake_file = checkout / "terminal" / "strata_control" / "drafting.py"
+            fake_file.parent.mkdir(parents=True)
+            env = {k: v for k, v in os.environ.items() if k != "STRATA_SYCL_ROOT"}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(drafting, "__file__", str(fake_file)):
+                self.assertEqual(drafting._sycl_host_path("/work/Strata-data/mtp/rt"),
+                                 checkout / "Strata-data" / "mtp" / "rt")
 
     def test_a_config_written_before_the_layout_move_is_found_above_the_checkout(self):
         # 0.2.17 (#5395, again on 0.2.16): the mount was the folder above the checkout; since the layout move the default is the checkout
