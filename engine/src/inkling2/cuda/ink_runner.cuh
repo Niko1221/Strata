@@ -230,6 +230,20 @@ inline bool repack_gguf_raw_body_to_sf4(
 // ============================================================================
 // InkCudaModel: GPU-resident .strata v1.1 / .gguf / HF Trunk + Experts (Single-GPU & Dual-GPU EP!)
 // ============================================================================
+/// What DFlash 2 really takes on a 16 GB card (RTX 5060 Ti and RTX 5080, 1 slot, the mix): 331 MiB of weights (112 MiB of bf16 tensors + 219 MiB of block weights), 15 MiB of scratch, a 41 MiB context ring
+/// for each of the first 8 slots and the driver's share of the kernels' first use (45 MiB): 432 MiB measured ("GPU memory taken 432 MiB"). df2_total_mib() is the planner's rounder number (492).
+inline size_t df2_real_bytes(int slots) {
+    return (size_t)(112.0 + df2_big_mib(df2_variant(true)) + 42.0 * (double)std::min(std::max(slots, 1), 8) + 60.0) << 20;
+}
+
+/// What the runner allocates after the K/V in the COMPACT layout (workspaces: max_batch x 520 KiB + 237 MiB; 367 MiB at max_batch 256 on an RTX 5060 Ti and an RTX 5080, measured) and what it takes between the end of
+/// the load and the K/V sizing (234 MiB: 1425 -> 1191 MiB free on the 5060 Ti, 1282 -> 1050 MiB on the 5080).
+constexpr size_t kCompactWsConstBytes = 237ull << 20;
+constexpr size_t kCompactSizingOverheadBytes = 234ull << 20;
+/// Free memory COMPACT must still have at the end of the start with no device K/V (the engine's own "compact keeps 128 MiB free" cut moves K/V to mapped host memory when it has to):
+/// the margin of the crash-safety rule (an RTX 5080 ended at 144 MiB free and died; an RTX 5070 Ti at 149 MiB and ran).
+constexpr size_t kCompactCrashMarginBytes = 256ull << 20;
+
 struct InkCudaModel {
     InkManifest man;
     strata::artifact::StrataFileReader rd;
@@ -389,7 +403,10 @@ struct InkCudaModel {
                 }
             };
             est_map(man.trunk);
-            est_map(man.dspark);
+            if (df2_dspark_selected()) est_map(man.dspark);   // DSpark's weights are only loaded when STRATA_INK_DRAFTER=dspark asks for them (add_map above): DFlash 2 is the drafter
+            const int plan_slots_pre = sm120_plan_slots_ref().load();
+            const bool df2_pre = df2_replaces_dspark(strata_path);
+            const size_t df2_pre_bytes = df2_pre ? df2_real_bytes(plan_slots_pre) : 0u;
             // the loader holds a 64 MiB staging buffer and the amax word next to the trunk while it converts, then the all-VRAM branch below asks for 768 MiB after the experts (ballast tests: with 713 MiB left the engine died at its first top-k, with 39-43 MiB left at the end it was on the edge: lazy module loads need free VRAM)
             {
                 const int plan_slots = sm120_plan_slots_ref().load();
@@ -399,7 +416,7 @@ struct InkCudaModel {
                     sm120_compact_refuse(primary_gpu);
                 }
             }
-            const size_t compact_margin = (768ull << 20) + (64ull << 20);
+            const size_t compact_margin = (768ull << 20) + (64ull << 20) + df2_pre_bytes;   // + DFlash 2's real total (the precheck did not count it)
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
             if (do_compact_vram && opt5060_ld.compact_hybrid && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
@@ -413,6 +430,32 @@ struct InkCudaModel {
                              vfree_pre >> 20, (est_trunk + est_sec4 + compact_margin) >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20);
                 do_compact_vram = false;
                 sm120_compact_refuse(primary_gpu);
+            }
+            // The crash margin (1 slot; 16 and more slots keep the SWA ring and the K/V on the host): what the runner and DFlash 2 really take after the load must leave at least 256 MiB free at the end
+            // of the start, with no device K/V (the K/V is the elastic part: the sizing moves it to mapped host memory). RTX 5080 (15,558 MiB free): 147 MiB predicted, 144 measured, refused;
+            // RTX 5060 Ti (15,698 MiB free): 290 predicted, 285 measured, runs.
+            if (do_compact_vram && plan_slots_pre == 1) {
+                const size_t per_visit = (size_t)kInkKVDim * 2u + (size_t)(2 * kInkKVHeads * 4);   // the FP8 K/V of COMPACT (InkCudaRunner::kv_bytes_per_visit_pos)
+                int n_swa = 0, n_glob = 0;
+                for (int v = 0; v < kInkVisits; ++v) {
+                    if (man.c.is_swa[ink_visit_phys(v)]) ++n_swa; else ++n_glob;
+                }
+                const int mb = 256;   // the compact prefill chunk (max_batch)
+                const size_t swa_b = (size_t)n_swa * (kInkSwaWin + mb) * per_visit;
+                const size_t sconv_b = (size_t)(n_swa + n_glob) * 3 * kInkSconvCh * 4;
+                const size_t ws_b = (size_t)mb * (520ull << 10) + kCompactWsConstBytes;
+                const size_t used = kCompactSizingOverheadBytes + swa_b + sconv_b + ws_b + df2_pre_bytes;
+                const size_t after_load = vfree_pre > est_trunk + est_sec4 ? vfree_pre - est_trunk - est_sec4 : 0u;
+                const size_t end_free = after_load > used ? after_load - used : 0u;
+                std::fprintf(stderr, "[Ink5060Ti] COMPACT end-of-start estimate: free after the load about %zu MiB - runner %zu MiB (swa %.0f, sconv %.0f, workspaces %.0f, sizing %zu) - DFlash 2 %zu MiB = %zu MiB free with no device K/V, crash margin %zu MiB\n",
+                             after_load >> 20, used >> 20, (double)swa_b / 1048576.0, (double)sconv_b / 1048576.0, (double)ws_b / 1048576.0, kCompactSizingOverheadBytes >> 20, df2_pre_bytes >> 20, end_free >> 20,
+                             kCompactCrashMarginBytes >> 20);
+                if (end_free < kCompactCrashMarginBytes) {
+                    std::fprintf(stderr, "[Ink5060Ti] COMPACT refused: it would end the start with about %zu MiB free (crash margin %zu MiB; free now %zu MiB, DFlash 2 %zu MiB); the old path (every RTX 50 part off) runs\n",
+                                 end_free >> 20, kCompactCrashMarginBytes >> 20, vfree_pre >> 20, df2_pre_bytes >> 20);
+                    do_compact_vram = false;
+                    sm120_compact_refuse(primary_gpu);
+                }
             }
         }
         if (do_compact_vram) {
@@ -2890,9 +2933,10 @@ struct InkCudaRunner {
             // all-VRAM load, which moved the KV split from 4352 to 4096 device tokens on an A4000: review finding B1).
             // the small compact reserve was sized with the FP8 KV: COMPACT_KV=0 (FP16 KV) left 43 MiB and crashed at the first top-k, so it takes the shipped reserve
             // DFlash 2 as the drafter (STRATA_INK_DRAFTER=dflash2): its weights, rings and scratch come out of what the K/V may take
-            const size_t df2_extra = df2_replaces_dspark(m.path) ? (((opt5060_r.compact_vram && m.all_sf4_vram) ? df2_total_mib(df2_variant(true), max_slots) : df2_total_mib(df2_variant(vtot < (24ull << 30)), max_slots) + 180) << 20) : 0ull;
+            const size_t df2_extra = df2_replaces_dspark(m.path) ? ((opt5060_r.compact_vram && m.all_sf4_vram) ? df2_real_bytes(max_slots)
+                                                                                                               : ((df2_total_mib(df2_variant(vtot < (24ull << 30)), max_slots) + 180) << 20)) : 0ull;
             const size_t ws_reserve = df2_extra + ((opt5060_r.compact_vram && opt5060_r.compact_kv && m.all_sf4_vram)
-                ? ((size_t)max_batch * (size_t)(520ull << 10) + (320ull << 20))
+                ? ((size_t)max_batch * (size_t)(520ull << 10) + kCompactWsConstBytes)
                 : (strata::core::ink_runner_ws_reserve_bytes(max_slots, m.man.has_dspark) + (wddm_fl / 2) + rtx_extra_res));
             swa_in_host = (opt5060_r.compact_vram && max_slots >= 16 && !m.ls_active);
             std::memset(swa_pinned, 0, sizeof(swa_pinned));
