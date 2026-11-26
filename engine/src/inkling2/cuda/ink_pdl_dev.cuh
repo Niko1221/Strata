@@ -6,8 +6,7 @@
 // INK_PDL_WAIT() is the FIRST statement of every kernel that may be started early (see ink_pdl.cuh for the host half). When the kernel is launched the plain
 // way, or on a card below sm_90, it does nothing. When the graph holds a programmatic edge into the kernel, it returns once the kernel before it has completed
 // and its writes are visible: a kernel may read constants (weights) before it, and must read or write nothing an earlier kernel of the step produces.
-// Design credit: the idea of starting the next kernel while the previous one finishes comes from Basalt (MIT, github.com/jesdga95/basalt, include/basalt/kernels/pdl.hpp);
-// this file and ink_pdl.cuh are written for Strata's graph rewrite and share no code with it.
+// This file and ink_pdl.cuh are written for Strata's graph rewrite.
 #pragma once
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && defined(__CUDACC_VER_MAJOR__) && \

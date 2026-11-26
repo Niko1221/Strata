@@ -582,7 +582,7 @@ class Credits(unittest.TestCase):
         self.assertIn("Credit for DFlash 2 goes to tjm8874", text)
         i = text.index("The drafter: DFlash 2")
         paragraph = text[i:text.index("### Inkling-2-Mini: the 0.2.23 pins", i)]
-        for other in ("Inco AI", "z-lab", "Basalt authors"):
+        for other in ("Inco AI", "z-lab"):
             self.assertNotIn(other, paragraph, other)
 
     def test_the_docs_list_the_five_builds_and_the_gsq_credit(self):

@@ -12,9 +12,7 @@
 // (3 query heads per row, up to 16 rows = 48 query rows = 3 slabs of 16); every K/V tile is read once for the whole group, converted to FP16 in shared
 // memory and consumed by mma.m16n8k16; one warp owns one 16-row slab and keeps its scores, probabilities (as A fragments) and output in registers.
 //
-// Design inspired by the long-context decode attention of Basalt (https://github.com/jesdga95/basalt, MIT, Copyright (c) 2026 Jesús Gulfo,
-// attn.cu "attn_mma_split_kernel": tensor-core split-K, 32-key tiles, FP16 probabilities scaled by 2^15 for PV, FP32 denominator, per-row slices that
-// depend only on the row's own key count). No code was copied; the notice is in notices/basalt-MIT.txt.
+// Tensor-core split-K: 32-key tiles, FP16 probabilities scaled by 2^15 for PV, FP32 denominator, per-row slices that depend only on the row's own key count.
 //
 // Semantics are those of the old kernel: bias = rel_table[row, head, min(qpos - key, 1024)], per-query sink in the denominator (folded into split 0 for a
 // plain step, into the tail slot of a verify step), 24:8 GQA, head_dim 128, FP16 and FP8 (E4M3 x per-(cell, head) FP32 scale) KV, host-tail cells

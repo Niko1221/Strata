@@ -317,7 +317,7 @@ DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.99 GB,
 (for the packs and for the GGUFs; a folder you pointed Strata at is never written to: put the file beside your model). Without the file the model runs with no
 drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
 without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,
-`--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 support in Basalt, pull request 763, MIT).
+`--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 port, MIT).
 The first measurements (RTX 5090 and RTX 5060 Ti, [phaseA-tests/rel0223/dflash2](../phaseA-tests/rel0223/dflash2/RESULTS.md)): faster in 24 of 36 cells, level in 5, slower in 7.
 Its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
 

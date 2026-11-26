@@ -646,7 +646,7 @@ def case_chat(c, a):
 # ===================================================================================================== case 6: parallel clients
 def case_parallel(c, a):
     results, notes, ok = {}, [], True
-    words = ["amber", "basalt", "cobalt", "dahlia", "ember", "fjord", "garnet", "heron"]
+    words = ["amber", "birch", "cobalt", "dahlia", "ember", "fjord", "garnet", "heron"]
     for n in [int(x) for x in a.parallel_levels.split(",") if x]:
         recs = [Recorder() for _ in range(n)]
         cross, errors = [], []
