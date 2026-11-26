@@ -497,6 +497,25 @@ public:
         ck.swa_start = start_pos;
         ck.swa_len = n_pos;
         ck.swa_k.clear(); ck.swa_v.clear(); ck.swa_ksc.clear(); ck.swa_vsc.clear();
+        {
+            // reserve every visit's bytes up front: a D2H copy into pageable memory may still be in flight when the next
+            // copy_d2h grows the vector, so the vectors must never reallocate before ckpt_sync()
+            size_t nk = 0, nv = 0, nksc = 0, nvsc = 0;
+            for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+                const auto& kv = runner_->kv_desc[v];
+                if (!kv.is_swa) continue;
+                if (kv.kv_fmt == 0) {
+                    nk += (size_t)n_pos * strata::ink::kInkKVDim * sizeof(__half);
+                    nv += (size_t)n_pos * strata::ink::kInkKVDim * sizeof(__half);
+                } else {
+                    nk += (size_t)n_pos * strata::ink::kInkKVDim;
+                    nv += (size_t)n_pos * ((kv.kv_fmt == 3) ? (strata::ink::kInkKVDim / 2) : strata::ink::kInkKVDim);
+                    nksc += (size_t)n_pos * strata::ink::kInkKVHeads * sizeof(float);
+                    nvsc += (size_t)n_pos * strata::ink::kInkKVHeads * sizeof(float);
+                }
+            }
+            ck.swa_k.reserve(nk); ck.swa_v.reserve(nv); ck.swa_ksc.reserve(nksc); ck.swa_vsc.reserve(nvsc);
+        }
         for (int v = 0; v < strata::ink::kInkVisits; ++v) {
             const auto& kv = runner_->kv_desc[v];
             if (!kv.is_swa) continue;
@@ -533,6 +552,14 @@ public:
         ck.has_dspark = false;
         if (slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0) {
             ck.dspark_k.clear(); ck.dspark_v.clear();
+            {
+                size_t nds = 0;                         // reserved up front for the same reason as the SWA windows
+                for (int il = 0; il < 3; ++il) {
+                    if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                    nds += (size_t)(seq_len - std::max(0, seq_len - model_.man.c.dspark_swa_win)) * strata::ink::kInkKVDim * sizeof(__half);
+                }
+                ck.dspark_k.reserve(nds); ck.dspark_v.reserve(nds);
+            }
             for (int il = 0; il < 3; ++il) {
                 if (model_.man.c.dspark_is_swa[il] == 0) continue;
                 const int cap = dspark_->ctx_cap[il];

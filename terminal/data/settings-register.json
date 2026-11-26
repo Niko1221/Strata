@@ -17214,7 +17214,7 @@
    "last_date": "2026-11-25",
    "status": "opt-in",
    "owner": "inkling2/cuda",
-   "note": "strata-inkling CUDA: prompt-end checkpoints above 8 slots. Up to 8 slots every slot keeps one (unchanged). Above 8, unset or 0 (default) keeps none, as before; N > 0 keeps up to N at once (least recently used first out), each ~80 MiB host RAM with fp8 K/V (~160 MiB fp16), so a follow-up agent turn resumes instead of re-prefilling. Non-numeric values mean 0.",
+   "note": "strata-inkling CUDA backend only (the HIP backend keeps its 8-slot cutoff): prompt-end checkpoints above 8 slots. A number, not on/off. Up to 8 slots every slot keeps one (unchanged). Above 8, unset or 0 (default) keeps none, as before; N > 0 keeps up to N at once (least recently used first out), each ~80 MiB host RAM with fp8 K/V (~160 MiB fp16), so a follow-up agent turn resumes instead of re-prefilling. Non-numeric values mean 0.",
    "retire_after": "",
    "retired_in": ""
   },
