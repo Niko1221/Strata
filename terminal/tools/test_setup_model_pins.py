@@ -254,7 +254,10 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned drafter source, only setup.py opens it (behind acquisition.require)  # inkling_family.py comment (nothing opens it)
                     '"""True when `hostname` is Hugging Face (huggingface.co / hf.co) or the configured HF_ENDPOINT host."""',  # transfer.py _hf_host() host check for HF_TOKEN scoping (opens nothing)
                     'if h == "huggingface.co" or h.endswith(".huggingface.co") or h == "hf.co" or h.endswith(".hf.co"):',
-                    'ep = (env.get("HF_ENDPOINT") or "").strip()')
+                    'ep = (env.get("HF_ENDPOINT") or "").strip()',
+                    # inkling_family._own_url: the address of OUR planned DFlash 2 copy (strata-engine/Inkling-2-Mini-DFlash2 at a pinned commit; empty until the upload and the
+                    # owner's choice). Like DFLASH2_URL above it is only read by setup's and `strata drafting fetch`'s download, behind acquisition.require.
+                    'return f"https://huggingface.co/{DFLASH2_REPO}/resolve/{DFLASH2_OWN_COMMIT}/{file}" if (DFLASH2_OWN_COMMIT and DFLASH2_OWN_COPY == kind) else ""')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):
