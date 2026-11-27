@@ -1077,6 +1077,30 @@ void or_u32_rows(uint32_t* dst, const uint32_t* src, int n, void* stream) {
     check("or_u32_rows");
 }
 
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+namespace {
+// 0 unknown, 1 default-on wave32 (gfx12: #3264; gfx1101: RX 7800 XT),
+// 2 other wave32 (opt-in via STRATA_MULTI_BLOCK_ARGMAX=1), 3 wave64 / unavailable
+int hip_head_ops_arch() {
+    static int arch[64] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return 3;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess || p.warpSize != 32) {
+            arch[dev] = 3;
+        } else if (strata::kernels::gfx_arch_is_gfx12(p.gcnArchName) ||
+                   strata::kernels::gfx_arch_is(p.gcnArchName, "gfx1101")) {
+            arch[dev] = 1;
+        } else {
+            arch[dev] = 2;
+        }
+    }
+    return arch[dev];
+}
+}  // namespace
+#endif
+
 bool multi_block_head_ops() {
 #if defined(STRATA_HIP_GFX906)
     return false;
@@ -1087,14 +1111,9 @@ bool multi_block_head_ops() {
     }();
     if (env == 0) return false;
 #if defined(__HIPCC__)
-    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4: the only HIP target #3264 was run on), 2 other
-    int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
-    if (arch[dev] == 0) {
-        cudaDeviceProp p{};
-        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
-    }
-    return arch[dev] == 1;
+    const int a = hip_head_ops_arch();
+    if (env == 1) return a == 1 || a == 2;   // opt-in on any wave32 HIP device
+    return a == 1;
 #else
     return true;
 #endif
@@ -1111,14 +1130,7 @@ bool argmax_rows_wanted() {
     }();
     if (env >= 0) return env != 0 && multi_block_head_ops();
 #if defined(__HIPCC__)
-    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4), 2 other
-    int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
-    if (arch[dev] == 0) {
-        cudaDeviceProp p{};
-        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
-    }
-    return arch[dev] == 1 && multi_block_head_ops();
+    return multi_block_head_ops();
 #else
     // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
