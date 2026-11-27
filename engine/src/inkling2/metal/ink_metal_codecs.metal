@@ -1200,6 +1200,7 @@ kernel void ink_linear_q8row_mv(
         for (int k = int(lane); k < K4; k += 32) {
             const float4 w0 = float4(q0p[k]);
             const float4 w1 = float4(q1p[k]);
+            #pragma unroll
             for (int i = 0; i < 8; ++i) {
                 const float4 xv = ((device const float4*)(X + (size_t)i * K))[k];
                 a0[i] += dot(w0, xv);
@@ -1221,6 +1222,7 @@ kernel void ink_linear_q8row_mv(
         for (int k = int(lane); k < K4; k += 32) {
             const float4 w0 = float4(q0p[k]);
             const float4 w1 = has1 ? float4(q1p[k]) : float4(0.f);
+            #pragma unroll 8
             for (int i = 0; i < M; ++i) {
                 const float4 xv = ((device const float4*)(X + (size_t)i * K))[k];
                 a0[i] += dot(w0, xv);
