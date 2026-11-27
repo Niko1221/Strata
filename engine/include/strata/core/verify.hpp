@@ -78,6 +78,7 @@ struct AdaptGate {
 };
 
 class NativeHead;
+class PeerExperts;
 class RemoteExpertOpt;
 
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
@@ -100,6 +101,7 @@ public:
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    void set_peer_experts(PeerExperts* peer) { peer_ = peer; }            // before init/capture
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -463,6 +465,30 @@ public:
     std::string route_stats_report();
 
 private:
+    struct PeerWeightRef {
+        const void* data = nullptr;
+        int type = 0;
+        uint64_t bytes = 0;
+        bool valid() const { return data != nullptr; }
+    };
+    PeerExperts* peer_ = nullptr;
+    int peer_dev_ = -1;
+    cudaStream_t peer_dense_cs_ = nullptr;
+    cudaEvent_t ev_peer_z_in_ = nullptr;
+    cudaEvent_t ev_peer_z_done_ = nullptr;
+    cudaEvent_t ev_peer_q_in_ = nullptr;
+    cudaEvent_t ev_peer_q_done_ = nullptr;
+    void* peer_z_xq_ = nullptr;
+    void* peer_z_xil_ = nullptr;
+    float* peer_z_out_ = nullptr;
+    float* peer_q_out_ = nullptr;
+    std::vector<PeerWeightRef> peer_z_layers_;
+    std::vector<PeerWeightRef> peer_q_layers_;
+    std::vector<void*> peer_dense_allocs_;
+    std::vector<const void*> peer_q8_packed_keys_;
+    bool peer_gdn_z_on_ = false;
+    bool peer_qsa_q_on_ = false;
+    void release_peer_dense();
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)

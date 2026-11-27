@@ -10215,8 +10215,21 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --peer-device needs --expert-profile and the expert cache\n");
             return 1;
         }
+        int offload_mib = 0;
+        if (const char* v = std::getenv("STRATA_PEER_GDN_Z"); v != nullptr && std::atoi(v) != 0)
+            offload_mib += 456;
+        if (const char* v = std::getenv("STRATA_PEER_QSA_Q"); v != nullptr && std::atoi(v) != 0)
+            offload_mib += 304;
+        const int eff_peer_reserve_mib =
+            offload_mib > 0 ? std::max(o.peer_reserve_mib, 1420 + offload_mib) : o.peer_reserve_mib;
+        if (offload_mib > 0) {
+            std::fprintf(stderr,
+                         "strata generate: peer GPU %d: offload reserve %d MiB (effective reserve %d MiB) for "
+                         "offloaded dense layers\n",
+                         o.peer_device, offload_mib, eff_peer_reserve_mib);
+        }
         const auto tp0 = Clock::now();
-        if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
+        if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, eff_peer_reserve_mib, o.peer_slots,
                        err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -13487,6 +13500,7 @@ int main(int argc, char** argv) {
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver_p(st, 1).set_next(&stage_ver_p(st + 1, 1), &split_drive_b);
         }
         ver.set_remote_expert_opt(remote_opt.get());
+        ver.set_peer_experts(peer.valid() ? &peer : nullptr);
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
@@ -24497,6 +24511,7 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
         if (pcie_balance()) ver.set_pcie_balance(&drive.d.pcie_model);
+        ver.set_peer_experts(peer.valid() ? &peer : nullptr);
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
 #endif
