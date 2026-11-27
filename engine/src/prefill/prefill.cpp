@@ -2706,6 +2706,28 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             }
         }
     }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)   // CUDA only (HIP on Linux takes the gfx11 branch above; the gfx906 compat build has no cudaDevAttrIntegrated)
+    // An integrated GPU (cudaDevAttrIntegrated: one memory for CPU and GPU, e.g. NVIDIA Thor): the same two first-prompt buffers
+    // the gfx11 branch above makes during the load (the int8 experts' q8_1 activations for a whole chunk and their group
+    // record), for the same reason.  Made lazily at the first long prompt's first layer, they come after the auto-sized expert
+    // cache, the lent prompt slots and the other prompt buffers have taken the memory: on Thor the cudaMalloc there failed with
+    // "prefill: int8 experts: no memory for the activations", the engine exited and the server restarted it (about a minute)
+    // before the same prompt was read again.  A discrete GPU keeps the lazy path.  A failure here is not an error: the prompt
+    // path tries as before.
+    if (T > 0 && strata::kernels::native_expert_i8_by_default()) {
+        int dev = 0, integrated = 0;
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, dev) == cudaSuccess &&
+            integrated) {
+            if (m.fr_xq == nullptr && cudaMalloc(&m.fr_xq, T * (size_t) (N / 32) * 36) == cudaSuccess) m.fr_xq_rows = (int64_t) T;
+            else if (m.fr_xq == nullptr) { m.fr_xq = nullptr; (void) cudaGetLastError(); }
+            if (m.i8_rec == nullptr && cudaMalloc((void**) &m.i8_rec, strata::prefill::i8grp::kRecBytes) != cudaSuccess) {
+                m.i8_rec = nullptr;
+                (void) cudaGetLastError();
+            }
+        }
+        (void) cudaGetLastError();
+    }
+#endif
 #endif
     pf_mark("init: host buffers, PLE rows, identity table", tr_last);
     Alloc o;
