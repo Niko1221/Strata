@@ -996,7 +996,8 @@ until you close the preview. It can still use your CPU, and it is code the model
 while an answer is being written or an image is made.
 
 **Language.** About > Settings lists the page's languages: English (the default), German, Spanish, Japanese, Korean, Portuguese,
-Russian and Chinese. The Chat view, its settings and the header are translated; Monitor, Images and About are still English. A
+Russian and Chinese. The Chat view, its settings, the header and the About page's Model settings card are translated;
+Monitor, Images and the rest of About are still English. A
 language is a file `serve/web/locales/<lang>.json`; the English text lives in the code next to its key, and
 `python terminal/tools/web_i18n.py` checks every file for the same keys and placeholders (`--write` rewrites `en.json`). `/?lang=de` shows a
 language for one visit.
