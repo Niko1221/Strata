@@ -13192,6 +13192,22 @@ int main(int argc, char** argv) {
                     (void) cudaGetLastError();   // (as above)
                 }
             }
+            // 2026-10-27 STRATA_PREFILL_HELPER=1 (opt-in): the helper GPU behind the plugin (the MI50) computes the fraction
+            // STRATA_PREFILL_HELPER_FRAC (default 0.66) of the experts it holds that this GPU would stream in the prompt path's
+            // fused layers, in parallel with this GPU.  Off (default): the prompt path is as it was.
+            if (const char* hv = std::getenv("STRATA_PREFILL_HELPER"); hv != nullptr && std::atoi(hv) != 0 && !multi_gpu && stages.empty() &&
+                o.batch <= 0 && !prefill_helpers.empty()) {
+                double frac = 0.66;
+                if (const char* fv = std::getenv("STRATA_PREFILL_HELPER_FRAC")) frac = std::clamp(std::atof(fv), 0.0, 1.0);
+                std::string herr;
+                bool on = false;
+                for (strata::core::RemoteExperts* h : prefill_helpers)
+                    if (h->prefill_supported() && sp.set_helper_prefill(h, frac, herr)) { on = true; break; }
+                if (on) std::fprintf(stderr, "strata serve: the helper GPU computes %.0f%% of the experts it holds in prompt reads (STRATA_PREFILL_HELPER)\n",
+                                     100.0 * frac);
+                else std::fprintf(stderr, "strata serve: STRATA_PREFILL_HELPER is off: %s\n", herr.empty() ? "no helper with the prefill entry points" : herr.c_str());
+                err.clear();
+            }
             // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
             // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
             if (multi_gpu && !stages.empty()) {
@@ -16106,6 +16122,60 @@ int main(int argc, char** argv) {
                     if (ids[i] >= 0 && ids[i] < g.n_expert) sd[ids[i]] += per;
             };
         }
+        // 2026-10-27 STRATA_PREFILL_MI50_STATS=1 (measurement only, nothing changes): per prompt read, the routed rows and
+        // the expert weights by where the expert lives - resident on the primary (host_res), held by a helper (the MI50
+        // through the plugin) and not resident, or streamed. Sizes what a helper computing its own experts in the prompt
+        // path would take off the primary: its rows, its weight bytes, the activations it would have to receive and send.
+        struct Mi50Stats {
+            bool on = false;
+            int64_t tokens = 0, chunks = 0, last_l = -1;
+            int64_t rows[3] = {}, pairs[3] = {};
+            uint64_t wbytes[3] = {};
+            std::vector<int32_t> cnt;
+        } mi50s;
+        mi50s.on = [] { const char* v = std::getenv("STRATA_PREFILL_MI50_STATS"); return v != nullptr && std::atoi(v) != 0; }();
+        if (mi50s.on && drive.d.remote_count > 0) {
+            mi50s.cnt.assign((size_t) g.n_expert, 0);
+            sp.on_routes_fused = true;
+            auto prev = sp.on_routes;
+            sp.on_routes = [&, prev](int64_t l, const int32_t* ids, int64_t n) {
+                if (prev) prev(l, ids, n);
+                if (l < 0 || l >= g.n_layers || n <= 0) return;
+                if (l <= mi50s.last_l || mi50s.last_l < 0) { ++mi50s.chunks; mi50s.tokens += n / std::max<int64_t>(1, g.n_expert_used); }
+                mi50s.last_l = l;
+                std::fill(mi50s.cnt.begin(), mi50s.cnt.end(), 0);
+                for (int64_t i = 0; i < n; ++i)
+                    if (ids[i] >= 0 && ids[i] < g.n_expert) ++mi50s.cnt[(size_t) ids[i]];
+                for (int32_t e = 0; e < g.n_expert; ++e) {
+                    const int32_t c = mi50s.cnt[(size_t) e];
+                    if (c == 0) continue;
+                    int k = 2;
+                    if (!host_res.empty() && host_res[(size_t) (l * g.n_expert + e)] >= 0) k = 0;
+                    else for (int r = 0; r < drive.d.remote_count; ++r)
+                        if (drive.d.remote[r]->holds(l, e)) { k = 1; break; }
+                    mi50s.rows[k] += c;
+                    ++mi50s.pairs[k];
+                    mi50s.wbytes[k] += (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(l);
+                }
+            };
+        }
+        auto mi50s_flush = [&] {
+            if (const std::string hr = sp.helper_prefill_report(true); !hr.empty()) { std::fprintf(stderr, "%s\n", hr.c_str()); std::fflush(stderr); }
+            if (!mi50s.on || mi50s.chunks == 0) return;
+            const int64_t all = mi50s.rows[0] + mi50s.rows[1] + mi50s.rows[2];
+            const char* nm[3] = {"resident primary", "held by helper", "streamed"};
+            std::fprintf(stderr, "strata mi50 stats: %lld tokens, %lld chunk(s), %lld routed rows\n",
+                         (long long) mi50s.tokens, (long long) mi50s.chunks, (long long) all);
+            for (int k = 0; k < 3; ++k)
+                std::fprintf(stderr, "strata mi50 stats:   %-16s %6.1f%% rows (%lld), %lld expert-layers, %.2f GiB weights\n", nm[k],
+                             all > 0 ? 100.0 * (double) mi50s.rows[k] / (double) all : 0.0, (long long) mi50s.rows[k],
+                             (long long) mi50s.pairs[k], (double) mi50s.wbytes[k] / (1024.0 * 1024.0 * 1024.0));
+            // activations a helper would receive and return for its rows: fp16 in, fp16 out, hidden size wide
+            std::fprintf(stderr, "strata mi50 stats:   helper activations %.2f GiB each way (fp16, %lld wide)\n",
+                         (double) mi50s.rows[1] * (double) g.n_embd * 2.0 / (1024.0 * 1024.0 * 1024.0), (long long) g.n_embd);
+            std::fflush(stderr);
+            mi50s = Mi50Stats{true, 0, 0, -1, {}, {}, {}, std::move(mi50s.cnt)};
+        };
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -20928,6 +20998,7 @@ int main(int argc, char** argv) {
                         kva_floors.note(ids.data(), sp.kva_floor());
                         if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
                     }
+                    mi50s_flush();   // strata-mi50: the helper's per-layer tallies of this read
                     return run_ok;
                 };
                 // STRATA_BATCH_CONCURRENT_READ=1 (opt-in, one GPU, --batch with --no-prefill-borrow): the prompt is read on a
@@ -21233,6 +21304,7 @@ int main(int argc, char** argv) {
                             try {   // (an exception leaving a std::thread ends the process: a failed read instead)
                                 if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
                                 read_ok = sp.run(ids.data() + q0, b0 - q0, q0, read_err);
+                                mi50s_flush();
                             } catch (const std::exception& x) {
                                 read_ok = false;
                                 read_err = std::string("the prompt read failed: ") + x.what();

@@ -3445,6 +3445,14 @@ __global__ void peer_gather_add_kernel(float* __restrict__ sum, const float* __r
     }
     *o = s;
 }
+// 2026-10-27 STRATA_PREFILL_HELPER: the pairs routed to an expert the helper computes leave this GPU's grouping (id -1) and weigh 0
+__global__ void helper_mask_kernel(int32_t* __restrict__ ids, float* __restrict__ w, const uint8_t* __restrict__ take, int64_t n,
+                                   int n_expert) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int32_t e = ids[i];
+    if ((unsigned) e < (unsigned) n_expert && take[e]) { ids[i] = -1; w[i] = 0.0f; }
+}
 __global__ void sums_to_f16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = hf_sat(x[i]);
@@ -3471,6 +3479,11 @@ void peer_gather_add(float* sum, const float* rows, int64_t r0, const float* wk,
     peer_gather_add_kernel<<<dim3((unsigned) ((N + 255) / 256), (unsigned) n_tok), 256, 0, (cudaStream_t) stream>>>(
         sum, rows, r0, wk, pair, tok, start, list);
     check("peer_gather_add");
+}
+void helper_mask(int32_t* ids, float* w, const uint8_t* take, int64_t n, int n_expert, void* stream) {
+    if (n <= 0) return;
+    helper_mask_kernel<<<blocks_for(n), 256, 0, (cudaStream_t) stream>>>(ids, w, take, n, n_expert);
+    check("helper_mask");
 }
 void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;

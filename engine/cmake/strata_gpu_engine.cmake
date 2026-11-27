@@ -521,12 +521,27 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # strata-mi50 (2026-10-23): the helper-GPU expert tier as a DLL for an engine on another HIP runtime (helper_plugin_abi.h,
   # --expert-cache-plugin).  Only the Windows gfx906 build: the Radeon Pro VII / MI50 is seen there only by HIP 5.x.
   if(STRATA_HIP_GFX906 AND WIN32)
-    # the prompt helper (ABI 5) uses the prompt kernels of strata_pf_own (moe_helpers.cu) and llama.cpp's MMQ half, which left the
-    # tree in 0.2.16: strata_pf_own's mmq_absent.cpp answers built() = false, so prefill_reserve refuses and the engine keeps the
-    # prompt path on the main card (the helper still serves decode)
+    # the prompt helper (ABI 5) computes its experts with llama.cpp's MMQ, which left the engine in 0.2.16 (strata_pf_own's mmq_absent.cpp
+    # answers built() = false, so the engine itself holds none).  The plugin DLL carries its own copy: Strata's MMQ glue (moe_mmq.cu,
+    # ggml_cuda_host.cu, from the 0.2.15 tree) over the stock MMQ kernels of third_party/strata-llama (byte-identical to the pin of
+    # third_party/strata-ggml, UPSTREAM.md), with ggml-base from strata-ggml.  Only this DLL has them: the engine's no_mmq_symbols test is unaffected.
+    set(_strata_hl "${CMAKE_CURRENT_SOURCE_DIR}/third_party/strata-llama/ggml")
+    set(_strata_hl_cu "${_strata_hl}/src/ggml-cuda")
+    set(_strata_hl_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
+    set(_strata_hl_src src/prefill/moe_mmq.cu src/prefill/ggml_cuda_host.cu src/prefill/mmq_helper_stubs.cu "${_strata_hl_cu}/quantize.cu")
+    foreach(_t IN LISTS _strata_hl_types)
+      list(APPEND _strata_hl_src "${_strata_hl_cu}/template-instances/mmq-instance-${_t}.cu")
+    endforeach()
+    set_source_files_properties(${_strata_hl_src} PROPERTIES LANGUAGE HIP)
+    add_library(strata_mmq_helper STATIC ${_strata_hl_src})
+    target_include_directories(strata_mmq_helper PRIVATE "${_strata_hl}/include" "${_strata_hl}/src" "${_strata_hl_cu}"
+                               PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(strata_mmq_helper PRIVATE GGML_USE_HIP=1)
+    target_link_libraries(strata_mmq_helper PUBLIC ggml-base ${_strata_gpu_runtime_target})
     add_library(strata_helper_gfx906 SHARED src/plugin/helper_plugin.cpp src/plugin/helper_prefill.cu)
     target_include_directories(strata_helper_gfx906 PRIVATE ${_strata_gpu_include_directories})
-    target_link_libraries(strata_helper_gfx906 PRIVATE strata_engine strata_pf_own ${_strata_gpu_runtime_target})
+    # strata_mmq_helper first: its mmq:: functions must win over strata_pf_own's mmq_absent.cpp (same names, built() = false)
+    target_link_libraries(strata_helper_gfx906 PRIVATE strata_mmq_helper strata_engine strata_pf_own ${_strata_gpu_runtime_target})
   endif()
 
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
