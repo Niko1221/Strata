@@ -41,7 +41,10 @@ from strata_control import intel_spec, vram_fit  # noqa: E402
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
-MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
+REPO = ROOT.parent                                                # the Strata checkout
+#: What strata-sycl.sh mounts at /work: the folder holding the checkout and, by default, Strata-data next to it.
+#: Mounting only the checkout made sycl_path() reject the default data folder, which sits outside it (#6400 #2).
+MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or REPO.parent)
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
@@ -140,20 +143,33 @@ def real_mem_have(mem_have, real_ram: float, fake_ram: float):
     return lambda model, ram, vram=0.0: mem_have(model, real_ram if ram >= fake_ram else ram, vram)
 
 
+#: Where a SYCL build can sit: sycl/tools/build.sh puts its BUILD_DIR in the checkout (docs/INTEL_ARC.md,
+#: "Build with Docker"), the no-Docker cmake recipes often put it in engine/, and the top-level
+#: -DSTRATA_ENABLE_SYCL option nests the binary under sycl/. Every documented shape is found (#6400 #1).
+BIN_CANDIDATES = tuple(b / sub / n for b in (REPO, ROOT) for sub in ("build-sycl-aot", "build-sycl")
+                       for n in ("strata", "sycl/strata"))
+
+
 def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
         return None, "the SYCL port runs on Linux only"
-    exe = next((b for b in (ROOT / "build-sycl-aot" / "strata", ROOT / "build-sycl" / "strata") if b.exists()), None)
+    exe = next((b for b in BIN_CANDIDATES if b.exists()), None)
     if exe is None:
-        return None, "it is not built (docs/INTEL.md, \"How to build it\": Docker, then sycl/tools/build.sh in the image)"
+        return None, ("it is not built (docs/INTEL_ARC.md, \"Build with Docker\": the strata-sycl-dev image, then "
+                      "sycl/tools/build.sh in it; or docs/INTEL_ARC.md, \"Build without Docker\")")
     return exe, None
 
 
 def sycl_path(path) -> str:
     """A host path as the engine's container sees it: the folder above the Strata checkout (or STRATA_SYCL_ROOT) is
-    mounted at /work."""
-    p, root = Path(path).resolve(), MOUNT.resolve()
+    mounted at /work.  A path already in that /work form - kept from an earlier run config's args - already is one:
+    /work names this mount whatever the mount is, so it passes through unchanged (the keys a rerun keeps would
+    otherwise be resolved as host paths, from the root down, and refused as outside the mount)."""
+    p = Path(path)
+    if p.as_posix() == "/work" or p.as_posix().startswith("/work/"):
+        return p.as_posix()
+    p, root = p.resolve(), MOUNT.resolve()
     try:
         return "/work/" + p.relative_to(root).as_posix()
     except ValueError:
@@ -423,9 +439,9 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
         # temperature - unless the driver emulates it (docs/INTEL.md)
         env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
-    if exe != ROOT / "build-sycl-aot" / "strata":
-        env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()
-    if MOUNT.resolve() != ROOT.parent.resolve():
+    if exe != REPO / "build-sycl-aot" / "strata":   # strata-sycl.sh runs it from the checkout; its default is the docs' build
+        env["STRATA_SYCL_BIN"] = exe.relative_to(REPO).as_posix()
+    if MOUNT.resolve() != REPO.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
         out["env"] = env
@@ -458,13 +474,11 @@ def install(argv) -> None:
             keep[p.name] = {k: c[k] for k in ("model_switcher", "sampling") if k in c}
         except (OSError, ValueError):
             pass
-    stub = READER_DIR                                   # setup reads the engine's BUILD.json; the SYCL build has none.  A folder that
-    stub.mkdir(exist_ok=True)                           # stays: the picture reader in it is what the run config points at
-    try:
-        stamped = json.loads((stub / "BUILD.json").read_text(encoding="utf-8"))   # keeps what the reader's build recorded
-    except (OSError, ValueError):
-        stamped = {}
-    (stub / "BUILD.json").write_text(json.dumps({**stamped, "version": sycl_version(), "source": "local", "lib_dirs": []}))
+    stub = READER_DIR                                   # setup reads the engine's BUILD.json; the SYCL build has none.  The folder
+    # is stamped and the picture reader built in build_engine_hip below, at engine_step time, not here: a first setup after a
+    # pull to the terminal/ layout runs setup.move_over_old_layout() inside S.main(), which renames every non-source folder it
+    # finds in engine/ into terminal/engine/ - including this stamp folder, created moments before.  Stamping it here meant
+    # engine_step read /<checkout>/engine/engine-sycl/BUILD.json after the folder had been renamed away: FileNotFoundError.
 
     say = S.say
     fake_ram = max(real_ram, 1024.0)
@@ -498,6 +512,12 @@ def install(argv) -> None:
     def build_engine_hip(gpu, llama, vision="none"):
         """No engine to compile here (the SYCL build is separate); the picture readers are: the portable CPU reader, once, and for
         --vision gpu the SYCL GPU reader (a few minutes, once; it needs the oneAPI compiler on this PC, else the CPU reader stays)."""
+        stub.mkdir(exist_ok=True)                       # the folder stays: the picture reader in it is what the run config points at
+        try:
+            stamped = json.loads((stub / "BUILD.json").read_text(encoding="utf-8"))   # keeps what the reader's build recorded
+        except (OSError, ValueError):
+            stamped = {}
+        (stub / "BUILD.json").write_text(json.dumps({**stamped, "version": sycl_version(), "source": "local", "lib_dirs": []}))
         if vision != "none":
             stamp = stub / "BUILD.json"
             vsrc = S.source_hash(S.VISION_SOURCES)
@@ -586,7 +606,9 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
-        script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
+        script = Path(cfg_path).parent / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"   # next to the config, where setup wrote
+        if not script.is_file():                                                             # it (both layouts); ROOT - engine/ - never held it
+            return start(cfg_path, *a, **k)                                                  # a config from elsewhere: setup's own start
         S.say(f"\nstarting {script.name} ...")
         os.execv("/bin/sh", ["/bin/sh", str(script)])
     S.start = start_sycl
