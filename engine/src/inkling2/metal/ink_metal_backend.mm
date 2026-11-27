@@ -280,6 +280,8 @@ public:
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         if (batch.n_tokens <= 0) return true;
+        static const bool prof_on = std::getenv("STRATA_INK_PROF") != nullptr;
+        const double prof_t0 = prof_on ? mtl::now_s() : 0.0;
         // Auto-slice oversized multi-slot prefill batches (e.g. --bench --parallel 64 --prompt-len 64 -> M=4096)
         if (batch.n_tokens > runner_.max_batch) {
             const int V = mod_.man.c.vocab_unpadded;
@@ -370,6 +372,25 @@ public:
             if (!runner_.forward_batch(st, nullptr, nullptr, err)) return false;
         }
         (void)taps_out;
+        if (prof_on) {
+            static double s_wall[9] = {}, s_gpu[9] = {}; static long s_n[9] = {};
+            const int mi = st.M < 1 ? 1 : (st.M > 8 ? 8 : st.M);
+            s_wall[mi] += (mtl::now_s() - prof_t0) * 1e3;
+            s_gpu[mi] += runner_.last_gpu_ms;
+            ++s_n[mi];
+            static long total = 0;
+            if (++total % 32 == 0) {
+                std::string line;
+                for (int m = 1; m <= 8; ++m) {
+                    if (!s_n[m]) continue;
+                    char buf[160];
+                    std::snprintf(buf, sizeof buf, "M%d(n=%ld wall=%.2fms gpu=%.2fms host=%.2fms) ",
+                                  m, s_n[m], s_wall[m] / s_n[m], s_gpu[m] / s_n[m], (s_wall[m] - s_gpu[m]) / s_n[m]);
+                    line += buf;
+                }
+                std::fprintf(stderr, "[ink PROF fwd] %s\n", line.c_str());
+            }
+        }
         return true;
     }
 
