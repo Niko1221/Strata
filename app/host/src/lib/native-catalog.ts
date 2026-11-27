@@ -1,10 +1,11 @@
 import type {NativeFamily,NativeSize} from './native';
 import {tr} from './i18n';
 import {nvfp4Version} from './native-names';
+import {withCustomBuilds,type CustomRow} from './custom-models';
 export interface CatalogVersion extends NativeSize{sourceFamily:string;edition:string;images:boolean}
 export interface CatalogModel extends Omit<NativeFamily,'sizes'>{sizes:CatalogVersion[]}
 export function nativeVersionLabel(model:string){const nv=nvfp4Version(model);if(nv)return tr(nv.name);return tr(({Q2_0:'Fastest',IQ2_XS:'Compact',IQ3_XXS:'Balanced',IQ3_S:'High quality',IQ1_M:'Coding','Gyro-S':'Smallest','Gyro-M':'Small memory','SQ-64':'Flagship','SQ-96':'High quality','SQ-128':'Highest quality','SQ-20':'Lossless','SQ-15':'Flagship','SQ-10':'Compact'} as Record<string,string>)[model]??model);}
-export const catalogVersionLabel=(version:CatalogVersion)=>{if(version.sourceFamily===INKLING_FAMILY&&/^UD-/i.test(version.model))return `${tr('Unsloth')} · ${version.model}`;if(version.sourceFamily===INKLING_FAMILY&&/^GSQ-RCO-/i.test(version.model))return `GSQ-RCO · ${version.model.replace(/^GSQ-RCO-/i,'')}`;const label=nativeVersionLabel(version.model);return [tr(version.edition),label===version.model&&version.edition?'':label].filter(Boolean).join(' · ');};
+export const catalogVersionLabel=(version:CatalogVersion)=>{if(version.custom&&version.displayName)return version.displayName;if(version.sourceFamily===INKLING_FAMILY&&/^UD-/i.test(version.model))return `${tr('Unsloth')} · ${version.model}`;if(version.sourceFamily===INKLING_FAMILY&&/^GSQ-RCO-/i.test(version.model))return `GSQ-RCO · ${version.model.replace(/^GSQ-RCO-/i,'')}`;const label=nativeVersionLabel(version.model);return [tr(version.edition),label===version.model&&version.edition?'':label].filter(Boolean).join(' · ');};
 /**
  * Models whose picture files Load fetches by itself (strata_control/pictures.py): the Flash-Next GGUF families, which share the original's reader (Swift has its own file).
  * NVFP4 packs and Qwen3.6 keep the installer for their pictures. With these the Load of a model that is on this computer never runs the installer again just
@@ -20,7 +21,7 @@ export const versionNote=(model:string)=>{const nv=nvfp4Version(model);return nv
  *  listed only while installed) comes last. Control sends them in this order already; the sort keeps it when an older Control does not. */
 const INKLING_ORDER=['SQ-20','SQ-15','SQ-10','GSQ-RCO-IQ3_S','UD-Q4_K_XL'];
 export const inklingRank=(model:string,offered?:boolean)=>{if(offered===false)return 20;const i=INKLING_ORDER.indexOf(String(model).toUpperCase());return i>=0?i:/^SQ-/i.test(model)?5:/^GSQ-/i.test(model)?6:7;};
-export function orderInklingSizes<T extends {model:string;offered?:boolean;installed?:boolean}>(sizes:T[]):T[]{return sizes.filter(s=>s.offered!==false||s.installed).map((s,i)=>({s,i})).sort((a,b)=>inklingRank(a.s.model,a.s.offered)-inklingRank(b.s.model,b.s.offered)||a.i-b.i).map(x=>x.s);}
+export function orderInklingSizes<T extends {model:string;offered?:boolean;installed?:boolean;custom?:boolean}>(sizes:T[]):T[]{const rank=(s:T)=>s.custom?10:inklingRank(s.model,s.offered);/* the person's own builds come after the official ones */return sizes.filter(s=>s.offered!==false||s.installed).map((s,i)=>({s,i})).sort((a,b)=>rank(a.s)-rank(b.s)||a.i-b.i).map(x=>x.s);}
 export const hasKvChoice=(group?:string)=>group!=='qwen3.6'&&group!==ORNITH_FAMILY&&group!==HY4_FAMILY&&group!==INKLING_FAMILY;
 /** Ornith-1.5-35B-A3B (setup.py OWN_PATH_FAMILIES['ornith'], the Qwen3.6 engine path): a display group of its own, so its Q4_K_M..Q8_0 sizes are not listed under Qwen3.6. */
 export const ORNITH_FAMILY='ornith';
@@ -30,7 +31,12 @@ export const HY4_FAMILY='hy4-flash';
 /** Thinking Machines Inkling-2-Mini (setup.py INKLING_FAMILIES, its own shape engine strata-inkling). */
 export const INKLING_FAMILY='inkling-2-mini';
 /** Display groups are distinct from the engine's installation family IDs. */
-export function nativeCatalogModels(families:NativeFamily[]):CatalogModel[]{
+export function nativeCatalogModels(families:NativeFamily[],installed?:readonly CustomRow[]|null):CatalogModel[]{
+ // The person's own builds (installed rows with custom:true) are versions of their parent model, listed after the official ones.
+ const official=officialCatalogModels(families);
+ return official.length?withCustomBuilds(official,installed):official;
+}
+function officialCatalogModels(families:NativeFamily[]):CatalogModel[]{
  if(!families.length)return[];
  const groups:CatalogModel[]=[{family:'qwen3.8',title:'Qwen3.8-Flash-Next',about:'',experimental:false,images:false,sizes:[]},{family:'qwen3.6',title:'Qwen3.6-35B-A3B',about:'',experimental:false,images:false,sizes:[]}];
  // Ornith-1.5-35B-A3B (#7134) runs on the Qwen3.6 engine path but is its own model: its sizes are a group of their own, listed after Qwen3.6 only when Control offers them (an older Control does not).
