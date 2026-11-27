@@ -1,0 +1,32 @@
+[strata] 2026-11-27 17:23:39 engine started: <home>\AppData\Local\Strata\components\engine\0.1.69-windows-x86_64-cuda-cuda13\strata.exe --serve --pack <strata>\Models\packs\iq3_s --native <strata>\Models\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <strata>\Models\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile <strata>\control\data\expert-profile.bin --expert-cache auto --prefill auto --max-context 131072 --kv int8 --kv-resident 32768 --vision --control-vector-scaled <strata>\Models\control\Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --vram-reserve-mib 1536 --prompt-cache-spread --draft dflash2 --draft-model <strata>\Models\dflash2\qwen3.8-flash-next-dflash2.q4_0-selq4.pack --draft-fallback none --mtp-draft-vocab <strata>\control\data\draft_vocab_cyrillic.bin --spec 6 --draft-conf 0.7 --conversation-cache-mib 23296
+strata: sm_120 (Blackwell): 12 speed switches on by default (STRATA_SM120_PERF=0 turns them off, as does STRATA_DEFAULTS=026; a switch you set is kept; ADAPT_FETCH is on because this card has 16 GiB of memory or less, it does not give bit-for-bit the same text, STRATA_ADAPT_FETCH=0 turns it off): HC_UPMIX Q80_ROWS1 EXP_MODE SIDE_MIXER DEQUANT_SIDE QFUSE LFUSE PLE_COMPACT PLE_COPY_STREAM PREFILL_CPU_SHARE_NT PREFILL_NVFP4 ADAPT_FETCH
+strata generate: NVIDIA (15.9 GiB): --prefill auto stays at 8192 so prompt loans do not cannibalize hot expert slots (#5199; STRATA_NV_CHUNK=16 or 1 raises it)
+strata generate: memory guard: limit 127.9 GiB (source: meminfo), current 13.5 GiB, reclaimable cache credited 0.0 GiB; available 114.5 GiB (MemAvailable 114.5 GiB), floor 2560 MiB
+strata generate: PCIe probe: 28.4 GB/s host->device (best of 28.4 28.3 28.4 28.4) -> pcie_frac 0.55 (default 0.55)
+strata generate: CPU expert kernels: AVX-2
+strata generate: native pack: <strata>\Models\packs\iq3_s experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 1.0 s)
+strata generate: 1466 MiB of weights loaded from <strata>\Models\packs\iq3_s in 0.2 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 6.5 s
+strata generate: control vector mode = project, dir = per-layer, layers 4..44 (41 steered)
+strata generate: --ple-io ram chosen by the residency policy (the table is 26.8 GiB, the expert arena still to fill 46.8 GiB and 112.1 GiB of RAM is available; STRATA_PLE_AUTO_RAM=0 keeps the direct reads, --ple-io direct forces them)
+strata generate: PLE table locked in RAM (--ple-io ram chosen by the residency policy) in 82.5 s
+strata generate: profile <strata>\control\data\expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.55 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of <strata>\Models\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata generate: experimental native Q6_K head, 521472000 bytes, in 1.4 s
+strata generate: GPU 0: NVIDIA GeForce RTX 5070 Ti, compute capability 12.0
+strata: pinned-memory headroom: holding 800 MiB for the buffers allocated after the expert arena (released after it: 640 MiB; kept until needed: 160 MiB; STRATA_PIN_RESERVE_MIB changes it)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 7436 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: expert arena read unbuffered (0 of 16 probe reads from the file cache; 37.5 GiB available, 51.1 GiB of files)
+strata: pinned-memory headroom: 640 MiB handed back after the expert arena
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages (2097152 B)
+strata generate: loaded 46.84 GiB at 0.40 GiB/s
+strata generate: CPU pool tasks/phase: 24 (automatic), participating threads: 8
+strata generate: CPU pool: 7 workers by default (8 physical cores, 16 logical processors; bounded by every physical core but the host's)
+strata generate: 7 pool workers on logical processors 2,4,6,8,10,12,14, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,...,14 (7 workers, one per physical core; host on 0)
+strata aux cpus: not available on this system
+strata generate: expert cache auto: 9.12 GiB free, 1536 MiB reserved (+285 MiB for the draft head, +192 MiB for what is allocated after the cache) -> 3754 slots
+strata generate: only 1560 MiB free once the slots are written (need 2013 MiB: reserve 1536 MiB + 477 MiB post-cache); shrinking the expert cache
+strata generate: expert cache 3474 slots, 6.65 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
