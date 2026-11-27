@@ -106,6 +106,8 @@ struct InkMetalRunner {
 
     int lib_codecs = -1, lib_ops = -1, lib_dspark = -1, lib_vis = -1, lib_mpp = -1;
     bool is_apple10 = false;
+    bool trace_experts = std::getenv("INK_TRACE_EXPERTS") != nullptr;
+    std::vector<std::pair<std::string, size_t>> prof_marks;   // INK_TIMELINE: (label, dispatch index)
     bool use_mpp = false, use_mpp_trunk_f16 = false, use_dspark_f16 = false;
     int mpp_decomp_cap = 0;
 
@@ -121,11 +123,13 @@ struct InkMetalRunner {
     // Pipelines
     mtl::Pipeline p_lin_bf16_mv1, p_lin_bf16_mv, p_lin_bf16_mm8, p_lin_bf16_mm;
     mtl::Pipeline p_lin_q8_mv1, p_lin_q8_mv, p_lin_q8_mm8, p_lin_q8_mm;
+    mtl::Pipeline p_attnproj_fused;
+    mtl::Pipeline p_lin_q8_mv1_wide;
     mtl::Pipeline p_lin_f32, p_lin_f32_mm, p_lin_f32_exact_mm;
     mtl::Pipeline p_lin_sk[9], p_lin_sk5_mm8, p_lin_sk6_mm8;
     mtl::Pipeline p_unemb_argmax_q8, p_unemb_argmax_bf16, p_unemb_argmax_sk6, p_argmax_part;
     mtl::Pipeline p_unemb_argmax_m_q8, p_unemb_argmax_m_bf16, p_unemb_argmax_m_sk6, p_argmax_part_m;
-    mtl::Pipeline p_moe_plan, p_moe_gu, p_moe_dn, p_moe_gu_sk23, p_moe_dn_sk23, p_moe_red8;
+    mtl::Pipeline p_moe_plan, p_moe_gu, p_moe_dn, p_moe_gu_sk23, p_moe_gu_sk23_stg, p_moe_gu_sk23_lr, p_moe_gu_sk23_mm, p_moe_dn_sk23, p_moe_dn_sk23_mm, p_moe_red8;
     mtl::Pipeline p_moe_gu_sf4, p_moe_dn_sf4, p_moe_gu_mx8, p_moe_dn_mx8;
     mtl::Pipeline p_moe_gu_sk2, p_moe_dn_sk2, p_moe_gu_sk3, p_moe_dn_sk3, p_moe_gu_sk4, p_moe_dn_sk4, p_moe_gu_sk5, p_moe_dn_sk5;
     mtl::Pipeline p_moe_gu_mm_sf4, p_moe_dn_mm_sf4, p_moe_gu_mm_mx8, p_moe_dn_mm_mx8, p_moe_gu_mm_gen, p_moe_dn_mm_gen;
@@ -205,6 +209,7 @@ struct InkMetalRunner {
     mtl::Buffer b_q, b_k_raw, b_v_raw, b_k, b_v, b_r, b_kd_taps, b_vd_taps;
     mtl::Buffer b_sinks, b_gate_attn, b_attn_out, b_attn_part_o, b_attn_part_ml, b_wo_raw, b_wo;
     mtl::Buffer b_mlp_in, b_r_logits, b_topk_idx, b_topk_w;
+    mtl::Buffer b_topk_trace;            // [48, MB, top_k] per-visit expert ids when INK_TRACE_EXPERTS is set
     mtl::Buffer b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_meta, b_moe_tiles;
     mtl::Buffer b_moe_h, b_moe_yp, b_moe_raw, b_moe_out;
     mtl::Buffer b_h_out, b_h_norm, b_h_gather, b_logits, b_argmax;
@@ -226,6 +231,13 @@ struct InkMetalRunner {
     mtl::Buffer w_dsp_q_f16[3], w_dsp_k_f16[3], w_dsp_v_f16[3], w_dsp_o_f16[3];
     mtl::Buffer w_dsp_g_f16[3], w_dsp_u_f16[3], w_dsp_d_f16[3];
 
+    struct FeatureHistory {
+        static constexpr int capacity = 2048;
+        int sent = -1;
+        std::vector<float> rows;
+        std::vector<int> positions;
+    };
+    std::unordered_map<int, FeatureHistory> feature_history;
     double last_gpu_ms = 0.0;
 
     bool init(mtl::Context& ctx, InkMetalModel& m, int slots, int ctx_len, int batch_cap,
@@ -248,6 +260,8 @@ struct InkMetalRunner {
         p_lin_bf16_mm8 = cx->pipeline(lib_codecs, "ink_linear_bf16_mm8");
         p_lin_bf16_mm  = cx->pipeline(lib_codecs, "ink_linear_bf16_mm");
         p_lin_q8_mv1   = cx->pipeline(lib_codecs, "ink_linear_q8row_mv1");
+        p_attnproj_fused = cx->pipeline(lib_codecs, "ink_attnproj_fused_mv1");
+        p_lin_q8_mv1_wide = cx->pipeline(lib_codecs, "ink_linear_q8row_mv1_wide");
         p_lin_q8_mv    = cx->pipeline(lib_codecs, "ink_linear_q8row_mv");
         p_lin_q8_mm8   = cx->pipeline(lib_codecs, "ink_linear_q8row_mm8");
         p_lin_q8_mm    = cx->pipeline(lib_codecs, "ink_linear_q8row_mm");
@@ -271,7 +285,11 @@ struct InkMetalRunner {
         p_moe_gu        = cx->pipeline(lib_codecs, "ink_moe_gu_situ");
         p_moe_dn        = cx->pipeline(lib_codecs, "ink_moe_dn");
         p_moe_gu_sk23   = cx->pipeline(lib_codecs, "ink_moe_gu_sk23");
+        p_moe_gu_sk23_stg = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_stg");
+        p_moe_gu_sk23_lr  = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_lr");
+        p_moe_gu_sk23_mm  = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_mm");
         p_moe_dn_sk23   = cx->pipeline(lib_codecs, "ink_moe_dn_sk23");
+        p_moe_dn_sk23_mm = cx->pipeline(lib_codecs, "ink_moe_dn_sk23_mm");
         p_moe_gu_sf4    = cx->pipeline(lib_codecs, "ink_moe_gu_sf4");
         p_moe_dn_sf4    = cx->pipeline(lib_codecs, "ink_moe_dn_sf4");
         p_moe_gu_mx8    = cx->pipeline(lib_codecs, "ink_moe_gu_mx8");
@@ -383,6 +401,10 @@ struct InkMetalRunner {
 
         // Allocate KV caches & ShortConv state pools (WorkingSet-aware auto-ctx sizing for 16/24/32 GB Mac M1/M2/M3/M4!)
         const auto& c = mod->man.c;
+        if (getenv("INK_DFLASH_LAYOUT")) for (const char* name : {"model.llm.embed.weight", "model.llm.embed_norm.weight", "model.llm.unembed.weight"}) {
+            const auto& t = mod->man.get(name);
+            fprintf(stderr, "probe_tensor %s %s %llu %lld %lld %d %d\n", name, fmt_name(t.fmt), (unsigned long long)(mod->sec1_off+t.off), (long long)t.rows(), (long long)t.cols(), c.vocab_unpadded, c.vocab_padded);
+        }
         {
             const uint64_t ws_lim = cx->recommended_working_set();
             const uint64_t cur_alloc = cx->allocated();
@@ -499,6 +521,7 @@ struct InkMetalRunner {
         b_r_logits  = cx->alloc(MB * c.n_experts * 4);
         b_topk_idx  = cx->alloc(MB * c.top_k * 4);
         b_topk_w    = cx->alloc(MB * c.top_k * 4);
+        b_topk_trace = cx->alloc(48 * MB * c.top_k * 4);   // INK_TRACE_EXPERTS: per-visit topk capture
         b_moe_uexp  = cx->alloc(c.n_experts * 4);
         b_moe_uoff  = cx->alloc(c.n_experts * 4);
         b_moe_ucnt  = cx->alloc(c.n_experts * 4);
@@ -870,7 +893,8 @@ struct InkMetalRunner {
             }
         } else if (ti.fmt == FMT_Q8ROW) {
             if (M == 1 && (K & 15) == 0) {
-                d.p = &p_lin_q8_mv1;
+                static const bool q8wide = std::getenv("INK_Q8WIDE") != nullptr;
+                d.p = q8wide ? &p_lin_q8_mv1_wide : &p_lin_q8_mv1;
                 d.grid[0] = (uint32_t)((N + 31) / 32);
                 d.tg[0] = 256;
             } else if (M >= 2 && M <= 8 && N >= 32768) {
@@ -938,6 +962,19 @@ struct InkMetalRunner {
 
     struct InkMppMmArgs {
         int M, N, K, out_stride;
+    };
+    // Must mirror InkAttnProjFusedParams in ink_metal_codecs.metal exactly.
+    struct InkAttnProjFusedParams {
+        uint64_t w_off[8];
+        uint32_t n_rows[8];
+        uint32_t is_f32[8];
+        uint32_t x_off4[8];
+        uint32_t out_idx[8];
+        uint64_t out_off[8];
+        uint32_t rowbase[8];
+        uint32_t total_rows;
+        uint32_t nproj;
+        uint32_t pad[2];
     };
     struct InkMppAttnArgs {
         int M, M_pad, slot, pos0, is_swa, swa_win, rel_extent, kv_stride;
@@ -1041,6 +1078,8 @@ struct InkMetalRunner {
             ++n_active_slots;
         }
 
+        static const bool tprof = std::getenv("INK_TPROF") != nullptr;
+        const double tp_t0 = tprof ? mtl::now_s() : 0.0;
         std::vector<mtl::Dispatch> ds;
         ds.reserve(2400);
 
@@ -1090,7 +1129,7 @@ struct InkMetalRunner {
 
         auto run_visit = [&](int ip, int visit, int pass_idx, bool has_msgs) {
             // Capture DSpark tap if visit in {5, 23, 41}
-            if (step.capture_taps && use_dspark) {
+            if ((step.capture_taps && use_dspark) || getenv("INK_DFLASH_FD")) {
                 for (int ti = 0; ti < 3; ++ti) {
                     if (visit == c.dspark_taps[ti]) {
                         push_copy(mtl::Arg::B(b_cur), mtl::Arg::B(b_taps4, (size_t)ti * M_stride * 4), M_stride);
@@ -1305,16 +1344,76 @@ struct InkMetalRunner {
                 }
             } else {
                 // ALL 6-8 projections read from b_in3 and write disjoint outputs -> run 100% CONCURRENTLY on Apple Silicon!
-                push_trunk_linear(ds, p + ".attn.wq_du.weight", in_q, mtl::Arg::B(b_q), M, -1, true);
-                push_trunk_linear(ds, p + ".attn.wk_dv.weight", in_k, mtl::Arg::B(b_k_raw), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.wv_dv.weight", in_v, mtl::Arg::B(b_v_raw), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.wr_du.weight", in_q, mtl::Arg::B(b_r), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.attn_sink_proj.weight", in_q, mtl::Arg::B(b_sinks), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.gate_attn.weight", in_q, mtl::Arg::B(b_gate_attn), M, -1, false);
+                static const bool fuse_attnproj = [] {
+                    const char* e = std::getenv("INK_FUSE_ATTN");
+                    return !(e && (std::string(e) == "0" || std::string(e) == "off"));
+                }();
+                // Fused single-dispatch path for M==1 decode: replaces 6-8 small back-to-back
+                // GEMV dispatches with one wide kernel so warps from different projections
+                // interleave (no drain/refill bubbles between them). Requires Q8_ROW trunk
+                // projections, F32 sinks/sconv, and all weights in the shared sec1 buffer.
+                const char* ap_names[8] = {".attn.wq_du.weight", ".attn.wk_dv.weight", ".attn.wv_dv.weight",
+                                           ".attn.wr_du.weight", ".attn.attn_sink_proj.weight", ".attn.gate_attn.weight",
+                                           ".attn.k_sconv.weight_proj", ".attn.v_sconv.weight_proj"};
+                const int nproj = is_swa ? 6 : 8;
+                bool can_fuse = fuse_attnproj && M == 1;
+                const mtl::Arg xins[8] = {in_q, in_k, in_v, in_q, in_q, in_q, in_k, in_v};
+                for (int i = 0; can_fuse && i < nproj; ++i) {
+                    const auto& ti = mod->man.get(p + ap_names[i]);
+                    const bool q8 = ti.fmt == FMT_Q8ROW;
+                    const bool f32 = ti.fmt == FMT_F32;
+                    if (!(q8 || f32) || (int)ti.cols() != D || (ti.rows() % 4) != 0) can_fuse = false;
+                    if (!q8 && !f32) can_fuse = false;
+                    // wq/wk/wv/wr/gate must be Q8; sinks/sconv F32-only in practice but accept either
+                }
+                if (can_fuse) {
+                    InkAttnProjFusedParams fp{};
+                    const mtl::Buffer* wbuf = mod->tw(p + ".attn.wq_du.weight").buf;
+                    const mtl::Buffer* out_bufs[8] = {&b_q, &b_k_raw, &b_v_raw, &b_r, &b_sinks, &b_gate_attn, &b_kd_taps, &b_vd_taps};
+                    uint32_t rb = 0;
+                    for (int i = 0; i < nproj; ++i) {
+                        const std::string nm = p + ap_names[i];
+                        const auto& ti = mod->man.get(nm);
+                        const mtl::Arg wa = mod->tw(nm);
+                        fp.w_off[i] = (uint64_t)wa.off;
+                        fp.n_rows[i] = (uint32_t)ti.rows();
+                        fp.is_f32[i] = (ti.fmt == FMT_F32) ? 1u : 0u;
+                        fp.x_off4[i] = (uint32_t)(xins[i].off / 4);
+                        fp.out_idx[i] = (uint32_t)i;
+                        fp.out_off[i] = 0;
+                        fp.rowbase[i] = rb;
+                        rb += (uint32_t)ti.rows();
+                        if (wa.buf != wbuf) can_fuse = false;
+                    }
+                    fp.nproj = (uint32_t)nproj;
+                    fp.total_rows = rb;
+                    if (can_fuse) {
+                        mtl::Dispatch d;
+                        d.barrier = true;
+                        d.p = &p_attnproj_fused;
+                        d.grid[0] = (rb + 31) / 32;
+                        d.tg[0] = 256;
+                        int xst = D;
+                        d.args = {mtl::Arg::B(*wbuf, 0), mtl::Arg::B(b_in3, 0),
+                                  mtl::Arg::B(*out_bufs[0]), mtl::Arg::B(*out_bufs[1]), mtl::Arg::B(*out_bufs[2]),
+                                  mtl::Arg::B(*out_bufs[3]), mtl::Arg::B(*out_bufs[4]), mtl::Arg::B(*out_bufs[5]),
+                                  mtl::Arg::B(*out_bufs[6]), mtl::Arg::B(*out_bufs[7]),
+                                  mtl::Arg::V(fp), mtl::Arg::V(xst)};
+                        ds.push_back(std::move(d));
+                    }
+                }
+                if (!can_fuse) {
+                    push_trunk_linear(ds, p + ".attn.wq_du.weight", in_q, mtl::Arg::B(b_q), M, -1, true);
+                    push_trunk_linear(ds, p + ".attn.wk_dv.weight", in_k, mtl::Arg::B(b_k_raw), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.wv_dv.weight", in_v, mtl::Arg::B(b_v_raw), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.wr_du.weight", in_q, mtl::Arg::B(b_r), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.attn_sink_proj.weight", in_q, mtl::Arg::B(b_sinks), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.gate_attn.weight", in_q, mtl::Arg::B(b_gate_attn), M, -1, false);
 
-                if (!is_swa) {
-                    push_trunk_linear(ds, p + ".attn.k_sconv.weight_proj", in_k, mtl::Arg::B(b_kd_taps), M, -1, false);
-                    push_trunk_linear(ds, p + ".attn.v_sconv.weight_proj", in_v, mtl::Arg::B(b_vd_taps), M, -1, false);
+                    if (!is_swa) {
+                        push_trunk_linear(ds, p + ".attn.k_sconv.weight_proj", in_k, mtl::Arg::B(b_kd_taps), M, -1, false);
+                        push_trunk_linear(ds, p + ".attn.v_sconv.weight_proj", in_v, mtl::Arg::B(b_vd_taps), M, -1, false);
+                    }
                 }
             }
 
@@ -1632,7 +1731,12 @@ struct InkMetalRunner {
             push_trunk_linear(ds, p + ".mlp.gate.weight", mtl::Arg::B(b_mlp_in), mtl::Arg::B(b_r_logits), M, -1, true, true);
             const size_t ex_off = (size_t)ip * c.n_experts * sizeof(InkExpertDev);
             const bool layer_has_gguf = (((layer_gu_mask[ip] | layer_dn_mask[ip]) & (1u << FMT_GGUF_RAW)) != 0);
-            const int mpp_moe_min_m = is_apple10 ? 10 : 16;
+            static const int mpp_moe_min_override = [] {
+                const char* e = std::getenv("INK_MPP_MOE_MIN_M");
+                return e ? atoi(e) : -1;
+            }();
+            int mpp_moe_min_m = is_apple10 ? 10 : 16;
+            if (mpp_moe_min_override > 0) mpp_moe_min_m = mpp_moe_min_override;
             if (use_mpp && M >= mpp_moe_min_m && !layer_has_gguf) {
                 {
                     mtl::Dispatch d;
@@ -1767,6 +1871,13 @@ struct InkMetalRunner {
                               mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
                               mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::V(c.route_scale)};
                     ds.push_back(std::move(d));
+                    if (trace_experts) {
+                        mtl::Dispatch tc;
+                        tc.p = &p_copy_f32;
+                        tc.grid[0] = (uint32_t)((M * c.top_k + 255) / 256); tc.tg[0] = 256;
+                        tc.args = {mtl::Arg::B(b_topk_idx), mtl::Arg::B(b_topk_trace, (size_t)visit * (size_t)max_batch * c.top_k * 4), mtl::Arg::V(M * c.top_k)};
+                        ds.push_back(std::move(tc));
+                    }
                 } else {
                     {
                         mtl::Dispatch d;
@@ -1785,7 +1896,11 @@ struct InkMetalRunner {
                         ds.push_back(std::move(d));
                     }
                 }
-                const bool use_moe_mm = (M >= 48);
+                static const int moe_mm_min_override = [] {
+                    const char* e = std::getenv("INK_MOE_MM_MIN_M");
+                    return e ? atoi(e) : 48;
+                }();
+                const bool use_moe_mm = (M >= moe_mm_min_override);
                 if (use_moe_mm) {
                     {
                         mtl::Dispatch d;
@@ -1814,15 +1929,26 @@ struct InkMetalRunner {
                 } else {
                     // Homogeneous layers use lean specialized kernels; SQ-10 mixed {S2,S3,SF4} uses ultra-lean sk23 (branchless 16-lane w2 + 3.25KB LUTs)!
                     constexpr uint32_t kSk23Mask = (1u << 2) | (1u << 3) | (1u << 15);
-                    {
+                    static const bool skip_moe = std::getenv("INK_SKIP_MOE") != nullptr;
+                    if (!skip_moe) {
                         mtl::Dispatch d;
-                        if (layer_homog_gu[ip] == 15)      { d.p = &p_moe_gu_sf4;  d.ind_off = 5 * sizeof(uint32_t); }
+                        static const bool use_lr_gu = std::getenv("INK_MOE_LR") != nullptr;
+                        static const bool use_mm_gu = [] { const char* e = std::getenv("INK_MOE_MM"); return !(e && std::string(e) == "0"); }();
+                        if (use_lr_gu && (layer_homog_gu[ip] == 2 || layer_homog_gu[ip] == 3)) { d.p = &p_moe_gu_sk23_lr; d.ind_off = 2 * sizeof(uint32_t); }
+                        else if (use_mm_gu && (layer_homog_gu[ip] == 2 || layer_homog_gu[ip] == 3)) { d.p = &p_moe_gu_sk23_mm; d.ind_off = 2 * sizeof(uint32_t); }
+                        else if (layer_homog_gu[ip] == 15)      { d.p = &p_moe_gu_sf4;  d.ind_off = 5 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 16) { d.p = &p_moe_gu_mx8;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 2)  { d.p = &p_moe_gu_sk2;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 3)  { d.p = &p_moe_gu_sk3;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 4)  { d.p = &p_moe_gu_sk4;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 5)  { d.p = &p_moe_gu_sk5;  d.ind_off = 2 * sizeof(uint32_t); }
-                        else if ((layer_gu_mask[ip] & ~kSk23Mask) == 0) { d.p = &p_moe_gu_sk23; d.ind_off = 2 * sizeof(uint32_t); }
+                        else if ((layer_gu_mask[ip] & ~kSk23Mask) == 0) {
+                            static const bool use_stg = [] { const char* e = std::getenv("INK_MOE_STG"); return e && std::string(e) != "0"; }();
+                            static const bool use_lr = std::getenv("INK_MOE_LR") != nullptr;
+                            static const bool use_mm = [] { const char* e = std::getenv("INK_MOE_MM"); return !(e && std::string(e) == "0"); }();
+                            d.p = use_lr ? &p_moe_gu_sk23_lr : (use_mm ? &p_moe_gu_sk23_mm : (use_stg ? &p_moe_gu_sk23_stg : &p_moe_gu_sk23));
+                            d.ind_off = 2 * sizeof(uint32_t);
+                        }
                         else                               { d.p = &p_moe_gu;      d.ind_off = 2 * sizeof(uint32_t); }
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
                         d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
@@ -1831,7 +1957,7 @@ struct InkMetalRunner {
                                   mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                         ds.push_back(std::move(d));
                     }
-                    {
+                    if (!skip_moe) {
                         mtl::Dispatch d;
                         if (layer_homog_dn[ip] == 15)      { d.p = &p_moe_dn_sf4;  d.ind_off = 11 * sizeof(uint32_t); }
                         else if (layer_homog_dn[ip] == 16) { d.p = &p_moe_dn_mx8;  d.ind_off = 5 * sizeof(uint32_t); }
@@ -1839,7 +1965,11 @@ struct InkMetalRunner {
                         else if (layer_homog_dn[ip] == 3)  { d.p = &p_moe_dn_sk3;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_dn[ip] == 4)  { d.p = &p_moe_dn_sk4;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_dn[ip] == 5)  { d.p = &p_moe_dn_sk5;  d.ind_off = 2 * sizeof(uint32_t); }
-                        else if ((layer_dn_mask[ip] & ~kSk23Mask) == 0) { d.p = &p_moe_dn_sk23; d.ind_off = 5 * sizeof(uint32_t); }
+                        else if ((layer_dn_mask[ip] & ~kSk23Mask) == 0) {
+                            static const bool use_mm_dn = [] { const char* e = std::getenv("INK_MOE_MM"); return !(e && std::string(e) == "0"); }();
+                            d.p = use_mm_dn ? &p_moe_dn_sk23_mm : &p_moe_dn_sk23;
+                            d.ind_off = 5 * sizeof(uint32_t);
+                        }
                         else                               { d.p = &p_moe_dn;      d.ind_off = 2 * sizeof(uint32_t); }
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
                         d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
@@ -1948,8 +2078,10 @@ struct InkMetalRunner {
         }
 
         // 6. Optional DSpark tap[3] (visit 48 = h_norm) -> populate DSpark context KV & f_rnn on GPU!
-        if (step.capture_taps && use_dspark) {
+        if ((step.capture_taps && use_dspark) || getenv("INK_DFLASH_FD")) {
             push_copy(mtl::Arg::B(b_h_norm), mtl::Arg::B(b_taps4, (size_t)3 * M_stride * 4), M_stride);
+        }
+        if (step.capture_taps && use_dspark) {
             // Compute all 3 layer mixes into b_in3[0..2] + f_rnn into dsp_frnn_tmp CONCURRENTLY (1 barrier instead of 4!)
             for (int dl = 0; dl < 3; ++dl) {
                 std::string dp = "dspark.layers." + std::to_string(dl);
@@ -2122,8 +2254,182 @@ struct InkMetalRunner {
         }
 
         // Execute ALL 48 visits in ONE Metal command buffer!
-        last_gpu_ms = cx->run_graph(ds) * 1e3;
-
+        static const bool timeline = std::getenv("INK_TIMELINE") != nullptr;
+        if (timeline && M >= 2 && M <= 32 && step.compute_logits) {
+            // Per-barrier segment completion timing in ONE command buffer: segprof semantics without the crash:
+            // the callback only timestamps; heavy analysis after completion.
+            std::vector<int> cuts;
+            for (size_t di = 1; di < ds.size(); ++di) if (ds[di].barrier) cuts.push_back((int)di);
+            struct PCtx { std::vector<double> ts; };
+            PCtx pc;
+            auto cbfn = [](void* u, int s) {
+                struct timespec tp; clock_gettime(CLOCK_MONOTONIC, &tp);
+                ((PCtx*)u)->ts.push_back(tp.tv_sec + tp.tv_nsec * 1e-9);
+            };
+            struct timespec t0s; clock_gettime(CLOCK_MONOTONIC, &t0s);
+            const double t0 = t0s.tv_sec + t0s.tv_nsec * 1e-9;
+            const double gpu = cx->run_graph_seg(ds, cuts, cbfn, &pc) * 1e3;
+            last_gpu_ms = gpu;
+            // attribute each segment's duration to its FIRST pipeline, aggregate globally per pipeline
+            static std::unordered_map<std::string, std::pair<double, long>> agg;
+            static long nt = 0;
+            for (size_t s = 0; s < pc.ts.size(); ++s) {
+                const double prev = (s == 0) ? t0 : pc.ts[s - 1];
+                const double dur = (pc.ts[s] - prev) * 1e3;
+                const size_t di = (size_t)cuts[s];
+                const char* nm0 = (di < ds.size() && ds[di].p) ? ds[di].p->name.c_str() : "?";
+                std::string key = std::string(is_tree ? "T" : "L") + std::to_string(M) + ":" + nm0;
+                auto& a = agg[key];
+                a.first += dur; ++a.second;
+            }
+            if (++nt % 8 == 0) {
+                std::vector<std::pair<double, std::string>> rows;
+                double tot = 0;
+                for (auto& [k, v] : agg) { rows.push_back({v.first / v.second, k}); tot += v.first / v.second; }
+                std::sort(rows.rbegin(), rows.rend());
+                std::fprintf(stderr, "[ink TIMELINE] tree pass segment ms (total ~%.1fms, n=%ld passes):\n", tot, nt);
+                for (size_t i = 0; i < std::min<size_t>(16, rows.size()); ++i)
+                    std::fprintf(stderr, "  %7.3f  %s (x%ld/pass)\n", rows[i].first, rows[i].second.c_str(), agg[rows[i].second].second / nt);
+            }
+        } else if (std::getenv("INK_TIMELINE") && prof_marks.empty()) {
+            // mark first occurrence of key pipelines + section transitions
+            const char* keys[] = {
+                "ink_embed_q8row", "ink_relpos_sink_gqa_splitk", "ink_relpos_tree_gqa_splitk",
+                "ink_relpos_gqa_splitk_red", "ink_moe_gu_sk23", "ink_moe_dn_sk23", "ink_moe_red8_sconv_add",
+                "ink_sconv4_mlp_add_tree", "ink_ctrl_gf_64", "ink_router_topk8_plan_m1", "ink_router_topk8",
+                "ink_linear_q8row_mv1", "ink_linear_q8row_mv", "ink_linear_q8row_mm8", "ink_linear_bf16_mv",
+                "ink_unembed_argmax_sk6", "ink_unembed_argmax_m_sk6", "ink_attnproj_fused_mv1",
+                "ink_linear_f32", "ink_linear_sk_mv_6", "ink_kv_store_tree_f16"};
+            prof_marks.clear();
+            for (const char* k : keys) {
+                for (size_t di = 0; di < ds.size(); ++di) {
+                    if (ds[di].p && ds[di].p->name == k) { prof_marks.push_back({k, di}); break; }
+                }
+            }
+            std::sort(prof_marks.begin(), prof_marks.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+        }
+        static double acc_build[9] = {}, acc_rg[9] = {}; static long acc_n[9] = {};
+        static const bool no_barr = std::getenv("INK_NOBARR") != nullptr;
+        if (no_barr) for (auto& d : ds) d.barrier = false;
+        const double tp_t1 = tprof ? mtl::now_s() : 0.0;
+        static const bool segprof = std::getenv("INK_SEGPROF") != nullptr;
+        if (timeline && M >= 2 && M <= 32 && step.compute_logits) {
+            // already executed via run_graph_seg above
+        } else if (segprof && step.M >= 1) {
+            // Segment at every barrier dispatch: host timestamp deltas approximate per-segment GPU completion times.
+            static std::vector<int> cuts;
+            static std::vector<std::string> segname;
+            static bool built = false;
+            if (!built) {
+                built = true;
+                int prev_barrier = -1;
+                for (size_t di = 0; di < ds.size(); ++di) {
+                    if (ds[di].barrier) {
+                        if (prev_barrier >= 0) {
+                            cuts.push_back((int)di);
+                            segname.push_back(ds[prev_barrier].p ? ds[prev_barrier].p->name : "?");
+                        }
+                        prev_barrier = (int)di;
+                    }
+                }
+            }
+            struct ProfCtx { std::vector<double> ts; };
+            static std::unordered_map<std::string, std::pair<double, long>> agg;
+            static long nsteps = 0;
+            ProfCtx pc;
+            auto cb_fn = [](void* user, int s) {
+                auto* pc2 = (ProfCtx*)user;
+                struct timespec tp; clock_gettime(CLOCK_MONOTONIC, &tp);
+                pc2->ts.push_back(tp.tv_sec + tp.tv_nsec * 1e-9);
+            };
+            struct timespec tp0; clock_gettime(CLOCK_MONOTONIC, &tp0);
+            const double t_base = tp0.tv_sec + tp0.tv_nsec * 1e-9;
+            double g = cx->run_graph_seg(ds, cuts, cb_fn, &pc) * 1e3;
+            last_gpu_ms = g;
+            if ((int)pc.ts.size() == (int)cuts.size()) {
+                for (size_t s = 0; s < pc.ts.size(); ++s) {
+                    const double prev = (s == 0) ? t_base : pc.ts[s - 1];
+                    auto& a = agg[std::to_string(M) + ":" + segname[s]];
+                    a.first += (pc.ts[s] - prev) * 1e3;
+                    ++a.second;
+                }
+                ++nsteps;
+                if (nsteps % 64 == 0) {
+                    std::vector<std::pair<double, std::string>> rows;
+                    double tot = 0;
+                    for (auto& [k, v] : agg) { rows.push_back({v.first / v.second, k}); tot += v.first / v.second; }
+                    std::sort(rows.rbegin(), rows.rend());
+                    std::fprintf(stderr, "[ink SEGPROF] per-step ms by first-pipeline of segment (total %.2fms, n=%ld):\n", tot, nsteps);
+                    for (size_t i = 0; i < std::min<size_t>(20, rows.size()); ++i)
+                        std::fprintf(stderr, "  %7.3f ms  %s\n", rows[i].first, rows[i].second.c_str());
+                }
+            }
+        } else {
+            last_gpu_ms = cx->run_graph(ds) * 1e3;
+        }
+        if (const char* pl = std::getenv("INK_PASSLOG")) {
+            static FILE* fp = nullptr;
+            if (!fp) fp = std::fopen(pl, "w");
+            if (fp) {
+                static long seq = 0;
+                std::fprintf(fp, "%ld,%d,%d,%d,%.3f\n", ++seq, M, is_tree ? 1 : 0,
+                             step.compute_logits ? 1 : 0, last_gpu_ms);
+                std::fflush(fp);
+            }
+        }
+        if (tprof) {
+            const double tp_t2 = mtl::now_s();
+            int mi = M < 1 ? 1 : (M > 8 ? 8 : M);
+            acc_build[mi] += (tp_t1 - tp_t0) * 1e3;
+            acc_rg[mi] += (tp_t2 - tp_t1) * 1e3;
+            if (is_tree && M <= 8) {
+                static double tb = 0, tw = 0; static long tn = 0;
+                tb += (tp_t1 - tp_t0) * 1e3; tw += (tp_t2 - tp_t1) * 1e3;
+                if (++tn % 16 == 0) std::fprintf(stderr, "[ink TPROF] TREE M%d n=%ld build=%.2f rgwall=%.2f\n", M, tn, tb / tn, tw / tn);
+            }
+            if (++acc_n[mi] % 32 == 0) {
+                std::string ln;
+                for (int m = 1; m <= 8; ++m) {
+                    if (!acc_n[m]) continue;
+                    char bf[128];
+                    std::snprintf(bf, sizeof bf, "M%d(n=%ld build=%.2f rgwall=%.2f) ", m, acc_n[m], acc_build[m] / acc_n[m], acc_rg[m] / acc_n[m]);
+                    ln += bf;
+                }
+                std::fprintf(stderr, "[ink TPROF] %s\n", ln.c_str());
+            }
+        }
+        if (std::getenv("INK_DCOUNT") && step.M == 1) {
+            static bool printed = false;
+            if (!printed) {
+                printed = true;
+                std::unordered_map<const mtl::Pipeline*, int> cnt;
+                int nbarr = 0;
+                for (const auto& d : ds) { cnt[d.p]++; if (d.barrier) ++nbarr; }
+                std::vector<std::pair<int, const mtl::Pipeline*>> rows;
+                for (const auto& [k, v] : cnt) rows.push_back({v, k});
+                std::sort(rows.rbegin(), rows.rend());
+                std::fprintf(stderr, "[ink DCOUNT] %zu dispatches, %d with barrier, %zu distinct pipelines:\n",
+                             ds.size(), nbarr, cnt.size());
+                for (const auto& [n, p] : rows) {
+                    std::fprintf(stderr, "  %4d x %s\n", n, p ? p->name.c_str() : "?");
+                }
+            }
+        }
+        if (getenv("INK_DFLASH_FD")) {
+            for (int row=0; row<M; ++row) {
+                auto& history=feature_history[step.slot_ids[row]];
+                const int pos=step.pos[row];
+                if (history.rows.empty()) {
+                    history.rows.resize(size_t(FeatureHistory::capacity)*4*D);
+                    history.positions.resize(FeatureHistory::capacity,-1);
+                }
+                if (pos==0) { history.sent=-1; std::fill(history.positions.begin(),history.positions.end(),-1); }
+                const int index=pos%FeatureHistory::capacity;
+                history.positions[index]=pos;
+                for (int layer=0; layer<4; ++layer)
+                    std::memcpy(history.rows.data()+(index*4+layer)*D,b_taps4.as<float>()+(layer*M+row)*D,D*sizeof(float));
+            }
+        }
         // Update latest f_rnn per slot if taps were captured (tree mode commits via commit_tree_path!)
         if (step.capture_taps && use_dspark && !is_tree) {
             const float* src = dsp_frnn_tmp.as<float>();
@@ -2140,6 +2446,78 @@ struct InkMetalRunner {
             if (argmax_out) {
                 std::memcpy(argmax_out, b_argmax.ptr, (size_t)n_lg * sizeof(int32_t));
             }
+        }
+        if (trace_experts && step.M >= 2 && step.M <= 8 && step.compute_logits) {
+            // Within-batch overlap: fraction of distinct experts vs 8*M slots per visit (loop core visits only)
+            static long nb = 0;
+            static double sum_ratio = 0, sum_n = 0;
+            ++nb;
+            const int32_t* tr = b_topk_trace.as<int32_t>();
+            const int stride = max_batch * c.top_k;
+            double this_n = 0, this_distinct = 0;
+            for (int v = 6; v < 42; ++v) {
+                int seen[128] = {};
+                int nd = 0;
+                for (int m = 0; m < step.M; ++m) {
+                    const int32_t* row = tr + v * stride + m * c.top_k;
+                    for (int k = 0; k < c.top_k; ++k) {
+                        int e = row[k];
+                        if (e >= 0 && e < 128 && !seen[e]) { seen[e] = 1; ++nd; }
+                    }
+                }
+                this_n += step.M * c.top_k;
+                this_distinct += nd;
+            }
+            sum_ratio += this_distinct / this_n;
+            ++sum_n;
+            if (nb % 16 == 0)
+                std::fprintf(stderr, "[ink TRACE-B] verify-batch expert usage: distinct/(8M)=%.3f (n=%ld batches; 1.0=全部独立 0.5=半重复)\n",
+                             sum_ratio / sum_n, nb);
+            // EcoSpec feasibility: same-position-pair expert overlap across tree slots.
+            // For consecutive draft positions (adjacent tree depth) measure how many of the
+            // 8 experts are shared per layer - high overlap means cost-aware pruning has
+            // little to gain; low overlap means big savings available.
+            {
+                static double ov_acc = 0; static long ov_n = 0;
+                for (int v = 6; v < 42; ++v) {
+                    for (int a = 0; a + 1 < step.M; ++a) {
+                        int cnt = 0;
+                        for (int x = 0; x < 8; ++x)
+                            for (int y = 0; y < 8; ++y)
+                                if (tr[v * stride + a * c.top_k + x] == tr[v * stride + (a + 1) * c.top_k + y]) ++cnt;
+                        ov_acc += cnt / 8.0;
+                        ++ov_n;
+                    }
+                }
+                if (nb % 16 == 0 && ov_n > 0)
+                    std::fprintf(stderr, "[ink TRACE-C] adjacent-token expert overlap: %.2f/8 (random=0.5; n=%ld pairs)\n",
+                                 ov_acc / ov_n, ov_n);
+            }
+        }
+        if (trace_experts && step.M == 1 && step.compute_logits) {
+            // Loop passes: visit v = 6 + p_idx*12 + (ip-6) for ip in [6,17], pass p_idx in 0..2.
+            // Measure same-(token,physical-layer) expert overlap across passes.
+            static long stepn = 0;
+            static double acc[3] = {};   // overlap counts for pass pairs (0,1),(0,2),(1,2)
+            static double tot = 0;
+            ++stepn;
+            const int32_t* tr = b_topk_trace.as<int32_t>();
+            for (int li = 0; li < 12; ++li) {
+                int v0 = 6 + li, v1 = 18 + li, v2 = 30 + li;
+                int cnt[3] = {};
+                for (int a = 0; a < 8; ++a) {
+                    for (int b = 0; b < 8; ++b) {
+                        if (tr[v0 * 8 + a] == tr[v1 * 8 + b]) ++cnt[0];
+                        if (tr[v0 * 8 + a] == tr[v2 * 8 + b]) ++cnt[1];
+                        if (tr[v1 * 8 + a] == tr[v2 * 8 + b]) ++cnt[2];
+                    }
+                }
+                for (int q = 0; q < 3; ++q) acc[q] += cnt[q];
+                tot += 8;
+            }
+            if (stepn % 32 == 0)
+                std::fprintf(stderr, "[ink TRACE] expert overlap/pass-pair: p01=%.2f/8 p02=%.2f/8 p12=%.2f/8 (n=%ld steps, random=0.5)\n",
+                             acc[0] / tot, acc[1] / tot, acc[2] / tot, stepn);
         }
         return true;
     }
@@ -3016,7 +3394,14 @@ struct InkMetalRunner {
         }
 
         // Execute ENTIRE W=4 Beam Search in ONE single Metal command buffer!
-        cx->run_graph(ds);
+        {
+            static double acc = 0; static long nn = 0;
+            const double g = cx->run_graph(ds) * 1e3;
+            if (std::getenv("INK_TPROF")) {
+                acc += g;
+                if (++nn % 32 == 0) std::fprintf(stderr, "[ink TPROF] beam_tree draft gpu=%.2fms (n=%ld)\n", acc / nn, nn);
+            }
+        }
 
         // 4. CPU Sparse-MoE Bayes-Optimal Connected Tree Extraction (< 3 us!)
         const int n_pool = 4 + (max_depth - 1) * 8;
@@ -3060,12 +3445,20 @@ struct InkMetalRunner {
         const bool is_bf16_trunk = (mod->man.get("model.llm.layers.0.attn.wq_du.weight").fmt == FMT_BF16);
         const bool is_sq10 = (mod->man.build.find("10") != std::string::npos);
         // Hardware-calibrated verify latency T_ver(M) in ms (Apple M5 Max measured on real prompts!)
+        // Calibrated on THIS machine (M6 24GB, SQ-10 fp8, locked residency, 2026-11-27 passlog):
+        // linear verify cost(M) ~= 25 + 10.5*(M-1) ms; tree verify at M=8 ~76-87ms.
+        // The previous constants were for an M5 Max and underestimated cost by ~2x,
+        // causing systematically oversized trees. INK_TVER_BASE/INK_TVER_MARG/INK_TDRAFT override.
+        static const double tv_base = [] { const char* e = std::getenv("INK_TVER_BASE"); return e ? atof(e) : 25.0; }();
+        static const double tv_marg = [] { const char* e = std::getenv("INK_TVER_MARG"); return e ? atof(e) : 10.5; }();
+        static const double tdraft  = [] { const char* e = std::getenv("INK_TDRAFT");  return e ? atof(e) : 9.0; }();
         auto t_ver_ms = [&](int M) -> double {
             if (is_apple10) {
-                const double t1 = is_bf16_trunk ? 17.0 : (is_sq10 ? 13.0 : 14.4);
+                if (is_sq10) return tv_base + tv_marg * (M - 1);
+                const double t1 = is_bf16_trunk ? 17.0 : 14.4;
                 const double uexp = 128.0 * (1.0 - std::pow(15.0 / 16.0, (double)M));
-                const double base = is_bf16_trunk ? 12.6 : (is_sq10 ? 8.8 : 10.6);
-                const double moe_per_e = is_bf16_trunk ? 0.38 : (is_sq10 ? 0.44 : 0.43);
+                const double base = is_bf16_trunk ? 12.6 : 10.6;
+                const double moe_per_e = is_bf16_trunk ? 0.38 : 0.43;
                 const double trunk_extra = (M >= 5) ? (is_bf16_trunk ? 2.0 : 4.2)
                                          : (M >= 4 && is_bf16_trunk) ? 2.0
                                          : ((M - 1) * (is_bf16_trunk ? 0.75 : 1.35));
@@ -3076,7 +3469,7 @@ struct InkMetalRunner {
                 return 34.0 + 1.85 * uexp;
             }
         };
-        const double t_draft = is_apple10 ? (is_bf16_trunk ? 4.5 : 4.0) : 14.0;
+        const double t_draft = is_apple10 ? (is_sq10 ? tdraft : (is_bf16_trunk ? 4.5 : 4.0)) : 14.0;
         const double plain_tps = 1.0 / t_ver_ms(1);
 
         if (dynamic_bayes && (int)cand_tok.size() >= 2) {

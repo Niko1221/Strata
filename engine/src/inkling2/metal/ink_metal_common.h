@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -454,6 +455,16 @@ struct InkMetalModel {
             return false;
         }
         base = static_cast<uint8_t*>(m);
+        const char* lock_pack = std::getenv("STRATA_INK_MLOCK_PACK");
+        if (lock_pack && std::strcmp(lock_pack, "1") == 0) {
+            if (::mlock(base, fsize) != 0) {
+                const int error = errno;
+                err = "mlock failed for " + p + " (" + std::to_string(fsize) + " bytes): " + std::strerror(error);
+                return false;
+            }
+            std::fprintf(stderr, "[ink_metal] locked native pack (%zu bytes)\n", fsize);
+        }
+
         if (!wrap_model_buffers(cx, exp_body_bytes, err)) {
             return false;
         }

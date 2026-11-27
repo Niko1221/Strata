@@ -874,7 +874,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
 
         // 2. Fast-path: Single-stream DSpark Adaptive Beam Tree (greedy) / Block-8 Rejection Sampling (temperature >= 0) (#6633)!
-        if (use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
+        if ((use_dspark || (std::getenv("INK_DFLASH_FD") && reqs[sole_slot].s.greedy() && !reqs[sole_slot].s.penalties() && reqs[sole_slot].s.hold_budget==0)) && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
             reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
             reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
             !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {

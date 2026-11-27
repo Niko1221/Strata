@@ -250,6 +250,10 @@ public:
         const auto& c = mod_.man.c;
         const size_t row = (size_t)c.n_kv * (size_t)c.head_dim;
         runner_.restore_slot(slot, ck.sconv);
+        // The target is back at the prompt boundary. Rebuild the external
+        // drafter from the retained target rows before asking for candidates.
+        auto history = runner_.feature_history.find(slot);
+        if (history != runner_.feature_history.end()) history->second.sent = -1;
         for (int v = 0; v < c.n_visits; ++v) {
             if (ck.swa_k[v].empty()) continue;
             const size_t stride = (size_t)runner_.visit_kv_stride[v];
@@ -276,6 +280,8 @@ public:
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         if (batch.n_tokens <= 0) return true;
+        static const bool prof_on = std::getenv("STRATA_INK_PROF") != nullptr;
+        const double prof_t0 = prof_on ? mtl::now_s() : 0.0;
         // Auto-slice oversized multi-slot prefill batches (e.g. --bench --parallel 64 --prompt-len 64 -> M=4096)
         if (batch.n_tokens > runner_.max_batch) {
             const int V = mod_.man.c.vocab_unpadded;
@@ -366,6 +372,25 @@ public:
             if (!runner_.forward_batch(st, nullptr, nullptr, err)) return false;
         }
         (void)taps_out;
+        if (prof_on) {
+            static double s_wall[9] = {}, s_gpu[9] = {}; static long s_n[9] = {};
+            const int mi = st.M < 1 ? 1 : (st.M > 8 ? 8 : st.M);
+            s_wall[mi] += (mtl::now_s() - prof_t0) * 1e3;
+            s_gpu[mi] += runner_.last_gpu_ms;
+            ++s_n[mi];
+            static long total = 0;
+            if (++total % 32 == 0) {
+                std::string line;
+                for (int m = 1; m <= 8; ++m) {
+                    if (!s_n[m]) continue;
+                    char buf[160];
+                    std::snprintf(buf, sizeof buf, "M%d(n=%ld wall=%.2fms gpu=%.2fms host=%.2fms) ",
+                                  m, s_n[m], s_wall[m] / s_n[m], s_gpu[m] / s_n[m], (s_wall[m] - s_gpu[m]) / s_n[m]);
+                    line += buf;
+                }
+                std::fprintf(stderr, "[ink PROF fwd] %s\n", line.c_str());
+            }
+        }
         return true;
     }
 
@@ -387,6 +412,56 @@ public:
         int32_t* out_emitted,
         int* out_drafted,
         std::string& err) override {
+        if (const char* fd_env = std::getenv("INK_DFLASH_FD")) {
+            // Single-slot text probe: send only newly committed feature rows.
+            const int fd = atoi(fd_env);
+            // Mixed batches interleave rows from both slots. Select only this slot's rows and require an unbroken position chain.
+            auto it=runner_.feature_history.find(slot);
+            if(it==runner_.feature_history.end()) return 0;
+            auto& history=it->second;
+            const bool reset=history.sent<0;
+            const int start=std::max({0,history.sent,anchor_pos-2047});
+            const int kept=anchor_pos-start;
+            // Generation can evict prompt features from the ring. Continue
+            // ordinary decoding until the whole draft window is available.
+            for (int pos = start; pos < anchor_pos; ++pos) {
+                if (history.positions[pos % history.capacity] != pos) return 0;
+            }
+            auto transfer = [&](void* data, size_t bytes, bool sending) {
+                char* cursor = static_cast<char*>(data);
+                while (bytes) {
+                    ssize_t n = sending ? write(fd,cursor,bytes) : read(fd,cursor,bytes);
+                    if (n <= 0) return false;
+                    cursor += n; bytes -= n;
+                }
+                return true;
+            };
+            int request[]={start,kept,int(anchor_tok),std::min(7,max_emit-1),slot,int(reset)};
+            if(kept<=0) return 0;
+            if(!transfer(request,sizeof(request),true)){err="draft IPC header";return -1;}
+            const int d=mod_.man.c.hidden;
+            for(int layer=0;layer<4;++layer) for(int pos=start;pos<anchor_pos;++pos) {
+                float* feature=history.rows.data()+((pos%history.capacity)*4+layer)*d;
+                if(!transfer(feature,d*sizeof(float),true)){err="draft IPC features";return -1;}
+            }
+            history.sent=anchor_pos;
+            const int proposed=request[3];
+            ink_metal::InkBatchStep st;
+            st.M=proposed+1; st.slot_ids.assign(st.M,slot); st.pos.resize(st.M); st.tok_ids.resize(st.M);
+            st.tok_ids[0]=anchor_tok;
+            if (!transfer(&st.tok_ids[1],proposed*sizeof(int32_t),false)) {err="draft IPC reply";return -1;}
+            for (int i=0;i<st.M;++i) st.pos[i]=anchor_pos+i;
+            st.compute_logits=true; st.record_verify_ring=true;
+            int32_t ids[8]{};
+            if (!runner_.forward_batch(st,nullptr,ids,err)) return -1;
+            int matched=0;
+            while (matched<proposed && ids[matched]==st.tok_ids[matched+1]) ++matched;
+            std::copy(ids,ids+matched+1,out_emitted);
+            if (matched<proposed) runner_.restore_verify_step(slot,matched);
+            last_ver_slot_=slot;last_ver_pos0_=anchor_pos;last_ver_m_=st.M;last_tree_slot_=-1;
+            if (out_drafted) *out_drafted=proposed;
+            return matched+1;
+        }
         if (!runner_.use_dspark || !runner_.use_dspark_meff || slot < 0 || slot >= runner_.max_slots ||
             max_emit < 2 || anchor_pos <= 0 || anchor_pos + 12 >= runner_.max_ctx) {
             return 0;
@@ -415,9 +490,23 @@ public:
         const double t_step0 = mtl::now_s();
         const bool is_bf16_trunk = (mod_.man.get("model.llm.layers.0.attn.wq_du.weight").fmt == ink_metal::FMT_BF16);
         const bool is_sq10 = (mod_.man.build.find("10") != std::string::npos);
-        const double t_plain_ms = runner_.is_apple10 ? (is_bf16_trunk ? 17.2 : (is_sq10 ? 13.5 : 14.8)) : 41.0;
+        // Calibrated on M6 24GB SQ-10 locked: plain M1 pass = 27.1ms (was 13.5 - half the truth,
+        // which doubled apparent speculative gain and kept drafting on content where it loses).
+        static const double t_plain_override = [] { const char* e = std::getenv("INK_TPLAIN"); return e ? atof(e) : -1.0; }();
+        const double t_plain_ms = (t_plain_override > 0) ? t_plain_override
+            : (runner_.is_apple10 ? (is_bf16_trunk ? 17.2 : (is_sq10 ? 27.1 : 14.8)) : 41.0);
 
         auto update_gain = [&](int n_emit) {
+            static const bool acc_log = std::getenv("INK_ACCLOG") != nullptr;
+            if (acc_log) {
+                static long hist[16] = {}, nlog = 0;
+                ++hist[std::min(15, n_emit)];
+                if (++nlog % 64 == 0) {
+                    std::fprintf(stderr, "[ink ACC] emit-len hist:");
+                    for (int i = 1; i <= 9; ++i) std::fprintf(stderr, " %d:%ld", i, hist[i]);
+                    std::fprintf(stderr, " (n=%ld)\n", nlog);
+                }
+            }
             const double step_ms = std::max(1.0, (mtl::now_s() - t_step0) * 1e3);
             const double step_gain = (double)n_emit * t_plain_ms / step_ms;
             slot_ema_gain_[slot] = 0.72 * slot_ema_gain_[slot] + 0.28 * step_gain;
