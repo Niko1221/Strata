@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "name": "iq3s-vs-xxs",
+    "version": 1,
+    "date": "2026-11-27",
+    "note": "Vsetky ulohy sa generuju deterministicky z 'seed'. Nic nie je nahodne za behu."
+  },
+  "numeric": {
+    "id": "B1_numeric_40",
+    "count": 40,
+    "seed": 20261127,
+    "max_tokens": 900,
+    "reps": 5
+  },
+  "recall": {
+    "id": "B2_nearmiss_recall",
+    "doc_words": 14000,
+    "seed": 77001,
+    "max_tokens": 500,
+    "reps": 3
+  },
+  "transform": {
+    "id": "B3_table_to_json",
+    "rows": 60,
+    "seed": 4402,
+    "max_tokens": 8000,
+    "reps": 3
+  },
+  "code": {
+    "id": "B4_long_code_bug",
+    "lines": 260,
+    "seed": 9107,
+    "max_tokens": 2500,
+    "reps": 2
+  },
+  "corpus": {
+    "chunks": 24,
+    "chars_per_chunk": 4200,
+    "word_target": 1300,
+    "seed": 31337
+  },
+  "recall_needles": [
+    {
+      "true": "RECORD DELTA: servisny protokol císlo SP-2771-NG uvádza, že tesnenie čerpadla 88-401-B treba vymeniť do 14. októbra 2027.",
+      "decoys": [
+        "RECORD DELTA: servisny protokol císlo SP-2771-NQ uvádza, že tesnenie čerpadla 88-401-B treba vymeniť do 14. októbra 2027.",
+        "RECORD DELTA: servisny protokol císlo SP-2777-NG uvádza, že tesnenie čerpadla 88-401-B treba vymeniť do 14. októbra 2027.",
+        "RECORD DELTA: servisny protokol císlo SP-2711-NG uvádza, že tesnenie čerpadla 88-401-B treba vymeniť do 14. októbra 2027.",
+        "RECORD DELTA: servisny protokol císlo SP-2771-NG uvádza, že tesnenie čerpadla 88-410-B treba vymeniť do 14. októbra 2027.",
+        "RECORD DELTA: servisny protokol císlo SP-2771-NG uvádza, že tesnenie čerpadla 88-401-B treba vymeniť do 14. novembra 2027."
+      ],
+      "question": "V texte je viacero záznamov RECORD DELTA, ktoré sa líšia v číslach. Nájdi ten, ktorý má presne protokol císlo SP-2771-NG, tesnenie 88-401-B a dátum 14. októbra 2027, a cituj celú jeho vetu doslovne, bez komentára."
+    },
+    {
+      "true": "RECORD EPSILON: revízny záznam AU-5140-XK uvádza krútiaci moment 84,5 newtonmetra na skrutke šestnástej severnej turbíny.",
+      "decoys": [
+        "RECORD EPSILON: revízny záznam AU-5140-XQ uvádza krútiaci moment 84,5 newtonmetra na skrutke šestnástej severnej turbíny.",
+        "RECORD EPSILON: revízny záznam AU-5104-XK uvádza krútiaci moment 84,5 newtonmetra na skrutke šestnástej severnej turbíny.",
+        "RECORD EPSILON: revízny záznam AU-5140-XK uvádza krútiaci moment 84,5 newtonmetra na skrutke šiestej severnej turbíny.",
+        "RECORD EPSILON: revízny záznam AU-5140-XK uvádza krútiaci moment 48,5 newtonmetra na skrutke šestnástej severnej turbíny.",
+        "RECORD EPSILON: revízny záznam AU-5140-XK uvádza krútiaci moment 84,5 newtonmetra na skrutke šestnástej južnej turbíny."
+      ],
+      "question": "V texte je viacero záznamov RECORD EPSILON, ktoré sa líšia v číslach a v jednej čiarke. Nájdi ten s presne AU-5140-XK, 84,5 newtonmetra a šestnástou skrutkou severnej turbíny, a cituj celú vetu doslovne, bez komentára."
+    }
+  ],
+  "pools": {
+    "sk": [
+      "Regionálne železničné trate vznikali v druhej polovici devätnásteho storočia ako odpoveď na potrebu dopraviť drevo, uhlie a poľnohospodárske produkty z dolín do miest. Ich význam klesol po vybudovaní hlavných koridorov, no mnohé z nich zostali jediným spojením pre obce, ktoré nemajú pravidelnú autobusovú linku. Obnova takýchto tratí nie je nostalgickým projektom, ale investíciou do dostupnosti práce, školy a zdravotnej starostlivosti. Náklady na rekonštrukciu jedného kilometra sú rádom miliónov eur, čo sa pri prvom pohľade zdá vysoké, kým sa neporovná s cenou novej cesty a s nákladmi na stratu času obyvateľov.",
+      "Ráno pred šiestou sa na námestí otvárajú prvé stánky. Predavači rozkladajú debny s hroznom, melónmi a zelerom, vedľa nich stoja hrnce so syrom a vrecká s orechmi. Vzduch je chladný a vlhký, na dlažbe sa leskne slabá vrstva rosy. Prví zákazníci prichádzajú s taškami a pomaly obchádzajú pulty, pričom si porovnávajú ceny a vážia, čo sa ešte zmestí do chladničky. Trh nie je len miestom nákupu, ale aj miestom stretávania: ľudia sa tu zdravia, vymieňajú si novinky o deťoch a dohadujú sa na opravách strechy, ktorú im po zime poškodil vietor.",
+      "V lese nad dedinou sa po daždi drží hustá hmla. Smreky majú mokré konáre a na zemi sa pod nohami prevaľujú kamene pokryté machom. Horár chodí po vyznačenej trase každý druhý deň a zapisuje si, kde sa objavili stopy po zveri a kde treba opraviť poškodený plot. Zhruba v polovici svahu sa nachádza prameň, ktorý nikdy nevyschol, ani počas suchého leta, a preto ho miestni používajú ako orientačný bod. Cesta k nemu nie je značená a kto ju nepozná, ten pri prvom odbočení zablúdi medzi rovnaké kmene a podobné prieseky.",
+      "V dielni sa pracuje od siedmej. Robotníci merajú rozmer súčiastok posuvným meradlom a výsledky zapisujú do zošita, ktorý leží na okraji pracovného stola. Každá dávka má svoje číslo a každý kus svoju značku, aby sa dalo dohľadať, z ktorej zmeny vyšiel a kto ho kontroloval. Keď sa objaví odchýlka väčšia než dve desatiny milimetra, linka sa zastaví a technik hľadá príčinu. Niekedy je to opotrebovaný nástroj, inokedy zle nastavený doraz alebo chyba v programe, ktorá sa prejaví až pri stom kuse.",
+      "V archíve sú zviazané zoznamy dodávok za sedem rokov po sebe. Každý zväzok má na chrbte štítok s rokom a s menom úradníka, ktorý ho viedol. Papier je zažltnutý a na okrajoch miestami prederavený, no atrament zostal čitateľný. Bádateľ, ktorý hľadá konkrétnu faktúru, musí najprv nájsť správny ročník, potom mesiac a až potom konkrétneho dodávateľa. Práca je pomalá a vyžaduje trpezlivosť, pretože jeden prehliadnutý riadok môže znamenať, že celá reťaz dôkazov sa rozpadne.",
+      "Cez rieku vedie kamenný most, ktorý postavili ešte pred prvou svetovou vojnou. Má štyri oblúky a na každom pilieri je vysekaný letopočet, ktorý už miestni dávno prestali čítať. Počas jarných povodní sa hladina dvakrát dostala až k spodnej hrane mosta, no konštrukcia vydržala. Pod mostom sa zdržiavajú rybári, ktorí tvrdia, že najlepšie miesto na lov je pri treťom pilieri, kde sa voda točí a vytvára tiché víry. Cesta cez most sa v zime nesolí, aby soľ nepoškodila kameň.",
+      "Deti z okolitých domov chodia do školy pešo cez námestie. Ráno sa zbierajú pri fontáne, kde sa dohadujú, kto ponesie tašku s výkresmi, a potom sa spolu vydajú pozdĺž parku. Učiteľka ich čaká pri vchode a každé dieťa pozdraví menom. V triede je dvadsaťdva žiakov a na stenách visia mapy, ktoré si sami nakreslili. Keď sa niekto z oneskorenia ospravedlní, trieda odpovie zborovo a potom sa pokračuje v počítaní príkladov, ktoré sú na tabuli napísané kriedou.",
+      "Kuchárka začína variť o šiestej ráno. Polievku z hrachu necháva na miernom ohni celú hodinu, aby sa zrná rozpadli a chuť sa spojila s údeným mäsom. Chlieb vozí pekárka každý deň o siedmej a necháva ho v koši pri dverách, prikrytý čistou utierkou. Na obed sa podáva jedno hlavné jedlo a kompót, ktorý sa robí z ovocia zo záhrady. Nikto nemá presne napísané, koľko soli treba pridať, a preto sa chuť každý deň mierne líši, hoci postup je rovnaký.",
+      "Horská chata stojí na konci doliny v nadmorskej výške tisícdvesto metrov. V zime sa k nej dostane len ten, kto má snežnice a pozná trasu, pretože značenie je pod snehom neviditeľné. Chata má dve izby, kuchyňu a piecku, ktorá vyhreje celý priestor za necelú hodinu. Správca chodí zásoby nosiť raz za dva týždne a vždy si so sebou berie zoznam, ktorý mu nechali predchádzajúci návštevníci. V knihe návštev sú zápisy staré viac než päťdesiat rokov a niektoré mená sa opakujú v troch generáciách.",
+      "Na úrade sa každá žiadosť eviduje pod číslom, ktoré sa prideľuje v poradí, ako prišla. Úradník overí prílohy, skopíruje doklady a vpíše údaje do systému, ktorý ich odošle na príslušné oddelenie. Lehota na vybavenie je stanovená zákonom a pri jej prekročení musí úrad písomne vysvetliť, prečo sa rozhodnutie oneskorilo. Ľudia často prichádzajú bez potrebných potvrdení a potom sa vracajú druhýkrát, čo predlžuje rady a zvyšuje nervozitu na oboch stranách priehradky."
+    ],
+    "py": [
+      "def nacti_csv(cesta):\n    \"\"\"Nacte CSV se zahlavim a vrati seznam slovniku.\"\"\"\n    radky = []\n    with open(cesta, encoding='utf-8', newline='') as f:\n        hlavicka = f.readline().strip().split(',')\n        for radek in f:\n            hodnoty = radek.rstrip('\\n').split(',')\n            if len(hodnoty) != len(hlavicka):\n                continue\n            radky.append(dict(zip(hlavicka, hodnoty)))\n    return radky\n",
+      "def seskup(polozky, klic):\n    \"\"\"Vrati slovnik seznamu seskupenych podle hodnoty klice.\"\"\"\n    vysledek = {}\n    for p in polozky:\n        k = p.get(klic)\n        if k is None:\n            continue\n        vysledek.setdefault(k, []).append(p)\n    return vysledek\n\n\ndef soucet_po(polozky, klic):\n    return {k: sum(int(x['castka']) for x in v) for k, v in seskup(polozky, klic).items()}\n",
+      "class Zasobnik:\n    def __init__(self):\n        self._data = []\n\n    def push(self, hodnota):\n        self._data.append(hodnota)\n\n    def pop(self):\n        if not self._data:\n            raise IndexError('zasobnik je prazdny')\n        return self._data.pop()\n\n    def peek(self):\n        return self._data[-1] if self._data else None\n\n    def __len__(self):\n        return len(self._data)\n",
+      "def fibonacci(n, memo=None):\n    \"\"\"Iterativni vypocet n-teho clenu Fibonacciho posloupnosti.\"\"\"\n    if memo is None:\n        memo = {0: 0, 1: 1}\n    for i in range(2, n + 1):\n        memo[i] = memo[i - 1] + memo[i - 2]\n    return memo[n]\n\n\ndef delitele(cislo):\n    return [d for d in range(1, cislo + 1) if cislo % d == 0]\n",
+      "def rozsah_dnu(od, do):\n    \"\"\"Vrati seznam datumu vcetne obou kraju.\"\"\"\n    from datetime import date, timedelta\n    d = od\n    out = []\n    while d <= do:\n        out.append(d)\n        d = d + timedelta(days=1)\n    return out\n\n\ndef pracovni_dny(datumy):\n    return [d for d in datumy if d.weekday() < 5]\n",
+      "import json\n\n\ndef nacti_json(cesta, vychozi=None):\n    try:\n        with open(cesta, encoding='utf-8') as f:\n            return json.load(f)\n    except FileNotFoundError:\n        return {} if vychozi is None else vychozi\n    except json.JSONDecodeError as e:\n        raise ValueError(f'neplatny JSON v {cesta}: {e}') from e\n\n\ndef uloz_json(cesta, data):\n    with open(cesta, 'w', encoding='utf-8') as f:\n        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)\n",
+      "def okna(sekvence, velikost):\n    \"\"\"Generator posouvajicich se oken pevne velikosti.\"\"\"\n    for i in range(len(sekvence) - velikost + 1):\n        yield sekvence[i:i + velikost]\n\n\ndef prumer_oken(sekvence, velikost):\n    return [sum(w) / len(w) for w in okna(sekvence, velikost)]\n\n\ndef rozptyl(hodnoty):\n    if len(hodnoty) < 2:\n        return 0.0\n    m = sum(hodnoty) / len(hodnoty)\n    return sum((x - m) ** 2 for x in hodnoty) / (len(hodnoty) - 1)\n",
+      "def parsuj_velikost(text):\n    \"\"\"Prevede '1h05m', '45m', '2h' na sekundy.\"\"\"\n    text = text.strip().lower()\n    hodin = 0\n    minut = 0\n    if 'h' in text:\n        casti = text.split('h')\n        hodin = int(casti[0]) if casti[0] else 0\n        text = casti[1]\n    if text.endswith('m'):\n        minut = int(text[:-1]) if text[:-1] else 0\n    return hodin * 3600 + minut * 60\n\n\ndef formatuj(sekundy):\n    return f'{sekundy // 3600}h{(sekundy % 3600) // 60:02d}m'\n",
+      "def scitani_s_limitem(cisla, limit):\n    \"\"\" Secte cisla, ale nikdy neprekroci limit; vraci (soucet, zbytek). \"\"\"\n    soucet = 0\n    zbytek = []\n    for c in cisla:\n        if soucet + c <= limit:\n            soucet += c\n        else:\n            zbytek.append(c)\n    return soucet, zbytek\n\n\ndef bezpecne_deleni(a, b):\n    if b == 0:\n        return None\n    return a / b\n"
+    ],
+    "data": [
+      "id;kod;mnozstvi;cena;datum\n1;AB-1042;14;129,50;2026-01-04\n2;CD-2201;7;78,00;2026-01-05\n3;EF-3390;23;310,75;2026-01-07\n4;GH-4417;2;15,20;2026-01-09\n5;IJ-5528;41;988,40;2026-01-12\n",
+      "{\n  \"zakazka\": \"OBJ-2026-0041\",\n  \"zakaznik\": \"Severná dielňa\",\n  \"polozky\": [\n    {\"kod\": \"AB-1042\", \"mnozstvo\": 14, \"cena\": 129.50},\n    {\"kod\": \"CD-2201\", \"mnozstvo\": 7, \"cena\": 78.00}\n  ],\n  \"stav\": \"odoslane\"\n}\n",
+      "[konfig]\ncesta=C:\\\\data\\\\vstup\nvystup=C:\\\\data\\\\vystup\nretezec=UTF-8\nopakovani=3\n",
+      "mesiac;trzby;naklady;zisk\n2026-01;145200;121400;23800\n2026-02;138900;119800;19100\n2026-03;162750;130100;32650\n2026-04;149300;124900;24400\n",
+      "{\n  \"typ\": \"udalost\",\n  \"id\": \"EV-9931\",\n  \"cas\": \"2026-03-14T07:22:00Z\",\n  \"zdroj\": \"stanice-07\",\n  \"hodnoty\": {\"teplota\": 4.2, \"vitr\": 6.8, \"vlhkost\": 81}\n}\n",
+      "kod;nazev;sklad;min;max\nAB-1042;Ložisko 6204;128;50;300\nCD-2201;Tesnenie 40x52;0;20;200\nEF-3390;Remen B-42;56;25;150\nGH-4417;Filtr oleje;312;100;400\n",
+      "{\"uzivatel\":\"marta\",\"role\":[\"sklad\",\"kontrola\"],\"aktivny\":true,\"zmena\":\"ranná\"}\n{\"uzivatel\":\"peter\",\"role\":[\"servis\"],\"aktivny\":false,\"zmena\":\"nočná\"}\n",
+      "datum;teplota;vitr;srazky\n2026-11-20;-2,4;11;0,0\n2026-11-21;0,8;7;1,2\n2026-11-22;3,1;4;0,0\n2026-11-23;1,6;9;0,4\n"
+    ]
+  }
+}
