@@ -15,8 +15,9 @@ namespace ink2 {
 
 struct ImageRec;  // defined in ink_vision.h
 
-// DFlash 2 is the only drafter of Inkling 2 Mini (owner, 2026-11-26). A model file's embedded DSpark is not used on any backend: the CUDA backend drafts with DFlash 2 (its sidecar file),
-// the other backends have no DFlash 2 port yet and run without a drafter (as --draft off) until it lands. STRATA_INK_DRAFTER=dspark asks for the dormant DSpark code by name (measurements).
+// DFlash 2 is the only drafter of Inkling 2 Mini on every GPU backend (owner, 2026-11-26): a model file's embedded DSpark is not used there; the CUDA backend drafts with DFlash 2 (its sidecar file),
+// the other GPU backends run with their own DFlash 2 port or without a drafter (as --draft off). One exception (owner, 2026-11-27): the CPU-only engine (ink_cpu_backend.cpp) keeps its built-in DSpark as in 0.2.22, it has no DFlash 2 port.
+// STRATA_INK_DRAFTER=dspark asks for the dormant DSpark code by name on the others (measurements).
 inline bool dormant_dspark_allowed() {
     const char* e = std::getenv("STRATA_INK_DRAFTER");
     if (!e) return false;
