@@ -187,6 +187,17 @@ class Launch(unittest.TestCase):
                 cmd.settings_from_args(self.parse(*argv), catalog=object())
             self.assertEqual(str(caught.exception), retired.NOT_OFFERED, argv)
 
+    def test_saved_preset_of_another_family_named_like_a_retired_model(self):
+        """An Inkling-2-Mini preset whose model is UD-Q8_K_XL (a name DeepSeek was also offered under) starts: the name alone is not an
+        identity, so a family that is not DeepSeek wins. This is the `strata launch --preset "UD-Q8_K_XL 128K"` refusal."""
+        from strata_cli.launch import cmd, store
+        from strata_cli.launch.settings import LaunchSettings
+        saved = LaunchSettings()
+        saved.family, saved.model = "inkling-2-mini", "UD-Q8_K_XL"
+        with mock.patch.object(store, "load", return_value=saved):
+            got, _notices = cmd.settings_from_args(self.parse("--preset", "ud-q8_k_xl-128k"), catalog=object())
+        self.assertEqual((got.family, got.model), ("inkling-2-mini", "UD-Q8_K_XL"))
+
     def test_saved_preset(self):
         from strata_cli.launch import cmd, store
         from strata_cli.launch.settings import LaunchSettings

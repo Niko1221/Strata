@@ -76,6 +76,15 @@ class Names(unittest.TestCase):
         for w in ("IQ3_S", "UD-IQ1_M", "UD-IQ4_XS", "coder", "qwen", "", None, 4):
             self.assertFalse(retired.is_name(w), w)
 
+    def test_ambiguous_name_needs_a_deepseek_family(self):
+        """UD-Q8_K_XL is also an Unsloth Inkling-2-Mini and Qwen quant, so the name alone is not an identity for it (an Inkling preset
+        with model UD-Q8_K_XL must not be refused as DeepSeek). An unambiguous name keeps its meaning whatever family is named."""
+        self.assertTrue(retired.is_name("UD-Q8_K_XL"))
+        self.assertTrue(retired.is_name("UD-Q8_K_XL", "deepseek41"))
+        for family in ("inkling-2-mini", "qwen", "qwen3.8-flash-next"):
+            self.assertFalse(retired.is_name("UD-Q8_K_XL", family), family)
+        self.assertTrue(retired.is_name("IST-DAS-2.00bpw", "inkling-2-mini"))    # an unambiguous name stays DeepSeek
+
     def test_file_names(self):
         for n in ("DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf", "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf",
                   "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf", "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf"):

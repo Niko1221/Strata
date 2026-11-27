@@ -239,7 +239,7 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     if any(getattr(a, k, None) for k in ("dsv41_package", "speed", "full_quality", "dspark")):
         raise ValueError(retired.NOT_OFFERED)                       # a DeepSeek-only flag (an old script, a saved shortcut): DeepSeek is no longer run
     if retired.is_name(a.family) or (a.model and retired.is_name(a.model) and (not a.family or retired.is_name(a.family))) or (
-            not a.model and (retired.is_name(s.family) or retired.is_name(s.model))):
+            not a.model and (retired.is_name(s.family) or retired.is_name(s.model, s.family))):
         raise ValueError(retired.NOT_OFFERED)                       # DeepSeek: typed, or in a saved preset (strata_control/retired.py)
     if a.model:
         if catalog is None:
