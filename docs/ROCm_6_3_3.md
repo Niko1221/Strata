@@ -1,0 +1,92 @@
+# ROCm 6.3.3 / gfx906 — system-install report (2x MI50)
+
+**Tree:** upstream `main` @ `2af30ccaa` (engine 0.1.67) **plus** the three-line `hip_compat` P2P mapping in PR #7088 — without it the compat build stops on undeclared `cudaDevP2PAttrNativeAtomicSupported` / `cudaDeviceGetPCIBusId` in `src/core/peer_experts.cpp`. **Cards:** 2x AMD Instinct MI50 32 GB (gfx906) | **System:** Ubuntu 24.04, kernel 6.8, ROCm 6.3.3 at `/opt/rocm-6.3.3` (clang 18), 2x Xeon E5-2630 v3 (16C/32T), 256 GB DDR4
+
+**Power state:** every capture below was taken at **225 W per card**, which on these boards is `power1_cap` = `power1_cap_max` = `power1_cap_default`. There is no higher setting: `pp_od_clk_voltage` does not exist for either card under ROCm 6.3.3, so 225 W is a firmware ceiling, not a tunable, and no cap sweep is possible on this hardware. Read `power1_cap` at run start rather than assuming it.
+
+**Power telemetry note:** this ROCm 6.3.3 build does not report average power (`rocm-smi`: `get_power_avg`, "Not supported on the given system"); instantaneous draw comes from `power1_input`, and the cap from `power1_cap` under `/sys/class/drm/cardN/device/hwmon/`.
+
+---
+
+## 1. Building on a system ROCm 6.3.3 (no container)
+
+The 6.3.x line still ships the gfx906 libraries, so the build works from a plain system install. CMake fetches the pinned ggml commit itself, so no `STRATA_GGML_DIR` is needed:
+
+```sh
+cmake -S engine -B build-906 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.3.3 \
+  -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DSTRATA_BUILD_TESTS=OFF \
+  -DCMAKE_C_COMPILER=/opt/rocm-6.3.3/lib/llvm/bin/clang \
+  -DCMAKE_CXX_COMPILER=/opt/rocm-6.3.3/lib/llvm/bin/clang++
+ninja -C build-906 strata
+```
+
+Notes that cost time to find:
+
+- `-DCMAKE_PREFIX_PATH` is not optional in this layout; without it the `hipblas-common` lookup fails.
+- A **failed first configure poisons the build directory** — the RPATH error that follows is a symptom, not a cause. Delete the directory rather than adding `-DCMAKE_BUILD_RPATH*` flags.
+- The build carries the upstream warning set and is not `-Werror`.
+- Two source-level blockers must be applied first on this tree: the `__shared__ alignas(16) int4` class (#4151, fixed upstream as `804003950`) and the `hip_compat` P2P names (#7088). With those, `ninja -C build-906 strata` links, a 28.6 MB binary.
+
+## 2. Same-day runs (225 W, the ceiling)
+
+Identical request throughout: 122-token prompt, 256 generated, temperature 0, `--batch 2`, `--spec 4`, `--max-context 262144`, `--kv-resident 32768`, `--pool-workers 15`; one warm-up discarded per series; decode tok/s taken from the engine's own per-request line and cross-checked against client wall time. The second session added 0.5 s sampling of junction temperature, power draw and the active DPM level on both cards.
+
+| session | single `gpu[0]` | split `gpu[0,1]` | expert cache (single / per card, split) |
+| --- | --- | --- | --- |
+| 2026-11-24, no telemetry | 21.50 median (20.99 / 22.21 / 21.50) | 22.75 median (24.26 / 19.54 / 22.75) | 7,499 slots / 9,112 + 8,865 |
+| 2026-11-25, 0.5 s telemetry | 17.07 median (17.07 / 18.04 / 15.20) | 22.96 median (24.58 / 17.75 / 22.96) | 7,499 / 9,070 + 8,879 |
+
+**The split arm is bimodal in both sessions** — fast, slow, fast — and that is the honest reading of it. The slow run is not distinguishable from the fast ones by any GPU signal: every run reached the top DPM level (1725 MHz), peak draw was 141-192 W of the 225 W ceiling, junction stayed 46-55 °C, expert-cache hit rate was flat at 96.3-96.4 %, file-tier reads were zero with no major faults, KV reads hit VRAM 99.7-99.9 % of the time, and draft acceptance sat at 82-87 %. Two candidates remain, both host-side: the pageable resident complement (27.27 GiB, and every start logs `NUMA placement FAILED: the complement is not page-locked`) taking a memory event mid-decode, or the peer-expert handoff occasionally not engaging. **No split speed-up is claimed.** With three runs per arm the median gap is smaller than the winning arm's own spread, and the arms ran in blocks rather than interleaved, so a time effect cannot be separated from a configuration effect.
+
+**The two sessions disagree on the single arm, and the second should not be used as a baseline.** Same binary, same 7,499-slot cache, healthy clocks, yet 21.50 on 11-24 against 17.07 on 11-25, with the arm's own standard deviation rising from 0.61 to 1.44. Tripled variance at an unchanged configuration reads as contention during the later session rather than drift, so the 11-24 single figure is the reference and any comparison should rest on arms measured back to back inside one session.
+
+**Expert-cache size moves decode much more than the split does.** One launch on 11-25 found only 13.70 GiB free, sized itself at 4,269 slots instead of 7,499, and decoded at 5.17 and 7.00 tok/s — 3x slower with the card at full clock (1,533 MHz mean, 1,725 peak), 182 W peak of 225, and 56 °C. Nothing in the HTTP response reports the difference, so a benchmark on a card with other tenants has to record the engine's own `expert cache auto` line to be interpretable at all.
+
+Memory placement at load:
+
+- **Split:** CUDA1 took 25.94 GiB of experts (`--vram-reserve-mib` is gone in 0.2.x, replaced by the elastic segment scheme, and the freed reserve goes to expert slots); 810 MiB (CUDA0) / 908 MiB (CUDA1) free after load.
+- **Single:** resident RAM mode — 62.78 GiB of experts pageable in RAM, 7,499 slots (21.89 GiB) in VRAM, 810 MiB free after load.
+
+Boot to serving, measured: **~12 min** with the PLE table already in the page cache (2.5 s table lock, 270.4 s profile pre-fill, 458 s for the 62.78 GiB pageable complement at ~87 MB/s). A genuinely cold PLE path adds roughly 428 s, but that figure is inferred rather than measured to completion. Warm launches serve in ~90 s (split) and ~1.7 min (single). This box's system disk is DRAM-less, so boot time measures the disk rather than the engine.
+
+## 3. Historical: the 0.1.45 tree (October)
+
+The previous revision of this report documented the 0.1.45 base (`477ac13c`) in full: the HIP compat layer's per-file port list, serve-mode A/Bs, the dual-GPU layer split, and a **12 h continuous resident-serve soak on the 256K-context / 2-batch-slot split config — no crashes, no restarts, no degradation**. Its warm decode numbers: 21.7–22.6 tok/s split, 17.2–18.4 tok/s single. Those numbers were taken under a lower cap and are historical; they are not comparable to §2 and are not restated as current.
+
+Of that tree's engine fixes, 0.2.16/0.2.17 absorbed the shared `alignas(16)` class (#4151, fixed upstream as `804003950`), the f16-range reset check (#4152, `04dd856ea`), and setup's gfx906 recognition (#4153). qwen3.6 left the gfx906 build after 0.1.51, which retired the rest.
+
+## 4. Cross-validation on three systems
+
+The work behind this report was built and run on three systems with three different GPUs, so the gfx906 numbers are not a single-machine result. All three legs come from the same branch commit, `75718ba21` (`d46f5f268` plus seven commits), built by three toolchains: clang 18 with ROCm 6.3.3 for the two HIP targets, and nvcc with CUDA 12.8 for sm_70. The numbers in §2 are from `main` @ `2af30ccaa` on gfx906, five commits later plus the #7088 mapping.
+
+| | 2x Instinct MI25 (gfx900) | 2x Instinct MI50 (gfx906) | Tesla V100 (sm_70) |
+| --- | --- | --- | --- |
+| **Build** | 172/172, `strata 0.1.67` | 178/178, `strata 0.1.67` | 169/169 with `-DSTRATA_EXPERIMENTAL_SM60=ON`, CUDA 12.x |
+| **Device self-test** | `OK`, 64 MiB arena, over-allocation refused | `OK`, over-allocation refused | `OK` |
+| **`--families`** | `qwen4exp` | `qwen4exp` | `qwen4exp qwen35moe` |
+| **Qwen3.8-Flash-Next** | PASS, 33.0 prefill / 17.4 decode tok/s, 28/40 drafts | PASS, see §2 (17.3 single, 23.0 split) | not run on this leg |
+| **Qwen3.6-35B-A3B** | refused by design (excluded under `STRATA_HIP_GFX906`) | refused by design | PASS, coherent: 1,301.7 prefill / 88.6 decode tok/s |
+| **Inkling-2-Mini SQ-10** | PASS, 27.5 prefill / 14.6 decode tok/s, deterministic | PASS, 224 prefill / 19.5 decode tok/s, deterministic | not built on this leg |
+| **Inkling vision** | PASS, reads a synthetic image | PASS, prompt expands 32 to 175 tokens (143 image rows), ~18.8 tok/s | not run |
+| **Hy4-Flash** | PASS, 4.3-4.8 tok/s across two cards | PASS, coherent prose, 2.34 tok/s on one card, 67 % VRAM expert hit rate | compiles, sm_70 cubin emitted, never loaded |
+| **Hy4 vision** | PASS | PASS, 231 image rows encoded in 0.23 s, 33.7 tok/s prefill, `fdot2` path taken | not run |
+
+Two invariants were checked rather than assumed, and they are the reason this table is worth having:
+
+**Determinism across architectures.** Two processes run back to back produced byte-identical 24-token greedy sequences on gfx900 and again on gfx906, with only the timing line moving. The Inkling pack was the same file on both boxes (9.8 GB, sha256 `ac4d452a...065934`), so this is the same bytes on different silicon rather than two similar packs.
+
+**The scalar fallback is the code that runs, not code that exists.** On gfx900 the extracted device code object disassembles to **zero** `v_mfma_*` and zero `v_dot2`/`v_dot4` instructions, with 6,070 `v_fma_f32`. The compat fallback is therefore what executed, which is the claim a compile-time switch alone cannot make.
+
+What this does not cover: Inkling was never built for CUDA (the lane is not in the sm_70 task line), Hy4 was compiled but never loaded on CUDA, the sm_70 leg is a single card with no layer split, and both vision runs are on the AMD arches only. A pre-sm_75 CUDA build of this tree needs `-DSTRATA_EXPERIMENTAL_SM60=ON` and a CUDA 12.x toolkit; CUDA 13 dropped sm_70 and fails the compiler test at `compute_70`. That is a property of the tree rather than of this branch — a control build of stock `d46f5f268` fails identically.
+
+One trap from the sm_70 leg is worth passing on. CUDA's `FASTEST_FIRST` device order does not match `nvidia-smi`'s enumeration, so `CUDA_VISIBLE_DEVICES=1` selected a 4 GiB GTX 1650 rather than the V100 and died in `cudaMalloc` inside the model load. Selecting the card by UUID (`nvidia-smi --query-gpu=uuid -i 1`) fixes it. On a mixed-VRAM box that failure is indistinguishable from an engine defect until you watch the memory delta, so confirm which card you picked before calling a lane broken.
+
+## 5. Not tested
+
+- **No soak on this tree.** The 12 h soak in §3 ran on 0.1.45; nothing of that length has been run on engine 0.1.67, so leak, drift and sustained-heat behaviour of the current tree are unmeasured.
+- Multi-GPU beyond `layer_split auto` on this pair; the lane-select and prefill-split paths.
+- SYCL builds and Mac/Metal. The CUDA leg was built and run on sm_70 (§4), but no CUDA build was made on this box.
+- `-Werror`.
+- The standard benchmark protocol (`docs/BENCHMARK_PROTOCOL.md`) — not yet run on gfx906.
