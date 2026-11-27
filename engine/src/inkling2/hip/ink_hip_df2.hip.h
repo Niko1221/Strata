@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "../cuda/ink_dflash2_path.cuh"
+#include "../ink_dflash2_mix.h"   // host decoder of the shipped pre-quantized (variant mix) file: SF4 -> bf16 (shared with the Metal and SYCL ports)
 #include "../../image/vae/safetensors_lite.hpp"
 
 namespace strata::ink {
@@ -281,6 +282,81 @@ __global__ void __launch_bounds__(256) k_hdf2_gemv_q4(const uint8_t* __restrict_
     for (int m = 0; m < kGemvMR; ++m) {
         const float s = wave32_sum(acc[m]);
         if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s;
+    }
+}
+
+// ---- SF4 (the shipped pre-quantized file's feed-forward matrices): [N][K/2] bytes of two E2M1 (sign-magnitude, low nibble first), [N][K/16] UE4M3 block scales, one fp32 tensor scale ----
+// value = e2m1 * ue4m3 * outer. E2M1 times 2 are the integers 0 1 2 3 4 6 8 12 (a 256-entry table maps a byte to two int8), dp4a-style dot with the int8 activations, then * 0.5 * outer.
+__device__ __forceinline__ float hd_ue4m3(uint8_t c) {
+    const int e = (c >> 3) & 15, m = c & 7;
+    return e == 0 ? ldexpf((float)m, -9) : ldexpf(1.0f + (float)m * 0.125f, e - 7);
+}
+__global__ void __launch_bounds__(256) k_hdf2_gemv_sf4(const uint8_t* __restrict__ Wp, const uint8_t* __restrict__ Ws, float w_outer, const int8_t* __restrict__ xq,
+                                                       const float* __restrict__ xs, float* __restrict__ Y, int M, int N, int K, int n_chunks) {
+    extern __shared__ __align__(16) uint8_t g_smem[];
+    __shared__ uint16_t lut[256];
+    const int nb = K >> 5;
+    int8_t* sq = reinterpret_cast<int8_t*>(g_smem);
+    float* ss = reinterpret_cast<float*>(g_smem + (size_t)kGemvMR * K);
+    {
+        const int mag[8] = {0, 1, 2, 3, 4, 6, 8, 12};
+        const int lo = threadIdx.x & 15, hi = threadIdx.x >> 4;
+        const int vlo = (lo & 8) ? -mag[lo & 7] : mag[lo & 7];
+        const int vhi = (hi & 8) ? -mag[hi & 7] : mag[hi & 7];
+        lut[threadIdx.x] = (uint16_t)(((uint32_t)(vlo & 0xFF)) | ((uint32_t)(vhi & 0xFF) << 8));
+    }
+    const int mc = blockIdx.x % n_chunks;
+    const int rb = blockIdx.x / n_chunks;
+    const int m0 = mc * kGemvMR;
+    const int mrows = min(kGemvMR, M - m0);
+    {
+        const int4* src = reinterpret_cast<const int4*>(xq + (size_t)m0 * K);
+        int4* dst = reinterpret_cast<int4*>(sq);
+        const int n16 = mrows * K / 16;
+        for (int i = threadIdx.x; i < n16; i += 256) dst[i] = src[i];
+        const float* s2 = xs + (size_t)m0 * nb;
+        for (int i = threadIdx.x; i < mrows * nb; i += 256) ss[i] = s2[i];
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int n = rb * 8 + warp;
+    if (n >= N) return;
+    const uint4* w16 = reinterpret_cast<const uint4*>(Wp + (size_t)n * (K / 2));
+    const uint8_t* wsr = Ws + (size_t)n * (K / 16);
+    float acc[kGemvMR];
+#pragma unroll
+    for (int m = 0; m < kGemvMR; ++m) acc[m] = 0.0f;
+    for (int b = lane; b < nb; b += 32) {
+        const uint4 w = w16[b];
+        const float s0 = hd_ue4m3(wsr[2 * b]), s1 = hd_ue4m3(wsr[2 * b + 1]);
+        const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
+        uint32_t d[8];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            d[2 * j] = (uint32_t)lut[wv[j] & 0xFF] | ((uint32_t)lut[(wv[j] >> 8) & 0xFF] << 16);
+            d[2 * j + 1] = (uint32_t)lut[(wv[j] >> 16) & 0xFF] | ((uint32_t)lut[(wv[j] >> 24) & 0xFF] << 16);
+        }
+#pragma unroll
+        for (int m = 0; m < kGemvMR; ++m) {
+            if (m < mrows) {
+                const uint4 a0 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32);
+                const uint4 a1 = *reinterpret_cast<const uint4*>(sq + (size_t)m * K + b * 32 + 16);
+                int p0 = sdot4_i32((int)d[0], (int)a0.x, 0);
+                p0 = sdot4_i32((int)d[1], (int)a0.y, p0);
+                p0 = sdot4_i32((int)d[2], (int)a0.z, p0);
+                p0 = sdot4_i32((int)d[3], (int)a0.w, p0);
+                int p1 = sdot4_i32((int)d[4], (int)a1.x, 0);
+                p1 = sdot4_i32((int)d[5], (int)a1.y, p1);
+                p1 = sdot4_i32((int)d[6], (int)a1.z, p1);
+                p1 = sdot4_i32((int)d[7], (int)a1.w, p1);
+                acc[m] += ((float)p0 * s0 + (float)p1 * s1) * ss[m * nb + b];
+            }
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < kGemvMR; ++m) {
+        const float s = wave32_sum(acc[m]);
+        if (lane == 0 && m < mrows) Y[(size_t)(m0 + m) * N + n] = s * 0.5f * w_outer;
     }
 }
 
@@ -888,6 +964,7 @@ struct InkHipDFlash2 {
         int kq = 1, ko = 1, kg = 1, ku = 1, kd = 1;   // 0 bf16, 1 Q8, 2 4-bit groups
         uint16_t *wkv = nullptr, *conv_a = nullptr, *conv_f = nullptr;
         float *base_a = nullptr, *base_f = nullptr, *attn_norm = nullptr, *post_norm = nullptr, *q_norm = nullptr, *k_norm = nullptr;
+        float oq = 1, oo = 1, og = 1, ou = 1, od = 1;   // SF4 tensor scales (kind 3)
     } L[hdf2::kLayers];
     uint16_t *fc = nullptr, *sel_h = nullptr, *pred = nullptr, *succ = nullptr;
     float *hidden_norm = nullptr, *norm = nullptr, *mask_row = nullptr;
@@ -995,17 +1072,48 @@ struct InkHipDFlash2 {
             // HIP default: Q8 block weights on every card (333 MiB, no loss against bf16 that the acceptance shows); bf16 / q4 by STRATA_INK_DFLASH2_WQ
             if (!std::getenv("STRATA_INK_DFLASH2_WQ") && !std::getenv("STRATA_INK_DFLASH2_W4") && df2_file_variant(df2_resolve_path(df2_model_path())).empty())
             { var.attn = 1; var.ffn = h.small_vram ? 2 : 1; }   // cards below 24 GB: 8-bit attention, 4-bit feed-forward (-105 MiB); larger cards: Q8
-            if (var.attn == 3 || var.ffn == 3) {
-                err = "the HIP DFlash 2 port has no SF4 block weights: use the bf16 checkpoint, or a q8 / q4 sidecar";
+            // SF4 block weights exist only in the shipped pre-quantized file (the loader below follows its tensors); from the bf16 checkpoint there is no SF4 conversion on HIP
+            if ((var.attn == 3 || var.ffn == 3) && df2_file_variant(df2_resolve_path(df2_model_path())).empty()) {
+                err = "HIP DFlash 2 has no SF4 conversion of the bf16 checkpoint: use STRATA_INK_DFLASH2_WQ=q8 | q4 | bf16, or the pre-quantized sidecar";
                 return false;
             }
         }
+        // STRATA_INK_DFLASH2_SF4=bf16: widen the file's SF4 matrices on the host to bf16 (shared decoder ink_dflash2_mix.h) instead of running them as SF4 (about 360 MiB more on the card)
+        const bool sf4_widen = std::getenv("STRATA_INK_DFLASH2_SF4") && std::string(std::getenv("STRATA_INK_DFLASH2_SF4")) == "bf16";
         uint16_t* tmp = nullptr;   // the largest matrix, bf16, before it is quantized
         if (hipMalloc((void**)&tmp, (size_t)kFF * kHidden * 2) != hipSuccess) { err = "out of GPU memory for the DFlash 2 loader"; return false; }
-        auto up_q = [&](const std::string& name, int N, int K, int& kind, void*& q, void*& sc) -> bool {
+        auto up_q = [&](const std::string& name, int N, int K, int& kind, void*& q, void*& sc, float& outer) -> bool {
             if (st.tensors.count(name + ".q")) {   // pre-quantized sidecar: the format follows the tensors
                 const auto& ts = st.tensors.at(name + ".s");
-                if (st.tensors.count(name + ".o")) { err = "SF4 sidecar tensors are not supported on HIP"; return false; }
+                if (st.tensors.count(name + ".o")) {   // SF4: .q U8 [N*K/2], .s U8 [N*K/16], .o F32 [1]
+                    const size_t qb = (size_t)N * K / 2, sb = (size_t)N * K / 16;
+                    if (!read_t(name + ".o", 4, "F32", false)) return false;
+                    std::memcpy(&outer, host.data(), 4);
+                    if (sf4_widen) {   // exact bf16 of the SF4 values (host), the bf16 path of the GEMM hook
+                        std::vector<unsigned char> qh;
+                        if (!read_t(name + ".q", qb, "U8", false)) return false;
+                        qh = host;
+                        if (!read_t(name + ".s", sb, "U8", false)) return false;
+                        std::vector<uint16_t> wide((size_t)N * K);
+                        ink2::df2mix::sf4_to_bf16(qh.data(), host.data(), outer, N, K, wide.data());
+                        kind = 0;
+                        q = wal<uint16_t>((size_t)N * K);
+                        sc = nullptr;
+                        if (!q) { err = "out of GPU memory for the DFlash 2 weights"; return false; }
+                        HDF2_CK(hipMemcpy(q, wide.data(), (size_t)N * K * 2, hipMemcpyHostToDevice));
+                        return true;
+                    }
+                    kind = 3;
+                    if (!read_t(name + ".q", qb, "U8", false)) return false;
+                    q = wal<uint8_t>(qb);
+                    if (!q) { err = "out of GPU memory for the DFlash 2 weights"; return false; }
+                    HDF2_CK(hipMemcpy(q, host.data(), qb, hipMemcpyHostToDevice));
+                    if (!read_t(name + ".s", sb, "U8", false)) return false;
+                    sc = wal<uint8_t>(sb);
+                    if (!sc) { err = "out of GPU memory for the DFlash 2 weights"; return false; }
+                    HDF2_CK(hipMemcpy(sc, host.data(), sb, hipMemcpyHostToDevice));
+                    return true;
+                }
                 kind = (ts.dtype == "F16") ? 2 : 1;
                 const size_t qb = kind == 1 ? (size_t)N * K : (size_t)N * K / 2;
                 const size_t sb = kind == 1 ? (size_t)N * 4 : (size_t)N * K / 16;
@@ -1047,9 +1155,9 @@ struct InkHipDFlash2 {
             const std::string p = "layers." + std::to_string(l) + ".";
             y.kq = y.ko = var.attn;
             y.kg = y.ku = y.kd = var.ffn;
-            ok = up_q(p + "self_attn.q_proj.weight", kQ, kHidden, y.kq, y.wq, y.sq) && up_q(p + "self_attn.o_proj.weight", kHidden, kQ, y.ko, y.wo, y.so) &&
-                 up_q(p + "mlp.gate_proj.weight", kFF, kHidden, y.kg, y.wg, y.sg) && up_q(p + "mlp.up_proj.weight", kFF, kHidden, y.ku, y.wu, y.su) &&
-                 up_q(p + "mlp.down_proj.weight", kHidden, kFF, y.kd, y.wd, y.sd) &&
+            ok = up_q(p + "self_attn.q_proj.weight", kQ, kHidden, y.kq, y.wq, y.sq, y.oq) && up_q(p + "self_attn.o_proj.weight", kHidden, kQ, y.ko, y.wo, y.so, y.oo) &&
+                 up_q(p + "mlp.gate_proj.weight", kFF, kHidden, y.kg, y.wg, y.sg, y.og) && up_q(p + "mlp.up_proj.weight", kFF, kHidden, y.ku, y.wu, y.su, y.ou) &&
+                 up_q(p + "mlp.down_proj.weight", kHidden, kFF, y.kd, y.wd, y.sd, y.od) &&
                  up_bf16(p + "self_attn.k_proj.weight", (size_t)kKV * kHidden, y.wkv, 0, true, (size_t)2 * kKV * kHidden) &&
                  up_bf16(p + "self_attn.v_proj.weight", (size_t)kKV * kHidden, y.wkv, (size_t)kKV * kHidden, false) &&
                  up_bf16(p + "attention_conv.kernel_projection.weight", (size_t)kDyn * kHidden, y.conv_a) &&
@@ -1195,7 +1303,7 @@ struct InkHipDFlash2 {
 
     // ---- GEMM helper ----------------------------------------------------------------------------------------------------------
     // Y[M][N] fp32 = X[M][K] fp32 * W[N][K]^T; kind 0 bf16 (the backend's GEMM), 1 Q8 row-scaled, 2 4-bit groups (quant = false reuses the last quantized activation)
-    void mv(const void* W, const void* wsc, int kind, const float* X, float* Y, int M, int N, int K, bool quant = true) {
+    void mv(const void* W, const void* wsc, int kind, float outer, const float* X, float* Y, int M, int N, int K, bool quant = true) {
         using namespace hdf2;
         if (kind == 0) {
             h.gemm((const uint16_t*)W, X, Y, M, N, K);
@@ -1205,7 +1313,8 @@ struct InkHipDFlash2 {
         const int nch = (M + kGemvMR - 1) / kGemvMR;
         const int nrb = (N + 7) / 8;
         const size_t sm = (size_t)9 * K + 16;
-        if (kind == 2) k_hdf2_gemv_q4<<<nrb * nch, 256, sm, h.stream>>>((const uint8_t*)W, (const half_t*)wsc, d_aq, d_as, Y, M, N, K, nch);
+        if (kind == 3) k_hdf2_gemv_sf4<<<nrb * nch, 256, sm, h.stream>>>((const uint8_t*)W, (const uint8_t*)wsc, outer, d_aq, d_as, Y, M, N, K, nch);
+        else if (kind == 2) k_hdf2_gemv_q4<<<nrb * nch, 256, sm, h.stream>>>((const uint8_t*)W, (const half_t*)wsc, d_aq, d_as, Y, M, N, K, nch);
         else k_hdf2_gemv_q8<<<nrb * nch, 256, sm, h.stream>>>((const int8_t*)W, (const float*)wsc, d_aq, d_as, Y, M, N, K, nch);
     }
 
@@ -1403,7 +1512,7 @@ struct InkHipDFlash2 {
             k_hdf2_rms_norm<<<R, 256, 0, st>>>(d_x, y.attn_norm, d_xn, R);
             h.gemm(y.conv_a, d_xn, d_dyn, R, kDyn, kHidden);
             k_hdf2_conv_pre<<<R, 256, 0, st>>>(d_xn, d_dyn, y.base_a, d_c, R);
-            mv(y.wq, y.sq, y.kq, d_c, d_q, R, kQ, kHidden);
+            mv(y.wq, y.sq, y.kq, y.oq, d_c, d_q, R, kQ, kHidden);
             h.gemm(y.wkv, d_c, d_kb, R, kKV, kHidden);
             h.gemm(y.wkv + (size_t)kKV * kHidden, d_c, d_vb, R, kKV, kHidden);
             k_hdf2_rmsnorm_rope<<<dim3(kHeads, R), 128, 0, st>>>(d_q, y.q_norm, d_pos, theta, R, kHeads);
@@ -1411,17 +1520,17 @@ struct InkHipDFlash2 {
             k_hdf2_ring_write<<<R, 256, 0, st>>>(d_kb, d_vb, d_srow, d_pos, l, d_rk_tab, d_rv_tab, R);
             k_hdf2_attn_part<<<dim3(kKvHeads, 1, split), 256, 0, st>>>(d_q, d_rk_tab, d_rv_tab, d_meta, d_meta + 5, l, split, p_m, p_l, p_o);
             k_hdf2_attn_combine<<<dim3(kKvHeads, 1, 32), 128, 0, st>>>(p_m, p_l, p_o, split, d_attn);
-            mv(y.wo, y.so, y.ko, d_attn, d_z, R, kHidden, kQ);
+            mv(y.wo, y.so, y.ko, y.oo, d_attn, d_z, R, kHidden, kQ);
             k_hdf2_conv_post_add<<<R, 256, 0, st>>>(d_z, d_dyn, y.base_a, d_x, R);
             if (l == 0) mark(1, st);
             // ---- feed-forward sublayer
             k_hdf2_rms_norm<<<R, 256, 0, st>>>(d_x, y.post_norm, d_xn, R);
             h.gemm(y.conv_f, d_xn, d_dyn, R, kDyn, kHidden);
             k_hdf2_conv_pre<<<R, 256, 0, st>>>(d_xn, d_dyn, y.base_f, d_c, R);
-            mv(y.wg, y.sg, y.kg, d_c, d_g, R, kFF, kHidden);
-            mv(y.wu, y.su, y.ku, d_c, d_u, R, kFF, kHidden, false);
+            mv(y.wg, y.sg, y.kg, y.og, d_c, d_g, R, kFF, kHidden);
+            mv(y.wu, y.su, y.ku, y.ou, d_c, d_u, R, kFF, kHidden, false);
             k_hdf2_swiglu<<<(unsigned)(((size_t)R * kFF + 255) / 256), 256, 0, st>>>(d_g, d_u, d_act, (size_t)R * kFF);
-            mv(y.wd, y.sd, y.kd, d_act, d_z, R, kHidden, kFF);
+            mv(y.wd, y.sd, y.kd, y.od, d_act, d_z, R, kHidden, kFF);
             k_hdf2_conv_post_add<<<R, 256, 0, st>>>(d_z, d_dyn, y.base_f, d_x, R);
             if (l == 0) mark(2, st);
         }
