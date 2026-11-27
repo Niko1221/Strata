@@ -210,14 +210,35 @@ def ms_answers(url: str, timeout: float = 12.0, sleep=time.sleep) -> bool:
     return reachable(url, timeout=timeout)
 
 
+def hf_answers(timeout: float = netpolicy.FIRST_CONNECT_S) -> bool:
+    """Whether the Hugging Face endpoint answers at all (a bounded HEAD, twice, so one dropped probe cannot move a
+    working install). Used only by `auto`: on a network where huggingface.co is blocked, waiting through a doomed
+    transfer helps nobody. An explicit HF_ENDPOINT is the person's own mirror (#495) and is never probed here."""
+    base = hf_endpoint()
+    if reachable(base, timeout=timeout):
+        return True
+    time.sleep(2)
+    return reachable(base, timeout=timeout)
+
+
 def model_source() -> str:
-    """"modelscope" or "huggingface".  ModelScope only when --source modelscope / STRATA_SOURCE=modelscope asks for it;
-    everything else (auto, a HF_ENDPOINT mirror chosen on purpose, #495) is Hugging Face.  Setup does not switch hosts
-    by itself (#908): ModelScope serves a repository's current files, not our pinned revision."""
+    """"modelscope" or "huggingface".  An explicit --source wins.  In `auto`, Hugging Face is tried first; if it does
+    not answer, the download goes to ModelScope instead (the files are the same, checked against the pinned SHA-256).
+    An explicit HF_ENDPOINT mirror is the person's choice and is left alone."""
     want = (os.environ.get("STRATA_SOURCE") or "auto").strip().lower()
-    key = (want, os.environ.get("HF_ENDPOINT") or "", ms_endpoint())
+    endpoint = (os.environ.get("HF_ENDPOINT") or "").strip()
+    key = (want, endpoint, ms_endpoint())
     if key not in _sources:
-        _sources[key] = "modelscope" if want in ("ms", "modelscope") else "huggingface"
+        if want in ("ms", "modelscope"):
+            _sources[key] = "modelscope"
+        elif want in ("hf", "huggingface"):                # an explicit source: never switch it
+            _sources[key] = "huggingface"
+        elif hf_answers():                                 # auto, with or without HF_ENDPOINT: probe whatever HF host is set
+            _sources[key] = "huggingface"
+        else:
+            _sources[key] = "modelscope"
+            warn(f"{hf_endpoint()} does not answer; downloading the model files from ModelScope ({ms_endpoint()}) "
+                 "instead. Set STRATA_SOURCE=huggingface to force Hugging Face.")
     return _sources[key]
 
 
@@ -243,9 +264,11 @@ def proxy_hint() -> str:
 
 
 def ms_file(url: str):
-    """(repo, path) when `url` is a Hugging Face file of a repository setup knows (HF_REVISIONS), else None."""
+    """(repo, path) for any Hugging Face file URL, so --source modelscope works for every model, not just the six
+    pinned ones. ModelScope mirrors the repositories under the same owner/name with the same paths; a repo it does
+    not have fails the probe in download() and falls back to Hugging Face as before."""
     m = HF_FILE.match(url)
-    if m is None or m.group("repo") not in HF_REVISIONS:
+    if m is None:
         return None
     return m.group("repo"), m.group("path")
 
@@ -3605,6 +3628,7 @@ def download(url, dst: Path, what=None):
         mark(dst)
         ok(f"{what or dst.name} copied")
         return
+    pin = file_pin(url) if url.startswith(("http://", "https://")) else None   # taken before `url` may become the ModelScope one
     ms = ms_file(url) if model_source() == "modelscope" else None
     if ms is not None:
         if ms_answers(ms_url(*ms), timeout=netpolicy.FIRST_CONNECT_S):
@@ -3615,7 +3639,8 @@ def download(url, dst: Path, what=None):
     part = dst.with_name(dst.name + ".part")
     total = 0
     # the file's pinned size and SHA-256, when it has them (ModelScope's copy is checked against the same pin)
-    pin = REPO_PINS.get(ms[0], {}).get(ms[1].rsplit("/", 1)[-1]) if ms is not None else file_pin(url)
+    if ms is not None and pin is None:                         # a repo outside REPO_PINS: look up its pin by repo too
+        pin = REPO_PINS.get(ms[0], {}).get(ms[1].rsplit("/", 1)[-1])
     for _unpinned in range(2):                         # the size: one request under the network rule (no more 5 x 60 s in silence)
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
@@ -12924,4 +12949,3 @@ if __name__ == "__main__":
         say("\nstopped.")
         event("error", message="stopped", exit_code=1, kind="interrupted")
         sys.exit(1)
-

@@ -54,6 +54,48 @@ def _safe_json_call(name: str, arguments) -> str:
     return f"<tool_call>\n{payload}\n</tool_call>"
 
 
+def _extract_args_object(raw: str) -> dict | None:
+    """Find the `args`/`arguments` object in a malformed tool-call JSON.
+
+    Inkling-2-Mini can emit a corrupted `name` key (repeated quote tokens, e.g. a name
+    key followed by four stray quotes) while the header NAME and the args object stay
+    intact. json.loads fails on the whole string, so recover the balanced args object
+    by brace matching and let the caller rebuild the call with the header name.
+    """
+    m = re.search(r'"(?:args|arguments)"\s*:\s*', raw)
+    if m is None:
+        return None
+    start = raw.find("{", m.end())
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(raw)):
+        c = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(raw[start:i + 1])
+                except ValueError:
+                    return None
+                return obj if isinstance(obj, dict) else None
+    return None
+
+
 def _parse_tool_body(header_name: str, body: str, kind: str, *, truncated: bool = False) -> str:
     raw = body.strip()
     fallback_name = header_name.strip()
@@ -69,6 +111,11 @@ def _parse_tool_body(header_name: str, body: str, kind: str, *, truncated: bool 
                     obj = json.loads(m.group(0))
                 except ValueError:
                     obj = None
+            # #(inkling malformed name key): name key corrupted but header NAME + args survive
+            if obj is None and fallback_name:
+                args = _extract_args_object(raw)
+                if args is not None:
+                    return _safe_json_call(fallback_name, args)
         if isinstance(obj, dict):
             name = str(obj.get("name") or fallback_name).strip()
             args = obj.get("args") if "args" in obj else obj.get("arguments")
