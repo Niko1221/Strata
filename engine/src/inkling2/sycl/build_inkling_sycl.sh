@@ -87,10 +87,12 @@ esac
 
 MKL_FLAGS=()
 MKL_LIBS=()
-if [ -n "${MKLROOT:-}" ] && [ -f "${MKLROOT}/include/oneapi/mkl/blas.hpp" ]; then
-  echo "[build_inkling_sycl] Enabling Intel oneMKL XMX GEMM (${MKLROOT})"
+if [ "${STRATA_SYCL_USE_ONEMKL:-0}" = "1" ] && [ -n "${MKLROOT:-}" ] && [ -f "${MKLROOT}/include/oneapi/mkl/blas.hpp" ]; then
+  echo "[build_inkling_sycl] Enabling optional legacy Intel oneMKL XMX GEMM (${MKLROOT})"
   MKL_FLAGS=(-DINK_SYCL_USE_ONEMKL=1 "-I${MKLROOT}/include")
   MKL_LIBS=("-L${MKLROOT}/lib" "-Wl,-rpath,${MKLROOT}/lib" -lmkl_sycl_blas -lmkl_intel_lp64 -lmkl_sequential -lmkl_core)
+else
+  echo "[build_inkling_sycl] Zero-oneMKL build (native SG16 joint_matrix XMX)"
 fi
 
 "${ICPX}" "${SYCL_FLAGS[@]}" "${MKL_FLAGS[@]}" \
