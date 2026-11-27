@@ -88,7 +88,16 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
         var = "PATH" if os.name == "nt" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     try:
-        done = subprocess.run([str(exe), "--info", str(model)], capture_output=True, text=True, errors="replace", timeout=timeout, env=env, cwd=str(Path(str(exe)).parent))
+        probe_args = [str(exe), "--info", str(model)]
+        # strata-inkling reports images=1 only when the vision shard is passed; forward it so
+        # server-side vision gating reflects the real engine capability. Run the probe in the
+        # model file's directory so relative model paths resolve the same way as at serve time.
+        if "--vision" in args:
+            vi = args.index("--vision")
+            if vi + 1 < len(args):
+                probe_args += ["--vision", args[vi + 1]]
+        probe_cwd = str(Path(str(model)).resolve().parent) if Path(str(model)).is_absolute() else (cfg or {}).get("cwd") or str(Path(str(exe)).parent)
+        done = subprocess.run(probe_args, capture_output=True, text=True, errors="replace", timeout=timeout, env=env, cwd=probe_cwd)
         info = parse_info(done.stdout) if done.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         info = None

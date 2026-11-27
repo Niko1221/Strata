@@ -100,8 +100,9 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
     if dspark:
         cmd += ["--dspark", str(dspark)]
     try:
+        probe_cwd = (cfg or {}).get("cwd") or str(Path(str(exe)).parent)
         done = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                              timeout=timeout, env=env, cwd=str(Path(str(exe)).parent))
+                              timeout=timeout, env=env, cwd=str(probe_cwd))
         info = parse_info(done.stdout) if done.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         info = None
