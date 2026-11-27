@@ -29,6 +29,11 @@
 #include "ink_metal_vision.h"
 
 namespace ink_metal {
+// The native Metal DFlash 2 drafter stays in the tree but is switched off for 0.2.23 (see ink_metal_backend.mm).
+inline constexpr bool kMetalDflash2Available = false;
+}  // namespace ink_metal
+
+namespace ink_metal {
 
 inline bool InkMetalModel::read_section0_json(int fd, uint64_t off, uint64_t len, std::string& out, std::string& err) {
     if (len == 0) { out.clear(); return true; }
@@ -283,7 +288,7 @@ struct InkMetalRunner {
         max_ctx = std::max(256, ctx_len);
         max_batch = std::max(64, batch_cap);
         kv_is_fp8 = (m5.active && m5.use_fp8_kv);
-        const bool want_df2 = enable_dspark && strata::ink::df2_requested();
+        const bool want_df2 = kMetalDflash2Available && enable_dspark && strata::ink::df2_requested();
         use_dspark = enable_dspark && !want_df2 && m.man.c.has_dspark;
         use_dflash2 = false;
 

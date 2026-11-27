@@ -229,12 +229,15 @@ public:
             if (cx_.recommended_working_set() < (48ull << 30)) want_chunk = std::min(want_chunk, 2048);
         }
         const int batch_cap = std::max(256, std::max(want_chunk, par));
-        const bool enable_draft = opts.enable_dspark &&
-                                  (strata::ink::df2_requested() || ink2::dormant_dspark_allowed());
+        // DFlash 2 is NOT available on Metal in this release (kMetalDflash2Available = false): the port reached no accepted draft token on SQ-20 with either the shipped file or the original
+        // bf16 file (0 of 64 offered) and changed greedy tokens on 8K / 16K documents. Plain decode is exactly the tip's; the DSpark gate is the tip's too.
+        const bool enable_draft = opts.enable_dspark && ink2::dormant_dspark_allowed();
         {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2
             const char* de = std::getenv("STRATA_INK_DRAFTER");
             const std::string dl = de ? std::string(de) : std::string();
             runner_.draft_user_on = opts.draft_forced || dl == "dflash2" || dl == "DFLASH2" || dl == "df2";
+            if (runner_.draft_user_on && !ink_metal::kMetalDflash2Available)
+                fprintf(stderr, "[ink_metal] DFlash 2 is not available on Metal in this release; decoding without a drafter.\n");
         }
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
                           enable_draft, opts.vision_path, "", err)) {
