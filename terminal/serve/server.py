@@ -3190,6 +3190,8 @@ class Vision:
         self.reader = None                              # "own" (Strata's) or "mtmd" (llama.cpp's) from the READY line; None for an older reader
         self.proc = None
         self.stopped = True
+        # Encoding and process lifecycle share this lock: CPU /tokenize may run beside engine generation, while
+        # unload/restart must not close or replace the reader pipe under an active encode.
         self.lock = threading.RLock()
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
@@ -3197,6 +3199,9 @@ class Vision:
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
         self.max_tokens = self.token_limit(cfg)
         self.elastic = cfg.get("elastic") is True
+        # A resident CPU reader has its own serialized encoder process and never changes GPU memory.
+        # GPU and elastic readers must still take the engine turn before encoding or changing residency.
+        self.requires_engine_turn = bool(cfg.get("gpu")) or self.elastic
         self.elastic_mib = self.elastic_ask_mib(cfg, self.max_tokens)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
@@ -3466,14 +3471,15 @@ class Vision:
 
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
-        if self.proc is not None:
-            try:
-                self.proc.kill()
-            except OSError:
-                pass
-        self.proc = None
-        self.stopped = True
-        self._start()
+        with self.lock:
+            if self.proc is not None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+            self.stopped = True
+            self._start()
 
     @staticmethod
     def load(source: str) -> bytes:
@@ -3647,23 +3653,24 @@ class Vision:
                   "tokens' from the reader's log with the report", flush=True)
 
     def close(self):
-        proc, self.proc = self.proc, None
-        if proc is None:
-            self.stopped = True
-            return
-        try:
-            proc.stdin.write("QUIT\n")
-            proc.stdin.flush()
-            proc.wait(timeout=10)
-        except Exception:
+        with self.lock:
+            proc, self.proc = self.proc, None
+            if proc is None:
+                self.stopped = True
+                return
             try:
-                proc.kill()
-            except OSError:
-                pass
-            try:
+                proc.stdin.write("QUIT\n")
+                proc.stdin.flush()
                 proc.wait(timeout=10)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except Exception:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
         for pipe in (proc.stdin, proc.stdout):
             if pipe is not None:
                 pipe.close()
@@ -3672,8 +3679,9 @@ class Vision:
     def shutdown(self):
         """#914: close() for good: the server ends, so the encoder's directory (one ~10 MB .sve per image, on a tmpfs
         /tmp that is RAM) goes with it instead of piling up with every start.  unload() keeps it for the restart."""
-        self.close()
-        shutil.rmtree(self.dir, ignore_errors=True)
+        with self.lock:
+            self.close()
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
@@ -5652,6 +5660,77 @@ class Service:
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
             self.tok.encode(prompt, parse_special=True)
+
+    @staticmethod
+    def _fetch_images(images, fetched, cancel):
+        """An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
+        for as long as urlopen waited.  `fetched`: URLs `_note_unreadable_tool_images` already downloaded."""
+        def fetch(src):
+            if cancel is not None and cancel.is_set():
+                raise ClientGone()
+            if src.startswith(("http://", "https://")):
+                return fetched[src] if fetched is not None and src in fetched else Vision.download(src)
+            return src
+        return [fetch(src) for src in images]
+
+    def expand_image_tokens(self, images, ids, cancel=None, fetched=None, count_only=False):
+        """-> (ids, encoded).  The rendered prompt's ids with each image placeholder replaced by the run of image
+        tokens its picture takes - the prompt a request's answer would read.  `encoded`: the encoder's
+        (embeddings file, token count) pairs, which prepare() combines into the GENI file.  Shared by `prepare()`
+        and POST /tokenize, so both count the same prompt."""
+        if self.offline and any(src.startswith(("http://", "https://")) for src in images):
+            raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+        if self.vision is None:
+            raise ValueError("this server was started without the vision encoder (run setup again and choose "
+                             "'vision'), so it cannot read images")
+        images = self._fetch_images(images, fetched, cancel)
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        start = self.tok.encode(VISION_START, parse_special=True)[0]
+        # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+        # run on the GPU at the same time - an encode during a running request left that request stuck at
+        # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+        # same FIFO as the requests.
+        encoded = None
+        # A cached CPU image count only needs the rows already in the reader cache. It can answer while the engine
+        # is generating, without touching the encoder process or its cache files. Keep the cache lock across the
+        # lookup and read so an engine turn cannot evict a path between them. New images and every generation request
+        # retain the FIFO turn, which also protects generation's temporary embedding inputs from cache eviction.
+        if count_only and not getattr(self.vision, "requires_engine_turn", True):
+            lock = getattr(self.vision, "lock", None)
+            cached = getattr(self.vision, "all_cached", None)
+            if lock is not None and cached is not None:
+                with lock:
+                    if cached(images):
+                        encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                   else [self.vision.encode(src) for src in images])
+        if encoded is None:
+            with self._turn(cancel):
+                if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
+                    self._vision_up()
+                try:
+                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                               else [self.vision.encode(src) for src in images])
+                finally:
+                    self.last_image_at = time.time()
+        # one placeholder per image -> one per image token.  Only the markers the template writes for an image
+        # (right after the vision start) are images: the same text inside a message (an agent reading these docs,
+        # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+        literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+        out, k = [], 0
+        for j, t in enumerate(ids):
+            if t == pad and j > 0 and ids[j - 1] == start:
+                # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if k == len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                out += [pad] * encoded[k][1]
+                k += 1
+            elif t == pad:
+                out += literal
+            else:
+                out.append(t)
+        if k != len(encoded):
+            raise ValueError("the prompt and its images do not match")
+        return out, encoded
 
     @contextlib.contextmanager
     def _turn(self, cancel=None):
@@ -8105,6 +8184,10 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path in ("/tokenize", "/v1/tokenize"):
+                    self._tokenize(req)
+                elif path in ("/detokenize", "/v1/detokenize"):
+                    self._detokenize(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
                 else:
@@ -8751,6 +8834,77 @@ def make_handler(svc: Service):
                                           "reasoning.encrypted_content" in include, validator is not None)
             # the request is also the sampling dict, as on the chat path (temperature, top_p, top_k, seed, ...)
             return ids, thinking, tools, max_new, asm, validator, req, force
+
+        def _tokenize(self, req):
+            """POST /tokenize: the prompt this server would read, rendered and tokenized - the model does not run.
+            vLLM's /tokenize shape: a 'prompt' (plain text) or a chat 'messages' conversation, and the token ids,
+            their count and the context length.  A chat request is read as /v1/chat/completions would read it
+            (openai_to_messages: the same template, the same tools and thinking level), so the count a client
+            plans from here is the count its request would take, `response_format`'s schema directive included.  The
+            web app's `strata_mcp` is refused: the MCP tools it adds are not counted here, so the figure would be low.
+            The request's `model` is accepted like the other routes accept it: this server has one model, and every
+            name reaches it (the client's own deployment id)."""
+            if "content" in req:                        # llama.cpp's name for the plain text
+                if "prompt" in req or "messages" in req:
+                    raise ValueError("send a 'prompt' (or llama.cpp's 'content') or a chat 'messages' conversation - "
+                                     "one of them")
+                req = {**req, "prompt": req["content"]}
+            if bool("prompt" in req) == bool("messages" in req):
+                raise ValueError("send a 'prompt' (a plain text) or a chat 'messages' conversation - not both, not neither")
+            if req.get("continue_final_message"):
+                raise ValueError("continue_final_message is not supported")
+            if "prompt" in req:
+                prompt = req["prompt"]
+                if not isinstance(prompt, str):
+                    raise ValueError("prompt: a text")
+                # llama.cpp's parse_special (default true): false reads control-token spellings in the text as plain
+                # text, so a client that renders its own prompt can tokenize message text that cannot open a turn
+                parse_special = req.get("parse_special", True)
+                if not isinstance(parse_special, bool):
+                    raise ValueError("parse_special: true or false")
+                ids = svc.tok.encode(prompt, parse_special=parse_special)
+            else:
+                # Match the OpenAI route's effective request settings. In particular, shared/config reasoning
+                # defaults change the rendered prompt, and a forced tool call with thinking disabled is written
+                # into the prompt before generation. Counting either request without these transformations gives
+                # clients a prompt length different from the one the engine reads.
+                req = svc.with_shared(req, "openai")
+                messages, tools, kw = openai_to_messages(req)
+                require_messages(messages)
+                if req.get("strata_mcp") is True and svc.mcp is not None:
+                    raise ValueError("strata_mcp is not counted: the MCP tools a chat request adds are not part of this "
+                                     "count; send the request without it")
+                if tool_choice_of(req.get("tool_choice"))[0] == "none":
+                    tools = None
+                force = svc.force_text(forced_call(req.get("tool_choice"), tools))
+                messages, validator = prepare_format(req.get("response_format"), messages, with_tools=bool(tools))   # its schema is written into the prompt
+                if validator is not None and req.get("strata_mcp"):
+                    raise ValueError("structured response_format with MCP is not supported")   # as the chat route says it
+                kw["add_generation_prompt"] = bool(req.get("add_generation_prompt", True))
+                ids = svc.encode_prompt(messages, tools, kw, store=False)
+                if force and kw.get("enable_thinking", True) is False:
+                    ids = ids + svc.tok.encode(force, parse_special=True)
+                images = images_of(messages)
+                if images:
+                    ids, _ = svc.expand_image_tokens(images, ids, count_only=True)
+            self._json(200, {"count": len(ids), "tokens": ids,
+                             "max_model_len": svc.reported_ctx(), "token_strs": None})
+
+        def _detokenize(self, req):
+            """POST /detokenize: token ids back to their text - the model does not run.  llama.cpp's and vLLM's shape:
+            'tokens' in; the text out as 'content' (llama.cpp) and 'prompt' (vLLM)."""
+            ids = req.get("tokens")
+            if not isinstance(ids, list) or not all(type(t) is int and t >= 0 for t in ids):
+                raise ValueError("tokens: a list of token ids")
+            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+            bad = [t for t in ids if n_vocab and t >= n_vocab]
+            if bad:
+                raise ValueError(f"tokens: {bad[0]} is outside the vocabulary (0..{n_vocab - 1})")
+            try:
+                text = svc.tok.decode(ids)
+            except (IndexError, ValueError) as e:
+                raise ValueError(f"tokens: an id this tokenizer does not have ({e})") from None
+            self._json(200, {"content": text, "prompt": text})
 
         def _count_tokens(self, req):
             """Anthropic's token count, which Claude Code asks for its context figures: the prompt this server would
