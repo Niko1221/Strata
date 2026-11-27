@@ -893,17 +893,48 @@ public:
         // 2. Load embedded DSpark tensors to GPU if present & enabled
         has_dspark_ = opts.enable_dspark && dspark_cfg_.present;
         if (has_dspark_) {
+            // llama.cpp-mainline layout detection: per-block ctx_mix/ctx_norm replace the
+            // global fuse_weight + dflare_norm, and the Markov head arrives pre-folded as
+            // markov_w2 (rank x vocab) + bias.
+            const bool mainline = model.m.dspark_tensors.count("markov_w2.weight") > 0 ||
+                                  model.m.dspark_tensors.count("dspark.markov_w2.weight") > 0;
+            float mix_rows[16] = {0};
             for (const auto& kv : model.m.dspark_tensors) {
                 std::string k = kv.first;
                 if (k.rfind("dspark.", 0) == 0) k = k.substr(7);
                 auto f32 = decode_sec1_f32(sec1.data(), kv.second);
+                if (mainline) {
+                    if (k.rfind("blk.", 0) == 0) {
+                        // "blk.N.<tail>": the first dot is the one after "blk"
+                        const size_t dot = k.find('.', 4);
+                        if (dot != std::string::npos) {
+                            const std::string tail = k.substr(dot + 1);
+                            const int blk = std::atoi(k.substr(4, dot - 4).c_str());
+                            if (tail == "ctx_mix.weight" && blk >= 0 && blk < 3 && f32.size() >= 4) {
+                                for (int j = 0; j < 4; ++j) mix_rows[blk * 4 + j] = f32[j];
+                            } else if (tail == "ctx_norm.weight") {
+                                // the runner reads the per-block mix norm as layers.N.dflare_norm.weight
+                                k = "layers." + std::to_string(blk) + ".dflare_norm.weight";
+                            }
+                        }
+                    } else if (k == "markov_ctx_mix.weight") {
+                        for (int j = 0; j < 4 && j < (int)f32.size(); ++j) mix_rows[12 + j] = f32[j];
+                    } else if (k == "markov_ctx_norm.weight") {
+                        k = "markov_head.dflare_norm.weight";
+                    } else if (k == "markov_w2.weight") {
+                        has_markov_w2_ = true;
+                        // the loader stores shapes row-major: (vocab, rank)
+                        if (kv.second.shape.size() >= 2) markov_w2_vocab_ = static_cast<int>(kv.second.shape[0]);
+                    }
+                }
                 if (k == "fuse_weight" || k.find("fuse") != std::string::npos) {
                     h_dspark_fuse_ = f32;
                 }
                 const bool store_bf16 = (kv.second.shape.size() == 2) &&
                     (k.find("layers.") == 0 ||
                      k == "markov_head.rnn_proj.weight" ||
-                     k == "markov_head.hidden_out.weight");
+                     k == "markov_head.hidden_out.weight" ||
+                     k == "markov_w2.weight");
                 if (store_bf16) {
                     auto bf16 = f32_vec_to_bf16(f32);
                     GpuBuffer b;
@@ -914,6 +945,12 @@ public:
                     if (!upload_raw(b, f32.data(), f32.size() * sizeof(float), err)) return false;
                     dspark_f32_[k] = b;
                 }
+            }
+            // mainline: no fuse_weight in the file — rebuild the 4x4 from the per-block
+            // ctx_mix vectors (rows 0-2) and markov_ctx_mix (row 3).  softmax4() then reads
+            // it exactly as it read the old shared matrix.
+            if (mainline && h_dspark_fuse_.size() != 16) {
+                h_dspark_fuse_.assign(mix_rows, mix_rows + 16);
             }
             if (!hip_ok(alloc_gpu_buffer(d_dspark_state_, static_cast<size_t>(dspark_cfg_.markov_rank) * 4, mem_info_.is_uma), "dspark state", err) ||
                 !hip_ok(alloc_gpu_buffer(d_dspark_state2_, static_cast<size_t>(dspark_cfg_.markov_rank) * 4, mem_info_.is_uma), "dspark state2", err) ||
@@ -2062,6 +2099,23 @@ public:
                 ds_bf16("markov_head.rnn_proj.weight"),
                 ds_f32("markov_head.rnn_proj.bias"),
                 D, rank);
+            if (has_markov_w2_) {
+                // mainline: the folded Markov head scores the same shortlist; the per-position
+                // base logit from the top-2 screen is added, as in the hidden_out path.
+                const auto it_w2 = dspark_bf16_.find("markov_w2.weight");
+                const auto it_b = dspark_f32_.find("markov_w2.bias");
+                if (it_w2 != dspark_bf16_.end()) {
+                    k5_dspark_w2_stage1<<<kCandArgBlks, 256, 0, stream_>>>(
+                        reinterpret_cast<const uint16_t*>(it_w2->second.dev_ptr),
+                        (it_b != dspark_f32_.end()) ? reinterpret_cast<const float*>(it_b->second.dev_ptr) : nullptr,
+                        d_lat,
+                        reinterpret_cast<const float*>(d_dspark_cand_v_.dev_ptr) + static_cast<size_t>(step - 1) * kNumCand,
+                        reinterpret_cast<const int32_t*>(d_dspark_cand_i_.dev_ptr) + static_cast<size_t>(step - 1) * kNumCand,
+                        reinterpret_cast<float*>(d_dspark_blk_v_.dev_ptr),
+                        reinterpret_cast<int32_t*>(d_dspark_blk_i_.dev_ptr),
+                        kNumCand, rank, markov_w2_vocab_ > 0 ? markov_w2_vocab_ : V);
+                }
+            } else {
             k5_dspark_markov_corr_bf16<<<(D + 7) / 8, 256, 0, stream_>>>(
                 d_lat,
                 ds_bf16("markov_head.hidden_out.weight"),
@@ -2075,6 +2129,7 @@ public:
                 reinterpret_cast<float*>(d_dspark_blk_v_.dev_ptr),
                 reinterpret_cast<int32_t*>(d_dspark_blk_i_.dev_ptr),
                 kNumCand, D, V);
+            }
             k5_dspark_argmax_stage2<<<1, 256, 0, stream_>>>(
                 reinterpret_cast<const float*>(d_dspark_blk_v_.dev_ptr),
                 reinterpret_cast<const int32_t*>(d_dspark_blk_i_.dev_ptr),
@@ -2129,6 +2184,17 @@ public:
 #pragma clang diagnostic pop
 #endif
         if (!has_dspark_ || max_emit <= 0 || out_emitted == nullptr) return 0;
+        if (has_markov_w2_) {
+            // llama.cpp-mainline drafter: the tree step still projects markov_head.hidden_out,
+            // which this layout does not carry.  The linear block drafter (dspark_draft) reads
+            // the folded markov_w2 head, so decline here and let it draft.
+            static bool said = false;
+            if (!said) {
+                std::fprintf(stderr, "strata-inkling: dspark drafter in the mainline layout; the beam tree is off, drafting on the block drafter\n");
+                said = true;
+            }
+            return 0;
+        }
         if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated) return 0;
         auto& sl = slots_[slot];
         if (anchor_pos < 1 || sl.dspark_len < anchor_pos || anchor_pos + kTreeMaxM >= sl.max_ctx) return 0;
@@ -5879,6 +5945,8 @@ private:
     std::unordered_map<std::string, GpuBuffer> dspark_bf16_;
     std::unordered_map<std::string, GpuBuffer> dspark_f32_;
     std::vector<float> h_dspark_fuse_;
+    bool has_markov_w2_ = false;               // drafter carries the folded Markov head (llama.cpp mainline layout)
+    int markov_w2_vocab_ = 0;                  // rows of markov_w2 (unpadded vocabulary of the folded head)
     GpuBuffer d_dspark_state_, d_dspark_state2_, d_dspark_latent_, d_dspark_corr_, d_dspark_toks_;
     GpuBuffer d_dspark_blk_v_, d_dspark_blk_i_, d_dspark_cand_v_, d_dspark_cand_i_;
     GpuBuffer ds_cur_, ds_res_, ds_h_, ds_q_, ds_k_, ds_v_, ds_ao_, ds_mg_, ds_mu_, ds_qkv_, ds_gu_;
