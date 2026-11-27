@@ -2052,12 +2052,57 @@ static inline void sk_w13_chunk(
         float4 wg0, wg1, wu0, wu1;
         sk_w8<F>(bg + 6, j, wg0, wg1);
         sk_w8<F>(bu + 6, j, wu0, wu1);
+#ifdef INK_MOE_WONLY
+        // weight-stream ablation: fold decode result without token dots (WRONG math, for profiling only)
+        ag[0] += effg * (wg0.x + wg1.y);
+        au[0] += effu * (wu0.x + wu1.y);
+#else
         for (int i = 0; i < mm; ++i) {
             device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
             const float4 x0 = xp[0], x1 = xp[1];
             ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
             au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
         }
+#endif
+    }
+}
+
+// Threadgroup-staged variant of sk_w13_chunk: the x slice for the current superblock is
+// cooperatively loaded ONCE per threadgroup into threadgroup memory instead of being re-read
+// from device memory by every row's simdgroup. Bit-exact: per-lane accumulation order over
+// superblocks is unchanged (sb ascending, same 32-lane unit mapping within each sb).
+template <int F>
+static inline void sk_w13_chunk_tg(
+    device const uchar* body, int r, device const float* x_in,
+    thread const uint* tk, int mm, int lane, int tid,
+    threadgroup float* sX, thread float* ag, thread float* au) {
+    constexpr int SB = sk_sb_bytes(F);
+    const size_t rowb = 9ul * SB;
+    device const uchar* gu = body + 2304;
+    device const uchar* rg = gu + (size_t)(2 * r) * rowb;
+    device const uchar* ru = gu + (size_t)(2 * r + 1) * rowb;
+    const int u = lane, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+    for (int sbi = 0; sbi < 9; ++sbi) {
+        // Cooperative stage: 256 floats per token for this superblock
+        for (int t = 0; t < mm; ++t) {
+            device const float* xs = x_in + ulong(tk[t]) * 2304ul + uint(sbi * 256);
+            for (int cidx = tid; cidx < 256; cidx += 256) sX[t * 256 + cidx] = xs[cidx];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        device const uchar* bg = rg + (size_t)sbi * SB;
+        device const uchar* bu = ru + (size_t)sbi * SB;
+        const float effg = float(as_type<half>(ld16(bg))) * (float(bg[2 + g]) * (1.0f / 255.0f));
+        const float effu = float(as_type<half>(ld16(bu))) * (float(bu[2 + g]) * (1.0f / 255.0f));
+        float4 wg0, wg1, wu0, wu1;
+        sk_w8<F>(bg + 6, j, wg0, wg1);
+        sk_w8<F>(bu + 6, j, wu0, wu1);
+        for (int i = 0; i < mm; ++i) {
+            threadgroup const float4* xp = (threadgroup const float4*)(sX + i * 256 + j);
+            const float4 x0 = xp[0], x1 = xp[1];
+            ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+            au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
@@ -2635,6 +2680,23 @@ kernel void ink_moe_gu_sk23(
         else                      sf4_w13_chunk_s<32>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
         const float g = simd_sum(ag0), u = simd_sum(au0);
         if (lane == 0) h_act[ulong(pid0) * 1152ul + uint(r)] = situ_act(g, u) * inv_sq;
+        return;
+    }
+    if (n >= 2) {
+        threadgroup float sX[4 * 256];
+        for (int t0 = 0; t0 < n; t0 += 4) {
+            const int mm = min(4, n - t0);
+            uint pid[4], tk[4];
+            for (int i = 0; i < mm; ++i) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
+            float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
+            if (ed.gu_code == 3)      sk_w13_chunk_tg<3>(body, r, x_in, tk, mm, int(lane), int(tid), sX, ag, au);
+            else if (ed.gu_code == 2) sk_w13_chunk_tg<2>(body, r, x_in, tk, mm, int(lane), int(tid), sX, ag, au);
+            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            for (int i = 0; i < mm; ++i) {
+                const float g = simd_sum(ag[i]), u = simd_sum(au[i]);
+                if (lane == 0) h_act[ulong(pid[i]) * 1152ul + uint(r)] = situ_act(g, u) * inv_sq;
+            }
+        }
         return;
     }
     for (int t0 = 0; t0 < n; t0 += 4) {
