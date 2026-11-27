@@ -36,6 +36,12 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     return s;
 }
 
+SavedConversation image(const std::vector<int32_t>& ids, bool cvec = true) {
+    SavedConversation s = image({}, cvec);
+    s.live.ids = ids;
+    return s;
+}
+
 struct ThrowingPool : SegmentPoolBudget {
     size_t idle = 0, reclaims = 0, expected_size = 0;
     uint64_t old_serial = 0, new_serial = 0;
@@ -1171,6 +1177,51 @@ int main() {
         check(c.clear() > 0 && sunk.size() == before, "#879's clear() hands nothing over");
         ConversationCache plain(one, 4);
         check(plain.put(image({1,2,3})) && plain.put(image({4,5,6})) && plain.size() == 1, "without a sink: evicted as before");
+    }
+    {   // an agent conversation: each turn's snapshot ends in the reply as generated, the client re-renders it in the next prompt
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        auto seq = [](int32_t from, int32_t to) { std::vector<int32_t> v; for (int32_t i = from; i < to; ++i) v.push_back(i); return v; };
+        auto cat = [](std::vector<int32_t> a, const std::vector<int32_t>& b) { a.insert(a.end(), b.begin(), b.end()); return a; };
+        const auto root = seq(1, 41), body1 = seq(100, 180);   // system prompt (root checkpoint) + turn-1 prompt
+        // turn 1 snapshot: prompt body1, reply R1 as generated; checkpoints: root, a periodic one inside the body, one in the reply
+        SavedConversation t1 = image(cat(cat(root, body1), seq(500, 520)));
+        t1.checkpoints = {cp(root), cp(cat(root, seq(100, 140))), cp(cat(cat(root, body1), seq(500, 510)))};
+        // turn 2 prompt: the same prompt, the reply re-rendered (different tokens), a tool result; its chain holds root + periodic
+        const auto p2 = cat(cat(cat(root, body1), seq(600, 620)), seq(700, 730));
+        const std::vector<ConversationCheckpoint> chain2{cp(root), cp(cat(root, seq(100, 140)))};
+        ConversationCache a(1 << 20, 4);
+        check(a.put(std::move(t1)) && a.size() == 1, "agent: turn 1 parked");
+        std::vector<size_t> gone;
+        check(a.drop_superseded(p2, {}, chain2, true, &gone) == 1 && gone.size() == 1 && a.size() == 0,
+              "agent: the older snapshot (reply re-rendered, deepest checkpoint inside it) is superseded");
+        // pure extension still drops
+        ConversationCache b(1 << 20, 4);
+        check(b.put(image({1, 2, 3, 4})) && b.drop_superseded({1, 2, 3, 4, 5, 6}, {}, {}, true) == 1 && b.size() == 0,
+              "pure prefix extension is superseded");
+        // a different conversation on the same system prompt (and a different one diverging early) is kept
+        ConversationCache c2(1 << 20, 4);
+        SavedConversation other = image(cat(cat(root, seq(900, 980)), seq(500, 520)));
+        other.checkpoints = {cp(root), cp(cat(root, seq(900, 940)))};
+        check(c2.put(std::move(other)), "agent: another conversation parked");
+        check(c2.drop_superseded(p2, {}, chain2, true) == 0 && c2.size() == 1, "two conversations on one system prompt both stay");
+        // early divergence (a timestamp inside the system prompt): nothing of the old snapshot follows the new prompt
+        auto early = p2; early[3] = 9999;
+        SavedConversation t1b = image(cat(cat(root, body1), seq(500, 520)));
+        t1b.checkpoints = {cp(root), cp(cat(root, seq(100, 140)))};
+        ConversationCache d(1 << 20, 4);
+        check(d.put(std::move(t1b)) && d.drop_superseded(early, {}, {cp(std::vector<int32_t>(early.begin(), early.begin() + 40))}, true) == 0,
+              "early divergence cannot be told from another conversation: kept");
+        // images below the held checkpoint must agree; a differing steering mode is isolated
+        ConversationCache e2(1 << 20, 4);
+        SavedConversation t1c = image(cat(cat(root, body1), seq(500, 520)));
+        t1c.cvec = false;
+        t1c.checkpoints = {cp(root), cp(cat(root, seq(100, 140)))};
+        check(e2.put(std::move(t1c)) && e2.drop_superseded(p2, {}, chain2, true) == 0, "steering mode is isolated");
+        // the chain does not hold the checkpoint: kept
+        ConversationCache f(1 << 20, 4);
+        SavedConversation t1d = image(cat(cat(root, body1), seq(500, 520)));
+        t1d.checkpoints = {cp(root), cp(cat(root, seq(100, 140)))};
+        check(f.put(std::move(t1d)) && f.drop_superseded(p2, {}, {cp(root)}, true) == 0, "a checkpoint the chain lacks keeps the snapshot");
     }
     {
         // #4420: a batch slot's chain holds one checkpoint (its admission's): parking it must not drop (#342) the main session's copy of the

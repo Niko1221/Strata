@@ -440,11 +440,13 @@ public:
     /// A snapshot of the same conversation is being parked, grown past these tokens: deletes the entries (file and index file)
     /// whose live tokens are a prefix of `image_live` (same steering and pictures) - they would never be read again.  Returns the
     /// token counts of the deleted entries.
-    std::vector<size_t> drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec) {
+    std::vector<size_t> drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
+                                        const std::vector<ConversationCheckpoint>& checks = {}) {
         SavedConversation image_live;   // (tokens and pictures only)
         image_live.live.ids = ids;
         image_live.live.imgs = imgs;
         image_live.cvec = cvec;
+        image_live.checkpoints = checks;
         std::lock_guard<std::mutex> lk(mu_);
         std::vector<size_t> out;
         for (size_t i = entries_.size(); i-- > 0;)
@@ -483,6 +485,8 @@ private:
     /// `e` is a prefix (equal or shorter) of `image`'s live tokens, same steering and pictures: `image` serves every resume `e` could
     static bool superseded_by(const Entry& e, const SavedConversation& image) {
         const size_t n = e.live.ids.size();
+        if (n != 0 && e.cvec == image.cvec && conversation_rewritten_tail_held(e, image.live.ids, image.live.imgs, image.checkpoints))
+            return true;   // the same conversation, its tail re-rendered by the client
         if (n == 0 || e.cvec != image.cvec || n > image.live.ids.size() ||
             !std::equal(e.live.ids.begin(), e.live.ids.end(), image.live.ids.begin())) return false;
         for (const auto& k : e.live.imgs) {   // its pictures are the first ones of the image's
