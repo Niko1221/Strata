@@ -1468,6 +1468,11 @@ const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) 
 bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
+    if (g.has_loop()) {
+        err = "record_window: loop.num_passes > 1 is not supported with speculative decoding (MTP) in v1 - "
+              "disable drafting for this model (--drafting off)";
+        return false;
+    }
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;

@@ -8,6 +8,7 @@
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/gdn.hpp"
+#include "strata/kernels/loop_gate.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -1479,7 +1480,7 @@ static void dump_half(const BlockBuffers& bb, const ModelGeometry& g, int64_t la
                       uint64_t off, uint64_t n, void* stream) {
     dump_slot(bb.dump, g, layer, src, off, n, stream);
 }
-bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos,                     int32_t pos_base, const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb,                     const MoEBuffers& mb, int64_t k, const BlockBuffers& bb, void* stream, std::string& err,                     const Doorbell* db, const PleRun* ple, int half, int stage_prefix) {
+bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos,                     int32_t pos_base, const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb,                     const MoEBuffers& mb, int64_t k, const BlockBuffers& bb, void* stream, std::string& err,                     const Doorbell* db, const PleRun* ple, int half, int stage_prefix, const LoopPassCtx* loop) {
     // ================================ THE PLE, AT LAYER 1 ONLY ================================
     //
     // **THIS IS THE CALL WHOSE ABSENCE FAILED GATE C1.**  Layer 1 carries the six `blk.1.ple_*` tensors and no
@@ -1567,6 +1568,39 @@ st_begin(layer, 0, stream);
     if (w_down[0]->q8_scale || w_up[0]->q8_scale) { err = "STRATA_HC_REQ8 needs the fused hyper-connection read"; return false; }    gr_read(R, (const float*) w_norm[0]->data, NativeDense::hc_bf16_view(*w_down[0], stream, 0, 1),            NativeDense::hc_bf16_view(*w_up[0], stream, 1, 1), (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
     st_end(layer, 0, stream);    dump_half(bb, g, layer, bb.inject, 2 * g.n_embd, g.hc, stream);        }
+    // Recurrent-depth loop, QSA-only (issue #7295): a port of Inkling2Loop's own loop (see
+    // include/strata/kernels/loop_gate.hpp for the exact math). `loop` is non-null only for a layer
+    // inside [loop_core_start, loop_core_end), built by the caller per captured-graph pass variant.
+    //
+    // The bank snapshot happens EVERY pass (it is what the NEXT pass's message-attention reads), taken
+    // right after `gr_read` produces `bb.mixed` and BEFORE any gating is applied to it - the generic
+    // path's analog of Inkling2Loop's `residual = cur` snapshot, which is also taken before
+    // `attn_res_mix_f32` touches `cur`. The gate itself only runs on pass > 0 (`loop->pass == 0` still
+    // snapshots, matching Inkling2Loop's `msgs == nullptr` on its own pass 0).
+    if (run0 && loop != nullptr) {
+        const cudaError_t ce = cudaMemcpyAsync(loop->bank_slot, bb.mixed, (size_t) g.n_embd * sizeof(float),
+                                               cudaMemcpyDeviceToDevice, (cudaStream_t) stream);
+        if (ce != cudaSuccess) { err = "block_layer_pre: loop bank snapshot: " + std::string(cudaGetErrorString(ce)); return false; }
+        if (loop->pass > 0) {
+            const WeightRef* wq = v.get("loop_msg_query.weight");
+            if (!wq) { err = v.name("loop_msg_query.weight") + " is missing"; return false; }
+            if (wq->kind != WeightKind::F32) { err = v.name("loop_msg_query.weight") + " must be F32"; return false; }
+            strata::kernels::loop_msg_attn(loop->bank_read, loop->bank_out, (const float*) wq->data,
+                                           strata::kernels::LoopMsgShapes{g.n_embd, loop->bank_n}, loop->msg_ws, stream);
+            const WeightRef* wd = v.get("loop_attn_ctrl_down.weight");
+            const WeightRef* wg = v.get("loop_attn_ctrl_gain.weight");
+            const WeightRef* wf = v.get("loop_attn_ctrl_forget.weight");
+            if (!wd || !wg || !wf) { err = v.name("loop_attn_ctrl_{down,gain,forget}.weight") + " is missing"; return false; }
+            if (wd->kind != WeightKind::Bf16InF32 || wg->kind != WeightKind::Bf16InF32 || wf->kind != WeightKind::Bf16InF32) {
+                err = v.name("loop_attn_ctrl_*") + " has the wrong engine form";
+                return false;
+            }
+            strata::kernels::loop_ctrl_gate(bb.mixed, loop->msg_ws, (const uint16_t*) wd->data,
+                                            (const uint16_t*) wg->data, (const uint16_t*) wf->data,
+                                            strata::kernels::LoopCtrlShapes{g.n_embd, g.loop_gate_rank},
+                                            loop->ctrl_ws, bb.mixed, stream);
+        }
+    }
     if (run1) {
     st_begin(layer, 1, stream);    if (qsa) {        if (!qsa_layer(tables, g, layer, pos, pos_base, qst, qb, bb.mixed, bb.block_out, stream, err,                            bb.dump))            return false;    } else {        if (!gdn_layer(tables, g, layer, gb, bb.mixed, bb.block_out, stream, err)) return false;    }    st_end(layer, 1, stream);    dump_half(bb, g, layer, bb.block_out, 0, g.n_embd, stream);        }
     if (run2) {
@@ -1590,6 +1624,22 @@ st_begin(layer, 3, stream);
     if (w_down[1]->q8_scale || w_up[1]->q8_scale) { err = "STRATA_HC_REQ8 needs the fused hyper-connection read"; return false; }    gr_read(R, (const float*) w_norm[1]->data, NativeDense::hc_bf16_view(*w_down[1], stream, 0, 1),            NativeDense::hc_bf16_view(*w_up[1], stream, 1, 1), (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
     st_end(layer, 3, stream);        }
+    // #7295: the MLP channel's gate - `loop->msg_ws[1]` was computed once, above, at the run0/run1
+    // boundary, and is reused here unchanged (both channels share one message-attention call).
+    if (run3 && loop != nullptr && loop->pass > 0) {
+        const WeightRef* wd = v.get("loop_mlp_ctrl_down.weight");
+        const WeightRef* wg = v.get("loop_mlp_ctrl_gain.weight");
+        const WeightRef* wf = v.get("loop_mlp_ctrl_forget.weight");
+        if (!wd || !wg || !wf) { err = v.name("loop_mlp_ctrl_{down,gain,forget}.weight") + " is missing"; return false; }
+        if (wd->kind != WeightKind::Bf16InF32 || wg->kind != WeightKind::Bf16InF32 || wf->kind != WeightKind::Bf16InF32) {
+            err = v.name("loop_mlp_ctrl_*") + " has the wrong engine form";
+            return false;
+        }
+        strata::kernels::loop_ctrl_gate(bb.mixed, loop->msg_ws + g.n_embd, (const uint16_t*) wd->data,
+                                        (const uint16_t*) wg->data, (const uint16_t*) wf->data,
+                                        strata::kernels::LoopCtrlShapes{g.n_embd, g.loop_gate_rank},
+                                        loop->ctrl_ws, bb.mixed, stream);
+    }
     if (run4) {
     st_begin(layer, 4, stream);    {        const bool ok = moe_route(tables, g, layer, k, mb, bb.mixed, stream, err, db);        st_end(layer, 4, stream);        if (!ok) return false;    }
     // Plan v0.3 P3: after the ring, so the GPU computes the shared expert while the host runs the pool.
@@ -1653,9 +1703,9 @@ st_begin(layer, 5, stream);
         return false;
     }
     st_end(layer, 6, stream);    return true;}
-bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,                 const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,                 int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,                 const Doorbell* db, const PleRun* ple) {
+bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,                 const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,                 int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,                 const Doorbell* db, const PleRun* ple, const LoopPassCtx* loop) {
 // The two halves back to back.  `parts` must be THIS layer's experts and must be ready before the call -
 // which holds for `session_token`, where the caller supplies them, and does NOT hold for a host loop that
 // has only just seen the router.  That is why the captured path calls the halves separately.
-if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple, 0, 0, loop))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
 // namespace strata::core

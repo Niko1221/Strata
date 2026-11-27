@@ -222,6 +222,20 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
         add("nextn.hnorm.weight", {N});
         add("nextn.shared_head_norm.weight", {N});
     }
+    if (g.has_loop() && layer >= g.loop_core_start && layer < g.loop_core_end) {
+        // #7295: a port of Inkling2Loop's own loop (engine/src/inkling2/inkling2_loop.cpp -
+        // attn_res_mix_f32/loop_control_f32), adapted to QSA's two gate points (the mixer's input, the
+        // FFN/MoE input) instead of Inkling2Loop's four (it separately norms attn-query/K/V inputs; QSA
+        // derives Q/K/V from one `gr_read` output, so there is nothing to gate separately for K/V).
+        // Naming mirrors Inkling2Loop's "merged mainline" (#32694) GGUF layout as closely as 2 channels
+        // allow: one query pair per layer, then a {down, gain, forget} triple per channel.
+        add("loop_msg_query.weight", {N, 2});
+        for (const char* ch : {"attn", "mlp"}) {
+            add((std::string("loop_") + ch + "_ctrl_down.weight").c_str(), {2 * N, g.loop_gate_rank});
+            add((std::string("loop_") + ch + "_ctrl_gain.weight").c_str(), {g.loop_gate_rank, N});
+            add((std::string("loop_") + ch + "_ctrl_forget.weight").c_str(), {g.loop_gate_rank, N});
+        }
+    }
     return t;
 }
 

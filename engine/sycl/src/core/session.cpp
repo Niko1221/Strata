@@ -820,6 +820,13 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     if (!gr.captured || gr.n != g.n_layers) { err = "session_loop: not captured"; return false; }
     if (gr.parts_dev == nullptr) { err = "session_loop: the graphs were captured without a parts buffer"; return false; }
     if (s.db == nullptr) { err = "session_loop: no doorbell; the loop has nothing to poll"; return false; }
+    // Recurrent-depth loop, QSA-only (issue #7295): the SYCL backend's session_capture does not build the
+    // per-pass graphs or the restart-from-prelude/message-bank state yet (CUDA/HIP only so far) - refuse
+    // loudly rather than silently running every pass as pass 0.
+    if (g.has_loop()) {
+        err = "session_loop: loop.num_passes > 1 is not yet supported on this backend (CUDA/HIP only)";
+        return false;
+    }
 
     dpct::queue_ptr cs = strata::q_of(stream);
     const int64_t k = s.k;
