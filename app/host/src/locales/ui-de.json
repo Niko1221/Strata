@@ -22,9 +22,9 @@
  "ui21": "Was die Eingabetaste bewirkt, wenn Sie eine Nachricht senden, während der Assistent noch antwortet.",
  "ui22": "Auf die Antwort warten",
  "ui23": "Nach der Antwort senden",
- "ui24": "Die Antwort unterbrechen",
+ "ui24": "Live-Nachricht senden",
  "ui25": "Die Eingabetaste sendet sie, sobald die Antwort fertig ist.",
- "ui26": "Die Eingabetaste stoppt die Antwort hier und sendet die Nachricht sofort.",
+ "ui26": "Mit der Eingabetaste senden Sie die Nachricht beim nächsten Schritt oder, falls nötig, nach der Antwort.",
  "ui27": "Wartet auf das Senden",
  "ui28": "Zurücknehmen",
  "ui29": "Zitieren",
@@ -39,5 +39,13 @@
  "ui38": "Eigene Antwort eingeben",
  "ui39": "Antwort senden",
  "ui40": "Fragen an Sie",
- "ui41": "Der Assistent kann anhalten und Ihnen eine Frage mit Antworten zur Auswahl stellen, wenn er Ihre Entscheidung braucht."
+ "ui41": "Der Assistent kann anhalten und Ihnen eine Frage mit Antworten zur Auswahl stellen, wenn er Ihre Entscheidung braucht.",
+ "ui42": "Alle zutreffenden auswählen",
+ "ui43": "Eine Option wählen",
+ "ui44": "Notiz oder weiteres Detail hinzufügen (optional)",
+ "ui45": "Assistenten jetzt anhalten",
+ "ui46": "Diese Frage überspringen und den Assistenten fortfahren lassen",
+ "ui47": "Wird übersprungen…",
+ "ui48": "Wird gesendet…",
+ "ui49": "Beantworten Sie die Frage oben, um fortzufahren…"
 }

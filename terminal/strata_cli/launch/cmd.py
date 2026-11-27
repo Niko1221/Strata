@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from strata_cli.launch import settings as S
+from strata_cli.launch.catalog import pick_row
 
 EXAMPLES = """\
 examples:
@@ -29,7 +30,7 @@ examples:
 """
 
 
-PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the reader runs on the processor)", "gpu": "on (the reader runs on the graphics card)"}
+PICTURE_WORDS = S.PICTURE_WORDS
 
 
 def _choice(label: str, options: tuple[str, ...]):
@@ -64,9 +65,9 @@ def _parallel(value: str) -> int:
     try:
         p = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 8, or leave it out to fit your card.") from None
-    if not 1 <= p <= 8:
-        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 8.")
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 64, or leave it out to fit your card.") from None
+    if not 1 <= p <= 64:
+        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 64.")
     return p
 
 
@@ -83,18 +84,19 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--model", metavar="NAME", help="the model size, e.g. iq3_xxs, q2_0, ud-q4_k_xl (any case)")
     g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
     g.add_argument("--dsv41-package", metavar="FILE", help=argparse.SUPPRESS)        # DeepSeek (no longer run): accepted, answered in plain words
-    g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
+    g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards, or one .gguf or .strata file (your own fine-tune, merge or quantization of a model Strata runs)")
+    g.add_argument("--custom-label", metavar="NAME", help="with --model-path: the name your own build is listed under (default: the file's own name). It gets a run config of its own; the official build is never replaced and your files are never copied or deleted")
     g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
     g.add_argument("--move-data", action="store_true",
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
                         "where they are and stay usable, and the new folder gets the new downloads")
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
-    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
+    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16 (Inkling-2-Mini: fp16, fp8; CUDA also k8v8, k8v4)")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
                         "gpu / cpu choose one; off turns pictures off")
-    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
+    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 64 (Inkling-2-Mini runs up to 64; the Qwen engine keeps 16 on NVIDIA and AMD cards and 8 elsewhere; Hy4-Flash answers one; default: fit to your graphics card; one request at a time with the DFlash2 drafter)")
     g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
@@ -102,6 +104,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
                         "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
                         "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
+    g.add_argument("--draft", choices=("on", "off"), metavar="on|off",
+                   help="Inkling-2-Mini only: on asks for the DFlash 2 drafter by name, so the engine loads it even where it would leave it out to keep the whole model "
+                        "on the card (the start then says nothing about it); off starts without it. Same as --set draft=on. The other models ignore it")
     g.add_argument("--draft-vocab", type=_choice("a draft vocabulary", S.DRAFT_VOCAB_MODES), metavar="cjk|en|cyrillic|fr|latin",
                    help="which tokens the drafter may guess: cjk (the default: with Chinese, Japanese and Korean), en (English and code), "
                         "cyrillic, fr or latin (each with English and code). Without it Strata picks from this computer's languages")
@@ -121,6 +126,12 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--dspark", metavar="WORD", help=argparse.SUPPRESS)               # DeepSeek (no longer run): accepted, answered in plain words
+    g.add_argument("--turbo", action="store_true",
+                   help="Inkling-2-Mini on NVIDIA or AMD cards: skip the experts that matter least for a word in the last pass (about 3 percent of the expert reads). "
+                        "Faster answers on cards that read the model from RAM or the SSD; answers differ slightly from exact. Off unless you ask. See docs/INKLING_TURBO.md")
+    g.add_argument("--turbo-max", action="store_true",
+                   help="like --turbo but skips about 16 percent of the expert reads in every pass: faster still, answers differ more (the exact setting is in docs/INKLING_TURBO.md). "
+                        "Off unless you ask")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
     g.add_argument("--pool-cores", metavar="LIST",
@@ -165,7 +176,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Shows the settings file and environment an app needs to talk to the Strata server that `strata launch` started. "
                     "Without a name it lists the apps. With --write it writes the file after asking, keeping a backup of any file it replaces.")
-    c.add_argument("harness", nargs="?", help="opencode, codex, claude-code, omp, pi, hermes, openclaw, deepseek-harness")
+    c.add_argument("harness", nargs="?", help="opencode, codex, claude-code, cline, omp, pi, hermes, openclaw, deepseek-harness")
     c.add_argument("--url", metavar="URL", help="the server address (default: the running launch, else http://127.0.0.1:8080)")
     c.add_argument("--key", metavar="KEY", help="the API key (default: the running launch's)")
     c.add_argument("--key-env", metavar="NAME", help="read the key from this environment variable")
@@ -174,6 +185,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
     c.add_argument("--check", action="store_true", help="send one prompt and one tool call to the running server the way this app would, and say if each worked")
     c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
+    c.add_argument("--dry-run", action="store_true", help="with --write: preview what would be written or backed up without changing any file on disk")
     c.add_argument("--if-unchanged", action="store_true",
                    help="with --write: a file that already holds exactly the rendered content is left alone - no write, no backup (reported as unchanged)")
     c.add_argument("--yes", action="store_true", help="do not ask before --write")
@@ -222,6 +234,7 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.model_path = str(Path(a.model_path).expanduser())
         if not a.model:
             s.family = s.model = None
+            s.custom_id = s.custom_label = None
     from strata_control import retired
     if any(getattr(a, k, None) for k in ("dsv41_package", "speed", "full_quality", "dspark")):
         raise ValueError(retired.NOT_OFFERED)                       # a DeepSeek-only flag (an old script, a saved shortcut): DeepSeek is no longer run
@@ -231,9 +244,22 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     if a.model:
         if catalog is None:
             raise ValueError("The model list is not available in this Terminal; run it from the full Terminal install.")
-        s.family, s.model = catalog.resolve(a.model, a.family)
-        if not a.model_path:
-            s.model_path = None
+        from strata_cli.launch import custom
+        found = custom.find(catalog, a.model)                       # one of the person's own builds, by its id or the name they gave it
+        if found is not None:
+            custom.use_installed(s, found)
+        else:
+            s.family, s.model = catalog.resolve(a.model, a.family)
+            s.custom_id = s.custom_label = None
+            if not a.model_path:
+                s.model_path = None
+    if getattr(a, "custom_label", None):
+        from strata_cli.launch import custom
+        if not s.model_path:
+            raise ValueError("--custom-label names your own model files: add --model-path with the .gguf or .strata file (or its folder).")
+        s.custom_label = custom.clean_label(a.custom_label) or None
+        if not s.custom_label:
+            raise ValueError("--custom-label needs a name to list your build under.")
     elif a.family and s.model:
         s.family = a.family
     if a.data_dir:
@@ -300,6 +326,18 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if getattr(a, "draft", None):
+        s.extra = {**s.extra, "--draft": a.draft}
+    if getattr(a, "turbo", False) or getattr(a, "turbo_max", False):
+        if a.turbo and a.turbo_max:
+            raise ValueError("--turbo and --turbo-max cannot be used together: choose one.")
+        word = "turbo-max" if a.turbo_max else "turbo"
+        if str(s.extra.get("STRATA_INK_TAIL_SKIP") or "") not in ("", word):
+            notices.append(S.Notice("warn", f"--{word} is ignored because STRATA_INK_TAIL_SKIP is set with --set.", "The setting you wrote wins."))
+        else:
+            s.extra = {**s.extra, "STRATA_INK_TAIL_SKIP": word}
+            notices.append(S.Notice("warn", f"--{word} is on: answers differ slightly from exact. It only works for Inkling-2-Mini on NVIDIA and AMD cards.",
+                                    "Take the flag away to get exact answers again."))
     if a.pool_cores:
         text = a.pool_cores.replace(" ", "")
         if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):
@@ -313,7 +351,9 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
 
 
 def _parallel_word(plan: dict, s: S.LaunchSettings) -> str:
-    """The plan's parallel word: fit to the card unless a number was given."""
+    """The plan's parallel word: fit to the card unless a number was given (1 for Hy4-Flash)."""
+    if s.family == "hy4-flash":
+        return "1"
     return str(s.parallel or "fit to your card")
 
 
@@ -369,7 +409,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         _q4 = _gf.strix_q4_stall_note(s.model, comp.gpus)       # REMOVE with the Strix stall fix (gpu_fit.STRIX_Q4_NOTE)
         if _q4:
             notices.append(S.Notice("warn", _q4, ""))
-        rows = [r for r in catalog.rows(hw, own=(s.family, s.model) if s.model_path else None) if r.family == s.family and r.model == s.model]
+        rows = [r for r in [pick_row(catalog.rows(hw, own=(s.family, s.model) if s.model_path else None), s)] if r is not None]
         if rows:
             r = rows[0]
             if r.verdict == "disk":
@@ -391,8 +431,8 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
             if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
-                s.vision = catalog.picture_default(r.images)
-                if s.vision == "off" and r.images and catalog.reader_state() == "missing":
+                s.vision = ("on" if r.images else "off") if s.family == "hy4-flash" else catalog.picture_default(r.images)
+                if s.vision == "off" and r.images and s.family != "hy4-flash" and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
@@ -409,7 +449,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
-    notices += S.check_parallel(s, vram_gb=vram)
+    notices += S.check_parallel(s, vram_gb=vram, ram_gb=comp.ram_gb, vendor=comp.engine_vendor)
     return s, notices
 
 
@@ -570,6 +610,12 @@ def _can_ask() -> bool:
     if sys.stdin is None or sys.stdin.closed:
         return False
     if os.environ.get("CI") or os.environ.get("STRATA_NO_PROMPT"):
+        return False
+    try:
+        from strata_cli import noinput                       # (0217-PLAT's module; a tree without it asks as before)
+    except ImportError:
+        return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
+    if noinput.stdin_is_no_keyboard():                       # `strata launch < /dev/null`: no question that nobody can answer (0.2.17)
         return False
     return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
 
@@ -764,9 +810,12 @@ def run_launch(a: argparse.Namespace) -> int:
             else:
                 for i in items:
                     sm = store.summary(i)
+                    is_hy4 = i.family == "hy4-flash"
+                    req = "1 request" if is_hy4 else ((str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card')
+                    tuned = "built-in" if is_hy4 else (('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned')
                     _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
-                         f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
-                         f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
+                         f"{req:<14} "
+                         f"{tuned:<16} {i.last_used or ''}")
             return 0
         if a.delete_preset:
             store.delete(a.delete_preset)
@@ -883,6 +932,7 @@ def run_launch(a: argparse.Namespace) -> int:
         move_data = _move_data_choice(a, s, catalog, machine)
         runner.s, runner.move_data = s, move_data
         if a.plan:
+            runner.look_up_feed = True                       # the plan asks the signed feed whether the small tuned drafter is listed (it lists the size the launch fetches)
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
             if machine:
@@ -899,7 +949,8 @@ def run_launch(a: argparse.Namespace) -> int:
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
-                _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
+                tune_word = "built-in" if s.family == "hy4-flash" else s.tune
+                _say(f"  tuning    {tune_word}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
                     _say(f"  [!] {n.line()}")
@@ -1007,7 +1058,8 @@ def _connect_write(harness, out, a, machine: bool):
     message is set only when nothing was written or the ask could not happen."""
     if not out["files"]:
         return [], 0, "Nothing to write for this app."
-    if not a.yes:
+    dry_run = bool(getattr(a, "dry_run", False))
+    if not a.yes and not dry_run:
         if not sys.stdin.isatty():
             return [], 2, "--write asks first; run it in a terminal or add --yes."
         ask = "\nWrite these files now? A file that exists is copied to a backup first. [y/N] "
@@ -1026,13 +1078,13 @@ def _connect_write(harness, out, a, machine: bool):
     results: list[dict] = []
     for n, f in enumerate(out["files"]):
         try:
-            results.append(harness.write_file(f, if_unchanged=bool(getattr(a, "if_unchanged", False))))
+            results.append(harness.write_file(f, if_unchanged=bool(getattr(a, "if_unchanged", False)), dry_run=dry_run))
         except OSError as exc:
             path = str(harness.expand(f["path"]))
             results.append({"path": path, "backup": None, "action": "failed", "error": exc.strerror or str(exc)})
             results += [{"path": str(harness.expand(g["path"])), "backup": None, "action": "not_written"} for g in out["files"][n + 1:]]
             return results, 1, f"Could not write {path}: {exc.strerror or exc}."
-    return results, 0, None
+    return results, 0, ("Dry run: nothing was written." if dry_run else None)
 
 def run_connect(a: argparse.Namespace) -> int:
     from strata_cli.launch import harness
@@ -1090,9 +1142,9 @@ def run_connect(a: argparse.Namespace) -> int:
                     payload["write"] = {"written": []}
                 print(json.dumps(payload))
                 return 1
-        if a.write:                                   # the JSON path writes too, and reports each file
+        if a.write or getattr(a, "dry_run", False):   # the JSON path writes too (or previews with --dry-run), and reports each file
             written, code, message = _connect_write(harness, out, a, True)
-            payload["write"] = {"written": written}
+            payload["write"] = {"written": written, **({"dry_run": True} if getattr(a, "dry_run", False) else {})}
             if code:
                 payload["ok"] = False
                 payload["error"] = {"code": code, "message": message}
@@ -1138,11 +1190,12 @@ def run_connect(a: argparse.Namespace) -> int:
             _say(f"{'PASS' if r.ok else 'FAIL'} {r.name}: {r.detail} ({r.seconds:.0f} s)")
         if not all(r.ok for r in results):
             return 1
-    if a.write:
+    if a.write or getattr(a, "dry_run", False):
         written, code, message = _connect_write(harness, out, a, False)
         for r in written:
             if r["action"] not in ("failed", "not_written"):
-                _say(f"{r['action'].capitalize()} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
+                label = r["action"].replace("_", " ").capitalize()
+                _say(f"{label} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
         if message:
             if code:
                 print(f"strata: {message}", file=sys.stderr)

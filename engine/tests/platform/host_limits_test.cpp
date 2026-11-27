@@ -48,6 +48,14 @@ int main() {
         CHECK(commit_verdict(4 * G, 48 * G, 3584ull << 20, 4 * G).warn);
         CHECK(!commit_verdict(commit_available(4 * G, room), commit_available(48 * G, room), 3584ull << 20, 4 * G).warn);
     }
+    // #6748: 16.16 GiB of RAM free, 9.27 GiB of commit left: the expert pool's host budget is the commit (before: the RAM, then "host malloc failed")
+    {
+        using strata::platform::host_ram_budget;
+        CHECK(host_ram_budget(16160ull * G / 1000, 9270ull * G / 1000) == 9270ull * G / 1000);
+        CHECK(host_ram_budget(9 * G, 40 * G) == 9 * G);          // the commit has room: the RAM bounds it, as before
+        CHECK(host_ram_budget(9 * G, 0) == 9 * G);               // commit unknown (not Windows): the RAM
+        CHECK(host_ram_budget(0, 5 * G) == 0);
+    }
 #if defined(_WIN32)
     // this machine: the reading the engine now takes (it can only grow the commit, never shrink it)
     {

@@ -65,6 +65,19 @@ def wanted(asked: str | None, vram_gb: float | None, make: str = "", *, unified:
         return a
     return default_mode(vram_gb, make, unified=unified)
 
+#: Inkling-2-Mini (owner 2026-11-26, "Should Inkling follow the Qwen rule for pictures everywhere?" - "yes"): the same rule, but its reader is built into
+#: strata-inkling (no separate helper program), so the engine itself applies it on the card's real memory (engine/src/inkling2/ink_vision_policy.h: the same
+#: 23.5 GiB, the same Intel exception).  Control resolves the default the same way where it knows the card and writes the result as the engine's
+#: `--vision-reader gpu|cpu`, so the server (picture size cap, silence allowance) and the engine agree; where it cannot tell the card it leaves the flag out and the
+#: engine's own "auto" decides.  tools/test_vision_reader.py reads ink_vision_policy.h and keeps the numbers the same.
+INKLING_READER_FLAG = "--vision-reader"
+INKLING_IDLE_FLAG = "--vision-idle-s"
+#: Seconds without a picture before the NVIDIA (one GPU) reader gives its memory back; the same number as the Qwen reader's "elastic_idle_s" default and
+#: the engine's kVisionIdleSecondsDefault.
+ELASTIC_IDLE_S_DEFAULT = 120
+#: What the Inkling GPU reader holds while it works (its weights, 0.64 GB, and the buffers of a 1,024-token picture): the engine keeps this much out of the experts' budget.
+INKLING_READER_GB = 1.1
+
 GFX = re.compile(r"gfx[0-9a-f]+", re.IGNORECASE)
 
 
@@ -207,4 +220,84 @@ def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
         return None
     out = {k: v for k, v in vision_cfg.items() if k not in ("cpu_exe", "elastic", "elastic_mib", "elastic_idle_s")}
     out["exe"], out["gpu"] = cpu, False
+    return out
+
+
+# ------------------------------------------------------------------------------------------------------------------- Inkling-2-Mini
+
+def inkling_reader(asked: str | None, vram_gb: float | None, make: str = "", *, mac: bool = False) -> str | None:
+    """The picture reader of an Inkling-2-Mini install for `asked` (None, "yes", "on", "gpu", "cpu", "no"/"none"/"off"): "gpu", "cpu", "none", or None when
+    the card cannot be told (the flag is then left out and the engine's own rule decides).  The same rule as the Qwen readers (default_mode):
+      * "no" is "none" (the Vision file is left out); "gpu" and "cpu" are kept as asked;
+      * a Mac (mac=True): the GPU, whatever the memory;
+      * an Intel Arc (make "intel"): the CPU reader at any memory size (INTEL_GPU_READER_BY_DEFAULT), the GPU one when asked;
+      * NVIDIA and AMD: the CPU under 23.5 GiB (GPU_MIN_VRAM_GB), the GPU from there; the memory is what the card reports, and on a machine whose GPU shares
+        the RAM (Strix Halo, DGX Spark) the shared pool it reports, so those read on the GPU, as the Qwen path does (setup passes the same gpu["vram_gb"])."""
+    a = (asked or "").lower()
+    if a in ("no", "none", "off"):
+        return "none"
+    if a in ("gpu", "cpu"):
+        return a
+    if mac:
+        return "gpu"
+    if make != "intel" and not float(vram_gb or 0.0) > 0.0:
+        return None
+    return default_mode(vram_gb, make)
+
+
+def inkling_lines(asked: str | None, mode: str | None, vram_gb: float | None, make: str = "", *, mac: bool = False, backend: str = "") -> list[tuple[bool, str]]:
+    """The plain-words screen lines for an Inkling picture reader: [(is_warning, text)].  Same wording style as the Qwen lines of setup.py
+    (own_path_vision, flash_vision_encoder): which reader runs and why, what it costs, how to switch.  `mode` is what inkling_reader gave."""
+    a = (asked or "").lower()
+    vram = float(vram_gb or 0.0)
+    small = 0 < vram < GPU_MIN_VRAM_GB
+    if mode == "none":
+        return [(False, "images: off (no picture reader is installed)")]
+    if mode is None:
+        return [(False, "images: on; the engine picks the picture reader by the card's memory (the CPU under 24 GB, the GPU from 24 GB; --vision gpu or --vision cpu sets it)")]
+    cost = (f"about {INKLING_READER_GB:.1f} GB of VRAM while it reads"
+            + (f", put on the card with the first picture and taken off after {ELASTIC_IDLE_S_DEFAULT // 60} minutes without one" if backend == "cuda" else ""))
+    if mac:
+        lines = [(False, "images: Inkling-2-Mini reads pictures on the Mac's GPU (the memory is shared, a fraction of a second per picture)")]
+        if mode == "cpu":
+            lines = [(True, MAC_CPU_NOTE)]
+        return lines
+    if mode == "gpu":
+        if a == "gpu" and small:
+            return [(True, f"the GPU picture reader keeps ~{INKLING_READER_GB:.1f} GB of VRAM that a {vram:.0f} GB card would use for experts (a few % of decode): "
+                           "kept as you chose; --vision cpu reads pictures on the CPU instead (a few seconds each)")]
+        if a == "gpu" and make == "intel":
+            return [(False, "images: Inkling-2-Mini reads pictures on the Intel Arc card, as you asked")]
+        return [(False, f"images: Inkling-2-Mini reads pictures on the GPU ({cost}; a fraction of a second per picture)")]
+    # cpu
+    if a == "cpu":
+        return [(False, "images: Inkling-2-Mini reads pictures on the CPU, as you asked (a few seconds each); the card keeps all its memory for the model")]
+    if make == "intel":
+        return [(False, "images: Inkling-2-Mini reads pictures on the CPU (a few seconds each) on an Intel Arc card; --vision gpu reads them on the card")]
+    return [(False, f"images: Inkling-2-Mini reads pictures on the CPU (a few seconds each), because the GPU reader would take ~{INKLING_READER_GB:.1f} GB of VRAM "
+                    f"from the experts on this {vram:.0f} GB card (--vision gpu to use it anyway)")]
+
+
+def reader_arg(args) -> str | None:
+    """The value of `--vision-reader` in an engine argument list ("gpu", "cpu" or "auto"); None when it is not there."""
+    items = [str(a) for a in (args or ())]
+    for i, a in enumerate(items[:-1]):
+        if a == INKLING_READER_FLAG:
+            return items[i + 1].strip().lower()
+    return None
+
+
+def set_reader_arg(args: list, mode: str | None) -> list:
+    """`args` with `--vision-reader <mode>` set (replacing an earlier one) or, for mode None / "none", taken out.  A new list."""
+    out: list = []
+    items = list(args or ())
+    i = 0
+    while i < len(items):
+        if str(items[i]) == INKLING_READER_FLAG:
+            i += 2 if i + 1 < len(items) else 1
+            continue
+        out.append(items[i])
+        i += 1
+    if mode in ("gpu", "cpu"):
+        out += [INKLING_READER_FLAG, mode]
     return out

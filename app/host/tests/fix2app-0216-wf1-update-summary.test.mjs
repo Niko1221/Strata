@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createNativeControl } from '../server/native-control.mjs';
 import { createAppUi, BROWSER_UPDATE_MESSAGE } from '../server/app-ui.mjs';
-import { APP_UPDATER_NOT_READY, APP_CHECK_FAILED } from '../server/update-messages.mjs';
+import { APP_UPDATER_NOT_READY, APP_CHECK_FAILED, CONTROL_UPDATED } from '../server/update-messages.mjs';
 
 /**
  * W-F1 (0.2.16 retest, WIN item 5): after the Strata row's update worked, the summary said
  * "Strata is updated. It takes effect the next time you open the app. The app updater is not ready yet. Try again in a moment."
  * The second sentence is the app's own step (the shell's signed updater) and read like a failure after a success.
  */
-const UPDATED = 'Strata is updated. It takes effect the next time you open the app.';
+const UPDATED = CONTROL_UPDATED;
 
 function fixture({ appUpdater, results = [{ component: 'control', status: 'updated' }] }) {
   const root = mkdtempSync(join(tmpdir(), 'strata-wf1-'));

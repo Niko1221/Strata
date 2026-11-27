@@ -33,7 +33,9 @@ class _SysAs:
 
 #: The engine stub: the strings drafting.engine_form / engine_reads_selector_q4 look for in the program file (a current engine carries them).
 ENGINE_STUB = (b"STRATA ENGINE STUB (config snapshot)\n--mtp-draft-vocab FILE (or --mtp DIR\n--draft-fallback\n"
-               b"--spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)\nselector codebooks: Q4_0 rows\n")
+               b"--spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)\nselector codebooks: Q4_0 rows\n"
+               # serve.engine_args drops --prompt-cache-spread for an engine program that does not carry the option (#6870); a current engine does, so the stub does too
+               b"--prompt-cache-spread\n")
 
 #: Environment variables a developer or CI may have set that would leak into a start; the world starts from a clean list.
 CLEAR = ("STRATA_SETTINGS_FILE", "STRATA_CONNECTION_DIR", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "STRATA_API_KEY",

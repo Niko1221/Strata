@@ -57,8 +57,14 @@ export function writeShellPrefs(patch, file = shellPrefsFile()) {
  * (set by the shell, never by the person). The page turns it into a sentence in the person's language.
  */
 export function parsePortNotice(value) {
-  const m = /^busy:(\d{1,5}):(\d{1,5})$/.exec(String(value ?? ''));
-  return m ? { wanted: Number(m[1]), used: Number(m[2]) } : null;
+  // "busy:<wanted>:<used>:terminal": the program on the wanted port is a Strata model server started from the Terminal (#6278).
+  // "reserved:<wanted>:<used>": nothing listens on the wanted port, the system keeps it back (WSL mirrored networking, Hyper-V, Docker; #7244).
+  const m = /^(busy|reserved):(\d{1,5}):(\d{1,5})(:terminal)?$/.exec(String(value ?? ''));
+  if (!m || (m[1] === 'reserved' && m[4])) return null;
+  const notice = { wanted: Number(m[2]), used: Number(m[3]) };
+  if (m[4]) notice.terminal = true;
+  if (m[1] === 'reserved') notice.reserved = true;
+  return notice;
 }
 
 /** The notification route of the shell's bridge (loopback, token). Null outside the desktop app. */

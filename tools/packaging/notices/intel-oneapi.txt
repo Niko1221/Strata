@@ -1,0 +1,19 @@
+Intel oneAPI runtime libraries: libiomp5.so, libsycl.so, libur_*.so, libmkl_*.so, libimf.so, libsvml.so, libirng.so, libintlc.so and the others listed below
+
+This engine package carries unmodified copies of runtime libraries of the Intel oneAPI toolkit (the DPC++/C++ compiler runtime and oneMKL)
+from the build machine. The Intel Arc (SYCL) engines in this package (the Strata engine, Inkling-2 and Hy4 runners) are linked against them
+(libsycl, the Unified Runtime loader and adapters, the Intel OpenMP runtime libiomp5, the oneMKL SYCL libraries, Intel's math and
+runtime support libraries), and most PCs have no oneAPI installation.
+
+License: these libraries are part of Intel's oneAPI toolkits and are redistributed under the terms Intel publishes with them. The license
+text and the third-party notices of the oneAPI installation the files were copied from are in this folder when the build machine had
+them: intel-oneapi-license.txt (the installation's licensing/<version>/license.txt) and intel-oneapi-third-party-programs.txt (its
+third-party-programs.txt). Some of the libraries are open source projects; the third-party file names each one with its license. Read
+those copies for the exact terms; this notice does not replace them.
+Copyright: Intel Corporation and the authors named in those files.
+
+Source code: the open source parts (the SYCL runtime, the Unified Runtime and its adapters, the LLVM OpenMP runtime) are developed in the
+public repositories named in the third-party file (for example https://github.com/intel/llvm). The libraries of this package are listed
+below with the folder they were copied from.
+
+These libraries keep their own license; bundling them with the engine does not change the license of Strata, which is MIT.

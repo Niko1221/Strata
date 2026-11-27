@@ -9,6 +9,29 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+**If your agent or app sends small side requests between turns (titles, summaries, suggestions), start the engine with `--parallel 2`
+(`"parallel": 2`) so the chat stays cached.** With one slot such a request replaces the cached conversation and the next turn reads the
+whole history again; the second slot holds the side request instead. On Inkling-2-Mini it costs about 164 MiB of video memory (measured at 64K
+context on an RTX PRO 5000; the slot's fixed state is the same size on a 12 GB card). The default stays one slot.
+
+**Two long conversations at once (Inkling-2-Mini, `--parallel 2`, #7226).** An agent client that alternates its main conversation with a large
+request of its own (Claude Code's auto mode sends a safety check between two steps) used to evict each chat from slot 0 on every request, so every
+request read its whole prompt again while slot 1 stayed empty. Now a request that continues nothing takes an empty or the least recently used
+slot, whatever its size, while slot 0 holds a chat of 2,048 tokens or more that was used in the last 10 minutes; both chats keep their slots. This
+also holds with the DSpark drafter, which used to prefer slot 0 for every such request. The price: the chat in slot 1 decodes without drafts (the
+drafter works in slot 0 only). With two slots a third conversation (a title request) still takes the least recently used one; `--parallel 3` keeps three.
+`STRATA_INKLING_KEEP_CHATS=0` brings back the earlier routing; `STRATA_INKLING_KEEP_IDLE_S` changes the 10 minutes.
+
+> **Measured on:** RTX A4000 16 GB, Inkling-2-Mini SQ-15, strata-inkling 0.1.67 (CUDA 13), `--parallel 2`, context 16,384, one GPU, 62 GB RAM. Workload:
+> two chats of about 2,500 tokens and a new one of about 8,700 tokens alternating, two short title requests, thinking off, temperature 0, 128 new tokens,
+> through the Strata server. Five runs per case, old and new routing alternating, drafter on and off (individual runs in the 0221 triage notes). New routing:
+> the 5 requests that could continue a chat read 2,611 to 8,861 cached tokens (old: 0 of every request); first token 2.2 to 2.4 s became 0.17 to 0.22 s at
+> 2,500 tokens and 7.4 to 7.8 s became 0.41 to 0.70 s at 8,700; the workload read 19.4K prompt tokens instead of 45.5K and its first tokens summed to 18 s
+> instead of 38 to 40 s. Decode of the chat in slot 1 against the same request in slot 0 with the old routing: 0.95 to 0.97 with the drafter off;
+> with the drafter on 0.72 on the first request, about 1.0 on the next, and 1.3 to 1.4 for the 8,700-token chat (on this card the drafter was slower than
+> no drafter at that length). Random-word text gives the drafter little to accept, so the cost on text a drafter predicts well, or on a card where DSpark
+> doubles decode speed, is not measured here.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
@@ -192,6 +215,16 @@ ran 3-4x slower, a request alone included. `--parallel N` is honoured as asked e
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
+- **Inkling-2-Mini keeps one conversation per slot, and the server knows where it is** (0.2.21). The engine resumes a next turn
+  from the whole stream the slot holds or from the checkpoint at the end of the previous prompt (the reply's hidden thinking is
+  never sent back, so the stream alone rarely matches). The server records both for every slot, including slot 0, which is
+  the solo path (`GEN`, where the DSpark drafter works): a follow-up goes to the slot that holds its start, and with
+  `--parallel 2` or more a short request that continues nothing (a client's title or translation request between two turns,
+  under 2,048 tokens) goes to another slot while slot 0 holds a conversation of 2,048 tokens or more. With `--parallel 1`
+  there is no other slot: such a request replaces the conversation and the next turn reads it again. A second slot costs
+  little video memory (about 160 MiB at 64K context on an RTX PRO 5000), so `--parallel 2` is the way to keep an agent's
+  conversation next to a client's helper requests. Requests with tools replay the empty thinking turn the prompt ends with,
+  so their history extends the previous prompt too (`serve/inkling_dialect.py`).
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
@@ -700,6 +733,12 @@ params, so the graph captured per row layout stays valid):
 
 Both are off by default; off, the engine runs the same launches as before. On, the arithmetic per row is the same:
 4 concurrent prompts at temperature 0 gave the same bytes as without them, with `--batch 4` and `--batch 8`.
+With either one on, the engine log says which at start-up (once per stage of a layer split), and whether the KV
+streams, in which case attention keeps one launch per row and only the GDN switch acts:
+
+```
+strata verify: batch rows in one launch: attention on (STRATA_BATCH_ATTN_ROWS), GDN on (STRATA_BATCH_GDN_GROUPS); the KV streams (--kv-resident), so attention keeps one launch per row
+```
 
 One RTX PRO 6000 Blackwell (96 GB), IQ3_S, all 24,576 experts in VRAM, `--kv int8`, 262144 context, `--mtp`,
 `--spec 4`, through the HTTP server: C different stories sent at once, 1024 tokens each, temperature 0.7, mean of

@@ -181,15 +181,15 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         # sm_75 and up starts a restart loop on those cards ("this PC's GPU is sm_60")
         raise SystemExit("refusing to package the cuda12 engine without sm_60, sm_61 or sm_70: it is the Pascal and Volta build "
                          "(CUDA 12.9, -DSTRATA_EXPERIMENTAL_SM60=ON, --arch sm_60 --arch sm_61 --arch sm_70 ...; see packaging/build_cuda_linux.sh)")
-    if backend == "hip":
+    if backend == "hip" and shape not in shape_engine.CUSTOM_SHAPES:         # custom shape runners (Hy4-Flash, Inkling-2-Mini) carry their own kernels (no hipBLASLt)
         from strata_control import hipblaslt_tuning
         problems = hipblaslt_tuning.check_stage(src, archs)
         if problems:
             raise SystemExit("refusing to package the AMD engine:\n  " + "\n  ".join(problems))
-    entrypoint = entry or ("strata.exe" if target.startswith("windows") else "strata")
+    entrypoint = entry or (shape_engine.exe_name(shape, target=target) if shape in shape_engine.CUSTOM_SHAPES else ("strata.exe" if target.startswith("windows") else "strata"))
     if not (src / entrypoint).is_file():
         raise SystemExit(f"{src / entrypoint} does not exist")
-    if check_reader:                       # the release recipes and the CLI ask for it; the library call keeps its old behaviour
+    if check_reader and shape not in shape_engine.CUSTOM_SHAPES:   # custom shape runners (Hy4-Flash, Inkling-2-Mini) read pictures inside their runner (no strata-vision)
         for note in check_picture_reader(src, backend, target, archs, variant=variant, allow_stale=allow_stale_vision,
                                          allow_none=allow_no_reader):
             print("note: " + note)
@@ -208,6 +208,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             shutil.copy2(src / rel, destination)
             files.append({"path": rel, "sha256": sha256(destination), "bytes": destination.stat().st_size})
         files += _bundle_missing_libraries(staging, target, [f["path"] for f in files], search or [], allow_libs or [])
+        files += _vc_runtime_notice(staging, target, files)
         if target.startswith("macos"):
             _refuse_too_new_for_mac(staging)
         component_id = shape_engine.component_id(shape) if shape else ec.COMPONENT_ID     # the engine of a model shape is its own component (strata_control/shape_engine.py)
@@ -280,6 +281,30 @@ def _bundle_missing_libraries(staging: Path, target: str, rels: list[str], searc
         raise SystemExit("refusing to package: these libraries are neither bundled nor part of the OS or the GPU driver, so a clean PC could not "
                          f"start the engine (0xC0000135 / 'library not found'):\n{lines}\nGive --search <folder holding them> or fix the build.")
     return added
+
+
+VC_RUNTIME_DLLS = ("vcomp140*.dll", "vcruntime140*.dll", "msvcp140*.dll", "concrt140*.dll", "vcamp140*.dll", "vccorlib140*.dll")
+
+
+def _vc_runtime_notice(staging: Path, target: str, files: list[dict]) -> list[dict]:
+    """A Windows package that carries the Microsoft Visual C++ runtime DLLs (VCOMP140.DLL for the Inkling-2 runner, VCRUNTIME140, MSVCP140 ...)
+    gets licenses/microsoft-vc-runtime.txt naming the ones it holds, whichever way they got in (copied by the search above or staged with the
+    engine).  Returns the manifest entry, or nothing for another platform or a package without them."""
+    if not target.startswith("windows"):
+        return []
+    held = sorted(f["path"] for f in files if "/" not in f["path"] and any(fnmatch.fnmatch(f["path"].lower(), p) for p in VC_RUNTIME_DLLS))
+    if not held:
+        return []
+    source = Path(__file__).resolve().parent / "notices" / "microsoft-vc-runtime.txt"
+    if not source.is_file():
+        raise SystemExit(f"refusing to package: {', '.join(held)} are bundled but {source} (their notice) does not exist")
+    rel = "licenses/microsoft-vc-runtime.txt"
+    if any(f["path"] == rel for f in files):
+        return []
+    dest = staging / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(source.read_text(encoding="utf-8") + "".join(f"  {name}\n" for name in held), encoding="utf-8")
+    return [{"path": rel, "sha256": sha256(dest), "bytes": dest.stat().st_size}]
 
 
 def _refuse_too_new_for_mac(folder: Path) -> None:

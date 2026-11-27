@@ -1,0 +1,6 @@
+{
+ "note": "Extra download mirrors for Inkling-2-Mini, tried AFTER the built-in pinned sources of strata_control/inkling_family.py: the Strata packs, the Vision shard and the tokenizer files (strata-engine/Inkling-2-Mini-Strata at STRATA_PACK_COMMIT), the GSQ-RCO GGUF (ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF at GSQ_COMMIT) and Unsloth's UD-Q4_K_XL (unsloth/Inkling-2-Mini-GGUF at UNSLOTH_COMMIT). Every pin is a Hugging Face commit, so a later upload to a repository never changes what an install downloads. Empty by default. Overridden by STRATA_INKLING_SOURCE or config key inkling_source (a local mirror of every file).",
+ "sources": [],
+ "gguf_sources": [],
+ "gsq_sources": []
+}

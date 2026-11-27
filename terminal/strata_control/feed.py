@@ -719,11 +719,14 @@ def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=No
 
 # ---------------------------------------------------------------------------------------------- hardware and selection
 
-def gfx_covers(archs, present: list[str]) -> bool:
-    """HIP: the build holds machine code for at least one of the installed AMD GPUs (``gfx1201``). Unknown GPUs: not a refusal."""
+def gfx_covers(archs, present: list[str], main: str = "") -> bool:
+    """HIP: the build holds machine code for at least one of the installed AMD GPUs (``gfx1201``, ``gfx1150``).
+    Feature suffixes such as ``:xnack-`` are stripped before comparison. Unknown GPUs: not a refusal."""
     if not present:
         return True
-    return any(a in present for a in archs)
+    from strata_control import engine_component as ec
+    have = set(ec.hip_counted(present, main))       # the discrete cards; an iGPU beside one does not count (#6650)
+    return any(str(a).split(":", 1)[0].lower() in have for a in archs)
 
 
 def engine_fit_reasons(pkg: EnginePackage, hardware: dict) -> list[str]:
@@ -744,8 +747,11 @@ def engine_fit_reasons(pkg: EnginePackage, hardware: dict) -> list[str]:
     cuda_archs = tuple(a for a in pkg.archs if a.startswith(("sm_", "compute_")))
     if pkg.backend == "cuda" and cuda_archs and hardware.get("cuda_archs") and not ec.arch_covers(cuda_archs, hardware["cuda_archs"]):
         reasons.append(f"{pkg.label} has code for {', '.join(cuda_archs)}, this PC's GPU is {', '.join(hardware['cuda_archs'])}")
-    if pkg.backend == "hip" and not gfx_covers(pkg.archs, hardware.get("gfx") or []):
-        reasons.append(f"{pkg.label} has code for {', '.join(pkg.archs)}, this PC's GPU is {', '.join(hardware['gfx'])}")
+    if pkg.backend == "hip" and not gfx_covers(pkg.archs, hardware.get("gfx") or [], hardware.get("gfx_main") or ""):
+        counted = ec.hip_counted(hardware["gfx"], hardware.get("gfx_main") or "")
+        skipped = sorted({str(g).split(":", 1)[0].lower() for g in hardware["gfx"]} - set(counted))
+        reasons.append(f"{pkg.label} has code for {', '.join(pkg.archs)}, this PC's GPU is {', '.join(counted)}"
+                       + (f" (the integrated {', '.join(skipped)} next to it is not what the model runs on)" if skipped else ""))
     need, have = pkg.min_driver.get("nvidia"), hardware.get("nvidia_driver")
     if pkg.backend == "cuda" and need and have and ec._version_key(have) < ec._version_key(need):
         reasons.append(f"{pkg.label} needs NVIDIA driver {need} or newer, this PC has {have}")
@@ -768,7 +774,13 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     fitting = _settle_hip_variants(fitting, hardware, reasons)
     if not fitting:
         return None, reasons
+    wanted_variant = str(hardware.get("variant_wanted") or "").lower()
+    if wanted_variant and hardware.get("backend") == "hip":
+        exact = [p for p in fitting if p.backend == "hip" and p.variant.lower() == wanted_variant]
+        if exact:
+            fitting = exact
     best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
+                                       ec.hip_covers_main(p.archs, hardware.get("gfx_main") or "") if p.backend == "hip" else 1,
                                        ec.hip_preference(p.archs) if p.backend == "hip" else 1,
                                        ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False))
     kept = str(hardware.get("installed_variant") or "")

@@ -195,9 +195,9 @@ def _pp_states(lines):
 
 def _backend_of(path: str, flavours: set[str]) -> list[str]:
     p = path
-    if p.startswith("engine/sycl/src"):
+    if p.startswith("engine/sycl/src") or "/sycl/" in p:   # the Inkling 2 Mini and Hy4-Flash SYCL engines live under engine/src/<model>/sycl/
         return ["sycl"]
-    if p.startswith("engine/metal/src"):
+    if p.startswith("engine/metal/src") or "/metal/" in p:
         return ["metal"]
     if "/cpu/" in p or p.endswith(("_cpu.cpp", "_cpu.hpp")):
         return ["cpu"]

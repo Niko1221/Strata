@@ -360,7 +360,8 @@ def _adl_cards(buf, count):
         if buf[i].VendorID not in (0x1002, 1002) and b"VEN_1002" not in udid.upper():   # ADL can list another vendor's adapter (an NVIDIA card beside the iGPU)
             continue
         dev = udid.split(b"DEV_", 1)[1].split(b"&", 1)[0] if b"DEV_" in udid else None
-        key = dev or nm
+        bdf = (buf[i].BusNumber, buf[i].DeviceNumber, buf[i].FunctionNumber)
+        key = bdf if any(bdf) else (dev or nm)
         if key in seen:
             continue
         seen.add(key)
@@ -544,6 +545,13 @@ def _pick_card(adl_names, index, hip_names):
     rather than another card's readings).  Only when the registry lists no AMD card at all: row `index`."""
     if hip_names:
         if not 0 <= index < len(hip_names):
+            # A run config can name a HIP device number that the registry list does not reach (HIP counts a Ryzen's integrated
+            # Radeon, which the list leaves out: "gpu": 1 on a PC with an iGPU and one card, #5946).  With exactly one card in
+            # the list and exactly one ADL row of that name the reading is unambiguous; with anything else nothing is guessed.
+            if index > 0 and len(hip_names) == 1:
+                only = [r for r, n in enumerate(adl_names) if n.strip().lower() == hip_names[0].strip().lower()]
+                if len(only) == 1:
+                    return only[0]
             return None
         want = hip_names[index].strip().lower()
         k = sum(1 for n in hip_names[:index] if n.strip().lower() == want)
@@ -1057,7 +1065,10 @@ class _Metal:
 #: the cards setup names by PCI id (sycl/setup_intel.py INTEL_ARC; the same table as sycl/serve/xe_telemetry.py)
 ARC_NAMES = {"e223": "Arc Pro B70", "e221": "Arc Pro B60", "e211": "Arc Pro B60", "e20b": "Arc B580", "e20c": "Arc B570",
              "e212": "Arc B50", "56a0": "Arc A770", "56a1": "Arc A750", "56a2": "Arc A580", "56a5": "Arc A380",
-             "56a6": "Arc A310", "5690": "Arc A770M"}
+             "56a6": "Arc A310", "5690": "Arc A770M",
+             # #6448: Panther Lake's GPU, built into the processor (not in setup's table); the ids as hwdata's pci.ids names them
+             "b080": "Arc B390", "b082": "Arc B390", "b084": "Arc Pro B390", "b086": "Arc Pro B390",
+             "b081": "Arc B370", "b083": "Arc B370", "b085": "Arc Pro B370", "b087": "Arc Pro B370"}
 
 
 class _ZesPciAddress(ctypes.Structure):
@@ -1213,9 +1224,34 @@ class _Intel:
         self._fd_mem = None                     # bytes the DRM clients this user can see hold on the card (fdinfo), last read
         self.driver = ("xe" if os.path.isdir(f"{self.dev}/tile0") else "i915") if self.dev else None
         self._pci = None                        # (rx bytes, tx bytes, ts us) of the last read
+        # #6448: a GPU built into the processor (Level Zero's INTEGRATED flag) has no memory of its own: it shares the RAM.
+        # A card, or sysman that cannot say (None), reads as before.
+        self.integrated = bool(self.zes.integrated()) if self.zes is not None else False
 
     def ok(self):
         return self.dev is not None and sys.platform.startswith("linux")
+
+    def _meminfo(self):
+        """MemTotal, MemAvailable and GPUReclaim (the freed pages the GPU driver keeps pooled for its next allocation; a kernel
+        that does not report them has no such line or 0, #2412) in bytes, from <proc>/meminfo; a missing one is 0."""
+        out = {"MemTotal": 0, "MemAvailable": 0, "GPUReclaim": 0}
+        try:
+            with open(f"{self._proc}/meminfo", encoding="ascii", errors="replace") as fh:
+                for line in fh:
+                    k, _, v = line.partition(":")
+                    if k in out:
+                        parts = v.split()
+                        if parts and parts[0].isdigit():
+                            out[k] = int(parts[0]) * 1024
+        except OSError:
+            pass
+        return out
+
+    def shared_free(self):
+        """#6448: what an integrated GPU can still take, in bytes: the RAM the system can still give (MemAvailable) plus the
+        pages the GPU driver holds pooled (GPUReclaim). None when MemAvailable cannot be read."""
+        m = self._meminfo()
+        return (m["MemAvailable"] + m["GPUReclaim"]) if m["MemAvailable"] else None
 
     @staticmethod
     def _rd(p):
@@ -1302,8 +1338,10 @@ class _Intel:
             drivers[key] = drv
             if total:
                 now[key] = (busy, total)
-            for k, v in kv.items():   # the client's memory on this card (i915: drm-resident-local0, xe: drm-resident-vram0), "N KiB"
-                if re.fullmatch(r"drm-resident-(local|vram)\d+", k):
+            # the client's memory on this card (i915: drm-resident-local0, xe: drm-resident-vram0), "N KiB"; an integrated GPU has
+            # no vram region, its clients' memory is in gtt and system (one region per buffer at a time, so the two add up)
+            for k, v in kv.items():
+                if re.fullmatch(r"drm-resident-(local|vram)\d+", k) or (self.integrated and k in ("drm-resident-gtt", "drm-resident-system")):
                     parts = v.split()
                     if parts and parts[0].isdigit():
                         unit = {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30}.get(parts[1] if len(parts) > 1 else "", 1)
@@ -1340,11 +1378,17 @@ class _Intel:
                 # sysman on i915 (Arc A-series) reports the card's size but no use: free == size, so "used 0" while an engine holds
                 # gigabytes (measured on an A750, p1006 11-16). The engine's own DRM clients' resident memory is the reading there.
                 used = self._fd_mem
+            if self.integrated:
+                # #6448: sysman answers MemAvailable as the size and MemFree as free here, both moving with every program on
+                # the computer. The size is the RAM; the use is what the GPU clients this user can see hold of it (fdinfo), which
+                # on a laptop includes the desktop's own.
+                used, total = self._fd_mem, (self._meminfo()["MemTotal"] or total)
             out["mem_used"], out["mem_total"] = used, total
         if self.hwmon:
             if out["temp"] is None:
                 files = os.listdir(self.hwmon)
-                src = next((lab[:-6] for lab in files if lab.endswith("_label") and self._rd(f"{self.hwmon}/{lab}") == "pkg"), None)
+                # temp*_label only: an xe card labels its energy counter "pkg" as well (energy2_label, microjoules; #6243)
+                src = next((lab[:-6] for lab in files if lab.startswith("temp") and lab.endswith("_label") and self._rd(f"{self.hwmon}/{lab}") == "pkg"), None)
                 v = self._rd(f"{self.hwmon}/{src or 'temp1'}_input")
                 out["temp"] = int(v) / 1000 if v and v.lstrip("-").isdigit() else None
             if out["power"] is None:
@@ -1451,18 +1495,71 @@ def windows_display_adapters(vendor=None) -> list:
     return out
 
 
+_DX_ADAPTERS = r"SOFTWARE\Microsoft\DirectX"   # the adapter list Windows and Task Manager use: Description, VendorId, AdapterLuid
+
+
+def _norm_card(name) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def _dx_amd_absent() -> set:
+    """Normalized Descriptions of AMD adapters the DirectX adapter list knows but reports as not plugged in now
+    (AdapterLuid 0; the app's own host reads the same key).  The display class keeps the driver key of a card that
+    was taken out (#3892): measured on a 7900 XTX PC, a removed RX 9070 XT's key sat between the iGPU and the card
+    and took a Monitor row.  A name counts as absent only when DirectX lists it with no live twin, so a name the
+    list does not know at all is never filtered."""
+    if os.name != "nt":
+        return set()
+    try:
+        import winreg
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DX_ADAPTERS)
+    except OSError:
+        return set()
+    live, gone = set(), set()
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(root, i)
+        except OSError:
+            break
+        i += 1
+        try:
+            k = winreg.OpenKey(root, sub)
+            desc = str(winreg.QueryValueEx(k, "Description")[0] or "")
+            vid = int(winreg.QueryValueEx(k, "VendorId")[0])
+            luid = winreg.QueryValueEx(k, "AdapterLuid")[0]
+        except (OSError, TypeError, ValueError):
+            continue
+        if isinstance(luid, (bytes, bytearray)):        # REG_QWORD or REG_BINARY; a Luid of 0 means the card is not there
+            luid = int.from_bytes(bytes(luid[:8]), "little")
+        if vid == 0x1002:
+            (live if luid else gone).add(_norm_card(desc))
+    return gone - live
+
+
 def windows_amd_cards(adapters=None) -> list:
-    """The AMD cards HIP runs on, as windows_display_adapters lists them.  A Ryzen's integrated Radeon is listed too
-    (512 MiB on a Ryzen 5 7600): beside a card with 2 GiB or more it is left out (an APU alone keeps it)."""
+    """The AMD cards HIP runs on, as windows_display_adapters lists them.  A Ryzen's integrated Radeon is listed too,
+    and size cannot tell it apart: 512 MiB on a Ryzen 5 7600, but exactly 2 GiB on a board carrying a 7900 XTX
+    (gfx1036, measured) and 43 GiB on a Strix Halo - so like _adl_cards the driver name decides, an integrated Radeon
+    being the one called "... Graphics"; an APU alone keeps it.  Driver keys of cards no longer plugged in (#3892)
+    are left out when the DirectX adapter list reports that exact name as absent."""
     cards = windows_display_adapters("amd") if adapters is None else adapters
-    return [c for c in cards if (c["vram_bytes"] or 0) >= 2 << 30] or cards
+    gone = _dx_amd_absent()
+    if gone:
+        cards = [c for c in cards if _norm_card(c["name"]) not in gone] or cards
+    discrete = [c for c in cards if "graphics" not in c["name"].lower()]
+    return discrete or cards
 
 
 def free_vram_mib(index=0, amd=False):
-    """Free VRAM of a card in MiB, or None when it cannot be read."""
+    """Free VRAM of a card in MiB, or None when it cannot be read.  An integrated Intel GPU (#6448) has no VRAM of its own: its
+    free memory is what the system can still give it (_Intel.shared_free), not the size less what the engine's own clients hold."""
     g = gpu_reader(index, amd)
     if not g.ok():
         return None
+    if isinstance(g, _Intel) and g.integrated:
+        free = g.shared_free()
+        return int(free >> 20) if free is not None else None
     r = g.read()
     if r.get("mem_total") is None or r.get("mem_used") is None:
         return None

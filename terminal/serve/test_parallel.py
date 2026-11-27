@@ -5,6 +5,7 @@ real StrataEngine and Service, so the server's side is tested without a GPU: req
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -94,7 +95,8 @@ def window():        # one batch window: every active slot one token
             stopped.discard(b)
             prompt_ids, emitted, in_slot = meta.pop(b, ([], [], False))
             slot_ids[b] = prompt_ids + emitted[:-1]
-            print(f"BDONE {b} {produced} {fin}{BDONE_MS}" + (" read=3.0" if in_slot else ""), flush=True)
+            print(f"BDONE {b} {produced} {fin}{BDONE_MS}" + (" read=3.0" if in_slot else "") +
+                  (f" drafts={2 * produced}:{produced}" if "--drafts" in args else ""), flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -341,6 +343,7 @@ class PickSlot(unittest.TestCase):
         e.slot_order = list(range(n))
         e.slot_busy = [False] * n
         e.slot_held = [[] for _ in range(n)]
+        e.slot_prompt = [[] for _ in range(n)]     # a real engine sets it at start and _slot_prefix reads it (this lazy fixture lacked it)
         e.slot_used = [0.0] * n
         e.slot_live = [None] * n
         e.slot_group = [0] * n
@@ -359,6 +362,73 @@ class PickSlot(unittest.TestCase):
         self.assertIsNone(e.pick_slot([7, 8]))
         e.slot_busy = [False] * 3
         self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # a held prompt is never the WHOLE prompt
+
+    # Inkling-2-Mini with its DSpark drafter: the drafter exists only for slot 0, so a lone request drafts only there (GRID, Olares: 1 slot 152 tok/s, 2 or 3 slots 85,
+    # the speed of drafting off, because pick_slot sent the lone request to the slot with the longest held start or to the one used longest ago)
+    def inkling(self, n, drafting="dspark"):
+        e = self.engine(n)
+        e.inkling_engine = True
+        e.info = {"drafting": drafting}
+        return e
+
+    def test_slot_zero_is_taken_when_nothing_worth_keeping_is_held(self):
+        e = self.inkling(3)
+        e.slot_held = [[9, 9], [], [5, 5]]
+        e.slot_used = [9.0, 0.0, 1.0]                               # slot 1 is empty and slot 2 used longest ago: the old order would take slot 1
+        self.assertEqual(e.pick_slot([7, 8]), 0)
+        e.slot_busy[0] = True                                       # slot 0 busy: the old order, nothing else changes
+        self.assertEqual(e.pick_slot([7, 8]), 1)
+        e.slot_busy[0] = False
+        e.slot_held = [[1] * 5000, [], []]                          # slot 0 itself holds the longest start: it keeps it
+        self.assertEqual(e.pick_slot([1] * 5000 + [2]), 0)
+
+    def test_a_real_conversation_keeps_its_slot_a_short_one_does_not(self):
+        n = StrataEngine.SLOT0_PREFIX_MAX
+        e = self.inkling(3)
+        e.slot_held = [[], [], list(range(1, n + 100))]             # a held start of n + 99 tokens in slot 2
+        self.assertEqual(e.pick_slot(list(range(1, n + 100)) + [7]), 2)
+        e.slot_held = [[], [], list(range(1, n - 10))]              # n - 11 tokens: re-prefilling that costs well under a second
+        self.assertEqual(e.pick_slot(list(range(1, n - 10)) + [7]), 0)
+        self.assertEqual(n, 512)
+
+    def test_a_long_chat_in_slot_zero_is_kept_from_a_cold_request_while_another_slot_is_free(self):
+        # #7226: the drafter's preference for slot 0 gave way only for a conversation that continued the request, so a cold request (of any size)
+        # wiped the long chat in slot 0 although slot 1 was empty.  STRATA_INKLING_KEEP_CHATS=0 brings the old rule back.
+        big = StrataEngine.SIDE_REQUEST_MIN
+        for env, want_cold in (({}, 1), ({"STRATA_INKLING_KEEP_CHATS": "0"}, 0), ({"STRATA_INKLING_KEEP_CHATS": "off"}, 0), ({"STRATA_INKLING_KEEP_CHATS": "1"}, 1)):
+            with self.subTest(env=env), mock.patch.dict("os.environ", env):
+                if not env:
+                    os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+                e = self.inkling(3)
+                e.slot_held = [[1] * big, [], []]
+                e.slot_used = [time.time(), 0.0, 1.0]                                  # the chat in slot 0 was used just now
+                self.assertEqual(e.pick_slot([7, 8]), want_cold)                       # a short cold request
+                self.assertEqual(e.pick_slot([7] * 5000), want_cold)                   # a large cold request
+                self.assertEqual(e.pick_slot([1] * big + [2]), 0)                      # the chat's own next turn keeps slot 0
+                e.slot_held = [[1] * (big - 1), [], []]                                # a chat under SIDE_REQUEST_MIN is not worth keeping
+                self.assertEqual(e.pick_slot([7, 8]), 0)
+                e.slot_held = [[1] * big, [], []]
+                e.slot_busy[1] = e.slot_busy[2] = True                                 # no other slot free: slot 0 as before
+                self.assertEqual(e.pick_slot([7, 8]), 0)
+                e.slot_busy = [False] * 3
+                e.slot_used[0] = time.time() - StrataEngine.KEEP_IDLE_S - 60           # a chat nobody has used for a long time is not kept: the lone client
+                self.assertEqual(e.pick_slot([7, 8]), 0)                               # that starts a new conversation drafts in slot 0, as in 0.2.22
+
+    def test_the_keep_switch_is_on_unless_it_is_set_to_zero(self):
+        for val, want in ((None, True), ("", True), ("1", True), ("0", False), ("false", False), ("No", False), ("off", False)):
+            with self.subTest(val=val), mock.patch.dict("os.environ", {} if val is None else {"STRATA_INKLING_KEEP_CHATS": val}):
+                if val is None:
+                    os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+                self.assertEqual(StrataEngine.inkling_keep_chats(), want)
+
+    def test_nothing_changes_without_the_drafter_or_for_another_engine(self):
+        for make in (lambda: self.engine(3), lambda: self.inkling(3, "off")):
+            e = make()
+            e.slot_held = [[9, 9], [], [5, 5]]
+            e.slot_used = [9.0, 0.0, 1.0]
+            self.assertEqual(e.pick_slot([7, 8]), 1)                # the empty slot first, as before
+            e.slot_held = [[], [], [1] * 20]
+            self.assertEqual(e.pick_slot([1] * 20 + [2]), 2)        # the held start, as before (also a short one)
 
     def test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat(self):
         # #2518: two chats in two slots; each next turn renders the history again but not the reply it decoded or the
@@ -1218,6 +1288,36 @@ class SlotRead(FakeEngineCase):
         self.assertEqual(self.log.read_text()[before:].split()[0], "GEN")
         self.assertFalse(any(x.endswith(" sr") for x in self.log.read_text().splitlines()))
 
+
+
+class BatchDraftCounters(FakeEngineCase):
+    """#5890: with --batch-mtp the engine's BDONE line carries the slot's own draft counters (drafts=<checked>:<kept>), and the response's
+    draft_n / draft_n_accepted read them; an engine that does not say it leaves them as before."""
+
+    def tokens(self, ids, max_new=64):
+        return [t for t in self.engine.generate_batched(list(ids), max_new, {}, threading.Event()) if t is not None]
+
+    def two_chats(self):
+        """Two conversations at once, so the second one runs in a batch slot -> the second one's engine record right after its reply."""
+        a, b = list(b"first LONGREPLY chat " + b"a" * 600), list(b"second chat " + b"b" * 600)
+        ta = threading.Thread(target=lambda: self.tokens(a))
+        ta.start()
+        time.sleep(0.15)
+        self.tokens(b)
+        last = dict(self.engine.last)
+        ta.join(30)
+        return last
+
+    def test_a_batch_slot_request_reports_its_drafts(self):
+        self.start(2, more=("--drafts",))
+        last = self.two_chats()
+        self.assertGreater(last["drafts_offered"], 0)
+        self.assertEqual((last["drafts_offered"], last["drafts_accepted"]), (2 * last["generated"], last["generated"]))
+
+    def test_an_engine_that_does_not_say_drafts_is_read_as_before(self):
+        self.start(2)
+        last = self.two_chats()
+        self.assertFalse(last.get("drafts_offered"))
 
 
 class EngineOwnedDefaults(unittest.TestCase):

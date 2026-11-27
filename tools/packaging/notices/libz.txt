@@ -30,3 +30,5 @@ Copyright: 1995-2013 Jean-loup Gailly and Mark Adler (zlib); the distribution's 
 
 Source code: https://zlib.net/. The exact source of this copy is the source package of the distribution package named below
 (for Debian and Ubuntu: `apt-get source` of the zlib package that built it).
+
+These libraries keep their own license; bundling them with the engine does not change the license of Strata, which is MIT.

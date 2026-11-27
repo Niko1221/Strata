@@ -247,7 +247,17 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
                     'https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF',   # the credit link in drafting.py's comment and drafting_fetch.py's docstring (nothing opens it)
                     'HF_DEFAULT = "https://huggingface.co"',
-                    'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
+                    'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)',
+                    'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"',  # hy4_family.py tokenizer_sources (used by setup/fetch behind acquisition.require)
+                    'return f"https://huggingface.co/{repo}/resolve/{revision}"',   # inkling_family.hf_base (0.2.23): the pinned-commit addresses of the Inkling downloads, only setup.py opens them (behind acquisition.require)
+                    'DFLASH2_URL = f"https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/{DFLASH2_COMMIT}/model.safetensors"',   # inkling_family.py: the pinned DFlash 2 file, only setup.py opens it (behind acquisition.require)
+                    'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned drafter source, only setup.py opens it (behind acquisition.require)  # inkling_family.py comment (nothing opens it)
+                    '"""True when `hostname` is Hugging Face (huggingface.co / hf.co) or the configured HF_ENDPOINT host."""',  # transfer.py _hf_host() host check for HF_TOKEN scoping (opens nothing)
+                    'if h == "huggingface.co" or h.endswith(".huggingface.co") or h == "hf.co" or h.endswith(".hf.co"):',
+                    'ep = (env.get("HF_ENDPOINT") or "").strip()',
+                    # inkling_family._own_url: the address of OUR planned DFlash 2 copy (strata-engine/Inkling-2-Mini-DFlash2 at a pinned commit; empty until the upload and the
+                    # owner's choice). Like DFLASH2_URL above it is only read by setup's and `strata drafting fetch`'s download, behind acquisition.require.
+                    'return f"https://huggingface.co/{DFLASH2_REPO}/resolve/{DFLASH2_OWN_COMMIT}/{file}" if (DFLASH2_OWN_COMMIT and DFLASH2_OWN_COPY == kind) else ""')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):

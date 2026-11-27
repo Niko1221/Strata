@@ -1,0 +1,29 @@
+Inkling-2-Mini-DFlash2 drafter weights (Apache License 2.0)
+===========================================================
+
+Strata's DFlash 2 drafter uses weights derived from `incoai/Inkling-2-Mini-DFlash2` (https://huggingface.co/incoai/Inkling-2-Mini-DFlash2), a DFlash 2 block-diffusion
+draft model for thinkingmachines/Inkling-2-Mini by Inco AI / z-lab (https://inco.ai/blog/dflash2/, https://github.com/z-lab/dflash). Copyright and credit for the weights belong
+to their authors, Inco AI and z-lab; Strata did not train them.
+
+The file Strata downloads (a converted copy of the original weights)
+  File:      Inkling-2-Mini-DFlash2-mix.safetensors   (stored beside the model as dflash2.safetensors)
+  From:      https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2, revision 04ecd36faef74e696f0a7b6b3c119264442a6234
+  Size:      551,600,700 bytes
+  SHA-256:   cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387
+  Licence:   Apache License 2.0, as stated on the original model card (not gated)
+
+Changes made (Apache License 2.0, section 4(b)): this file is a modified version of the original weights. The attention matrices (q_proj, o_proj) are stored as 8-bit integers
+with one fp32 scale per row, the feed-forward matrices (gate_proj, up_proj, down_proj) as 4-bit SF4 (E2M1 values, UE4M3 scale per 16, one fp32 scale per tensor); all other tensors
+(fc, K/V and convolution projections, selector, codebooks, norms) are unchanged values (norms as float32). The format is "strata-dflash2-q1", variant "mix". It was made on 2026-11-26
+by the Strata engine itself (STRATA_INK_DFLASH2_DUMP) from the original file, and the repository file carries this notice, the licence and the script that reproduces it
+(make_mix_from_original.py).
+
+The original file
+  File:      model.safetensors
+  Size:      989,975,616 bytes
+  SHA-256:   217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee
+  Revision:  4f9088ea66c21f2b99ed657d1941c306b03e84d2   (incoai/Inkling-2-Mini-DFlash2)
+The engine also accepts this original file when a person puts it beside the model (it quantizes the large matrices in memory at load time); it is the last-resort download source.
+
+The licence text is at https://www.apache.org/licenses/LICENSE-2.0.txt; it applies to the weights (original and modified) under its terms (attribution, a copy of the licence, a
+statement of changes, no warranty). This notice lists a third-party work under its own licence; it does not change the licence of Strata, which is MIT.

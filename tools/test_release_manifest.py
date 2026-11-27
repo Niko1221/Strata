@@ -76,6 +76,23 @@ class ReleaseManifest(unittest.TestCase):
         finally:
             rm.code_versions = real
 
+    def test_a_control_only_update_of_the_same_release_names_its_own_tag_as_the_engines_source(self):
+        """0.2.21.1: Control 0.1.68 joins the v0.2.21 release, whose engines stay 0.1.67 (no engine built, tag unchanged)."""
+        m = copy.deepcopy(rm.load())
+        m["tag"], m["engines_from"] = "v" + m["product_version"], "v" + m["product_version"]
+        m["control_version"], m["engine_version"] = "0.1.68", "0.1.67"
+        m["assets"] = [a for a in m["assets"] if not a.startswith("strata-engine-")] + ["strata-engine-0.1.67-linux-x86_64-cuda-cuda13.tar.gz"]
+        cmake = {"CMakeLists.txt (engine)": ("0.1.68", "engine_version"), "CMakeLists.txt (Control)": ("0.1.68", "control_version")}
+        real = rm.code_versions
+        try:
+            rm.code_versions = lambda: {**real(), **cmake}
+            self.assertNotIn("CMakeLists.txt (engine) says", "\n".join(rm.check(m)))
+            no_from = copy.deepcopy(m)
+            no_from.pop("engines_from")
+            self.assertIn("CMakeLists.txt (engine) says", "\n".join(rm.check(no_from)))
+        finally:
+            rm.code_versions = real
+
     def test_installer_names_in_the_manifest_asset_list(self):
         m = rm.load()
         for name in rm.expand(m):

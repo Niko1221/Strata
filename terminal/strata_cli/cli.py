@@ -185,6 +185,11 @@ def parser() -> argparse.ArgumentParser:
     models_import.add_argument("--plan", action="store_true", required=True,
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
+    models_remove = models_sp.add_parser("remove", help="remove one of your own builds (a custom .gguf or .strata) from Strata's list: only its run settings go, your model files stay where they are")
+    models_remove.add_argument("model_id", help="the build's id, as `strata models list` shows it")
+    models_remove.add_argument("--install-dir", help="absolute path to a Strata installation")
+    models_remove.add_argument("--yes", action="store_true", help="do it; without it nothing is removed and the command only says what would be")
+    models_remove.add_argument("--output", choices=("human", "json"), default="human")
     models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
     models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
     models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
@@ -533,6 +538,9 @@ def parser() -> argparse.ArgumentParser:
     code_sessions = code_sp.add_parser("sessions", help="shared harness sessions")
     code_sessions.add_argument("action", choices=("list",))
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
+    complete = sp.add_parser("complete", help="print a bash, zsh or fish tab-completion script for the strata command")
+    complete.add_argument("--shell", choices=("bash", "zsh", "fish"), default="bash",
+                          help="which shell to print the script for (default bash)")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
                      components_verify, models_list, models_inspect, models_import, models_move, calibrate,
@@ -596,6 +604,8 @@ def _models(a: argparse.Namespace) -> int:
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
     if a.models_command == "move":
         return _models_move(a)
+    if a.models_command == "remove":
+        return _models_remove(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -622,7 +632,7 @@ def _models(a: argparse.Namespace) -> int:
             return _error("connection options require --served", 2, a.output == "json")
         result = models.list_installed(a.install_dir)
         lines = [f"{item['id']}  {item['component_status']}  "
-                 f"{item.get('name', item.get('error', ''))}" for item in result["models"]]
+                 f"{item.get('name', item.get('error', ''))}" + _custom_tail(item) for item in result["models"]]
         if not lines:
             where = ", ".join(result.get("install_dirs") or [result["install_dir"]])
             lines = [f"No installed models found. Looked in: {where}. "
@@ -740,11 +750,53 @@ def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
     return _models_move(a)
 
 
+def _custom_tail(item: dict) -> str:
+    """` [Custom] 12 GB, a build of inkling-2-mini SQ-20` after a custom build's name in `strata models list` (nothing for the official installs)."""
+    if item.get("custom") is not True:
+        return ""
+    from strata_cli.launch import custom
+    size = custom.size_words(item.get("custom_bytes"))
+    base = " ".join(x for x in (str(item.get("base_family") or ""), str(item.get("base_model") or "")) if x)
+    return f"  [{custom.BADGE}]" + (f" {size}" if size else "") + (f", a build of {base}" if base else "")
+
+
+def _models_remove(a: argparse.Namespace) -> int:
+    """`strata models remove ID`: a custom build leaves Strata's list; only its run config is deleted. The weights are never touched, and an
+    official install is refused here (it has its own removal in the app)."""
+    from strata_cli.launch import custom
+    from strata_control import models
+    from strata_control.profiles import ProfileError
+    machine = a.output == "json"
+    try:
+        found = models.inspect(a.model_id, a.install_dir)["model"]
+    except ProfileError as exc:
+        return _error(str(exc), 5, machine)
+    path = Path(found["source_config"])
+    entry = custom.read_custom(path)
+    if entry is None:
+        return _error(f"{a.model_id} is not one of your own builds, so `strata models remove` does not remove it.", 2, machine)
+    if not a.yes:
+        text = (f"This would remove '{entry['display_name']}' ({entry['id']}) from Strata's list by deleting {path.name}. {custom.KEPT_WORDS} "
+                "Run it again with --yes to do it.")
+        return _success({"removed": [], "would_remove": [path.name], "kept_files": True}, machine=machine, human=text)
+    try:
+        removed = custom.remove_reference(path)
+    except (OSError, ValueError) as exc:
+        return _error(f"Could not remove {path.name}: {exc}", 5, machine)
+    return _success({"removed": removed, "kept_files": True}, machine=machine,
+                    human=f"Removed '{entry['display_name']}' from Strata's list ({', '.join(removed)}). {custom.KEPT_WORDS}")
+
+
 def _import_words(plan: dict) -> str:
     """The plain-words result of `strata models import --plan`: what the files are, what is already set up, what changes (nothing)."""
     cand = plan.get("candidate_selection") or {}
-    lines = [f"{plan['file_count']} GGUF file(s): {plan['file_set_status']}"]
-    if cand.get("family"):
+    kind = ".strata" if plan.get("file_kind") == "strata" else "GGUF"
+    lines = [f"{plan['file_count']} {kind} file(s): {plan['file_set_status']}"]
+    if cand.get("custom"):
+        lines.append(f"These files are your own build of {cand.get('family_title') or cand['family']}: Strata runs them with the settings of {cand['model']} "
+                     f"and lists them as '{cand.get('suggested_label') or 'Custom build'}' (change it with --custom-label NAME in `strata launch --model-path`). "
+                     "They are used where they are, never copied; the official build is not replaced.")
+    elif cand.get("family"):
         lines.append(f"These files are Strata's {cand['family']} {cand['model']}.")
     done = plan.get("already_set_up")
     if done:
@@ -1093,8 +1145,17 @@ def _direct_calibration(ref: str, kind: str, report_path: Path, action) -> tuple
 
 
 def _calibration(a: argparse.Namespace) -> int:
+    from serve import hy4_kind, inkling_kind
     from strata_control import calibration
     machine = a.output == "json"
+    try:
+        _p, _s, _r, _cfg = _source(a.profile)
+    except Exception:                                        # noqa: BLE001
+        _cfg = {}
+    if hy4_kind.is_hy4(_cfg):
+        return _error("Tencent Hy4-Flash needs no calibration: its speed and memory placement are set automatically by strata-hy4.", 2, machine)
+    if inkling_kind.is_inkling(_cfg):
+        return _error("Inkling-2-Mini needs no calibration: its speed and memory placement are set automatically by strata-inkling.", 2, machine)
     if (a.out and not a.measure) or (a.exclusive and not (a.measure or a.apply_result or a.rollback_result)):
         return _error("--out is only for --measure; --exclusive is only for --measure, --apply-result "
                       "or --rollback-result", 2, machine)
@@ -1197,6 +1258,22 @@ def _bench(a: argparse.Namespace) -> int:
         return _success({"summary": result}, machine=machine,
                         human=bench.format_summary(result))
     if a.bench_command == "compare":
+        from strata_cli import bench_standard
+        # #4325: the default run writes the standard report, which `bench.load` does not read. Two standard reports are compared here; one of each kind is said plainly.
+        base_std, cand_std = bench_standard.load_if_standard(Path(a.baseline)), bench_standard.load_if_standard(Path(a.candidate))
+        if (base_std is None) != (cand_std is None):
+            raise ProfileError("cannot compare a standard benchmark result with a serving-suite result: give two results of the same kind", 5)
+        if base_std is not None:
+            result = bench_standard.compare(base_std, cand_std)
+            if a.output == "markdown":
+                rendered = bench_standard.markdown_comparison(result)
+                if a.out:
+                    bench.write_markdown(Path(a.out), rendered)
+                    print(f"Markdown comparison: {Path(a.out).resolve()}")
+                else:
+                    print(rendered, end="")
+                return 0
+            return _success({"comparison": result}, machine=machine, human=bench_standard.format_comparison(result))
         result = bench.compare(bench.load(Path(a.baseline)), bench.load(Path(a.candidate)))
         if a.output == "markdown":
             rendered = bench.markdown_comparison(result)
@@ -2125,6 +2202,10 @@ def _install(a: argparse.Namespace) -> int:
         env["STRATA_CONTROL_INSTALL"] = "1"
         from strata_cli.launch.catalog import install_root
         env.setdefault("STRATA_INSTALL_DIR", str(install_root()))
+        try:                                             # #7012: setup writes its run configs here; a Terminal-only install has no such folder yet
+            Path(env["STRATA_INSTALL_DIR"]).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass                                         # setup says what it cannot write
     return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
                            cwd=str(installer.parent), env=env)
 
@@ -2200,6 +2281,10 @@ def _run(a: argparse.Namespace) -> int:
             return _timeskip(a)
         if a.command == "presets":
             return tune_commands.presets_command(a)
+        if a.command == "complete":
+            from strata_cli import completion
+            sys.stdout.write(completion.script(parser(), a.shell))
+            return 0
         if a.command in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd
             return launch_cmd.run_launch(a) if a.command == "launch" else launch_cmd.run_connect(a)

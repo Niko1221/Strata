@@ -6,11 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <string_view>
+#include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -189,6 +193,21 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
     return true;
 }
 
+/// #2518: the checkpoints a slot carries for `live` - every one whose tokens are a strict prefix of it, in the
+/// order given.  The retained checkpoints are a chain (each a prefix of the next), and a request that branches
+/// inside the conversation resumes from the point it shares, which is usually NOT the longest checkpoint: the
+/// deepest one diverges before it.  Keeping only the longest left the slot with nothing such a request could
+/// start from.  An image prompt is not matched again by tokens alone, so it carries none.
+inline std::vector<ConversationCheckpoint> conversation_checkpoints_prefixing(
+        const std::vector<ConversationCheckpoint>& checks, const std::vector<int32_t>& live, bool image) {
+    std::vector<ConversationCheckpoint> out;
+    if (image) return out;
+    for (const ConversationCheckpoint& c : checks)
+        if (c.ids.size() < live.size() && std::equal(c.ids.begin(), c.ids.end(), live.begin()))
+            out.push_back(c);
+    return out;
+}
+
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
@@ -253,6 +272,22 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     }
     if (j != c.imgs.size()) return 0;
     return (int64_t) n;
+}
+
+inline constexpr int conversation_cache_swap_default_block_mib = 0;
+inline bool parse_conversation_cache_swap_block_mib(std::string_view text, int& mib) {
+    if (text.empty()) return false;
+    for (const char c : text) if (c < '0' || c > '9') return false;
+    int64_t value = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || value < 0 || value > 256) return false;
+    mib = (int) value;
+    return true;
+}
+
+// The parser bounds this value; zero leaves the original switch/retain path alone.
+inline constexpr size_t conversation_cache_swap_block_bytes(int mib) {
+    return (size_t) mib << 20;
 }
 
 class ConversationCache {
@@ -327,6 +362,12 @@ public:
     }
     size_t retained_bytes() const { return reuse_.bytes(); }
     int64_t retained_tokens() const { return reuse_.kv.empty() ? 0 : reuse_.unchanged_tokens; }
+    // take_reuse_for can use a positive prefix exactly when the first tokens match.
+    template<class Token>
+    bool has_reuse_for(const std::vector<Token>& live) const {
+        return retained_tokens() > 0 && !reuse_.ids.empty() && !live.empty() &&
+               (int64_t) reuse_.ids.front() == (int64_t) live.front();
+    }
     bool can_fit(size_t incoming, size_t held = 0) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
@@ -493,8 +534,28 @@ public:
     // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
     // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
     // shares the system prompt's root with it), is kept.  Returns how many were dropped.
+    // An entry whose LIVE tokens are a prefix of (or equal to) `ids` (same pictures, same steering, no pinned shared
+    // prefix) is superseded as well: the conversation only appends, so the longer snapshot serves every resume the older
+    // one could.  Without this the older snapshots of a long agent conversation (whose deepest checkpoint the new chain
+    // does not hold) were evicted oldest-first and spilled to the SSD tier, one whole snapshot per turn, for nothing.
+    // `dropped_tokens`, when given, receives the token count of each dropped entry.
+    bool live_extended_by(const SavedConversation& e, const std::vector<int32_t>& ids,
+                          const std::vector<ConversationImageKey>& images) const {
+        const size_t n = e.live.ids.size();
+        if (n == 0 || n > ids.size() || e.pinned() || !std::equal(e.live.ids.begin(), e.live.ids.end(), ids.begin())) return false;
+        size_t within = 0;
+        for (const auto& m : images) if (m.start < (int64_t) n) ++within;
+        if (within != e.live.imgs.size()) return false;
+        for (const auto& k : e.live.imgs) {
+            bool found = false;
+            for (const auto& m : images) if (m == k) { found = true; break; }
+            if (!found) return false;
+        }
+        return true;
+    }
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
-                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
+                           std::vector<size_t>* dropped_tokens = nullptr) {
         auto held = [&](const ConversationCheckpoint& c) {
             if (c.ids == ids && c.imgs == images) return true;
             for (const auto& k : checkpoints)
@@ -507,8 +568,9 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
-                !(guarded_ != 0 && serials_[i] == guarded_)) {
+            if (e.cvec == cvec && !(guarded_ != 0 && serials_[i] == guarded_) &&
+                ((deepest && !deepest->ids.empty() && held(*deepest)) || live_extended_by(e, ids, images))) {
+                if (dropped_tokens) dropped_tokens->push_back(e.live.ids.size());
                 bytes_ -= e.bytes();
                 erase(i);
                 ++dropped;
@@ -559,11 +621,11 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (!deepest || deepest->ids.empty()) continue;
-            bool holds = deepest->ids == ids && deepest->imgs == images;
+            bool holds = deepest && !deepest->ids.empty() && deepest->ids == ids && deepest->imgs == images;
             for (const auto& k : checkpoints)
-                if (!holds && k.ids == deepest->ids && k.imgs == deepest->imgs) holds = true;
+                if (deepest && !deepest->ids.empty() && !holds && k.ids == deepest->ids && k.imgs == deepest->imgs) holds = true;
             if (holds) longest = std::max(longest, deepest->ids.size());
+            else if (live_extended_by(e, ids, images)) longest = std::max(longest, e.live.ids.size());   // (no checkpoint chain to report)
         }
         return longest;
     }
@@ -575,6 +637,32 @@ public:
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);
+        bytes_ += n;
+        return true;
+    }
+
+    // Exchange publication must finish every fallible step before removing old entries.
+    bool put_exchanged(SavedConversation&& image, size_t held = 0) {
+        const size_t n = image.bytes();
+        if (!can_fit(n, held)) return false;
+        static_assert(std::is_nothrow_move_constructible_v<SavedConversation> &&
+                      std::is_nothrow_move_assignable_v<SavedConversation>);
+        serials_.push_back(next_serial_);
+        try { entries_.push_back(std::move(image)); }
+        catch (...) { serials_.pop_back(); throw; }
+        // Keep the payload outside the deque: erasing an old entry can move its
+        // remaining elements. An entry without checkpoints cannot supersede itself.
+        SavedConversation staged = std::move(entries_.back());
+        entries_.back().checkpoints.clear();
+        try { trim_pool(held + n); }
+        catch (...) {
+            entries_.pop_back(); serials_.pop_back();
+            image = std::move(staged);
+            throw;
+        }
+        drop_superseded(staged.live.ids, staged.live.imgs, staged.checkpoints, staged.cvec);
+        entries_.back() = std::move(staged);
+        ++next_serial_;
         bytes_ += n;
         return true;
     }

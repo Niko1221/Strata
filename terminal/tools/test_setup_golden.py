@@ -220,7 +220,7 @@ class Golden(unittest.TestCase):
 
 if __name__ == "__main__":
     if "--write" in sys.argv:
-        GOLDEN.write_text(json.dumps(record(), indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        GOLDEN.write_text(json.dumps(record(), indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         print(f"wrote {GOLDEN}")
     else:
         unittest.main()
