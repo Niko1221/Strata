@@ -1,0 +1,10 @@
+{
+  "id": "T4-aq-cli",
+  "title": "Air-quality CLI (Open-Meteo)",
+  "files": ["app/Program.cs"],
+  "exe": true,
+  "repair": 1,
+  "buildArgs": [],
+  "timeoutSec": 120,
+  "prompt": "Vytvor konzolovu aplikaciu (subor app/Program.cs, top-level statements) s nazvom aq, ktora zobrazi kvalitu ovzdusia pre Prahu z Open-Meteo API.\n\nVstupne data maju tvar:\n{ \"hourly\": { \"time\": [\"2026-11-27T00:00\", ...], \"pm10\": [10.0, null, ...], \"pm2_5\": [...], \"european_aqi\": [10, ...] } }\nPole mozu obsahovat null a mozu mat roznu dlzku.\n\nArgumenty:\n  --file PATH   nacitaj JSON zo suboru (bez neho stiahni URL nizsie)\n  --hours N     zobraz poslednych N hodin (default 24); ak je N vacsie ako pocet hodin, zobraz vsetky\n  --json        namiesto tabulky vypis JSON\n\nURL:\nhttps://air-quality-api.open-meteo.com/v1/air-quality?latitude=50.0755&longitude=14.4378&hourly=pm10,pm2_5,european_aqi&timezone=Europe%2FPrague&forecast_days=2\n\nPravidla:\n1. null sa vypise ako '-' a do priemerov ani maxima sa nerata.\n2. Priemer (avg) aj maximum (max) sa pocitaju len z vybranych hodin a zaokruhluju na 1 desatinne miesto; max_aqi je cele cislo.\n3. Kategoria (band) podla european_aqi: <=20 good, <=40 fair, <=60 moderate, <=80 poor, <=100 very poor, >100 extremely poor. Chybajuce aqi => '-'.\n4. Tabulka: hlavicka 'time pm10 pm2_5 aqi band', potom riadky, potom riadok 'avg' a riadok 'max' (v rovnakom poradi stlpcov).\n5. --json vypise jeden objekt s klucmi: hours, avg_pm10, avg_pm2_5, avg_aqi, max_pm10, max_pm2_5, max_aqi, first, last (first/last = cas prvej a poslednej vybratej hodiny).\n6. Chyba (subor neexistuje, nespravny JSON, --hours <= 0, neznamy argument) => chybova sprava na stderr a exit code 2. Pri uspechu exit 0 a nic na stderr.\n7. Desatinna bodka, nie ciarka. Nepouzivaj NuGet balicky."
+}
