@@ -7,6 +7,8 @@
 #include "strata/kernels/window_limits.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace strata::core {
@@ -63,14 +65,18 @@ bool RemoteExpertOpt::init(std::string& err) {
     h_mask_ = reinterpret_cast<int32_t*>(h_sum_ + MAXT * H);
     m_mask_ = reinterpret_cast<int32_t*>(m_sum_ + MAXT * H);
     for (auto& p : peers_) {
+        if (p.remote->plugin_) continue;   // strata-mi50 (2026-10-26): a plugin tier reduces in its own runtime, no buffer here
         const OnDevice on(p.remote->device_);
         if (!check(cudaMalloc((void**) &p.sum, MAXT * H * sizeof(float)), err)) return false;
     }
     return true;
 }
 
+const float* RemoteExpertOpt::host_sum() const { return h_sum_ + (int64_t) token_begin_ * H; }
+
 RemoteExpertOpt::~RemoteExpertOpt() {
     for (auto& p : peers_) {
+        if (p.remote->plugin_) { p.remote->remote_opt_ = nullptr; continue; }   // strata-mi50: nothing of ours on its device
         const OnDevice on(p.remote->device_);
         if (p.remote->stream_) cudaStreamSynchronize(p.remote->stream_);
         if (p.sum) cudaFree(p.sum);
@@ -110,9 +116,12 @@ bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::s
 }
 
 void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
-    for (int64_t i = 0; i < tokens_ * H; ++i) h_sum_[token_begin_ * H + i] += remote.h_out_[i];
+    // strata-mi50 (2026-10-26): a plugin tier hands back its reduced rows and owned flags (finish_opt) in its own host buffers
+    const float* rows = remote.plugin_ ? remote.plugin_sum_.data() : remote.h_out_;
+    const uint8_t* owned = remote.plugin_ ? remote.plugin_owned_.data() : remote.owned_.data();
+    for (int64_t i = 0; i < tokens_ * H; ++i) h_sum_[token_begin_ * H + i] += rows[i];
     for (int i = 0; i < tokens_ * K; ++i)
-        h_mask_[token_begin_ * K + i] |= remote.owned_[(size_t) i] != 0;
+        h_mask_[token_begin_ * K + i] |= owned[(size_t) i] != 0;
 }
 
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
@@ -134,7 +143,7 @@ void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int t
 
 bool RemoteExpertOpt::owns(int64_t layer, int32_t expert) const {
     for (const auto& p : peers_)
-        if (p.remote->cache_.slot_of(layer, expert) >= 0) return true;
+        if (p.remote->holds(layer, expert)) return true;   // 2026-10-26: holds() also asks a plugin tier (was cache_.slot_of)
     return false;
 }
 
@@ -148,6 +157,12 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
     for (const auto& [i, slot] : pending) resident[(size_t) i] = 1;
     for (const auto& p : peers_) {
         const auto& r = *p.remote;
+        if (r.plugin_) {   // strata-mi50 (2026-10-26): a plugin tier keeps no layers_present_ here; ask it what it holds
+            for (int32_t l = 0; l < (int32_t) (primary.size() / (size_t) r.n_expert_); ++l)
+                for (int32_t e = 0; e < r.n_expert_; ++e)
+                    if (r.holds(l, e)) resident[(size_t) l * r.n_expert_ + e] = 1;
+            continue;
+        }
         for (int32_t l = 0; l < (int32_t) r.layers_present_.size(); ++l)
             for (int32_t e = 0; e < r.n_expert_; ++e)
                 if (r.cache_.slot_of(l, e) >= 0) resident[(size_t) l * r.n_expert_ + e] = 1;
@@ -156,6 +171,23 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
     std::string err;
     for (auto& p : peers_) {
         auto& r = *p.remote;
+        // strata-mi50 (2026-10-26): a plugin tier swaps in its own runtime (ABI 3), with blocking fills; was skipped (cache filled at open only)
+        if (r.plugin_) {
+            static const bool off = [] { const char* v = std::getenv("STRATA_PLUGIN_ADAPT"); return v && v[0] == '0'; }();
+            if (off) continue;   // STRATA_PLUGIN_ADAPT=0: the plugin tier keeps what it loaded at open (the ABI 2 behaviour)
+            // the plugin's fills are blocking and cross the helper's own link (the MI50: PCIe 4.0 x4), so far fewer per round than
+            // the in-process tiers' asynchronous max_swaps (96 measured 12% slower decode than no swaps); STRATA_PLUGIN_ADAPT_SWAPS=N
+            static const int cap = [] { const char* v = std::getenv("STRATA_PLUGIN_ADAPT_SWAPS"); return v ? std::atoi(v) : 8; }();
+            int swapped = 0;
+            if (!r.adapt_swaps(usage.data(), primary.data(), resident.data(), (int64_t) primary.size(), std::min(max_swaps, cap),
+                               [&](int64_t l, int64_t e) { return source.blob(l, e); }, swapped, err)) {
+                std::fprintf(stderr, "remote expert decode optimization: %s\n", err.c_str());
+                return false;
+            }
+            static const bool trace = [] { const char* v = std::getenv("STRATA_PLUGIN_ADAPT_LOG"); return v && v[0] == '1'; }();
+            if (trace && swapped > 0) std::fprintf(stderr, "strata-mi50: helper plugin swapped %d experts\n", swapped);
+            continue;
+        }
         std::vector<Swap> swaps;
         std::vector<std::pair<float, int32_t>> candidates, victims;
         for (int32_t l = 0; l < (int32_t) r.layers_present_.size(); ++l) {

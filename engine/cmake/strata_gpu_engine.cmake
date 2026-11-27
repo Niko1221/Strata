@@ -518,6 +518,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(kv_host_dma_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
+  # strata-mi50 (2026-10-23): the helper-GPU expert tier as a DLL for an engine on another HIP runtime (helper_plugin_abi.h,
+  # --expert-cache-plugin).  Only the Windows gfx906 build: the Radeon Pro VII / MI50 is seen there only by HIP 5.x.
+  if(STRATA_HIP_GFX906 AND WIN32)
+    # the prompt helper (ABI 5) uses the prompt kernels of strata_pf_own (moe_helpers.cu) and llama.cpp's MMQ half, which left the
+    # tree in 0.2.16: strata_pf_own's mmq_absent.cpp answers built() = false, so prefill_reserve refuses and the engine keeps the
+    # prompt path on the main card (the helper still serves decode)
+    add_library(strata_helper_gfx906 SHARED src/plugin/helper_plugin.cpp src/plugin/helper_prefill.cu)
+    target_include_directories(strata_helper_gfx906 PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(strata_helper_gfx906 PRIVATE strata_engine strata_pf_own ${_strata_gpu_runtime_target})
+  endif()
+
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
   # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention
   add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)

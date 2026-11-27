@@ -16,10 +16,19 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N
 #define CUBLAS_OP_T HIPBLAS_OP_T
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
+#if hipblasVersionMajor < 2
+// strata-mi50 (2026-10-23): hipBLAS 1.x (HIP SDK 5.7, Windows gfx906 build) has no hipblasComputeType_t and its hipblasGemmEx
+// takes hipblasDatatype_t for both the data and the compute type. Newer hipBLAS keeps the mapping below, unchanged.
+#define CUBLAS_COMPUTE_32F HIPBLAS_R_32F
+#define CUDA_R_32F HIPBLAS_R_32F
+#define CUDA_R_16F HIPBLAS_R_16F
+#define CUDA_R_16BF HIPBLAS_R_16B
+#else
 #define CUBLAS_COMPUTE_32F HIPBLAS_COMPUTE_32F
 #define CUDA_R_32F HIP_R_32F
 #define CUDA_R_16F HIP_R_16F
 #define CUDA_R_16BF HIP_R_16BF
+#endif
 // rocBLAS picks its own math and workspace; the NVIDIA-only knobs are accepted and ignored
 #define CUBLAS_DEFAULT_MATH 0
 #define cublasSetMathMode(handle, mode) HIPBLAS_STATUS_SUCCESS

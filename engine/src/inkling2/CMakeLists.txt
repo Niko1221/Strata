@@ -191,7 +191,7 @@ if(STRATA_BUILD_TESTS)
 endif()
 
 # Optional GPU backend plug-ins (automatically wired when backend lane lands its subfolder!)
-if(STRATA_ENABLE_CUDA)
+if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)   # strata-mi50: the gfx906 HIP build must not enable CUDA here
   if(MSVC AND NOT DEFINED CMAKE_CUDA_RUNTIME_LIBRARY)
     set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
   endif()
@@ -235,7 +235,7 @@ if(STRATA_ENABLE_CUDA)
   target_link_libraries(strata-inkling PRIVATE strata_inkling_ep_cuda)
   target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_EP_CUDA=1)
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cuda/CMakeLists.txt" AND STRATA_ENABLE_CUDA)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cuda/CMakeLists.txt" AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)   # strata-mi50: as above
   add_subdirectory(cuda)
 endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/hip/CMakeLists.txt" AND STRATA_ENABLE_HIP)
