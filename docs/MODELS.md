@@ -265,8 +265,10 @@ one revision and SHA-256 checked. It is in the app's model list and in setup (`-
 | **Q8_0** | 37.8 GB | 37.8 GB |
 
 The picture reader (`mmproj-Ornith-1.5-35B-BF16.gguf`, 0.9 GB) is downloaded with the model. The 122B Ornith models
-are a different size and are not part of this entry. The graphics-memory figures behind the context advice are the
-Qwen3.6 ones, not measured for Ornith yet: on a small card the engine says what it really fits when it starts.
+are a different size and are not part of this entry. Strata loaded and answered with all four sizes on an RTX 3090
+(24 GB, engine 0.1.69, 2026-11-27); the weights that stay on the card were 1.65 GiB (Q4_K_M), 1.85 GiB (Q5_K_M),
+2.06 GiB (Q6_K) and 4.40 GiB (Q8_0), and the context advice uses those. The other graphics-memory figures are the
+Qwen3.6 ones and were not measured on a small card: there the engine says what it really fits when it starts.
 The catalog entry, its tests and the file sizes and hashes are from eSPiYa's patch (PR #7140).
 
 ```sh

@@ -78,6 +78,21 @@ class RunConfig(unittest.TestCase):
             cfg.write_text(json.dumps({"arch": "qwen35moe", "args": ["--max-context", "32768"]}), encoding="utf-8")
             self.assertEqual(setup.choices_from_config(cfg)["family"], "qwen36")
 
+    def test_the_base_figure_is_per_size_from_the_dense_weights_the_engine_printed(self):
+        # measured on an RTX 3090 with engine 0.1.69, `strata launch --family ornith`, 32K ("N GiB on the GPU" of the start): the dense
+        # part grows with the size, so a Q8_0 start holds about 2.5 GiB more than the Q5_K_M start the base figure was first taken from
+        measured = {"Q4_K_M": 1.65, "Q5_K_M": 1.85, "Q6_K": 2.06, "Q8_0": 4.40}
+        self.assertEqual(own_path_fit.DENSE_GPU_GIB_ORNITH, measured)
+        state = own_path_fit.STATE_GIB
+        for q, dense in measured.items():
+            want = own_path_fit.BASE_GIB - 4.40 + dense + own_path_fit.HYBRID_MIN_ORNITH[q] + state
+            self.assertAlmostEqual(own_path_fit.inputs("ornith-1.5-35b-a3b", q)["fixed_gb"], want, places=3, msg=q)
+        fixed = {q: own_path_fit.inputs("ornith-1.5-35b-a3b", q)["fixed_gb"] for q in measured}
+        self.assertEqual(sorted(fixed, key=fixed.get), ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"])
+        self.assertGreater(fixed["Q8_0"] - fixed["Q5_K_M"], 2.5)
+        # Qwen3.6 keeps its one base figure
+        self.assertAlmostEqual(own_path_fit.inputs("qwen3.6-35b-a3b", "Q8_0")["fixed_gb"], own_path_fit.BASE_GIB + 1760 / 1024 + state, places=3)
+
     def test_the_fit_figures_follow_the_config_name(self):
         for q in SIZES:
             self.assertEqual(own_path_fit.from_model_name(f"ornith-1.5-35b-a3b-{q.lower()}"),
