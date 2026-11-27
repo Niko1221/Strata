@@ -1541,6 +1541,22 @@ class Host:
             self.starting = False
             self.phase = None
 
+    def _remove_own_state(self) -> None:
+        """A reader may briefly hold the state file open after the Windows lease closes."""
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                current = _read_state(self.name)
+                if current and current.get("token") == self.token:
+                    self.state_path.unlink(missing_ok=True)
+                return
+            except ProfileError:
+                return
+            except PermissionError as error:
+                if not WINDOWS or not private_files.is_sharing_violation(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+
     def serve(self) -> int:
         activity_lease = acquire_activity_lease(shared=True)
         listener = owner_transport.Listener(self.socket_path, timeout=1.0)
@@ -1624,12 +1640,7 @@ class Host:
                 _unlock_file(self.state_fd)
                 os.close(self.state_fd)
                 self.state_fd = None
-            try:
-                current = _read_state(self.name)
-                if current and current.get("token") == self.token:
-                    self.state_path.unlink(missing_ok=True)
-            except ProfileError:
-                pass
+            self._remove_own_state()
             if not owner_transport.WINDOWS:
                 # POSIX leaves a socket file behind; Windows leaves nothing (the listener's close
                 # releases the port). `Listener.close()` already unlinks the POSIX path, so this is
