@@ -1119,6 +1119,10 @@ struct Options {
     /// limit: an entry goes when the size cap needs room (least recently used first) or when a longer spill of the same conversation
     /// replaces it.  Off by default (a per-process folder, removed at the end).
     bool conversation_spill_persist = false;
+    /// --conversation-spill-idle-s N (with --conversation-spill-persist): after N seconds without a request the parked
+    /// conversations the SSD tier lacks are written (one per wait), so a restart finds them; a graceful stop (QUIT / EOF) writes
+    /// the rest, and a snapshot the RAM tier cannot take goes to the tier at once.  0: no idle writes (stop and oversized stay).
+    int64_t conversation_spill_idle_s = 20;
     int64_t conversation_spill_mib = -1;
     bool session_save_reclaim = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
@@ -4084,13 +4088,14 @@ int main(int argc, char** argv) {
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--conversation-cache-park-gain" || a == "--conversation-spill-mib" ||
-                 a == "--conversation-cache-rewind-keep" ||
+                 a == "--conversation-cache-rewind-keep" || a == "--conversation-spill-idle-s" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
             const int64_t limit = (a == "--conversation-cache-slots" || a == "--conversation-cache-min-tokens" ||
-                                   a == "--conversation-cache-park-gain" || a == "--conversation-cache-rewind-keep")
+                                   a == "--conversation-cache-park-gain" || a == "--conversation-cache-rewind-keep" ||
+                                   a == "--conversation-spill-idle-s")
                                       ? INT32_MAX : INT64_MAX / (1024 * 1024);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 || number > limit) {
                 std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
@@ -4103,6 +4108,7 @@ int main(int argc, char** argv) {
             else if (a == "--conversation-cache-rewind-keep") o.conversation_cache_rewind_keep = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--conversation-spill-mib") o.conversation_spill_mib = number;
+            else if (a == "--conversation-spill-idle-s") o.conversation_spill_idle_s = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
@@ -14159,13 +14165,55 @@ int main(int argc, char** argv) {
         // for the disk.  It stays in RAM (and the physical-RAM gate sees it) until this thread takes it back from the writer:
         // freed (spill_reclaim), or reused as it is when the next request wants it (the restore below).  The RAM gate's own
         // evictions wait for the writer, so the memory they free shows up in the reading.
+        // which parked conversations the idle / stop writer put on the SSD tier (FNV-1a of the token ids -> SSD serial,
+        // UINT64_MAX: tried, not written), so an eviction does not write the same conversation a second time
+        std::unordered_map<uint64_t, uint64_t> spill_done;
+        auto spill_key = [](const strata::core::SavedConversation& img) -> uint64_t {
+            uint64_t h = 1469598103934665603ull;
+            for (const int32_t t : img.live.ids) { h ^= (uint32_t) t; h *= 1099511628211ull; }
+            return h ^ (uint64_t) img.live.ids.size() ^ ((uint64_t) img.live.imgs.size() << 48);
+        };
+        auto spill_held = [&](const strata::core::SavedConversation& img) -> bool {
+            const auto it = spill_done.find(spill_key(img));
+            return it != spill_done.end() && it->second != UINT64_MAX && spill.find(it->second).has_value();
+        };
         std::optional<strata::core::BackgroundWriter<strata::core::SavedConversation>> spill_writer;
         if (spill.enabled()) {
             spill_writer.emplace([&](const strata::core::SavedConversation& s) { return spill_write(s, "evicted from RAM, written in the background"); },
                                  [] { strata::core::spill_detail::lower_thread_priority(); });   // (it gives way to the serve loop)
             conversations.set_evict_sink([&](strata::core::SavedConversation&& v) {
+                if (spill_held(v)) return;   // the idle writer put this very conversation on the SSD tier already
                 if (spill_ready(v, "evicted from RAM")) spill_writer->push(std::move(v));
             });
+        }
+        // --conversation-spill-persist: write the parked conversations the SSD tier lacks
+        // between requests (--conversation-spill-idle-s) and at a graceful stop, so a restart finds them (an eviction alone missed
+        // every conversation still parked in RAM).  One per call
+        // (`why`: idle, stop); false: none left.  Runs on this thread only, between requests.
+        std::function<bool(const char*)> spill_persist_one;
+        // --conversation-spill-persist: a snapshot the RAM tier cannot take (larger than its budget, or physical RAM short) is written here at once
+        // instead of being dropped; true when it is on the SSD tier
+        std::function<bool(const strata::core::SavedConversation&)> spill_direct;
+        if (spill.enabled() && spill.persistent() && o.conversation_spill_idle_s >= 0) {
+            spill_direct = [&](const strata::core::SavedConversation& img) -> bool {
+                if (!spill_ready(img, "direct")) return false;
+                const uint64_t serial = spill_write(img, "direct");
+                if (serial != 0) spill_done[spill_key(img)] = serial;
+                return serial != 0;
+            };
+            spill_persist_one = [&](const char* why) -> bool {
+                for (size_t i = 0; i < conversations.size(); ++i) {
+                    const strata::core::SavedConversation* img = conversations.find(conversations.serial_at(i));
+                    if (img == nullptr || !conversations.wants((int64_t) img->live.ids.size()) || spill_held(*img)) continue;
+                    const uint64_t key = spill_key(*img);
+                    if (spill_done.count(key)) continue;   // tried before (refused by the cost rule, or the write failed)
+                    if (!spill_ready(*img, why)) { spill_done[key] = UINT64_MAX; continue; }
+                    const uint64_t serial = spill_write(*img, why);
+                    spill_done[key] = serial != 0 ? serial : UINT64_MAX;
+                    return true;
+                }
+                return false;
+            };
         }
         // the writer's written images, freed here (they are on the SSD tier); the bytes freed
         auto spill_reclaim = [&]() -> size_t {
@@ -14364,14 +14412,21 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
+            bool disk_only = false;   // the snapshot goes straight to the persistent SSD tier, not into RAM
             if (!conversations.make_room(estimate, held)) {
-                std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
+                if (!spill_direct) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
+                                 estimate >> 20);
+                    return true;
+                }
+                disk_only = true;
+                std::fprintf(stderr, "strata serve: conversation cache: snapshot %zu MiB exceeds the RAM budget; writing it to the SSD tier\n",
                              estimate >> 20);
-                return true;
             }
             const auto t0 = Clock::now();
             try {
-                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                // a disk-only snapshot lives for the one write (about a second) and is freed: no parking floor for it
+                const uint64_t floor = disk_only ? 0 : (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
                 // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
@@ -14403,7 +14458,7 @@ int main(int argc, char** argv) {
                 // OS at once, or the reading could never show them.
                 bool no_progress = false;
                 std::string cannot_help_note;   // #2253: the refusal line's note when no eviction could have made room
-                if (!fits) {
+                if (!fits && !disk_only) {   // (a disk-only snapshot evicts nothing: it is written out and freed at once)
                     const strata::core::EvictForRam r = strata::core::evict_for_ram(
                         admit, [&] { return mem ? std::optional<uint64_t>(mem->available) : std::nullopt; },
                         [&]() -> size_t {
@@ -14428,6 +14483,20 @@ int main(int argc, char** argv) {
                         std::snprintf(note, sizeof note, "; short by %llu MiB, more than the %zu parked hold (%zu MiB), so none was evicted",
                                       (unsigned long long) (r.short_by >> 20), conversations.size(), conversations.evictable_bytes() >> 20);
                         cannot_help_note = note;
+                    }
+                }
+                // physical RAM is short for parking, but the snapshot can still go to the persistent SSD tier: it is held
+                // only for the write, so it needs only a small floor (512 MiB), not the parking floor
+                if (!fits && !disk_only && spill_direct) {
+                    const int64_t disk_floor_mib = std::min<int64_t>(o.conversation_cache_min_free_mib, 512);
+                    mem = strata::core::sample_host_memory();
+                    if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
+                                                                additional, (uint64_t) disk_floor_mib << 20)) {
+                        disk_only = fits = true;
+                        std::fprintf(stderr, "strata serve: conversation cache: physical RAM short for parking (need %zu MiB "
+                                             "plus %lld MiB floor, %s; evicted %zu); writing it to the SSD tier\n",
+                                     additional >> 20, (long long) o.conversation_cache_min_free_mib,
+                                     ram_note(mem).c_str(), evicted);
                     }
                 }
                 if (!fits) {
@@ -14483,17 +14552,24 @@ int main(int argc, char** argv) {
                 }
                 auto mem_after = strata::core::sample_host_memory();
                 // (the park pools' idle memory is the first RAM to go back here too: a park the check refuses with the pools held would pass without them)
-                if (!strata::core::conversation_memory_admit(
+                if (!disk_only && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor) && pools_budget.idle_bytes() > 0) {
                     pools_budget.shrink((size_t) -1);
                     mem_after = strata::core::sample_host_memory();
                 }
-                if (!strata::core::conversation_memory_admit(
+                if (!disk_only && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     // the SSD tier: the captured image is written out and freed instead of thrown away (P2, entry c)
                     if (spill_put(image, "the RAM floor after the capture")) return true;
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
+                    return true;
+                }
+                if (disk_only) {   // write it to the persistent SSD tier now, then free it (not parked in RAM)
+                    const bool ok = spill_direct(image);
+                    std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens%s to the SSD tier in %.1f ms (not parked in RAM)\n",
+                                 ok ? "wrote" : "could not write", src.ids.size(), src.what.c_str(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
@@ -16037,7 +16113,17 @@ int main(int argc, char** argv) {
         }).detach();
         auto next_line = [&](std::string& out) -> bool {
             std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
+            const auto ready = [&] { return !in_lines.empty() || in_eof; };
+            // --conversation-spill-idle-s: no request for that long - write the parked conversations the SSD tier lacks,
+            // one at a time, waiting that long again between them (a request that comes meanwhile waits for at most one write)
+            while (spill_persist_one && o.conversation_spill_idle_s > 0 &&
+                   !in_cv.wait_for(lk, std::chrono::seconds(o.conversation_spill_idle_s), ready)) {
+                lk.unlock();
+                const bool more = spill_persist_one("idle");
+                lk.lock();
+                if (!more) break;
+            }
+            in_cv.wait(lk, ready);
             if (in_lines.empty()) return false;
             out = std::move(in_lines.front());
             in_lines.pop_front();
@@ -23956,6 +24042,18 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+        // --conversation-spill-persist: a graceful stop writes what the SSD tier lacks - the evictions still queued, then the parked conversations -
+        // so a restart finds them.  Bounded: the server waits ENGINE_QUIT_WAIT_S (20 s) for the engine to end.  The live
+        // conversation (not parked) is not written.
+        if (spill_persist_one) {
+            constexpr double kStopWriteS = 12.0;
+            const auto ts = Clock::now();
+            if (spill_writer) spill_writer->wait_idle();
+            size_t n = 0;
+            while (std::chrono::duration<double>(Clock::now() - ts).count() < kStopWriteS && spill_persist_one("stop")) ++n;
+            std::fprintf(stderr, "strata serve: conversation cache: %zu parked conversation%s written to the SSD tier at stop in %.1f s\n",
+                         n, n == 1 ? "" : "s", std::chrono::duration<double>(Clock::now() - ts).count());
+        }
 #if defined(STRATA_USE_HIP) && defined(__linux__)
         kfdq_exit::g_stop.store(nullptr);   // the flag goes with this scope
 #endif
