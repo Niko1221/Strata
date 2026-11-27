@@ -311,7 +311,7 @@ jobs:
       HF_STRATA: https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/5623ceb47d7a01db827460ce1c23e7818a75661b
       HF_GSQ: https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF/resolve/357051619a8805c032e58a9976cea9bddb0832cd
       HF_UNSLOTH: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/8078d149286eec7193795413b9e0643da6d11fa1
-      HF_DFLASH2: https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/4f9088ea66c21f2b99ed657d1941c306b03e84d2
+      HF_DFLASH2: https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/04ecd36faef74e696f0a7b6b3c119264442a6234
     steps:
       - uses: actions/checkout@v4
         with:
@@ -341,8 +341,9 @@ jobs:
           for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json chat_template.jinja; do
             curl -fsSL --retry 3 -o "$W/tok/$f" "$HF_STRATA/$f"
           done
-          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/dflash2.safetensors" "$HF_DFLASH2/model.safetensors"
-          echo "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee  $W/models/dflash2.safetensors" | sha256sum -c -
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/dflash2.safetensors" "$HF_DFLASH2/Inkling-2-Mini-DFlash2-mix.safetensors"
+          test "$(stat -c%s "$W/models/dflash2.safetensors")" = 551600700
+          echo "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387  $W/models/dflash2.safetensors" | sha256sum -c -
           ls -l "$W/tok" "$W/models/dflash2.safetensors"
 
       - name: 2. SQv2-20 (.strata) + DFlash 2 + STRATA_INK_INTELARC (off/exact/fast) gate

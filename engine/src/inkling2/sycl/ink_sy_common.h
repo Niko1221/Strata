@@ -79,12 +79,16 @@ inline bool seek_abs(FILE* fp, uint64_t off) {
 // Preserves any explicit user override of UR_LOADER_USE_LEVEL_ZERO_V2.
 inline void ensure_l0_v1_default() {
     if (!std::getenv("UR_LOADER_USE_LEVEL_ZERO_V2")) {
+#ifndef INK_SYCL_USE_ONEMKL
+        // only a zero-oneMKL build may opt into V2: with oneMKL linked, V2 is the SIGSEGV the line above describes (release builds link oneMKL)
         if (intelarc_env_requested()) {
             sy_setenv("UR_LOADER_USE_LEVEL_ZERO_V2", "1", 0);
             if (!std::getenv("SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS")) {
                 sy_setenv("SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS", "1", 0);
             }
-        } else {
+        } else
+#endif
+        {
             sy_setenv("UR_LOADER_USE_LEVEL_ZERO_V2", "0", 0);
         }
     }
