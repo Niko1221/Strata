@@ -4303,6 +4303,22 @@ __global__ void __launch_bounds__(256) k_moe_reduce_buckets_h(
     moe_out[static_cast<size_t>(b) * D + d] = acc;
 }
 
+// RDNA2 rocBLAS dense route: BF16 weights -> FP16 (exact for |w| in FP16 range), and FP16 GEMM out -> FP32 (+ bias)
+__global__ void __launch_bounds__(256) k_bf16_to_f16_vec4(const uint16_t* __restrict__ src, half_t* __restrict__ dst, size_t n4) {
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= n4) return;
+    const uint2 v = reinterpret_cast<const uint2*>(src)[i];
+    const uint32_t w[4] = {v.x << 16, v.x & 0xffff0000u, v.y << 16, v.y & 0xffff0000u};
+    half_t* d = dst + i * 4;
+    for (int j = 0; j < 4; ++j) d[j] = static_cast<half_t>(__builtin_bit_cast(float, w[j]));
+}
+__global__ void __launch_bounds__(256) k_f16_to_f32_bias(const half_t* __restrict__ y16, const float* __restrict__ bias,
+                                                         float* __restrict__ y, int M, int N) {
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= static_cast<size_t>(M) * N) return;
+    y[i] = static_cast<float>(y16[i]) + (bias ? bias[i % N] : 0.0f);
+}
+
 // RDNA2 rocBLAS prompt route: the layer's descriptor table with only the VRAM experts that got 1..min_rows-1 rows
 // (the grouped native kernels run those in one launch; null descriptors are skipped). Block: 128.
 __global__ void __launch_bounds__(128) k_moe_small_descs(

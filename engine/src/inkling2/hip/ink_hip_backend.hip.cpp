@@ -4897,6 +4897,23 @@ private:
                 return;
             }
         }
+        // RDNA2 rocBLAS: BF16 GEMMs run ~6.7 TFLOPS there, FP16-in/FP16-out up to 40: widen W to FP16 per call (N*K*4 bytes of
+        // traffic), X straight from FP32 to FP16, one FP16 GEMM, widen Y (+ bias). STRATA_INK_ROCBLAS_DENSE=0 keeps BF16.
+        if (dense_f16_ && blaslt_.is_rocblas() && M >= blaslt_min_m_ && N >= 64 && K >= 64 && (static_cast<size_t>(N) * K) % 4 == 0) {
+            const size_t nw = static_cast<size_t>(N) * K, nx = static_cast<size_t>(M) * K, ny = static_cast<size_t>(M) * N;
+            auto grow = [&](GpuBuffer& b, size_t bytes) { if (b.bytes < bytes) { free_gpu_buffer(b); (void)alloc_gpu_buffer(b, bytes, mem_info_.is_uma); } return b.bytes >= bytes; };
+            if (grow(dense_w16_, nw * 2) && grow(dense_x16_, nx * 2) && grow(dense_y16_, ny * 2)) {
+                half_t* w16 = reinterpret_cast<half_t*>(dense_w16_.dev_ptr);
+                half_t* x16 = reinterpret_cast<half_t*>(dense_x16_.dev_ptr);
+                half_t* y16 = reinterpret_cast<half_t*>(dense_y16_.dev_ptr);
+                k_bf16_to_f16_vec4<<<static_cast<unsigned>((nw / 4 + 255) / 256), 256, 0, stream_>>>(W, w16, nw / 4);
+                k_f32_to_f16<<<static_cast<unsigned>((nx + 255) / 256), 256, 0, stream_>>>(X, x16, static_cast<int>(nx));
+                if (blaslt_.gemm_f16_f16(w16, x16, y16, M, N, K, stream_, 1.0f)) {
+                    k_f16_to_f32_bias<<<static_cast<unsigned>((ny + 255) / 256), 256, 0, stream_>>>(y16, bias, Y, M, N);
+                    return;
+                }
+            }
+        }
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
             if (sc_x_bf16_.bytes >= need) {
@@ -10003,6 +10020,7 @@ private:
         adj_dir_.clear();
         free_gpu_buffer(expert_gpu_arena_); free_gpu_buffer(d_exp_stage_);
         free_gpu_buffer(d_exp_w13_f16_); free_gpu_buffer(d_exp_w2_f16_);
+        free_gpu_buffer(dense_w16_); free_gpu_buffer(dense_x16_); free_gpu_buffer(dense_y16_); free_gpu_buffer(sc_bucket_y32_); free_gpu_buffer(sc_small_exps_);
         free_gpu_buffer(d_dspark_state_); free_gpu_buffer(d_dspark_state2_); free_gpu_buffer(d_dspark_latent_);
         free_gpu_buffer(d_dspark_corr_); free_gpu_buffer(d_dspark_toks_);
         free_gpu_buffer(d_dspark_blk_v_); free_gpu_buffer(d_dspark_blk_i_);
@@ -10147,6 +10165,8 @@ private:
     };
     int blaslt_moe_min_b_ = 999999;
     bool moe_y_f16_ = false;
+    bool dense_f16_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_DENSE"); return !(e && e[0] == '0'); }();
+    GpuBuffer dense_w16_, dense_x16_, dense_y16_;   // RDNA2 rocBLAS dense route scratch
     GpuBuffer sc_bucket_y32_, sc_small_exps_;   // grouped small experts of the RDNA2 rocBLAS route
     int rocblas_min_rows_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_MIN_ROWS"); return e ? std::max(1, std::atoi(e)) : 16; }();   // RDNA2 rocBLAS prompt route: expert GEMMs write FP16 buckets
     bool use_i8_moe_wmma_ = true;
