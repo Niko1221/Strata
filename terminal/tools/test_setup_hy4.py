@@ -368,7 +368,7 @@ class Defaults0218(unittest.TestCase):
         self.assertEqual(hy4_family.files_of("SQ-64"), ["Hy4-Flash-SQ-64.strata", hy4_family.ENGRAM_FILE, hy4_family.VISION_FILE])
         self.assertEqual(hy4_family.files_of("SQ-64", vision=False), ["Hy4-Flash-SQ-64.strata", hy4_family.ENGRAM_FILE])
 
-    def install(self, vram=12.0, **over):
+    def install(self, vram=12.0, hip=False, **over):
         """install_hy4_flash with the heavy steps stubbed, small stand-in files in the model folder: returns (the config setup wrote, the lines it said)."""
         import argparse
         tmp = tempfile.TemporaryDirectory()
@@ -394,7 +394,7 @@ class Defaults0218(unittest.TestCase):
                 mock.patch.object(setup, "data_folder_for", return_value=(root / "data", None)), mock.patch.object(setup, "hy4_tokenizer_dir", return_value=root / "tok"), \
                 mock.patch.object(setup, "write_setup_config", lambda path, cfg, *x, **k: written.update(cfg)), mock.patch.object(setup, "write_run_script", return_value=Path("run.cmd")), \
                 mock.patch.object(setup, "explicit_args", return_value=[]), mock.patch.object(setup, "pip_cuda_libs", create=True):
-            setup.install_hy4_flash(a, "hy4-flash", gpu, False, False, None, False, 8095, 64.0, None)
+            setup.install_hy4_flash(a, "hy4-flash", gpu, hip, False, None, False, 8095, 64.0, None)
         return written, lines, root
 
     def test_the_default_install_is_128k_with_the_drafter_and_the_pictures(self):
@@ -405,8 +405,8 @@ class Defaults0218(unittest.TestCase):
         self.assertEqual(cfg["drafting"], "dfly2")
         self.assertEqual(cfg["arch"], "hy4flash")
         self.assertEqual(cfg["exe"], "component:strata-hy4")
-        self.assertEqual(args[args.index("--vram-experts-gb") + 1], "5.22")               # 12 GiB at 128K with elastic 16K initial KV + adaptive vcache slabs leaves 5.22 GB for VRAM experts
-        self.assertEqual(args[args.index("--ram-experts-gb") + 1], "50.82")
+        self.assertEqual(args[args.index("--vram-experts-gb") + 1], "4.87")               # 12 GiB at 128K with elastic 16K initial KV + adaptive vcache slabs leaves 5.22 GB for VRAM experts, written as the GiB the engine reads (#6792's rule, now Hy4's too)
+        self.assertEqual(args[args.index("--ram-experts-gb") + 1], "47.33")
         self.assertTrue(any(l.startswith("images: on") for l in lines), lines)
 
     def test_vision_no_leaves_the_shard_and_the_option_out(self):
@@ -426,8 +426,18 @@ class Defaults0218(unittest.TestCase):
     def test_the_planned_placement_on_an_8_gib_card_is_written_at_128k(self):
         cfg, _lines, _ = self.install(vram=8.0)                                          # the engine lanes deal with a cache that does not fit the card
         args = cfg["args"]
-        self.assertEqual(args[args.index("--vram-experts-gb") + 1], "1.44")
-        self.assertEqual(args[args.index("--ram-experts-gb") + 1], "54.60")        # 8 GiB + 64 GiB, SQ-64 with elastic 16K initial KV: 1.44 GB VRAM + 54.60 GB RAM (fits in memory)
+        self.assertEqual(args[args.index("--vram-experts-gb") + 1], "1.35")
+        self.assertEqual(args[args.index("--ram-experts-gb") + 1], "50.86")         # 8 GiB + 64 GiB, SQ-64 with elastic 16K initial KV: 1.44 GB VRAM + 54.60 GB RAM, both as GiB (fits in memory)
+
+    def test_a_hip_plan_that_fills_the_card_and_the_ram_gets_ram_tier_slack(self):
+        """A card+RAM plan with no SSD tier keeps every expert in memory only if the RAM cap has room (the engine places a few percent
+        more than the plan into RAM: `RAM_TIER_SLACK_GIB` / `RAM_TIER_SLACK_FRAC`, bounded by the free RAM), the HIP lane's rule
+        (`inkling_expert_flags`, measured on an RX 7900 XT) now Hy4's too: on a HIP box the cap stays at the plan's room."""
+        with mock.patch.object(setup, "ram_free_gb", return_value=64.0):
+            cfg, _lines, _ = self.install(hip=True)
+        args = cfg["args"]
+        self.assertEqual(args[args.index("--vram-experts-gb") + 1], "4.87")
+        self.assertEqual(args[args.index("--ram-experts-gb") + 1], "49.94")           # 47.33 GiB of experts + the RAM_TIER slack (0.05 x the plan's 52.2 GiB = 2.61 GiB)
 
 
 class Catalog(unittest.TestCase):
