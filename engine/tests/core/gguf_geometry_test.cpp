@@ -266,6 +266,39 @@ int main(int argc, char** argv) {
               "another architecture is refused by name, by the reader and the guard");
     }
     {
+        // #7295: the recurrent-depth loop's optional loop.* keys. No loop.* keys at all: off, unchanged.
+        const Result off = run(d.path, full_keys());
+        check(off.read_err.empty() && !off.g.has_loop(), "no loop.* keys: loop_num_passes defaults to 1 (off)");
+
+        // layer 3 is QSA under the default full_attention_interval = 4; a valid single-QSA-layer range
+        const fixture::Kv cs = fixture::u32(p + "loop.core_start", 3), ce = fixture::u32(p + "loop.core_end", 4),
+                          np = fixture::u32(p + "loop.num_passes", 3), gr = fixture::u32(p + "loop.gate_rank", 64);
+        const Result on = run(d.path, with(with(with(with(full_keys(), cs.key, &cs), ce.key, &ce), np.key, &np), gr.key, &gr));
+        check(on.read_err.empty() && on.g.has_loop() && on.g.loop_core_start == 3 && on.g.loop_core_end == 4 &&
+                  on.g.loop_num_passes == 3 && on.g.loop_gate_rank == 64,
+              "loop.core_start=3..core_end=4 (layer 3 is QSA), num_passes=3, gate_rank=64: read");
+
+        // a range that includes a GDN layer (2 is GDN under interval 4) is refused by layer number
+        const fixture::Kv ce2 = fixture::u32(p + "loop.core_end", 5);
+        check(has(run(d.path, with(with(with(full_keys(), cs.key, &cs), ce2.key, &ce2), np.key, &np)).read_err,
+                 "which is a GDN layer"),
+              "a loop range over a GDN layer (2) is refused, naming the layer");
+
+        // an empty or inverted range is refused
+        const fixture::Kv ce_eq = fixture::u32(p + "loop.core_end", 3);
+        check(has(run(d.path, with(with(with(full_keys(), cs.key, &cs), ce_eq.key, &ce_eq), np.key, &np)).read_err,
+                 "not a valid sub-range"),
+              "loop.core_end == loop.core_start is refused");
+        const fixture::Kv ce_big = fixture::u32(p + "loop.core_end", 49);
+        check(has(run(d.path, with(with(with(full_keys(), cs.key, &cs), ce_big.key, &ce_big), np.key, &np)).read_err,
+                 "not a valid sub-range"),
+              "loop.core_end beyond n_layers is refused");
+
+        // with num_passes absent (<= 1, "off"), an otherwise-invalid range is never consulted at all
+        const Result stale = run(d.path, with(with(full_keys(), cs.key, &cs), ce_big.key, &ce_big));
+        check(stale.read_err.empty() && !stale.g.has_loop(), "an invalid range with loop.num_passes absent (off) reads fine");
+    }
+    {
         // Qwen3.8-27B's own keys (qwen35, dense): the reader names the architecture, not the first qwen4exp key it
         // misses (which is what generate printed before the reader checked the name)
         const std::vector<fixture::Kv> dense = {

@@ -852,6 +852,32 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
     if (g.n_rot > g.head_dim || g.n_rot > g.idx_key_dim || g.n_rot % 2)
         return p + "rope.dimension_count = " + std::to_string(g.n_rot) + " is not an even slice of the head widths";
 
+    // Recurrent-depth loop, generic path, QSA-only (issue #7295) - a port of Inkling2Loop's own loop
+    // (engine/src/inkling2/), adapted for QSA's single mixer input and per-pass KV. `loop.num_passes`
+    // absent or <= 1 leaves every loop_* field at its ModelGeometry default (off, `has_loop()` false) -
+    // the generic path is unaffected unless a model's metadata explicitly turns this on.
+    if (!read_int("loop.num_passes", g.loop_num_passes, false)) return err;
+    if (!read_int("loop.core_end", g.loop_core_end, false)) return err;
+    if (!read_int("loop.gate_rank", g.loop_gate_rank, false)) return err;
+    if (const MetaValue* v = f.get(p + "loop.core_start")) {
+        // read_int refuses 0 as "not positive"; core_start = 0 is valid (the whole trunk up to core_end
+        // is the loop range), so this key is read by hand rather than through read_int.
+        if (!v->is_num() || v->type == MetaType::F32 || v->type == MetaType::F64 || v->type == MetaType::BOOL)
+            return p + "loop.core_start is not an integer";
+        if ((int64_t) v->u < 0) return p + "loop.core_start must not be negative";
+        g.loop_core_start = (int64_t) v->u;
+    }
+    if (g.has_loop()) {
+        if (g.loop_core_end <= g.loop_core_start || g.loop_core_end > g.n_layers)
+            return p + "loop.core_start/core_end = " + std::to_string(g.loop_core_start) + ".." +
+                   std::to_string(g.loop_core_end) + " is not a valid sub-range of the " +
+                   std::to_string(g.n_layers) + " layers";
+        for (int64_t l = g.loop_core_start; l < g.loop_core_end; ++l)
+            if (!core::is_qsa_layer(g, l))
+                return p + "loop.core_start/core_end includes layer " + std::to_string(l) +
+                       ", which is a GDN layer - the loop is QSA-only (its GDN recurrent state is not touched)";
+    }
+
     // The layer split, twice over: the interval, and a ratio per layer that is non-zero (the indexer's pooling
     // block) exactly on the full-attention layers.
     if (const MetaValue* v = f.get(p + "attention.compress_ratios")) {

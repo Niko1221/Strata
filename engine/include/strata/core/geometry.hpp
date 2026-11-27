@@ -59,12 +59,25 @@ struct ModelGeometry {
     ModelFamily family = ModelFamily::Qwen4Exp;
     int64_t n_mtp_layers = 0;       ///< MTP blocks inside the model file, after the trunk (qwen35moe: blk.40)
 
+    // Recurrent-depth loop, generic path, QSA-only (issue #7295) - a port of Inkling2Loop's own loop
+    // (engine/src/inkling2/inkling2_loop.cpp, ink_cpu_backend.cpp), adapted to QSA's single mixer input
+    // (2 gated channels: the QSA mixer's input and the FFN/MoE input, not Inkling2Loop's 4 - it derives
+    // Q/K/V from 3 separately-normed tensors, QSA derives them all from one `gr_read` output) and to
+    // per-pass KV lanes instead of shared KV. `loop_num_passes = 1` is "off" - every field below is
+    // meaningless and every new code path is skipped.
+    int64_t loop_core_start = 0;    ///< loop.core_start: first repeated layer (inclusive); meaningless while off
+    int64_t loop_core_end = 0;      ///< loop.core_end: one past the last repeated layer (exclusive)
+    int64_t loop_num_passes = 1;    ///< loop.num_passes: > 1 enables the loop over [core_start, core_end)
+    int64_t loop_gate_rank = 0;     ///< loop.gate_rank: the GRU gate's low-rank width (Inkling2Loop default 64)
+
     constexpr bool has_indexer() const { return idx_q_heads > 0; }              ///< false: dense attention only
     constexpr bool has_hyper_connections() const { return hc > 0; }             ///< false: plain pre-norm residual
     constexpr int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     constexpr int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
     constexpr int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
+    constexpr bool has_loop() const { return loop_num_passes > 1; }             ///< false: today's single-pass trunk
+    constexpr int64_t loop_core_len() const { return has_loop() ? loop_core_end - loop_core_start : 0; }
 };
 
 }  // namespace strata::core

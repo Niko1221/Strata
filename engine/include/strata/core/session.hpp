@@ -20,6 +20,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -60,6 +61,48 @@ struct SessionState {
     int64_t gdn_ord0 = 0;                 ///< global GDN ordinal of `gdn_state` row 0
     int64_t gdn_alloc = 0;                ///< allocated GDN rows
     int qsa_primary() const { return (int) qsa_ord0; }
+
+    // ================================ RECURRENT-DEPTH LOOP, QSA-ONLY (issue #7295) ================================
+    //
+    // A port of Inkling2Loop's own loop (engine/src/inkling2/), not a from-scratch design - see
+    // LOOP_TRANSFORMER_PLAN.md §2a/§2b for the real mechanism this mirrors and the two honest
+    // adaptations (2 gated channels instead of 4; the GRU gate and message-attention math are the
+    // same). Per the user's explicit choice, KV is PER-PASS, matching Inkling2Loop's `visit_kv_slot`
+    // exactly, not shared across passes.
+    //
+    // Every layer in `[loop_core_start, loop_core_end)` is QSA (the GGUF reader refuses otherwise),
+    // so `qsa_states[]` gets `(loop_num_passes - 1) * (loop_core_end - loop_core_start)` EXTRA states
+    // appended after the normal `qsa_alloc` ones - one full KV cache per (in-range layer, pass > 0).
+    // Pass 0 of an in-range layer uses its ordinary slot, same as any other QSA layer.
+    int64_t qsa_pass_extra_ord0 = 0;      ///< index into `qsa_states[]` where the per-pass extras start
+    /// Which `qsa_states[]` slot layer `layer` uses on pass `pass` (0 outside the loop, or `pass == 0`,
+    /// always returns the ordinary slot a model without a loop would use).
+    int64_t qsa_pass_slot(const ModelGeometry& g, int64_t layer, int64_t pass) const {
+        if (pass <= 0 || !g.has_loop() || layer < g.loop_core_start || layer >= g.loop_core_end)
+            return layer / std::max<int64_t>(g.qsa_interval, 1);
+        return qsa_pass_extra_ord0 + (pass - 1) * g.loop_core_len() + (layer - g.loop_core_start);
+    }
+
+    // The restart-from-prelude state (LOOP_TRANSFORMER_PLAN.md §2a): `loop_R0` is `R`'s snapshot right
+    // after the prelude, restored into `R` at the start of every pass > 0 - a hard reset, not a blend
+    // (Inkling2Loop's `cur = prelude` line). `loop_bank`/`loop_bank_out` hold the PREVIOUS pass's
+    // per-layer snapshots (one per in-range layer, (hc, n_embd) each) and its end-of-core-range state,
+    // read by the message-attention step at the start of each later pass. All three are null, and
+    // never read, when `!g.has_loop()`.
+    float* loop_R0 = nullptr;         ///< (hc, n_embd): the full residual, snapshotted right after the prelude
+    /// (loop_core_len, n_embd) each - plain vectors, the mixer's INPUT activation (`bb.mixed`), the generic
+    /// path's analog of Inkling2Loop's plain-D residual bank (it has no hyper-connection streams at all, so
+    /// there is no `hc` axis here, unlike `loop_R0`). `loop_bank_write` is what THIS pass's layers snapshot
+    /// into, one entry per in-range layer, as each one runs; `loop_bank_read` is what the message-attention
+    /// step reads from - copied (one device memcpy, at the pass boundary, same timing as the `loop_R0`
+    /// reset) from the PREVIOUS pass's `loop_bank_write` once that pass is done writing it. Never aliased: a
+    /// pass's own writes must not be visible to its own reads, which only Inkling2Loop's separate
+    /// `blocks`/`bank` variables (LOOP_TRANSFORMER_PLAN.md §2a) made obvious was a real requirement.
+    float* loop_bank_write = nullptr;
+    float* loop_bank_read = nullptr;
+    float* loop_bank_out = nullptr;   ///< (n_embd,), the previous pass's end-of-core-range mixer input
+    float* loop_msg_ws = nullptr;     ///< scratch for the message-attention step (2, n_embd) per token
+    float* loop_ctrl_ws = nullptr;    ///< scratch for the GRU gate step, `loop_ctrl_workspace_bytes`
     /// The doorbell the host loop polls.  Null until a caller provides one - the engine runs without it, and
     /// neither `session_token` nor `session_replay` looks at it.
     const Doorbell* db = nullptr;
@@ -198,6 +241,18 @@ struct SessionGraphs {
     cudaGraphExec_t* preA = nullptr;   ///< `half == 1`: gr_read -> attention -> gr_write   (the MIXER)
     cudaGraphExec_t* preB = nullptr;   ///< `half == 2`: gr_read -> moe_route              (FFN front + ROUTER)
     bool split_captured = false;
+
+    /// Recurrent-depth loop, QSA-only (issue #7295, a port of Inkling2Loop's own loop): one extra
+    /// captured `pre` graph array per pass > 0 (`execs_pass[pass - 1][layer]`), non-null only for
+    /// layers inside `[loop_core_start, loop_core_end)` - null everywhere else and whenever
+    /// `!g.has_loop()`. Pass 0 reuses the ordinary `execs[l]` unchanged. Unlike an earlier draft of
+    /// this feature, EVERY pass writes its own fresh KV lane (the user chose this over KV-sharing to
+    /// match Inkling2Loop exactly, LOOP_TRANSFORMER_PLAN.md §2b) - so what differs between
+    /// `execs[l]`/`execs_pass[p][l]` is WHICH `QsaState` the graph was captured against (and, for
+    /// `pass > 0`, the message-attention + GRU gate nodes `block_layer_pre` adds), not whether KV is
+    /// written at all. `post[l]` needs no per-pass variant: it takes no `QsaState` and the gate
+    /// never touches it.
+    std::vector<cudaGraphExec_t*> execs_pass;
 
     /// How many times `session_loop` has run.  `rings_mid_graph` and `ms_to_ring` are CUMULATIVE and the loop
     /// is called once per token, so anything reporting a ratio needs this - and prefill runs the loop too, so

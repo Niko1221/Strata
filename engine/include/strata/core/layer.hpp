@@ -604,6 +604,20 @@ bool ple_finish_token(const PleRun& p, void* stream, std::string& err);
 /// Internal PLE workspace plus one separate hc_dim normalized row for advancing history.
 uint64_t ple_run_scratch_bytes();
 
+/// Recurrent-depth loop, QSA-only (issue #7295) - a port of Inkling2Loop's own loop (see
+/// include/strata/kernels/loop_gate.hpp), not a from-scratch design. One of these is built by the caller
+/// (`session_capture`, one captured graph variant per pass) for a layer inside
+/// `[loop_core_start, loop_core_end)`; null for every other layer and whenever `!g.has_loop()`.
+struct LoopPassCtx {
+    int64_t pass = 0;             ///< this graph variant's pass (0: snapshot the bank, never gate)
+    float* bank_slot = nullptr;   ///< THIS layer's write slot inside `SessionState::loop_bank_write`
+    const float* bank_read = nullptr;   ///< the previous pass's full bank (`loop_bank_read`)
+    const float* bank_out = nullptr;    ///< the previous pass's end-of-core-range state (`loop_bank_out`)
+    int64_t bank_n = 0;            ///< entries in `bank_read` (`loop_core_len()`)
+    float* msg_ws = nullptr;       ///< scratch, `(2, n_embd)` (`SessionState::loop_msg_ws`)
+    float* ctrl_ws = nullptr;      ///< scratch, `loop_ctrl_workspace_bytes` (`SessionState::loop_ctrl_ws`)
+};
+
 /// `ple` is the layer-1 PLE, or null to skip it (which is what every measurement before LEDGER L123 did).
 /// It is applied INSIDE `pre[1]`, before layer 1's own `gr_read`, because the block's output is
 /// `hidden + gated + silu(conv)` on the residual itself - it is a residual UPDATE, and the architecture puts
@@ -611,7 +625,7 @@ uint64_t ple_run_scratch_bytes();
 bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
                  const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,
                  int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,
-                 const Doorbell* db = nullptr, const PleRun* ple = nullptr);
+                 const Doorbell* db = nullptr, const PleRun* ple = nullptr, const LoopPassCtx* loop = nullptr);
 
 /// **THE BLOCK, SPLIT AT THE ROUTER, SO A HOST LOOP CAN PUT THE CPU POOL IN THE MIDDLE.**
 ///
@@ -645,7 +659,7 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
                      int32_t pos_base, const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb,
                      const MoEBuffers& mb, int64_t k, const BlockBuffers& bb, void* stream, std::string& err,
                      const Doorbell* db = nullptr, const PleRun* ple = nullptr, int half = 0,
-                     int stage_prefix = 0);
+                     int stage_prefix = 0, const LoopPassCtx* loop = nullptr);
 
 bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,
                       const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,

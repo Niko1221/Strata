@@ -11,6 +11,8 @@
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/loop_gate.hpp"
+#include "strata/core/loop_step.hpp"
 
 #include <cuda_runtime.h>
 
@@ -48,6 +50,31 @@ static uint64_t ple_hist_bytes() {
     return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
+/// Recurrent-depth loop, QSA-only (issue #7295): how many EXTRA `QsaState`s the per-pass KV lanes need
+/// beyond the ordinary `qsa_alloc` - 0 unless the loop is on and its range overlaps [layer_lo, layer_hi).
+static int64_t loop_extra_qsa_states(const ModelGeometry& g, int64_t layer_lo, int64_t layer_hi) {
+    if (!g.has_loop()) return 0;
+    const int64_t lo = std::max(g.loop_core_start, layer_lo), hi = std::min(g.loop_core_end, layer_hi);
+    if (hi <= lo) return 0;
+    return (g.loop_num_passes - 1) * (hi - lo);
+}
+
+/// `loop_R0` (the full (hc, n_embd) residual, for the hard restart-from-prelude reset) + `loop_bank_write` /
+/// `loop_bank_read` / `loop_bank_out` (plain n_embd vectors - the mixer's INPUT activation, `bb.mixed`, the
+/// generic path's analog of Inkling2Loop's plain-D residual bank, since it has no hyper-connection streams
+/// at all) + `loop_msg_ws`. 0 when the loop is off or its range does not overlap this session's layer slice.
+static uint64_t loop_state_bytes(const ModelGeometry& g, int64_t layer_lo, int64_t layer_hi) {
+    if (!g.has_loop()) return 0;
+    const int64_t lo = std::max(g.loop_core_start, layer_lo), hi = std::min(g.loop_core_end, layer_hi);
+    if (hi <= lo) return 0;
+    const uint64_t r0 = (uint64_t) g.hc * g.n_embd * sizeof(float);
+    const uint64_t d = (uint64_t) g.n_embd * sizeof(float);
+    const strata::kernels::LoopCtrlShapes ctrl_shapes{g.n_embd, g.loop_gate_rank};
+    return r0 /* R0 */ + 2 * (uint64_t) (hi - lo) * d /* bank_write + bank_read */ + d /* bank_out */ +
+           (uint64_t) 2 * g.n_embd * sizeof(float) /* msg_ws */ +
+           (uint64_t) strata::kernels::loop_ctrl_workspace_bytes(ctrl_shapes) /* ctrl_ws */;
+}
+
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
@@ -56,16 +83,20 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     const int64_t q_lo = layer_lo / I, q_hi = layer_hi / I;
     const int64_t q_n = std::max<int64_t>(q_hi - q_lo, g.n_qsa_layers() > 0 ? 1 : 0);
     const int64_t gdn_n = std::max<int64_t>((layer_hi - layer_lo) - std::max<int64_t>(q_hi - q_lo, 0), 0);
+    const int64_t q_extra = loop_extra_qsa_states(g, layer_lo, layer_hi);
     uint64_t n = 0;
     n += gdn_buffers_bytes(g);
     n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
-    // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
+    // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K). The
+    // loop's per-pass extras (q_extra) borrow it too - they are ordinary QsaStates, just addressed by
+    // (layer, pass) instead of layer alone.
     if (g.n_qsa_layers() > 0)
-        n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
+        n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1 + q_extra) * qsa_state_bytes(g, max_cells, false);
     n += qsa_buffers_bytes(g, max_cells);
     n += moe_buffers_bytes(g, k);
     n += block_buffers_bytes(g);
     n += ple_hist_bytes();                       // the PLE's NG_HIST normalized history rows
+    n += loop_state_bytes(g, layer_lo, layer_hi); // #7295: 0 unless the loop's range overlaps this slice
     return align_up(n, SESSION_STATE_ALIGN) + 4096;
 }
 
@@ -91,6 +122,11 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.qsa_alloc = std::max<int64_t>(q_n_range, g.n_qsa_layers() > 0 ? 1 : 0);
     s.gdn_ord0 = layer_lo - layer_lo / I;
     s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
+    // #7295: the loop's per-pass KV lanes - `q_extra` extra QsaStates, one per (in-range layer, pass > 0),
+    // placed right after the model's global QSA ordinal space so they never collide with an ordinary
+    // layer's slot. 0 when the loop is off or its range does not overlap [layer_lo, layer_hi).
+    const int64_t q_extra = loop_extra_qsa_states(g, layer_lo, layer_hi);
+    s.qsa_pass_extra_ord0 = g.n_qsa_layers();
 
     gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
     s.gdn_state = (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);
@@ -99,10 +135,10 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // pointers and `qsa_state_init` writes them - a contiguous array would need the arena to be laid out the
     // same way, which is a coupling with nothing to gain.  Only the range's ordinals are initialized; the
     // rest stay value-initialized nulls.  The FIRST ALLOCATED one (the session's primary, ordinal qsa_ord0)
-    // owns the RoPE table that the others - and the prefill staging identity, and the MTP drafter - borrow.
+    // owns the RoPE table that the others - including the loop's per-pass extras - borrow.
     const uint64_t first = qsa_state_bytes(g, max_cells, true), rest = qsa_state_bytes(g, max_cells, false);
-    s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1) * rest : 0);
-    s.qsa_states = new QsaState[(size_t) g.n_qsa_layers()]();
+    s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1 + q_extra) * rest : 0);
+    s.qsa_states = new QsaState[(size_t) (g.n_qsa_layers() + q_extra)]();
     s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
 
     uint8_t* qp = (uint8_t*) s.qsa_state_arena;
@@ -111,6 +147,12 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     for (int64_t j = 0; j < s.qsa_alloc; ++j)
         if (qsa_state_init(g, max_cells, qp + (j == 0 ? 0 : first + (uint64_t) (j - 1) * rest),
                            s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0)
+            return 0;
+    // #7295: the extras never own the RoPE table (qsa_alloc is always >= 1 whenever the model has any QSA
+    // layer at all, so `s.qsa_states[s.qsa_ord0]` is always a valid borrow source here).
+    for (int64_t m = 0; m < q_extra; ++m)
+        if (qsa_state_init(g, max_cells, qp + first + (uint64_t) (s.qsa_alloc - 1 + m) * rest,
+                           s.qsa_states[s.qsa_pass_extra_ord0 + m], &s.qsa_states[s.qsa_ord0]) == 0)
             return 0;
     qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
 
@@ -121,6 +163,19 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // THE PLE HISTORY: NG_HIST rows of hc_dim floats, row-fastest.  Sequence state, carved here and zeroed by
     // `session_zero`; it survives every token, which is the whole point of a conv history.
     s.ple_hist = (float*) take(ple_hist_bytes());
+    // #7295: the loop's restart-from-prelude state. 0 bytes (every pointer stays null) unless the loop's
+    // range overlaps [layer_lo, layer_hi) - `session_loop` never reads these otherwise.
+    if (g.has_loop() && std::max(g.loop_core_start, layer_lo) < std::min(g.loop_core_end, layer_hi)) {
+        const int64_t range_n = std::min(g.loop_core_end, layer_hi) - std::max(g.loop_core_start, layer_lo);
+        const uint64_t d = (uint64_t) g.n_embd * sizeof(float);
+        s.loop_R0 = (float*) take((uint64_t) g.hc * d);
+        s.loop_bank_write = (float*) take((uint64_t) range_n * d);
+        s.loop_bank_read = (float*) take((uint64_t) range_n * d);
+        s.loop_bank_out = (float*) take(d);
+        s.loop_msg_ws = (float*) take((uint64_t) 2 * d);
+        const strata::kernels::LoopCtrlShapes ctrl_shapes{g.n_embd, g.loop_gate_rank};
+        s.loop_ctrl_ws = (float*) take((uint64_t) strata::kernels::loop_ctrl_workspace_bytes(ctrl_shapes));
+    }
     s.R = s.block.R;
     return used;
 }
@@ -217,18 +272,30 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
     gr.split_captured = split;
     gr.n = 0;
 
+    // Recurrent-depth loop, QSA-only (issue #7295, a port of Inkling2Loop's own loop): one extra `pre`
+    // graph array per pass > 0, for layers inside [loop_core_start, loop_core_end) only - see
+    // SessionGraphs::execs_pass's comment for why `posts` needs no such array.
+    if (g.has_loop() && std::max(g.loop_core_start, layer_lo) < std::min(g.loop_core_end, layer_hi)) {
+        gr.execs_pass.resize((size_t) (g.loop_num_passes - 1));
+        for (auto& arr : gr.execs_pass) {
+            arr = new cudaGraphExec_t[(size_t) g.n_layers]();
+            for (int64_t i = 0; i < g.n_layers; ++i) arr[i] = nullptr;
+        }
+    }
+
     int64_t qsa_index = s.qsa_ord0;
     for (int64_t l = layer_lo; l < layer_hi; ++l) {
         gdn_point_at(g, l, s);
         const bool qsa = is_qsa_layer(g, l);
+        const bool in_loop_range = g.has_loop() && l >= g.loop_core_start && l < g.loop_core_end;
         QsaState& qst = qsa ? s.qsa_states[qsa_index] : s.qsa_states[s.qsa_primary()];
 
         // **TWO GRAPHS PER LAYER, SPLIT AT THE ROUTER.**  `pre` ends with the doorbell rung; the host then runs
         // the CPU pool on what it published; `post` combines those experts with THIS layer's weights.  Capturing
         // them together is what the old single graph could not do, and the reason it could not is that
         // `moe_combine` needs the pool's answer and the pool needs the router's.
-        auto capture = [&](bool post, cudaGraphExec_t* out, const char* what, int half = 0,
-                           int stage_prefix = 0) -> bool {
+        auto capture = [&](bool post, cudaGraphExec_t* out, const char* what, const QsaState& qst_use,
+                           int half = 0, int stage_prefix = 0, const LoopPassCtx* loop = nullptr) -> bool {
             cudaStream_t cs = nullptr;
             if (cudaStreamCreate(&cs) != cudaSuccess) {
                 err = std::string("session_capture: stream create failed");
@@ -243,9 +310,9 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
             // stages so the mixer and the FFN-front-plus-router can be timed separately.
             const bool ok = post
                                 ? block_layer_post(tables, g, l, s.k, s.moe, s.block, parts, (void*) cs, err)
-                                : block_layer_pre(tables, g, l, 0, 0, s.gdn, qst, s.qsa_bufs, s.moe, s.k,
+                                : block_layer_pre(tables, g, l, 0, 0, s.gdn, qst_use, s.qsa_bufs, s.moe, s.k,
                                                   s.block, (void*) cs, err, s.db, s.ple.ready() ? &s.ple : nullptr,
-                                                  half, stage_prefix);
+                                                  half, stage_prefix, loop);
             if (!ok) {
                 err = "session_capture: " + std::string(what) + " layer " + std::to_string(l) + ": " + err;
                 return false;
@@ -265,15 +332,38 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
             cudaGraphDestroy(graph);
             return true;
         };
-        if (!capture(/*post=*/false, &gr.execs[l], "pre")) return false;
-        if (!capture(/*post=*/true, &gr.posts[l], "post")) return false;
+        // #7295: pass 0 for an in-range layer still needs a LoopPassCtx (pass == 0) so it snapshots the
+        // bank - the gate itself only fires for pass > 0 (`block_layer_pre` checks `loop->pass > 0`).
+        LoopPassCtx pass0_ctx;
+        if (in_loop_range) {
+            pass0_ctx.pass = 0;
+            pass0_ctx.bank_slot = s.loop_bank_write + (size_t) (l - g.loop_core_start) * g.n_embd;
+            pass0_ctx.bank_read = s.loop_bank_read;
+            pass0_ctx.bank_out = s.loop_bank_out;
+            pass0_ctx.bank_n = g.loop_core_len();
+            pass0_ctx.msg_ws = s.loop_msg_ws;
+            pass0_ctx.ctrl_ws = s.loop_ctrl_ws;
+        }
+        if (!capture(/*post=*/false, &gr.execs[l], "pre", qst, 0, 0, in_loop_range ? &pass0_ctx : nullptr))
+            return false;
+        if (!capture(/*post=*/true, &gr.posts[l], "post", qst)) return false;
+        if (in_loop_range) {
+            for (int64_t pass = 1; pass < g.loop_num_passes; ++pass) {
+                LoopPassCtx ctx = pass0_ctx;
+                ctx.pass = pass;
+                const QsaState& qst_pass = s.qsa_states[s.qsa_pass_slot(g, l, pass)];
+                if (!capture(/*post=*/false, &gr.execs_pass[(size_t) (pass - 1)][l], "pre (pass)", qst_pass,
+                            0, 0, &ctx))
+                    return false;
+            }
+        }
         if (split) {
-            if (!capture(/*post=*/false, &gr.preA[l], "preA", /*half=*/1)) return false;
-            if (!capture(/*post=*/false, &gr.preB[l], "preB", /*half=*/2)) return false;
+            if (!capture(/*post=*/false, &gr.preA[l], "preA", qst, /*half=*/1)) return false;
+            if (!capture(/*post=*/false, &gr.preB[l], "preB", qst, /*half=*/2)) return false;
             // Prefixes 1..5, ALL through the new parameter - including the fifth, so that it and the fourth
             // differ only in the one stage between them and not in how many nodes their graphs carry.
             for (int k = 1; k <= 5; ++k)
-                if (!capture(/*post=*/false, &gr.preP[k - 1][l], "preP", /*half=*/0, /*stage_prefix=*/k))
+                if (!capture(/*post=*/false, &gr.preP[k - 1][l], "preP", qst, /*half=*/0, /*stage_prefix=*/k))
                     return false;
         }
         ++gr.n;
@@ -520,6 +610,13 @@ void session_graphs_free(SessionGraphs& gr) {
         delete[] gr.preP[k];
         gr.preP[k] = nullptr;
     }
+    for (cudaGraphExec_t* arr : gr.execs_pass) {
+        if (arr == nullptr) continue;
+        for (int64_t i = 0; i < gr.n; ++i)
+            if (arr[i] != nullptr) cudaGraphExecDestroy(arr[i]);
+        delete[] arr;
+    }
+    gr.execs_pass.clear();
     gr.preA = nullptr;
     gr.preB = nullptr;
     gr.split_captured = false;
@@ -667,6 +764,15 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
             return false;
         }
     }
+    // Recurrent-depth loop, QSA-only (issue #7295, a port of Inkling2Loop's own loop): if the core range
+    // starts at layer 0, THIS is pass 0's entry into it - snapshot `loop_R0` before `pre[0]` (below) makes
+    // its first write. The ordinary case (`loop_core_start > 0`) is snapshotted later, where
+    // `next == loop_core_start` is computed for the first time.
+    if (g.has_loop() && g.loop_core_start == 0) {
+        const cudaError_t ce = cudaMemcpyAsync(s.loop_R0, s.R, (size_t) g.hc * g.n_embd * sizeof(float),
+                                               cudaMemcpyDeviceToDevice, cs);
+        if (ce != cudaSuccess) { err = "session_loop: snapshot loop_R0: " + std::string(cudaGetErrorString(ce)); return false; }
+    }
     {
         const auto t0 = std::chrono::steady_clock::now();
         const cudaError_t le = cudaGraphLaunch(gr.execs[0], cs);
@@ -678,6 +784,9 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
         (void) t0;
     }
 
+    // Which pass of [loop_core_start, loop_core_end) the loop is currently replaying. 0 outside the
+    // range, or when the loop is off (`g.has_loop()` false).
+    int64_t loop_pass = 0;
     for (int64_t l = 0; l < g.n_layers; ++l) {
         const auto t_launch = std::chrono::steady_clock::now();
 
@@ -772,17 +881,56 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
                 return false;
             }
         }
-        // ---- and layer l+1's routing starts.  `pre[l+1]` touches none of the buffers `post[l]` reads, because
-        // the two are ordered on one stream and `pre[l+1]`'s first use of `bb.mixed`/`bb.inject` is its own
-        // `gr_read`, which comes after `post[l]` has consumed them.
-        if (l + 1 < g.n_layers) {
-            const cudaError_t ne = cudaGraphLaunch(gr.execs[l + 1], cs);
+        // ---- and the next layer's routing starts.  `pre[next]` touches none of the buffers `post[l]`
+        // reads, because the two are ordered on one stream and `pre[next]`'s first use of
+        // `bb.mixed`/`bb.inject` is its own `gr_read`, which comes after `post[l]` has consumed them.
+        //
+        // #7295: this decision (which layer, which graph variant) is pure arithmetic, factored into
+        // `loop_next_layer` (include/strata/core/loop_step.hpp) so it is unit-tested without a GPU.
+        const LoopStep step = loop_next_layer(g, l, loop_pass);
+        const int64_t next = step.next;
+        loop_pass = step.loop_pass;
+        // #7295: the pass boundary - another pass is about to start. Reset `R` to what it was right
+        // after the prelude (Inkling2Loop's `cur = prelude`, LOOP_TRANSFORMER_PLAN.md §2a - every pass
+        // restarts from the SAME input, informed only by the gated messages, not by the previous pass's
+        // output) and rotate the message bank: THIS pass's `loop_bank_write` becomes the NEXT pass's
+        // `loop_bank_read`/`loop_bank_out` (the last in-range layer's snapshot stands in for
+        // Inkling2Loop's separately-tracked `bank_out` - see loop_gate.hpp's file comment).
+        if (step.pass_boundary) {
+            const size_t range_n = (size_t) g.loop_core_len();
+            cudaError_t ce = cudaMemcpyAsync(s.R, s.loop_R0, (size_t) g.hc * g.n_embd * sizeof(float),
+                                             cudaMemcpyDeviceToDevice, cs);
+            if (ce == cudaSuccess)
+                ce = cudaMemcpyAsync(s.loop_bank_read, s.loop_bank_write, range_n * g.n_embd * sizeof(float),
+                                     cudaMemcpyDeviceToDevice, cs);
+            if (ce == cudaSuccess)
+                ce = cudaMemcpyAsync(s.loop_bank_out, s.loop_bank_write + (range_n - 1) * (size_t) g.n_embd,
+                                     (size_t) g.n_embd * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+            if (ce != cudaSuccess) {
+                err = "session_loop: pass boundary at layer " + std::to_string(l) + ": " + cudaGetErrorString(ce);
+                return false;
+            }
+        }
+        // #7295: the FIRST entry into the core range (pass 0, `loop_core_start > 0` - the
+        // `loop_core_start == 0` case was snapshotted before `pre[0]`, above). `s.R` here is `post[l]`'s
+        // write for layer `loop_core_start - 1`, i.e. exactly the residual the core range is about to
+        // read for the first time.
+        if (g.has_loop() && next == g.loop_core_start && loop_pass == 0 && g.loop_core_start > 0) {
+            const cudaError_t ce = cudaMemcpyAsync(s.loop_R0, s.R, (size_t) g.hc * g.n_embd * sizeof(float),
+                                                   cudaMemcpyDeviceToDevice, cs);
+            if (ce != cudaSuccess) { err = "session_loop: snapshot loop_R0: " + std::string(cudaGetErrorString(ce)); return false; }
+        }
+        if (next < g.n_layers) {
+            const cudaGraphExec_t ge = step.repeat_pass ? gr.execs_pass[(size_t) (loop_pass - 1)][next] : gr.execs[next];
+            const cudaError_t ne = cudaGraphLaunch(ge, cs);
             if (ne != cudaSuccess) {
-                err = "session_loop: launch pre[" + std::to_string(l + 1) + "]: " + cudaGetErrorString(ne);
+                err = "session_loop: launch pre[" + std::to_string(next) + "]" + (step.repeat_pass ? " (pass)" : "") +
+                      ": " + cudaGetErrorString(ne);
                 return false;
             }
             cudaEventRecord(probe, cs);
         }
+        l = next - 1;   // the `for`'s own `++l` lands exactly on `next`
         // ---- **THE SECOND HALF OF THE ROUND TRIP, AND THE HALF NOTHING WAS MEASURING.**
         //
         // From seeing the ring to having queued the next `pre`.  Everything in here is a driver call, and on
@@ -801,6 +949,12 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
                    std::string& err) {
+    // #7295: the uncaptured (`--no-capture`) path does not implement the loop's restart-from-prelude /
+    // per-pass KV lanes - refuse loudly rather than silently running every pass as pass 0.
+    if (g.has_loop()) {
+        err = "session_token: loop.num_passes > 1 is not supported without graph capture (--no-capture)";
+        return false;
+    }
     cudaStream_t cs = (cudaStream_t) stream;
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
