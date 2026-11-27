@@ -15,6 +15,7 @@
 #include "strata/core/window_wait.hpp"
 #include "strata/kernels/resident_plan_mirror.hpp"
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/q8_1_finite.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -306,7 +307,8 @@ __dpct_inline__ void gdn_step_commit_kernel(
 }
 
 // S26 (STRATA_QFUSE=1): the q8_1 image of a 32-column block, written by the warp that holds those columns with
-// native_quantize_q8_1_kernel's quantizer (the same XOR-tree max and sum, d = amax / 127, roundf(x / d), ds = (d, sum)).
+// native_quantize_q8_1_kernel's quantizer (the same XOR-tree max and sum, d = amax / 127, roundf(x / d), ds = (d, sum),
+// and #606's finite scale and sum from q8_1_finite.hpp, as the CUDA gdn_q8_1_store).
 struct GdnQ81 { sycl::half2 ds; int8_t qs[32]; };
 __dpct_inline__ void gdn_q8_1_store(GdnQ81 *__restrict__ xq, size_t idx,
                                     float xi) {
@@ -334,10 +336,10 @@ __dpct_inline__ void gdn_q8_1_store(GdnQ81 *__restrict__ xq, size_t idx,
         dpct::experimental::permute_sub_group_by_xor(
             0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
             sum, o);
-    const float d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : sycl::round(xi / d);
+    const float d = q8_1_finite(amax / 127.0f);   // #606, as native_quantize_q8_1_kernel: finite blocks bit for bit
+    const int8_t q = q8_1_quant(xi, d, amax);
     xq[idx / 32].qs[idx % 32] = q;
-    if (idx % 32 == 0) xq[idx / 32].ds = sycl::half2(d, sum);
+    if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);
 }
 
 template <bool ALL_OUT, bool Q, bool QK_REG = false>
