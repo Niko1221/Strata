@@ -23,7 +23,7 @@
 
 namespace strata::inkling2::hip {
 
-__global__ inline void k_rb_f16_to_f32(const _Float16* __restrict__ x, float* __restrict__ y, size_t n) {
+__global__ void k_rb_f16_to_f32(const _Float16* __restrict__ x, float* __restrict__ y, size_t n) {
     const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < n) y[i] = static_cast<float>(x[i]);
 }
