@@ -970,6 +970,101 @@ public:
         }
         cx_.free(g_x);
         cx_.free(g_y);
+        return ok && selfcheck_gguf_typed(err);
+    }
+
+    // 4. STRATA_INK_GGUF_TYPED: the per-type GGUF expert kernels give the generic kernels' output bit for bit (decode and
+    //    prompt kernels, all 8 types, split and interleaved gate/up, 7 and 20 tokens per expert).
+    bool selfcheck_gguf_typed(std::string& err) {
+        static const uint32_t kTypes[8] = {16u, 17u, 18u, 19u, 20u, 21u, 22u, 42u};
+        auto rb_of = [](uint32_t t, int K) -> size_t {
+            switch (t) {
+                case 16u: return (size_t)(K >> 8) * 66;  case 17u: return (size_t)(K >> 8) * 74;
+                case 18u: return (size_t)(K >> 8) * 98;  case 19u: return (size_t)(K >> 8) * 50;
+                case 20u: return (size_t)(K >> 5) * 18;  case 21u: return (size_t)(K >> 8) * 110;
+                case 22u: return (size_t)(K >> 8) * 82;  default:  return (size_t)(K >> 6) * 18;  // 42 Q2_0
+            }
+        };
+        constexpr size_t kCap = 8ull << 20;  // one expert's body, the largest (IQ4_NL) is 4.5 MB
+        constexpr int NT = 20, NP = 8 * NT;
+        mtl::Buffer sec4 = cx_.alloc(2 * kCap), ex = cx_.alloc(2 * sizeof(ink_metal::InkExpertDev));
+        mtl::Buffer x_in = cx_.alloc((size_t)NT * 2304 * sizeof(float)), topk = cx_.alloc((size_t)NP * sizeof(float));
+        mtl::Buffer h0 = cx_.alloc((size_t)NP * 1152 * sizeof(float)), h1 = cx_.alloc((size_t)NP * 1152 * sizeof(float));
+        mtl::Buffer y0 = cx_.alloc((size_t)NP * 2304 * sizeof(float)), y1 = cx_.alloc((size_t)NP * 2304 * sizeof(float));
+        mtl::Buffer pairs = cx_.alloc(27 * sizeof(int32_t)), uexp = cx_.alloc(2 * sizeof(int32_t));
+        mtl::Buffer uoff = cx_.alloc(2 * sizeof(int32_t)), ucnt = cx_.alloc(2 * sizeof(int32_t));
+        mtl::Buffer meta = cx_.alloc(32 * sizeof(uint32_t)), tiles = cx_.alloc(4 * sizeof(uint32_t));
+        uint64_t seed = 0x5eed6767ull;
+        for (int i = 0; i < NT * 2304; ++i) x_in.as<float>()[i] = (float)(m5_u01(seed) * 2.0 - 1.0);
+        for (int i = 0; i < NP; ++i) topk.as<float>()[i] = (float)m5_u01(seed);
+        // Expert 0: tokens 0..6 (pair 8t); expert 1: tokens 0..19 (pair 8t+1).
+        int32_t* pl = pairs.as<int32_t>();
+        for (int i = 0; i < 7; ++i) pl[i] = 8 * i;
+        for (int i = 0; i < NT; ++i) pl[7 + i] = 8 * i + 1;
+        uexp.as<int32_t>()[0] = 0; uexp.as<int32_t>()[1] = 1;
+        uoff.as<int32_t>()[0] = 0; uoff.as<int32_t>()[1] = 7;
+        ucnt.as<int32_t>()[0] = 7; ucnt.as<int32_t>()[1] = NT;
+        meta.as<uint32_t>()[0] = 2; meta.as<uint32_t>()[9] = 2;
+        uint32_t* tl = tiles.as<uint32_t>();
+        tl[0] = (0u << 16) | 7u; tl[1] = 0; tl[2] = (1u << 16) | (uint32_t)NT; tl[3] = 7;
+
+        auto run = [&](const mtl::Pipeline& p, bool gu, bool mm, mtl::Buffer& h, mtl::Buffer& y) {
+            mtl::Dispatch d;
+            d.p = &p; d.grid[0] = mm ? 36 : 144; d.grid[1] = 2; d.tg[0] = 256;
+            if (gu) {
+                std::memset(h.ptr, 0x7F, h.bytes);
+                d.args = {mtl::Arg::B(sec4), mtl::Arg::B(ex), mtl::Arg::B(x_in), mtl::Arg::B(mm ? tiles : uexp),
+                          mtl::Arg::B(uoff), mtl::Arg::B(ucnt), mtl::Arg::B(pairs), mtl::Arg::B(meta), mtl::Arg::B(h),
+                          mtl::Arg::B(sec4), mtl::Arg::B(sec4), mtl::Arg::B(sec4)};
+            } else {
+                std::memset(y.ptr, 0x7F, y.bytes);
+                d.args = {mtl::Arg::B(sec4), mtl::Arg::B(ex), mtl::Arg::B(topk), mtl::Arg::B(mm ? tiles : uexp),
+                          mtl::Arg::B(uoff), mtl::Arg::B(ucnt), mtl::Arg::B(pairs), mtl::Arg::B(meta), mtl::Arg::B(h),
+                          mtl::Arg::B(y), mtl::Arg::B(sec4), mtl::Arg::B(sec4), mtl::Arg::B(sec4)};
+            }
+            cx_.run({d});
+        };
+        const mtl::Pipeline g_gu = cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_situ");
+        const mtl::Pipeline g_dn = cx_.pipeline(runner_.lib_codecs, "ink_moe_dn");
+        const mtl::Pipeline g_gum = cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_mm_gen");
+        const mtl::Pipeline g_dnm = cx_.pipeline(runner_.lib_codecs, "ink_moe_dn_mm_gen");
+        bool ok = true;
+        for (int ti = 0; ti < 8 && ok; ++ti) {
+            const uint32_t t = kTypes[ti];
+            const uint32_t dn_off = (uint32_t)(32 + 2304 * rb_of(t, 2304));
+            uint8_t* raw = sec4.as<uint8_t>();
+            for (size_t i = 0; i < 2 * kCap; ++i) raw[i] = (uint8_t)(m5_splitmix64(seed) % 0x3Cu);  // finite half scales
+            for (int e = 0; e < 2; ++e) {
+                uint32_t* hd = reinterpret_cast<uint32_t*>(raw + e * kCap);
+                hd[0] = 0x47475546u; hd[1] = t; hd[2] = t; hd[3] = (uint32_t)e;  // expert 1: interleaved gate/up
+                float* sc = reinterpret_cast<float*>(hd + 4);
+                sc[0] = 0.7f; sc[1] = 1.3f; sc[2] = 0.9f;
+                ink_metal::InkExpertDev& d = ex.as<ink_metal::InkExpertDev>()[e];
+                d.body_off = e * kCap; d.dn_off = dn_off; d.gu_code = 20; d.dn_code = 20; d.chunk_idx = 0;
+            }
+            const mtl::Constants c = mtl::Constants().u(40, t);
+            const mtl::Pipeline t_gu = cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_gguf", c);
+            const mtl::Pipeline t_dn = cx_.pipeline(runner_.lib_codecs, "ink_moe_dn_gguf", c);
+            const mtl::Pipeline t_gum = cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_mm_gguf", c);
+            const mtl::Pipeline t_dnm = cx_.pipeline(runner_.lib_codecs, "ink_moe_dn_mm_gguf", c);
+            const struct { const mtl::Pipeline *g, *t; bool gu, mm; const char* what; } cases[4] = {
+                {&g_gu, &t_gu, true, false, "gate/up decode"}, {&g_dn, &t_dn, false, false, "down decode"},
+                {&g_gum, &t_gum, true, true, "gate/up prompt"}, {&g_dnm, &t_dnm, false, true, "down prompt"}};
+            run(g_gu, true, false, h0, y0);  // the down cases read h0
+            for (const auto& k : cases) {
+                if (k.gu) { run(*k.g, true, k.mm, h0, y0); run(*k.t, true, k.mm, h1, y1); }
+                else { run(*k.g, false, k.mm, h0, y0); run(*k.t, false, k.mm, h0, y1); }
+                const mtl::Buffer& a = k.gu ? h0 : y0;
+                const mtl::Buffer& b = k.gu ? h1 : y1;
+                if (a.as<uint32_t>()[0] == 0x7F7F7F7Fu || std::memcmp(a.ptr, b.ptr, a.bytes) != 0) {
+                    err = "metal selfcheck: per-type GGUF " + std::string(k.what) + " kernel differs from the generic one, type " +
+                          std::to_string(t);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        for (mtl::Buffer* b : {&sec4, &ex, &x_in, &topk, &h0, &h1, &y0, &y1, &pairs, &uexp, &uoff, &ucnt, &meta, &tiles}) cx_.free(*b);
         return ok;
     }
 

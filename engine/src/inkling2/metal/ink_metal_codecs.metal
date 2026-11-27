@@ -1830,18 +1830,14 @@ static inline void gguf_decode_8(uint t, device const uchar* row, int col, threa
     }
 }
 
-// Vectorized activation-reusing GGUF_RAW w13 dot (32 lanes/row, 288*8 = 2304 exact -> 9 iters/lane, ZERO IDLE LANES!)
-static inline void gguf_w13_chunk(
-    device const uchar* body, int r, device const float* x_in,
-    thread const uint* tk, int mm, int lane, thread float* ag, thread float* au) {
-    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
-    const uint t = hdr->gu_type;
-    const size_t rb = gguf_row_bytes_m(t, 2304);
-    const bool interlv = (hdr->flags & 1u) != 0u;
-    device const uchar* base = body + 32;
-    device const uchar* rg = base + (size_t)(interlv ? (2 * r) : r) * rb;
-    device const uchar* ru = base + (size_t)(interlv ? (2 * r + 1) : (1152 + r)) * rb;
-    const float gs = hdr->gate_scale, us = hdr->up_scale;
+// STRATA_INK_GGUF_TYPED: the GGUF type of the per-type expert pipelines (ink_moe_*_gguf, ink_moe_*_mm_gguf), set at
+// pipeline creation. The generic GGUF dots (gguf_w13_chunk / gguf_w2_pair) and the per-type kernels share these loops,
+// so both sum in the same order; with the type a constant, the loop body is that type's straight-line decoder.
+constant uint INK_GGUF_T [[function_constant(40)]];
+
+static inline void gguf_w13_loop(uint t, device const uchar* rg, device const uchar* ru, float gs, float us,
+                                 device const float* x_in, thread const uint* tk, int mm, int lane,
+                                 thread float* ag, thread float* au) {
     for (int u = lane; u < 288; u += 32) {
         const int col = u << 3;
         float4 wg0, wg1, wu0, wu1;
@@ -1856,17 +1852,8 @@ static inline void gguf_w13_chunk(
     }
 }
 
-// Vectorized activation-reusing GGUF_RAW w2 pair dot (32 lanes/pair, 144*8 = 1152)
-static inline void gguf_w2_pair(
-    device const uchar* body, uint dn_off, int rp, device const float* h_act,
-    thread const uint* pid, int mm, int lane, thread float* a0, thread float* a1) {
-    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
-    const uint t = hdr->dn_type;
-    const size_t rb = gguf_row_bytes_m(t, 1152);
-    device const uchar* base = body + dn_off;
-    device const uchar* r0 = base + (size_t)(2 * rp) * rb;
-    device const uchar* r1 = r0 + rb;
-    const float ds = hdr->dn_scale;
+static inline void gguf_w2_loop(uint t, device const uchar* r0, device const uchar* r1, float ds, device const float* h_act,
+                                thread const uint* pid, int mm, int lane, thread float* a0, thread float* a1) {
     for (int u = lane; u < 144; u += 32) {
         const int col = u << 3;
         float4 u0, u1, v0, v1;
@@ -1879,6 +1866,35 @@ static inline void gguf_w2_pair(
             a1[i] = fma(ds, dot(v0, x0) + dot(v1, x1), a1[i]);
         }
     }
+}
+
+// Vectorized activation-reusing GGUF_RAW w13 dot (32 lanes/row, 288*8 = 2304 exact -> 9 iters/lane, ZERO IDLE LANES!)
+static inline void gguf_w13_chunk(
+    device const uchar* body, int r, device const float* x_in,
+    thread const uint* tk, int mm, int lane, thread float* ag, thread float* au) {
+    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
+    const uint t = hdr->gu_type;
+    const size_t rb = gguf_row_bytes_m(t, 2304);
+    const bool interlv = (hdr->flags & 1u) != 0u;
+    device const uchar* base = body + 32;
+    device const uchar* rg = base + (size_t)(interlv ? (2 * r) : r) * rb;
+    device const uchar* ru = base + (size_t)(interlv ? (2 * r + 1) : (1152 + r)) * rb;
+    const float gs = hdr->gate_scale, us = hdr->up_scale;
+    gguf_w13_loop(t, rg, ru, gs, us, x_in, tk, mm, lane, ag, au);
+}
+
+// Vectorized activation-reusing GGUF_RAW w2 pair dot (32 lanes/pair, 144*8 = 1152)
+static inline void gguf_w2_pair(
+    device const uchar* body, uint dn_off, int rp, device const float* h_act,
+    thread const uint* pid, int mm, int lane, thread float* a0, thread float* a1) {
+    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
+    const uint t = hdr->dn_type;
+    const size_t rb = gguf_row_bytes_m(t, 1152);
+    device const uchar* base = body + dn_off;
+    device const uchar* r0 = base + (size_t)(2 * rp) * rb;
+    device const uchar* r1 = r0 + rb;
+    const float ds = hdr->dn_scale;
+    gguf_w2_loop(t, r0, r1, ds, h_act, pid, mm, lane, a0, a1);
 }
 
 static inline void decode_sb_gguf_16(device const uchar* row_ptr, uint t, float sc, int col, threadgroup half* dst) {
@@ -3247,7 +3263,8 @@ kernel void ink_moe_dn_mm_mx8(
 
 
 // Flattened Parallel (expert, m_tile) simdgroup_matrix w13 + fused SITU (General: SF4 + MX8 + S2_K..S8_K, BM=32 BN=64 BK=64!)
-kernel void ink_moe_gu_mm_gen(
+template <bool TYPED>
+kernel void ink_moe_gu_mm_gen_t(
     device const uchar* sec4        [[buffer(0)]],
     device const InkExpertDev* ex   [[buffer(1)]],
     device const float* x_in        [[buffer(2)]],
@@ -3275,11 +3292,15 @@ kernel void ink_moe_gu_mm_gen(
     const int n0 = int(tgp.x) * 64;
     const InkExpertDev ed = ex[e];
     device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
-    const int gcode = int(ed.gu_code);
+    if constexpr (TYPED) {
+        if (ed.gu_code != 20 || ((device const InkGgufExpertHeader*)body)->gu_type != INK_GGUF_T) return;
+    }
+    const int gcode = TYPED ? 20 : int(ed.gu_code);
     const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16 && ed.dn_code != 20);
     const float sf4_outer = (gcode == 15) ? (((device const float*)body)[0] / ((device const float*)body)[1]) : 0.0f;
     const size_t sk_rowb = (gcode != 15 && gcode != 16 && gcode != 20) ? (9ul * size_t(sk_sb_bytes(gcode))) : 0ul;
-    const uint gguf_t = (gcode == 20) ? ((device const InkGgufExpertHeader*)body)->gu_type : 0u;
+    uint gguf_t = (gcode == 20) ? ((device const InkGgufExpertHeader*)body)->gu_type : 0u;
+    if constexpr (TYPED) gguf_t = INK_GGUF_T;
     const size_t gguf_rb = (gcode == 20) ? gguf_row_bytes_m(gguf_t, 2304) : 0ul;
     const uint gguf_fl = (gcode == 20) ? ((device const InkGgufExpertHeader*)body)->flags : 0u;
     const float gguf_gs = (gcode == 20) ? ((device const InkGgufExpertHeader*)body)->gate_scale : 1.0f;
@@ -3367,7 +3388,8 @@ kernel void ink_moe_gu_mm_gen(
 }
 
 // Flattened Parallel (expert, m_tile) simdgroup_matrix w2 (General: SF4 + MX8 + Paired-2-Row S2_K..S8_K, BM=32 BN=64 BK=64!)
-kernel void ink_moe_dn_mm_gen(
+template <bool TYPED>
+kernel void ink_moe_dn_mm_gen_t(
     device const uchar* sec4        [[buffer(0)]],
     device const InkExpertDev* ex   [[buffer(1)]],
     device const float* topk_w      [[buffer(2)]],
@@ -3396,10 +3418,14 @@ kernel void ink_moe_dn_mm_gen(
     const int n0 = int(tgp.x) * 64;
     const InkExpertDev ed = ex[e];
     device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
-    const int dcode = int(ed.dn_code);
+    if constexpr (TYPED) {
+        if (ed.dn_code != 20 || ((device const InkGgufExpertHeader*)body)->dn_type != INK_GGUF_T) return;
+    }
+    const int dcode = TYPED ? 20 : int(ed.dn_code);
     const float sf4_outer = (dcode == 15) ? (((device const float*)body)[2] / ((device const float*)body)[3]) : 0.0f;
     const size_t sk_pairb = (dcode != 15 && dcode != 16 && dcode != 20) ? (9ul * size_t(sk_sb_bytes(dcode))) : 0ul;
-    const uint gguf_t = (dcode == 20) ? ((device const InkGgufExpertHeader*)body)->dn_type : 0u;
+    uint gguf_t = (dcode == 20) ? ((device const InkGgufExpertHeader*)body)->dn_type : 0u;
+    if constexpr (TYPED) gguf_t = INK_GGUF_T;
     const size_t gguf_rb = (dcode == 20) ? gguf_row_bytes_m(gguf_t, 1152) : 0ul;
     const float gguf_ds = (dcode == 20) ? ((device const InkGgufExpertHeader*)body)->dn_scale : 1.0f;
     const int sgm = int(sg >> 2), sgn = int(sg & 3u);
@@ -3484,6 +3510,12 @@ kernel void ink_moe_dn_mm_gen(
         y_pairs[(size_t)pid_m * 2304 + gn0 + 9] = acc11.thread_elements()[1] * rw;
     }
 }
+
+// ink_moe_*_mm_gen: the generic kernels as before; ink_moe_*_mm_gguf: one GGUF type, set by INK_GGUF_T.
+template [[host_name("ink_moe_gu_mm_gen")]]  kernel decltype(ink_moe_gu_mm_gen_t<false>) ink_moe_gu_mm_gen_t<false>;
+template [[host_name("ink_moe_dn_mm_gen")]]  kernel decltype(ink_moe_dn_mm_gen_t<false>) ink_moe_dn_mm_gen_t<false>;
+template [[host_name("ink_moe_gu_mm_gguf")]] kernel decltype(ink_moe_gu_mm_gen_t<true>)  ink_moe_gu_mm_gen_t<true>;
+template [[host_name("ink_moe_dn_mm_gguf")]] kernel decltype(ink_moe_dn_mm_gen_t<true>)  ink_moe_dn_mm_gen_t<true>;
 
 // ============================================================================
 // 6. M5 Max Opt-In: 1-Cycle simd_shuffle Register-LUT SF4 MoE + GGUF Row-Dot Unit Test
@@ -3876,3 +3908,103 @@ INK_MOE_RCO_INST("iq1_s",   19u)
 INK_MOE_RCO_INST("iq3_s",   21u)
 INK_MOE_RCO_INST("iq2_s",   22u)
 INK_MOE_RCO_INST("q2_0",    42u)
+
+// Per-type GGUF expert kernels for decode: the GGUF branch of ink_moe_gu_situ / ink_moe_dn with the same layout (32 lanes
+// per row, 8 rows per threadgroup) and summation order, for one type set by INK_GGUF_T.
+kernel void ink_moe_gu_gguf(
+    device const uchar* sec4        [[buffer(0)]],
+    device const InkExpertDev* ex   [[buffer(1)]],
+    device const float* x_in        [[buffer(2)]],
+    device const int* uexp          [[buffer(3)]],
+    device const int* uoff          [[buffer(4)]],
+    device const int* ucnt          [[buffer(5)]],
+    device const int* pair_list     [[buffer(6)]],
+    device const uint* meta         [[buffer(7)]],
+    device float* h_act             [[buffer(8)]],
+    device const uchar* sec4_1      [[buffer(9)]],
+    device const uchar* sec4_2      [[buffer(10)]],
+    device const uchar* sec4_3      [[buffer(11)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int y = int(tgp.y);
+    if (y >= int(meta[0])) return;
+    const int e = uexp[y];
+    const InkExpertDev ed = ex[e];
+    if (ed.gu_code != 20) return;
+    device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
+    if (hdr->gu_type != INK_GGUF_T) return;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int r = int(tgp.x) * 8 + int(sg);
+    if (r >= 1152) return;
+    const int off = uoff[y], n = ucnt[y];
+    const size_t rb = gguf_row_bytes_m(INK_GGUF_T, 2304);
+    const bool interlv = (hdr->flags & 1u) != 0u;
+    device const uchar* base = body + 32;
+    device const uchar* rg = base + (size_t)(interlv ? (2 * r) : r) * rb;
+    device const uchar* ru = base + (size_t)(interlv ? (2 * r + 1) : (1152 + r)) * rb;
+    const float gs = hdr->gate_scale, us = hdr->up_scale;
+    for (int t0 = 0; t0 < n; t0 += 4) {
+        const int mm = min(4, n - t0);
+        uint pid[4], tk[4];
+        for (int i = 0; i < mm; ++i) { const uint p = uint(pair_list[off + t0 + i]); pid[i] = p; tk[i] = p >> 3u; }
+        float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
+        gguf_w13_loop(INK_GGUF_T, rg, ru, gs, us, x_in, tk, mm, int(lane), ag, au);
+        for (int i = 0; i < mm; ++i) {
+            const float g = simd_sum(ag[i]);
+            const float u = simd_sum(au[i]);
+            if (lane == 0) h_act[ulong(pid[i]) * 1152ul + uint(r)] = situ_act(g, u);
+        }
+    }
+}
+
+kernel void ink_moe_dn_gguf(
+    device const uchar* sec4        [[buffer(0)]],
+    device const InkExpertDev* ex   [[buffer(1)]],
+    device const float* topk_w      [[buffer(2)]],
+    device const int* uexp          [[buffer(3)]],
+    device const int* uoff          [[buffer(4)]],
+    device const int* ucnt          [[buffer(5)]],
+    device const int* pair_list     [[buffer(6)]],
+    device const uint* meta         [[buffer(7)]],
+    device const float* h_act       [[buffer(8)]],
+    device float* y_pairs           [[buffer(9)]],
+    device const uchar* sec4_1      [[buffer(10)]],
+    device const uchar* sec4_2      [[buffer(11)]],
+    device const uchar* sec4_3      [[buffer(12)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int yy = int(tgp.y);
+    if (yy >= int(meta[0])) return;
+    const int e = uexp[yy];
+    const InkExpertDev ed = ex[e];
+    if (ed.dn_code != 20) return;
+    device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    device const InkGgufExpertHeader* hdr = (device const InkGgufExpertHeader*)body;
+    if (hdr->dn_type != INK_GGUF_T) return;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int rp = int(tgp.x) * 8 + int(sg);
+    if (rp >= 1152) return;
+    const int off = uoff[yy], n = ucnt[yy];
+    const size_t rb = gguf_row_bytes_m(INK_GGUF_T, 1152);
+    device const uchar* r0 = body + ed.dn_off + (size_t)(2 * rp) * rb;
+    device const uchar* r1 = r0 + rb;
+    const float ds = hdr->dn_scale;
+    for (int t0 = 0; t0 < n; t0 += 4) {
+        const int mm = min(4, n - t0);
+        uint pid[4];
+        for (int i = 0; i < mm; ++i) pid[i] = uint(pair_list[off + t0 + i]);
+        float a0[4] = {0,0,0,0}, a1[4] = {0,0,0,0};
+        gguf_w2_loop(INK_GGUF_T, r0, r1, ds, h_act, pid, mm, int(lane), a0, a1);
+        for (int i = 0; i < mm; ++i) {
+            const float v0 = simd_sum(a0[i]);
+            const float v1 = simd_sum(a1[i]);
+            if (lane == 0) {
+                const float rw = topk_w[pid[i]];
+                const ulong yb = ulong(pid[i]) * 2304ul + uint(2 * rp);
+                y_pairs[yb]     = v0 * rw;
+                y_pairs[yb + 1] = v1 * rw;
+            }
+        }
+    }
+}
