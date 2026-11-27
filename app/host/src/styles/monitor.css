@@ -102,3 +102,17 @@
 .monitor-readings dd { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .monitor-readings dl { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .monitor-readings { padding: 12px 16px; } .monitor-readings dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* strata-mi50: the Record log button - 2026-10-26 in the Monitor's header (.monitor-record), 2026-10-27 one for the whole app,
+   fixed at the top centre of the window on every screen: a hollow circle, a red one that pulses while a recording runs */
+/* 2026-10-27 (2): back at the top right, where it sat in the Monitor's header beside the screenshot icon, still on every screen
+   (was top: 8px; left: 50%; transform: translateX(-50%), the top centre) */
+/* 2026-10-27 (3): 1 cm (38px at 96 dpi) further left, right: 76px -> 114px (owner request) */
+.record-log { position: fixed; top: calc((var(--st-header-h, 64px) - 28px) / 2); right: 114px; z-index: 60; display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 12px; border-radius: 999px; border: 1px solid var(--st-line, rgba(127,127,127,.35)); background: var(--st-surface, #1b1d22);
+  color: var(--st-ink, inherit); font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.record-log:hover { border-color: currentColor; }
+.record-log[data-on="true"] { border-color: #e5484d; color: #ff6b6f; }
+.record-log__dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; flex: none; }
+.record-log[data-on="true"] .record-log__dot { background: #e5484d; border-color: #e5484d; animation: record-log-pulse 1.4s ease-out infinite; }
+@keyframes record-log-pulse { 0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, .6); } 100% { box-shadow: 0 0 0 8px rgba(229, 72, 77, 0); } }
+@media (prefers-reduced-motion: reduce) { .record-log[data-on="true"] .record-log__dot { animation: none; } }

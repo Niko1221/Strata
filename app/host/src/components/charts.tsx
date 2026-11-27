@@ -10,13 +10,14 @@ export function ReferenceSpark({ data, maximum, tone = 'var(--st-accent)', secon
         data: (number | null | undefined)[];
         label: string;
         tone: string;
+        maximum?: number;   // strata-mi50 (2026-10-26): the same scale as the first line (one line per GPU); unset = its own scale
     };
     label: string;
     unit: string;
     timestamps: number[];
 }) {
     const [hover, setHover] = useState<number | null>(null);
-    const primary = referencePaths(data, maximum), other = secondary ? referencePaths(secondary.data) : null;
+    const primary = referencePaths(data, maximum), other = secondary ? referencePaths(secondary.data, secondary.maximum) : null;
     const empty = !data.some(value => typeof value === 'number' && Number.isFinite(value)) && !secondary?.data.some(value => typeof value === 'number' && Number.isFinite(value));
     const value = (values: (number | null | undefined)[]) => hover !== null && typeof values[hover] === 'number' && Number.isFinite(values[hover]) ? `${Math.round(values[hover]! * 10) / 10} ${unit}` : 'Unavailable';
     const ago = hover !== null && timestamps[hover] != null ? Math.max(0, Math.round(((timestamps.at(-1) ?? 0) - timestamps[hover]) / 1000)) : 0;
