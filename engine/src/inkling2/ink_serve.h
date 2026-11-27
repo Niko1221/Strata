@@ -473,6 +473,7 @@ struct ActiveReq {
     std::unordered_map<int, uint64_t> prompt_sig;
     struct Ckpt { int pos; int handle; };
     std::vector<Ckpt> ckpts;             // the slot's checkpoints, ascending by position (InkBackend::ckpt_save)
+    int turn_mark = 0;                   // the position of the mark before the last token of the prompt read last (0: none)
     // `slot` is the request's name on the protocol lines.  `phys` is the backend slot (KV store) it runs in: the engine picks, for
     // each request, the idle store that already holds the most of its prompt, so every conversation keeps its own cache whatever
     // slot number the server names (it sends every request that runs alone as GEN = slot 0).  -1: holds no store.
@@ -662,6 +663,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             backend.ckpt_free(rq.ckpts.back().handle);
             rq.ckpts.pop_back();
         }
+        if (rq.turn_mark >= pos) rq.turn_mark = 0;
     };
     auto ckpt_take = [&](ActiveReq& rq, int pos) {
         if (ckpt_max <= 0 || pos <= 0) return;
@@ -696,8 +698,13 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         const int h = backend.ckpt_save(rq.phys);
         if (h >= 0) rq.ckpts.push_back({pos, h});
     };
+    auto turn_mark_take = [&](ActiveReq& rq, int pos) {        // the mark before the prompt's last token: this turn's
+        ckpt_take(rq, pos);
+        if (!rq.ckpts.empty() && rq.ckpts.back().pos == pos) rq.turn_mark = pos;
+    };
     auto slot_forget = [&](ActiveReq& rq) {                    // the slot holds nothing any more
         ckpt_drop_from(rq, 0);
+        rq.turn_mark = 0;
         rq.cached_prefix.clear();
         rq.cached_sig.clear();
         rq.prompt_ckpt_prefix.clear();
@@ -709,6 +716,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         std::vector<int32_t> prefix;
         std::unordered_map<int, uint64_t> sig;
         std::vector<ActiveReq::Ckpt> ckpts;
+        int turn_mark = 0;               // (ActiveReq::turn_mark)
         std::vector<int32_t> pckpt;      // the prompt-end checkpoint's tokens (ActiveReq::prompt_ckpt_prefix)
         std::vector<int32_t> shared;     // the shared-prefix checkpoint's tokens (ActiveReq::shared_prefix)
         bool busy = false;
@@ -722,6 +730,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         st.prefix.swap(rq.cached_prefix);
         st.sig.swap(rq.cached_sig);
         st.ckpts.swap(rq.ckpts);
+        st.turn_mark = rq.turn_mark;
+        rq.turn_mark = 0;
         st.pckpt.swap(rq.prompt_ckpt_prefix);
         st.shared.swap(rq.shared_prefix);
         rq.prompt_ckpt_prefix.clear();
@@ -771,9 +781,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         return std::equal(sh.begin(), sh.end(), rq.prompt_ids.begin()) ? rq.pin : 0;
     };
     auto store_acquire = [&](ActiveReq& rq) {
-        // 1. the store that holds this conversation: the prompt continues it, or reaches its newest mark - the one before the last
-        //    token of the prompt it read last (the next turn, a retry).  A store that shares less - the same tools and system
-        //    prompt, an earlier part of the history - keeps its conversation: this request starts from its marks in another store (4).
+        // 1. the store that holds this conversation: the prompt continues it, or reaches the mark before the last token of the
+        //    prompt it read last (the next turn, a retry).  That mark is not always the newest: a continuation pass (ckpt=0)
+        //    leaves grid and fine marks past it, and so does a prompt whose length is itself on the fine grid; the client's
+        //    next turn parts from the store before those.  A store that shares less - the same tools and system prompt, an
+        //    earlier part of the history - keeps its conversation: this request starts from its marks in another store (4).
         int pick = -1, pick_use = 0;
         for (int i = 0; i < P; ++i) {
             const KvStore& st = stores[static_cast<size_t>(i)];
@@ -781,8 +793,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             // (a backend without ckpt_save: what its prompt-end or shared-prefix checkpoint serves counts as reaching the newest mark)
             const int held_use = held_usable(st.prefix, st.sig, st.ckpts, rq, nullptr);
             const int use = held_use > 0 ? held_use : std::max(pckpt_usable(st.pckpt, rq), shared_usable(st.shared, rq));
-            const int newest = held_use == 0 ? 0 : st.ckpts.empty() ? static_cast<int>(st.prefix.size()) : st.ckpts.back().pos;
-            if (use > 0 && use >= newest &&
+            int reach = held_use == 0 ? 0 : st.ckpts.empty() ? static_cast<int>(st.prefix.size()) : st.ckpts.back().pos;
+            // (the turn's mark while the store still has it; a rewind or the thinning of a full store may have taken it)
+            for (const auto& ck : st.ckpts) if (held_use > 0 && ck.pos == st.turn_mark) reach = ck.pos;
+            if (use > 0 && use >= reach &&
                 (use > pick_use || (use == pick_use && pick >= 0 && st.used > stores[static_cast<size_t>(pick)].used))) {
                 pick = i;
                 pick_use = use;
@@ -801,6 +815,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.cached_prefix.swap(st.prefix);
         rq.cached_sig.swap(st.sig);
         rq.ckpts.swap(st.ckpts);
+        rq.turn_mark = st.turn_mark;
+        st.turn_mark = 0;
         rq.prompt_ckpt_prefix.swap(st.pckpt);
         rq.shared_prefix.swap(st.shared);
         st.pckpt.clear();
@@ -834,6 +850,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             slot_forget(rq);
           } else {
             ckpt_drop_from(rq, 0);
+            rq.turn_mark = 0;
             rq.cached_prefix.assign(src_prefix->begin(), src_prefix->begin() + src_pos);
             rq.cached_sig.clear();
             for (const auto& kv : *src_sig) if (kv.first < src_pos) rq.cached_sig[kv.first] = kv.second;
@@ -1068,7 +1085,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             slot_forget(rq);
         } else {
             proto("RESUME %d", reuse);
-            if (reuse == rq.prompt_len - 1 && !rq.no_ckpt) ckpt_take(rq, reuse);   // no read stops here any more: the mark for this prompt sent again
+            if (reuse == rq.prompt_len - 1 && !rq.no_ckpt) turn_mark_take(rq, reuse);   // no read stops here any more: the mark for this prompt sent again
         }
         if (reuse < static_cast<int>(rq.shared_prefix.size())) rq.shared_prefix.clear();
         rq.shared_pending = ckpt_max == 0 && rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
@@ -1517,7 +1534,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 // a checkpoint where the prompt ends (before anything is generated), and every ckpt_every tokens on the way there
                 // (ckpt=0, a continuation pass: no mark at this prompt's end, the marks of the request's first pass stay the newest)
                 if (ckpt_max > 0) {
-                    if ((rq.prefill_pos == rq.prompt_len - 1 && !rq.no_ckpt) || on_grid(rq.prefill_pos) || fine_mark(rq, rq.prefill_pos)) ckpt_take(rq, rq.prefill_pos);
+                    if (rq.prefill_pos == rq.prompt_len - 1 && !rq.no_ckpt) turn_mark_take(rq, rq.prefill_pos);
+                    else if (on_grid(rq.prefill_pos) || fine_mark(rq, rq.prefill_pos)) ckpt_take(rq, rq.prefill_pos);
                 } else if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.phys, rq.prefill_pos)) {
