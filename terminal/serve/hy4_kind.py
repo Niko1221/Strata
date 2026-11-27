@@ -97,8 +97,11 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
 
 
 def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
-    """`--draft dfly2` when the drafter is wanted AND the engine says it has one (`--info`: drafter=dfly2); otherwise nothing: an engine that cannot run it starts without."""
-    return ["--draft", "dfly2"] if wants_drafter(cfg) and (info or {}).get("drafter") == "dfly2" else []
+    """`--draft dfly2` or `--draft off` when the engine says it has the drafter (`--info`: drafter=dfly2); otherwise nothing: an engine that cannot run it starts without.
+    `off` has to be said: under --serve the engine's own default is `auto`, which turns the drafter on."""
+    if (info or {}).get("drafter") != "dfly2":
+        return []
+    return ["--draft", "dfly2" if wants_drafter(cfg) else "off"]
 
 
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
@@ -141,12 +144,12 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     if "--session-reuse" not in args:            # the engine keeps the longest common prefix of a conversation: on unless the config says 0
         args += ["--session-reuse", "1"]
     wants_images = "--vision" in args
-    need_draft = "--draft" not in args and wants_drafter(cfg)
+    need_draft = "--draft" not in args
     info = probe(exe, args, cfg) if (exe and (wants_images or need_draft)) else None
     if need_draft:
         add = drafter_args(cfg, info)
         args += add
-        if not add and announce:
+        if not add and announce and wants_drafter(cfg):
             print(f"[strata] {NO_DRAFTER_NOTE}", flush=True)
     if wants_images and (info or {}).get("images") != "1":
         at = args.index("--vision")

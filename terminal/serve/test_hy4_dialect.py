@@ -259,6 +259,7 @@ class Kind(unittest.TestCase):
         cfg = {"arch": "hy4flash", "args": self.BASE}
         with mock.patch.object(hy4_kind, "probe", return_value=None):
             self.assertEqual(hy4_kind.engine_args(cfg, "x", announce=False), self.BASE + self.SR)   # drafter asked (the default), the engine cannot say it has one
+            self.assertEqual(hy4_kind.engine_args({**cfg, "drafting": "off"}, "x", announce=False), self.BASE + self.SR)   # no --draft for an engine that may not know the flag
         with mock.patch.object(hy4_kind, "probe", return_value={"arch": "hy4flash", "drafter": "none", "images": "0"}):
             self.assertEqual(hy4_kind.engine_args({**cfg, "args": self.BASE + ["--vision", "v.strata"]}, "x", announce=False), self.BASE + self.SR)   # no image reader: --vision <file> left out
 
@@ -267,7 +268,7 @@ class Kind(unittest.TestCase):
         have = {"arch": "hy4flash", "drafter": "dfly2", "images": "1"}
         with mock.patch.object(hy4_kind, "probe", return_value=have):
             self.assertEqual(hy4_kind.engine_args(cfg, "x", announce=False), self.BASE + ["--vision", "v.strata"] + self.SR + ["--draft", "dfly2"])
-            self.assertEqual(hy4_kind.engine_args({**cfg, "drafting": "off"}, "x", announce=False), self.BASE + ["--vision", "v.strata"] + self.SR)
+            self.assertEqual(hy4_kind.engine_args({**cfg, "drafting": "off"}, "x", announce=False), self.BASE + ["--vision", "v.strata"] + self.SR + ["--draft", "off"])   # the engine's `auto` would turn it on
             off = hy4_kind.engine_args({**cfg, "args": cfg["args"] + ["--session-reuse", "0"]}, "x", announce=False)       # an explicit 0 stays
             self.assertEqual(off.count("--session-reuse"), 1)
             self.assertEqual(off[off.index("--session-reuse") + 1], "0")
