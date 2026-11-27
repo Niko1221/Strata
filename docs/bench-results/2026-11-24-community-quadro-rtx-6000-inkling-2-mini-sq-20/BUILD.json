@@ -1,0 +1,23 @@
+{
+  "engine": "strata-inkling",
+  "engine_version": "0.1.67",
+  "engine_component": "0.1.67-linux-x86_64-cuda-cuda13",
+  "build_type": "official signed release (no local build)",
+  "terminal_version": "0.1.65",
+  "track": "default",
+  "cuda_runtime": "CUDA 13 (engine package)",
+  "driver": "595.99.02",
+  "cuda_archs": ["sm_75"],
+  "model": "Inkling-2-Mini-SQ-20.strata",
+  "model_repo": "strata-engine/Inkling-2-Mini-Strata",
+  "model_bytes": 19346685952,
+  "model_sha256": "0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97",
+  "vision_shard": "Inkling-2-Mini-Vision.strata (608 MB)",
+  "gpu": "2x NVIDIA Quadro RTX 6000 (sm_75), 24 GiB each, NVLink, EP2",
+  "os": "Ubuntu 26.04.1 LTS, kernel 7.0.0-42-generic",
+  "cpu": "Intel Xeon Gold 6138 @ 2.00GHz, 40 cores / 80 threads",
+  "ram_gib": 247.2,
+  "settings": "--gpus 2 --kv k8v4 --vision on --max-context 131072 --draft dspark --parallel 1",
+  "upstream_parity_fix": "#6671 (DSpark spec-decode losslessness on sm_75)",
+  "date": "2026-11-24"
+}
