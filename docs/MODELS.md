@@ -353,6 +353,7 @@ DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.55 GB,
 drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
 without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,
 `--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 port, MIT).
+The file is Strata's converted copy of `incoai/Inkling-2-Mini-DFlash2` (Inco AI / z-lab, Apache-2.0): the large matrices are stored pre-quantized (Q8 and SF4), 551,600,700 bytes, hosted at `strata-engine/Inkling-2-Mini-DFlash2` and pinned by commit and SHA-256; the original file is still accepted and is the last-resort source. The notice with the statement of changes is `notices/INKLING-2-MINI-DFLASH2-APACHE-2.0.txt`; it does not change the licence of Strata (MIT).
 The engine also leaves DFlash 2 out by itself where loading it would move part of the model off the card (a model that fits whole would run in the slower hybrid mode, or lose a
 noticeable part of the experts' room). It then prints one line, `DFlash 2 not loaded: it would move part of the model off the card (...)`, which the Terminal start and the app's
 start log show as it is, and the Monitor's drafting note repeats. `strata launch --draft on` (or `--set draft=on`; for a start by hand `STRATA_INK_DFLASH2_FORCE=1`) asks for it by name and loads it anyway.

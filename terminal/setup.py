@@ -11020,7 +11020,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         if want_drafter:                                # the person's own folder is never written to: a DFlash 2 file they put there is used
             sidecar = inkling_fetch_dflash2(a, folder, own)
             if sidecar is None:
-                warn(f"no {inkling_family.DFLASH2_FILE} beside the model: it runs without a drafter. Put the file (989,975,616 bytes) next to the model to turn drafting on")
+                warn(f"no {inkling_family.DFLASH2_FILE} beside the model: it runs without a drafter. Put the file ({inkling_family.size_of(inkling_family.DFLASH2_FILE):,} bytes) next to the model to turn drafting on")
     else:
         step(5, f"downloading {fam['title']} {model}")
         files = inkling_family.files_of(model, vision)
