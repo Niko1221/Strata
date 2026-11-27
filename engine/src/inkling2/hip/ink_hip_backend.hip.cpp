@@ -6581,7 +6581,7 @@ private:
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
                         aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
-            } else if (is_contiguous_single_slot && B >= 64 && attn_qtile_) {
+            } else if (is_contiguous_single_slot && B >= 64 && attn_qtile_ && mem_info_.gen == AmdGen::Rdna2) {
                 // RDNA2 prompt chunks: query-tiled kernel (K/V tiles shared by 8 queries in LDS)
                 const dim3 qgrid(c_.n_head, (B + 7) / 8);
                 if (is_fp8) {
