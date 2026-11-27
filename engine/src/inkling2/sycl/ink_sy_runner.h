@@ -1242,7 +1242,7 @@ struct InkSyRunner {
             [&](const float* x7, float* raw_lg, int rows) {
                 dispatch_linear(unemb, x7, raw_lg, rows, c.vocab_unpadded);
             },
-            out_drafts, confs, arc_cfg().active);
+            out_drafts, confs, false);   // DFlash 2 is the only drafter: the n-gram suffix fallback (allow_pld) is not used
     }
 
     // On-GPU zero-full-vocab-D2H greedy speculative verify step for DFlash 2!

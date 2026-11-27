@@ -296,13 +296,15 @@ public:
     }
 
     int dspark_spec_step_sampled(int slot, int32_t anchor_tok, int anchor_pos, int max_emit,
-                                 const SampleOpts& sopts, uint64_t step_seed,
-                                 const int32_t* /*hist_ids*/, int /*hist_len*/,
+                                 float temperature, int top_k, float top_p, float min_p,
+                                 uint64_t rng_seed, uint64_t rng_offset,
                                  int32_t* out_emitted, int* out_drafted, std::string& err) override {
         if (!runner_.use_dflash2 || !ink_sycl::arc_cfg().active) return 0;
+        // the shared hook passes a (seed, offset) pair; the runner takes one 64-bit step seed
+        const uint64_t step_seed = rng_seed ^ (rng_offset * 0x9e3779b97f4a7c15ull);
         const int r = runner_.dflash2_spec_step_sampled(
             slot, anchor_tok, anchor_pos, max_emit,
-            sopts.temperature, sopts.top_k, sopts.top_p, sopts.min_p, step_seed,
+            temperature, top_k, top_p, min_p, step_seed,
             out_emitted, out_drafted);
         if (r < 0) err = "sycl dflash2 sampled spec step failed";
         return r;
