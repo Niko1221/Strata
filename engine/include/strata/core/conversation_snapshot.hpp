@@ -233,8 +233,11 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+// `first_stage`: `image` is a layer split's first-stage image (it holds stage_images); only its own K/V is restored
+// here, and the caller restores each later stage's prefix from image.stage_images[k] into that stage's session.
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
                                                           SessionState& session, const ModelGeometry& g,
-                                                          const QsaState* draft, std::string& error);
+                                                          const QsaState* draft, std::string& error,
+                                                          bool first_stage = false);
 
 } // namespace strata::core
