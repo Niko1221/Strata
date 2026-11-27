@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     bool serve = false, session_reuse = false, vision_requested = false;
     std::string vision_path;
     int64_t image_max_pixels = 1048576;
-    double vram_experts_gb = -1.0, ram_experts_gb = -1.0;
+    double vram_experts_gb = -1.0, peer_vram_experts_gb = -1.0, ram_experts_gb = -1.0;
     int kv_host_above = -1, gx_mb = 256, gx_min_t = 32, gen = 0, max_ctx = 0, chunk = 0, index_topk = 2048, threads = (int)std::max(2u, std::thread::hardware_concurrency() / 2), expert_act = 1;
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--serve") serve = true;
@@ -122,6 +122,19 @@ int main(int argc, char** argv) {
             const std::string f = (i + 1 < argc && argv[i + 1][0] != '-') ? std::string(argv[++i]) : std::string();
             return print_info(f);
         }
+        if (a == "--help" || a == "-h") {
+            fprintf(stderr,
+                    "usage: strata-hy4-sycl --model SQ32.strata --engram Engram-Q8.strata --tokens ids.txt [--gen N] [--chunk N] [--ctx N] [--threads N] [--expert-act 0|1] [--warm] [--dump] [--all-logits] [--out dir]\n"
+                    "       strata-hy4-sycl --serve --native SQ.strata --engram ENG.strata [--max-context N] [--draft off|dfly2|auto]   (engine line protocol)\n"
+                    "       strata-hy4-sycl --info FILE.strata | --version | --export-tokenizer FILE.strata DIR\n"
+                    "\n"
+                    "expert placement (dual GPU):\n"
+                    "  --vram-experts-gb GiB      primary GPU expert cache budget (default: auto)\n"
+                    "  --peer-vram-experts-gb GiB peer GPU(s) expert budget; default: same as --vram-experts-gb\n"
+                    "                             (peer GPUs hold ONLY experts, so a larger budget fits)\n"
+                    "  --ram-experts-gb GB        host RAM expert arena budget (default: auto)\n");
+            return 0;
+        }
         if (a == "--export-tokenizer") {
             const std::string f = nxt();
             return export_tokenizer(f, nxt());
@@ -138,6 +151,7 @@ int main(int argc, char** argv) {
             vision_path = nxt();
             vision_requested = true;
         } else if (a == "--vram-experts-gb") vram_experts_gb = atof(nxt().c_str());
+        else if (a == "--peer-vram-experts-gb") peer_vram_experts_gb = atof(nxt().c_str());
         else if (a == "--ram-experts-gb") ram_experts_gb = atof(nxt().c_str());
         else if (a == "--engram-cache-mib") (void)nxt();
         else if (a == "--cpu-hi") hi_act = true;
@@ -233,6 +247,7 @@ int main(int argc, char** argv) {
         so.gx_mb = gx_mb;
         so.kv_host_above = kv_host_above >= 0 ? kv_host_above : (dev_caps().global_mem >= (24ull << 30) ? 131072 : 24000);
         so.vram_experts_gb = vram_experts_gb;
+        so.peer_vram_experts_gb = peer_vram_experts_gb;
         so.ram_experts_gb = ram_experts_gb;
         so.hi_act = hi_act || (expert_act == 0);
         so.no_index = no_index;
@@ -301,7 +316,7 @@ int main(int argc, char** argv) {
         const bool want_gx = (gx_mb > 0 && (load_only || T0 >= gx_min_t));
         const size_t gx_reserve = (want_gx ? ((size_t)gx_mb * 2 / 3 + 220) * (1ull << 20) : 0) + (16ull << 20);
         const size_t host_oh = r.kv_host_bytes + g.host_bytes_total + ((size_t)std::max(gx_mb, 0) << 20) + (640ull << 20);
-        if (!setup_experts_unified(model, threads, vram_experts_gb, ram_experts_gb, gx_reserve, host_oh, hi_act || (expert_act == 0), vcache, ucx, err, peer_devs, &peers)) {
+        if (!setup_experts_unified(model, threads, vram_experts_gb, ram_experts_gb, gx_reserve, host_oh, hi_act || (expert_act == 0), vcache, ucx, err, peer_devs, &peers, peer_vram_experts_gb)) {
             fprintf(stderr, "experts: %s\n", err.c_str());
             return 1;
         }

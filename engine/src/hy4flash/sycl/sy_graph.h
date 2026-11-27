@@ -123,7 +123,8 @@ struct TreeSpec {
 inline bool setup_experts_unified(const std::string& model_path, int threads, double vram_experts_gb_arg, double ram_experts_gb_arg,
                                   size_t reserve_vram_bytes, size_t host_overhead_bytes, bool hi_act,
                                   SyVramExpertCache& vcache, hy4::CpuExperts& ucx, std::string& err,
-                                  const std::vector<int>& peer_devs = {}, SyPeerExperts* peers = nullptr) {
+                                  const std::vector<int>& peer_devs = {}, SyPeerExperts* peers = nullptr,
+                                  double peer_vram_experts_gb_arg = -1.0) {
     // 1. Determine VRAM expert cache budget (caller includes DFly2 reserve in reserve_vram_bytes when !df.ok so plain & DFly2 match!)
     size_t vram_budget = 0;
     if (vram_experts_gb_arg >= 0.0) {
@@ -146,7 +147,15 @@ inline bool setup_experts_unified(const std::string& model_path, int threads, do
     vcache.build_vram_mask(vram_mask);
     std::vector<std::vector<bool>> peer_mask;
     if (peers && !peer_devs.empty()) {
-        const size_t per_peer_budget = (vram_experts_gb_arg > 0.0) ? (size_t)(vram_experts_gb_arg * 1073741824.0) : 0;
+        // Asymmetric budgets: peer GPUs hold ONLY experts (no trunk/KV/scratch), so --peer-vram-experts-gb
+        // can exceed --vram-experts-gb. -1 (or env HY4S_PEER_VRAM_EXPERTS_GB unset) falls back to the
+        // primary budget, preserving v0.2.20 behavior bit-for-bit.
+        double peer_gb = peer_vram_experts_gb_arg;
+        if (peer_gb < 0.0) {
+            if (const char* env_p = std::getenv("HY4S_PEER_VRAM_EXPERTS_GB")) peer_gb = atof(env_p);
+        }
+        if (peer_gb < 0.0) peer_gb = vram_experts_gb_arg;
+        const size_t per_peer_budget = (peer_gb > 0.0) ? (size_t)(peer_gb * 1073741824.0) : 0;
         if (!peers->init(model_path, peer_devs, vram_mask, per_peer_budget, err, 1400)) return false;
         peers->set_q8_act(!hi_act);
         peers->mark_peer_mask(peer_mask);
