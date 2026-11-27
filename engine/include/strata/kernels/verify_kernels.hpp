@@ -238,11 +238,12 @@ void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int3
 /// be mapped host memory read after the window's own sync.  Graph-capturable; CUDA and HIP.
 inline constexpr int kNonfiniteBlocks = 16;
 void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* flags, void* stream);
-/// True where row_top_prob_split runs as its own kernel (CUDA; AMD keeps the one-block row_top_prob, so it calls
-/// that).  STRATA_MULTI_BLOCK_ARGMAX=0: off.
+/// True where row_top_prob_split runs as its own kernel: CUDA, HIP gfx12 / gfx1101 by default, or any wave32 HIP
+/// device with STRATA_MULTI_BLOCK_ARGMAX=1 (wave64 HIP keeps the one-block row_top_prob).  STRATA_MULTI_BLOCK_ARGMAX=0: off.
 bool multi_block_head_ops();
-/// True where the verify head's and the draft's greedy pick should be argmax_rows: sm_80 to sm_89 (the one-block
-/// kernel is slow there; sm_90+ has sample_tokens' cluster kernel, other cards keep sample_tokens).
+/// True where the verify head's and the draft's greedy pick should be argmax_rows: CUDA sm_80 to sm_89 (sm_7x opt-in
+/// via STRATA_ARGMAX_ROWS_SM70=1; sm_90+ has sample_tokens' cluster kernel), or HIP where multi_block_head_ops() is
+/// enabled.  STRATA_ARGMAX_ROWS=0 forces sample_tokens.
 bool argmax_rows_wanted();
 /// Dense-attention step records for `n` cells: [cell, cell+1, (cell+1)/4, cell+1] from cells[i] (device memory).
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream);
