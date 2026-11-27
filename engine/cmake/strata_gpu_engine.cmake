@@ -87,6 +87,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/kv_q4.cu
                           src/kernels/cuda/fused_gr.cu
                           src/kernels/cuda/cvec.cu
+                          src/kernels/cuda/lora.cu
                           src/kernels/cuda/qsa_decode_attn.cu
                           src/kernels/cuda/qsa_prompt_attn.cu
                           src/kernels/cuda/fused_gdn.cu
@@ -1278,6 +1279,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(cvec_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(cvec_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME cvec_parity COMMAND cvec_parity)
+  # LoRA kernels versus double precision and the request switch through a captured graph.
+  add_executable(lora_parity src/kernels/lora_parity.cpp)
+  target_include_directories(lora_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(lora_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME lora_parity COMMAND lora_parity)
 
   # The rewritten per-hit and grouped expert kernels vs the previous ones, bitwise (GPU, synthetic, no model).
   # `--bench` adds previous/new timings on engine-like shapes.

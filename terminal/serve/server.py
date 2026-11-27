@@ -1528,7 +1528,11 @@ class StrataEngine:
         """`cvec=0|1`: the experimental-speed-projection control vector for this request, when the engine was
         started with one (--control-vector-scaled; an engine without one ignores the key).  Absent = on."""
         on = sampling.get("experimental_speed_projection")
-        return f" cvec={int(on)}" if isinstance(on, bool) else ""
+        key = f" cvec={int(on)}" if isinstance(on, bool) else ""
+        # "lora": false - the LoRA adapter off for this request, when the engine was started with one (--lora;
+        # an engine without one ignores the key).  Absent = on.
+        lora = sampling.get("lora")
+        return key + (f" lora={int(lora)}" if isinstance(lora, bool) else "")
 
     def _send(self, text: str):
         btrace("send>", text[:60])
@@ -6681,6 +6685,7 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read; #3040
+                            lora_n = (getattr(self.engine, "info", {}) or {}).get("lora", 0)
                             if inkling_images and not admission_rejected and finish != "cancel":
                                 # Inkling's pictures are ONE placeholder id each in `ids`; the engine expands them to the picture's tokens and its DONE line
                                 # counts those (the prompt it really read): that is the prompt_tokens a client is told
@@ -6689,6 +6694,8 @@ class Service:
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
+                                "lora": (sampling or {}).get("lora") is not False
+                                if str(lora_n) not in ("0", "", "None") else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "gen": getattr(self.engine, "gen", None),       # #4636: the engine process this record is from
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
