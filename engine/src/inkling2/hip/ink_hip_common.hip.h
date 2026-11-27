@@ -214,6 +214,11 @@ __device__ __forceinline__ float sf4_e2m1_f32(uint32_t nib) {
 
 // ---- Exact F8_E4M3FN & UE8M0 decoders (for SF4 block scales, MX8 weights/scales, and FP8 KV cache) ----
 __device__ __forceinline__ float e4m3fn_to_f32(uint8_t b) {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    // RDNA4 decodes OCP E4M3 in hardware (v_cvt_f32_fp8): the same value as the bit decode below for all 254 non-NaN codes
+    // (checked on an R9700), where the bit decode cost the FP8 K/V cache half its prompt and decode speed. NaN stays 0.
+    return ((b & 0x7Fu) == 0x7Fu) ? 0.0f : __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(b), 0);
+#endif
     const uint32_t sign = static_cast<uint32_t>(b & 0x80u) << 24;
     const uint32_t exp  = (b >> 3) & 0x0Fu;
     const uint32_t mant = b & 0x07u;
@@ -232,6 +237,23 @@ __device__ __forceinline__ float e4m3fn_to_f32(uint8_t b) {
         f = sign | ((exp + (127u - 7u)) << 23) | (mant << 20);
     }
     return __builtin_bit_cast(float, f);
+}
+
+// Four FP8 K/V bytes of one word -> four floats times the token's scale: two packed converts on RDNA4 instead of four.
+__device__ __forceinline__ void e4m3fn_x4_to_f32(uint32_t w, float s, float& a, float& b, float& c, float& d) {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    const auto lo = __builtin_amdgcn_cvt_pk_f32_fp8(static_cast<int>(w), false);
+    const auto hi = __builtin_amdgcn_cvt_pk_f32_fp8(static_cast<int>(w), true);
+    a = ((w & 0x7Fu) == 0x7Fu) ? 0.0f : lo[0] * s;
+    b = (((w >> 8) & 0x7Fu) == 0x7Fu) ? 0.0f : lo[1] * s;
+    c = (((w >> 16) & 0x7Fu) == 0x7Fu) ? 0.0f : hi[0] * s;
+    d = (((w >> 24) & 0x7Fu) == 0x7Fu) ? 0.0f : hi[1] * s;
+#else
+    a = e4m3fn_to_f32(static_cast<uint8_t>(w & 0xFFu)) * s;
+    b = e4m3fn_to_f32(static_cast<uint8_t>((w >> 8) & 0xFFu)) * s;
+    c = e4m3fn_to_f32(static_cast<uint8_t>((w >> 16) & 0xFFu)) * s;
+    d = e4m3fn_to_f32(static_cast<uint8_t>((w >> 24) & 0xFFu)) * s;
+#endif
 }
 
 __device__ __forceinline__ uint8_t f32_to_e4m3fn(float x) {
