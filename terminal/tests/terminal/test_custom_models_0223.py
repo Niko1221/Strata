@@ -156,6 +156,13 @@ class AskTheEngine(Base):
         _p, info, _ = self.ask("plain-name.strata", inkling_strata(), {}, programs=[])                  # no engine installed at all
         self.assertEqual((info["family"], info["guessed"]), ("inkling-2-mini", True))
 
+    def test_an_answer_counts_only_for_the_family_of_the_engine_that_gave_it(self):
+        # a wrong-family engine that printed an arch line of the other family must not decide: only the guess is left (the name here says Inkling)
+        _p, info, _ = self.ask("an-inkling-named.strata", hy4_strata(), {"strata-hy4": self.INK}, programs=[("hy4-flash", Path("/e/strata-hy4"))])
+        self.assertEqual((info["family"], info["guessed"], info.get("read_by_engine", False)), ("inkling-2-mini", True, False))
+        _p, info, _ = self.ask("x.strata", inkling_strata(), {"strata-inkling": self.HY4, "strata-hy4": self.HY4})
+        self.assertEqual((info["family"], info["read_by_engine"]), ("hy4-flash", True))
+
     def test_plan_import_uses_the_engines_answer_and_does_not_say_it_guessed(self):
         f = self.folder("eng")
         p = f / "my-custom-pack.strata"

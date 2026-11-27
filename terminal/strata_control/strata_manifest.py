@@ -209,7 +209,7 @@ def family_from_engine(path: Path) -> tuple[str | None, dict]:
     for family, exe in programs:
         facts = parse_info(_run_info(exe, Path(path)))
         named = family_of_manifest({"arch": facts.get("arch")}) if facts.get("arch") else None
-        if named is not None:
+        if named is not None and named == family:                    # an answer counts only for the family of the engine that gave it (a wrong-family file must not pass as this one)
             return named, facts
     return None, {}
 
