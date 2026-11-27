@@ -28,6 +28,8 @@ public:
     // Bracket the existing pool callback; its signature and dispatch remain unchanged.
     void begin(const float* weights, int token_begin, int tokens);
     void end() { weights_ = nullptr; }
+    /// strata-mi50 (2026-10-26): the window's host-side reduced rows (tokens x H) from token_begin; the plugin reads them in finish_opt
+    const float* host_sum() const;
     void copy_rows(float* dst, const float* src, int token_begin, int tokens,
                    const int32_t* hit_rows, const int32_t* count, void* stream) const;
     void combine(float* dst, float* scratch, int token_begin, int tokens,

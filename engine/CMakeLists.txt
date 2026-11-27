@@ -727,7 +727,8 @@ if(STRATA_NATIVE_EXPERTS)
   enable_language(C)
   # ggml-base / ggml-cpu only where something links them: the tests (ggml as the oracle) and the ggml-cpu pool (STRATA_OWN_CPU_QUANT=OFF).
   # A release engine (tests off, Strata's own pool) configures, builds and links no ggml; the ggml tools below exist only with it.
-  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT)
+  # (+ the gfx906 Windows plugin: its MMQ library for the prompt helper, STRATA_PREFILL_HELPER, reads ggml's headers and links ggml-base)
+  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT OR (STRATA_HIP_GFX906 AND WIN32))
     strata_ggml_configure_root()
   else()
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)   # (what strata_ggml_configure_root sets for the whole project)

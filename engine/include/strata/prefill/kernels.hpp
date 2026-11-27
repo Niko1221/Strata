@@ -141,6 +141,9 @@ void peer_gather_add(float* sum, const float* rows, int64_t r0, const float* wk,
 /// moe_combine_peer with the peer's sums in FP16 (`peer16`, may be mapped host memory)
 void moe_combine_peer16(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg,
                         const uint16_t* peer16, int64_t rows_local, float* bo, int64_t T, void* stream);
+/// 2026-10-27 STRATA_PREFILL_HELPER: where take[ids[i]] != 0, ids[i] = -1 and w[i] = 0 (in place, n = tokens * k): those pairs are computed
+/// by the helper GPU; the grouping skips an id of -1 and the combine weighs the pair's (unwritten) row by 0.
+void helper_mask(int32_t* ids, float* w, const uint8_t* take, int64_t n, int n_expert, void* stream);
 /// y = FP16 bits of x, saturated at +-65504 (the peer's sums on their way back; eddoursul/Strata 2acfac4)
 void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream);
 /// dst[0, n) = FP32 of the FP16 src[0, n) (n a multiple of 8, 16-byte aligned; src may be mapped host memory)

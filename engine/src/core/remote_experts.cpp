@@ -1,6 +1,7 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/helper_plugin_abi.h"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
@@ -14,6 +15,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace strata::core {
 namespace {
@@ -66,9 +73,113 @@ bool check(cudaError_t result, const char* what, std::string& err, int device) {
 }
 } // namespace
 
+
+// ---- strata-mi50 (2026-10-23): the helper tier in a plugin DLL with its own HIP runtime (helper_plugin_abi.h) ----
+namespace {
+struct HelperPlugin {
+    std::string dll, pack;
+    int device = 0;
+    bool loaded = false;
+    strata_helper_init_t init = nullptr;
+    strata_helper_open_t open = nullptr;
+    strata_helper_close_t close = nullptr;
+    strata_helper_begin_t begin = nullptr;
+    strata_helper_finish_t finish = nullptr;
+    strata_helper_owns_t owns = nullptr;
+    strata_helper_holds_t holds = nullptr;
+    strata_helper_stats_t stats = nullptr;
+    strata_helper_open2_t open2 = nullptr;           // ABI 2 (2026-10-26): --remote-expert-opt
+    strata_helper_begin_opt_t begin_opt = nullptr;
+    strata_helper_finish_opt_t finish_opt = nullptr;
+    strata_helper_adapt_t adapt = nullptr;           // ABI 3 (2026-10-26): adaptive swaps on the helper
+    strata_helper_copy_blobs_t copy_blobs = nullptr; // ABI 4 (2026-10-27): the prompt path reads the helper's blobs
+    strata_helper_prefill_reserve_t pf_reserve = nullptr;   // ABI 5 (2026-10-27): the helper computes prompt experts
+    strata_helper_prefill_begin_t pf_begin = nullptr;
+    strata_helper_prefill_finish_t pf_finish = nullptr;
+};
+HelperPlugin& helper_plugin() { static HelperPlugin p; return p; }
+
+bool load_helper_plugin(std::string& err) {
+    HelperPlugin& p = helper_plugin();
+    if (p.loaded) return true;
+#if defined(_WIN32)
+    // 2026-10-26: the driver's HIP 5.x runtime first, with its dependencies from System32 only.  It imports amd_comgr.dll by
+    // that name, and an engine package folder can hold another one (the official package's HIP 7 copy beside strata.exe):
+    // loaded from there, the HIP 5.x runtime fails (cudaMemGetInfo failed in the plugin).  The plugin's import then binds
+    // to this already loaded module.
+    LoadLibraryExA("amdhip64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // the plugin's own folder first: its HIP 5.x libraries (hipblas.dll, rocblas.dll) sit beside it or on PATH
+    HMODULE m = LoadLibraryExA(p.dll.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (m == nullptr) m = LoadLibraryA(p.dll.c_str());
+    if (m == nullptr) {
+        err = "helper plugin: cannot load " + p.dll + " (error " + std::to_string((unsigned long) GetLastError()) + ")";
+        return false;
+    }
+    auto sym = [&](const char* n) { return (void*) GetProcAddress(m, n); };
+    auto ver = (strata_helper_abi_version_t) sym("strata_helper_abi_version");
+    // 2026-10-27: ABI 4 plugins still load (no prefill_* functions); was: ver() != STRATA_HELPER_ABI_VERSION
+    if (ver == nullptr || ver() < STRATA_HELPER_ABI_MIN || ver() > STRATA_HELPER_ABI_VERSION) { err = "helper plugin: " + p.dll + " has another ABI version"; return false; }
+    p.init = (strata_helper_init_t) sym("strata_helper_init");
+    p.open = (strata_helper_open_t) sym("strata_helper_open");
+    p.close = (strata_helper_close_t) sym("strata_helper_close");
+    p.begin = (strata_helper_begin_t) sym("strata_helper_begin");
+    p.finish = (strata_helper_finish_t) sym("strata_helper_finish");
+    p.owns = (strata_helper_owns_t) sym("strata_helper_owns");
+    p.holds = (strata_helper_holds_t) sym("strata_helper_holds");
+    p.stats = (strata_helper_stats_t) sym("strata_helper_stats");
+    p.open2 = (strata_helper_open2_t) sym("strata_helper_open2");
+    p.begin_opt = (strata_helper_begin_opt_t) sym("strata_helper_begin_opt");
+    p.finish_opt = (strata_helper_finish_opt_t) sym("strata_helper_finish_opt");
+    p.adapt = (strata_helper_adapt_t) sym("strata_helper_adapt");
+    p.copy_blobs = (strata_helper_copy_blobs_t) sym("strata_helper_copy_blobs");
+    if (ver() >= 5) {
+        p.pf_reserve = (strata_helper_prefill_reserve_t) sym("strata_helper_prefill_reserve");
+        p.pf_begin = (strata_helper_prefill_begin_t) sym("strata_helper_prefill_begin");
+        p.pf_finish = (strata_helper_prefill_finish_t) sym("strata_helper_prefill_finish");
+    }
+    if (!p.init || !p.open || !p.close || !p.begin || !p.finish || !p.owns || !p.holds || !p.stats ||
+        !p.open2 || !p.begin_opt || !p.finish_opt || !p.adapt || !p.copy_blobs) {
+        err = "helper plugin: " + p.dll + " lacks an entry point";
+        return false;
+    }
+    p.loaded = true;
+    return true;
+#else
+    err = "helper plugin: only on Windows";
+    return false;
+#endif
+}
+struct PluginCtx { const ExpertCache* primary; ExpertSource* source; };
+int plugin_primary_cb(void* ctx, int32_t layer, int32_t expert) {
+    return ((PluginCtx*) ctx)->primary->slot_of(layer, expert) >= 0 ? 1 : 0;
+}
+const uint8_t* plugin_blob_cb(void* ctx, int64_t layer, int64_t expert) { return ((PluginCtx*) ctx)->source->blob(layer, expert); }
+// adapt_swaps through the plugin: ctx is the caller's blob function
+const uint8_t* plugin_blob_fn_cb(void* ctx, int64_t layer, int64_t expert) {
+    return (*(const std::function<const uint8_t*(int64_t, int64_t)>*) ctx)(layer, expert);
+}
+}  // namespace
+
+void RemoteExperts::set_plugin(const std::string& dll, const std::string& pack_dir, int plugin_device) {
+    HelperPlugin& p = helper_plugin();
+    p.dll = dll; p.pack = pack_dir; p.device = plugin_device;
+}
+bool RemoteExperts::plugin_configured() { return !helper_plugin().dll.empty(); }
+bool RemoteExperts::plugin_owns(int64_t index) const { return helper_plugin().owns(plugin_, index) != 0; }
+bool RemoteExperts::plugin_holds(int64_t layer, int32_t expert) const { return helper_plugin().holds(plugin_, layer, expert) != 0; }
+int64_t RemoteExperts::plugin_i(int k) const { int64_t c[5] = {}; double d[3] = {}; helper_plugin().stats(plugin_, c, d); return c[k]; }
+double RemoteExperts::plugin_d(int k) const { int64_t c[5] = {}; double d[3] = {}; helper_plugin().stats(plugin_, c, d); return d[k]; }
+
 RemoteExperts::~RemoteExperts() { close(); }
 
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
+    if (plugin_configured()) {   // strata-mi50: the plugin runtime's device; `device` (this runtime's ordinal) is unused
+        if (!load_helper_plugin(err)) return false;
+        char e[512] = {};
+        const HelperPlugin& p = helper_plugin();
+        if (p.init(p.pack.c_str(), 0, 0, p.device, &free_gib, e, (int) sizeof e) != 0) { err = std::string("helper plugin: ") + e; return false; }
+        return true;
+    }
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
     if (device < 0 || device >= count) {
@@ -98,6 +209,7 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
 }
 
 void RemoteExperts::close() {
+    if (plugin_) { helper_plugin().close(plugin_); plugin_ = nullptr; return; }
     if (device_ < 0) return;
     DeviceScope scope(device_);
     if (scope.ok) {
@@ -137,12 +249,44 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>>& ranked,
                          const ExpertCache& primary, ExpertSource& source,
                          std::vector<uint8_t>& claimed, std::string& err, bool auto_size) {
+    if (plugin_configured()) {   // strata-mi50: the tier lives in the plugin (its own HIP runtime and device)
+        close();
+        if (!load_helper_plugin(err)) return false;
+        const HelperPlugin& p = helper_plugin();
+        char e[512] = {};
+        double free_gib = 0;
+        if (p.init(p.pack.c_str(), layers, experts, p.device, &free_gib, e, (int) sizeof e) != 0) { err = std::string("helper plugin: ") + e; return false; }
+        std::vector<int32_t> flat;
+        flat.reserve(ranked.size() * 2);
+        for (const auto& pr : ranked) { flat.push_back(pr.first); flat.push_back(pr.second); }
+        PluginCtx ctx{&primary, &source};
+        // 2026-10-26: open2 with reduce when --remote-expert-opt attached an optimizer (was p.open, no reduction)
+        plugin_ = p.open2(slots, flat.data(), (int64_t) ranked.size(), plugin_primary_cb, plugin_blob_cb, &ctx, claimed.data(),
+                          auto_size ? 1 : 0, remote_opt_ ? 1 : 0, e, (int) sizeof e);
+        if (plugin_ == nullptr) { err = std::string("helper plugin: ") + e; return false; }
+        n_expert_ = experts;
+        if (remote_opt_) {
+            plugin_sum_.assign((size_t) strata::kernels::cpu::MAXT * H, 0.0f);
+            plugin_owned_.assign((size_t) CAP, 0);
+        }
+        return true;
+    }
+    return open_with(device, slots, layers, experts, ranked,
+                     [&](int32_t l, int32_t e) { return primary.slot_of(l, e) >= 0; },
+                     [&](int64_t l, int64_t e) { return source.blob(l, e); }, claimed, err, auto_size, false);
+}
+
+bool RemoteExperts::open_with(int device, int slots, int64_t layers, int64_t experts,
+                              const std::vector<std::pair<int32_t, int32_t>>& ranked,
+                              const std::function<bool(int32_t, int32_t)>& on_primary,
+                              const std::function<const uint8_t*(int64_t, int64_t)>& blob,
+                              std::vector<uint8_t>& claimed, std::string& err, bool auto_size, bool standalone) {
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
     if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
         layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts ||
-        device == primary_device()) {   // the helper cannot be the primary device (any visible ordinal)
+        (!standalone && device == primary_device())) {   // the helper cannot be the primary device (any visible ordinal)
         err = "CUDA" + std::to_string(device) + " experts: need the device, ranked experts and positive slot count";
         return false;
     }
@@ -160,7 +304,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     for (const auto& pair : ranked) {
         if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
-        if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
+        if (!on_primary(pair.first, pair.second) && !claimed[index] && !picked[index]) {
             const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
             if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
             selected.push_back(pair);
@@ -190,15 +334,15 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     if (!cache_ok) { err = "CUDA" + std::to_string(device) + " experts: " + err; close(); return false; }
     for (const auto& pair : selected) {
         const int32_t slot = cache_.admit(pair.first, pair.second);
-        const uint8_t* blob = source.blob(pair.first, pair.second);
-        if (slot < 0 || !blob || !cache_.fill_slot_blocking(slot, blob, err, (int64_t) lay.blob_bytes(pair.first))) {
+        const uint8_t* bytes = blob(pair.first, pair.second);
+        if (slot < 0 || !bytes || !cache_.fill_slot_blocking(slot, bytes, err, (int64_t) lay.blob_bytes(pair.first))) {
             err = "CUDA" + std::to_string(device) + " experts: " +
                   (err.empty() ? "cache fill failed" : err);
             close(); return false;
         }
     }
     const auto& first = selected.front();
-    if (!cache_.verify_slot(cache_.slot_of(first.first, first.second), source.blob(first.first, first.second),
+    if (!cache_.verify_slot(cache_.slot_of(first.first, first.second), blob(first.first, first.second),
                             err, (int64_t) lay.blob_bytes(first.first))) {
         err = "CUDA" + std::to_string(device) + " experts: " + err;
         close(); return false;
@@ -265,6 +409,16 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
                           std::string& err) {
+    if (plugin_) {
+        char e[512] = {};
+        // 2026-10-26: --remote-expert-opt - the plugin reduces with the window's router weights (begin_opt)
+        plugin_reduced_ = remote_opt_ && remote_opt_->active();
+        const int rc = plugin_reduced_
+            ? helper_plugin().begin_opt(plugin_, layer, x, ids, n_tok, k, kind, primary_res, remote_opt_->weights_, e, (int) sizeof e)
+            : helper_plugin().begin(plugin_, layer, x, ids, n_tok, k, kind, primary_res, e, (int) sizeof e);
+        if (rc != 0) { err = e; plugin_reduced_ = false; return false; }
+        return true;
+    }
     // cumulative host time in here (staging and launches), reported per request by the driver
     struct Timer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } } timer{ms_begin_};
@@ -359,6 +513,17 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
 }
 
 bool RemoteExperts::finish(float* out, std::string& err) {
+    if (plugin_) {
+        char e[512] = {};
+        if (plugin_reduced_) {   // 2026-10-26: one summed row per token back, added into the optimizer's mapped sum
+            plugin_reduced_ = false;
+            if (helper_plugin().finish_opt(plugin_, plugin_sum_.data(), plugin_owned_.data(), e, (int) sizeof e) != 0) { err = e; return false; }
+            remote_opt_->accumulate(*this);
+            return true;
+        }
+        if (helper_plugin().finish(plugin_, out, e, (int) sizeof e) != 0) { err = e; return false; }
+        return true;
+    }
     if (group_id_.empty()) return true;
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }
@@ -368,7 +533,7 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
     // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
     // branch reads).
-#if defined(STRATA_USE_HIP)   // HIP only: the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)   // HIP only (2026-10-23: also the gfx906 plugin build, previously only STRATA_USE_HIP): the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
     static const bool spin = [] {
         const char* v = std::getenv("STRATA_REMOTE_SPIN");
         return !(v != nullptr && v[0] == '0');
@@ -391,10 +556,99 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     return true;
 }
 
+// strata-mi50 (2026-10-26): the swap rule of RemoteExpertOpt::adapt (src/core/remote_expert_opt.cu) for this one tier, run where the
+// tier's cache lives: in the plugin's runtime for the MI50.  The in-process tiers keep the original asynchronous path in adapt();
+// here every fill is blocking, so a blob pointer from `blob` is never used after the next call (the callback crosses runtimes).
+bool RemoteExperts::adapt_swaps(const float* usage, const int32_t* primary, uint8_t* resident, int64_t n, int max_swaps,
+                                const std::function<const uint8_t*(int64_t, int64_t)>& blob, int& swapped, std::string& err) {
+    swapped = 0;
+    if (plugin_) {
+        char e[512] = {};
+        if (helper_plugin().adapt(plugin_, usage, primary, resident, n, max_swaps, plugin_blob_fn_cb, (void*) &blob, &swapped,
+                                  e, (int) sizeof e) != 0) { err = e; return false; }
+        return true;
+    }
+    if (max_swaps <= 0 || device_ < 0 || n != (int64_t) layers_present_.size() * n_expert_) return true;
+    struct Swap { float gain; int32_t layer, in, out; };
+    std::vector<Swap> swaps;
+    std::vector<std::pair<float, int32_t>> candidates, victims;
+    for (int32_t l = 0; l < (int32_t) layers_present_.size(); ++l) {
+        candidates.clear(); victims.clear();
+        const size_t base = (size_t) l * n_expert_;
+        float primary_cold = 1.0e30f;
+        for (int32_t e = 0; e < n_expert_; ++e) {
+            const float u = usage[base + e];
+            if (primary[base + e] >= 0) primary_cold = std::min(primary_cold, u);
+            if (cache_.slot_of(l, e) >= 0) victims.emplace_back(u, e);
+            else if (!resident[base + e] && u >= 2.0f) candidates.emplace_back(u, e);
+        }
+        const size_t m = std::min(candidates.size(), victims.size());
+        if (!m) continue;
+        std::sort(candidates.begin(), candidates.end(), [](auto& a, auto& b) { return a.first > b.first; });
+        std::partial_sort(victims.begin(), victims.begin() + m, victims.end(), [](auto& a, auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i < m; ++i) {
+            if (victims[i].first > primary_cold) break;
+            if (candidates[i].first < victims[i].first + 1.5f) break;
+            swaps.push_back({candidates[i].first - victims[i].first, l, candidates[i].second, victims[i].second});
+        }
+    }
+    std::sort(swaps.begin(), swaps.end(), [](auto& a, auto& b) { return a.gain > b.gain; });
+    if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
+    if (swaps.empty()) return true;
+    DeviceScope scope(device_);
+    if (!scope.ok) { err = scope.error(device_); return false; }
+    if (!check(cudaStreamSynchronize(stream_), "adapt", err, device_)) return false;   // nothing of this tier still running
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    for (const auto& s : swaps) {
+        const uint8_t* in_blob = blob(s.layer, s.in);
+        if (in_blob == nullptr) continue;
+        if (!cache_.fill_slot_blocking(cache_.slot_of(s.layer, s.out), in_blob, err, (int64_t) lay.blob_bytes(s.layer))) {
+            err = "CUDA" + std::to_string(device_) + " experts: adapt: " + err;
+            return false;
+        }
+        cache_.replace(s.layer, s.out, s.in);
+        const size_t base = (size_t) s.layer * n_expert_;
+        resident[base + s.out] = 0;
+        resident[base + s.in] = 1;
+        ++swapped;
+    }
+    return true;
+}
+
+bool RemoteExperts::prefill_supported() const {
+    const HelperPlugin& p = helper_plugin();
+    return plugin_ != nullptr && p.pf_reserve && p.pf_begin && p.pf_finish;
+}
+
+bool RemoteExperts::prefill_reserve(int64_t t_max, std::vector<uint8_t>& layer_ok, uint16_t** x16, uint16_t** sum16, std::string& err) {
+    if (!prefill_supported()) { err = "the helper plugin has no prefill entry points (ABI < 5)"; return false; }
+    char e[512] = {};
+    if (helper_plugin().pf_reserve(plugin_, t_max, layer_ok.data(), (int64_t) layer_ok.size(), x16, sum16, e, (int) sizeof e) != 0) { err = e; return false; }
+    return true;
+}
+
+bool RemoteExperts::prefill_begin(int64_t layer, int64_t t, int64_t k, const uint16_t* x16, const int32_t* ids, const float* w,
+                                  const uint8_t* take, std::string& err) {
+    char e[512] = {};
+    if (helper_plugin().pf_begin(plugin_, layer, t, k, x16, ids, w, take, e, (int) sizeof e) != 0) { err = e; return false; }
+    return true;
+}
+
+bool RemoteExperts::prefill_finish(uint16_t* sum16, double* ms_wait, std::string& err) {
+    char e[512] = {};
+    if (helper_plugin().pf_finish(plugin_, sum16, ms_wait, e, (int) sizeof e) != 0) { err = e; return false; }
+    return true;
+}
+
 bool RemoteExperts::copy_cached_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst,
                                       size_t n, uint8_t* hit, std::string& err) {
     std::fill(hit, hit + n, 0);
-    if (device_ < 0 || read_stream_ == nullptr || n == 0) return true;
+    if (plugin_ && n > 0) {   // 2026-10-27: the plugin copies from the helper's VRAM (ABI 4); was: every blob a miss, read from the files
+        char e[512] = {};
+        if (helper_plugin().copy_blobs(plugin_, layers, experts, dst, (int64_t) n, hit, e, (int) sizeof e) != 0) { err = e; return false; }
+        return true;
+    }
+    if (plugin_ || device_ < 0 || read_stream_ == nullptr || n == 0) return true;
     const auto& lay = strata::kernels::cpu::expert_layout();
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }

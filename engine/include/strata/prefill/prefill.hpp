@@ -24,7 +24,7 @@
 #include <memory>
 #include <string>
 
-namespace strata::core { class PeerExperts; }
+namespace strata::core { class PeerExperts; class RemoteExperts; }
 namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
@@ -235,6 +235,14 @@ public:
     /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
     bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
 
+    /// 2026-10-27 STRATA_PREFILL_HELPER (plugin ABI 5): the helper GPU (`helper`, the MI50 behind the plugin) computes the fraction `frac`
+    /// of the experts it holds that this GPU would stream, in the prompt path's fused layers, in parallel with this GPU; this GPU adds the
+    /// per-token sums it returns in its combine.  Allocates this side's buffers for chunks of up to init's `chunk` tokens and reserves
+    /// the helper's work space.  false with `err`: nothing is changed (the prompt path stays as it was).
+    bool set_helper_prefill(core::RemoteExperts* helper, double frac, std::string& err);
+    /// One line for the log: layers and experts the helper took and the time it kept this GPU waiting (empty when off or unused).
+    std::string helper_prefill_report(bool reset);
+
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
@@ -265,6 +273,9 @@ public:
     /// 149-prefetch (STRATA_RAM_ADAPT2): a layer's routed expert ids (T x k, -1 = none) after the prompt path downloaded them
     /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
     std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
+    /// 2026-10-27 (measurement, STRATA_PREFILL_MI50_STATS): also download the ids on the fused path (a host sync a layer)
+    /// so on_routes sees every layer. Off: the fused path stays sync-free, as before.
+    bool on_routes_fused = false;
     int64_t stopped_at() const { return stopped_at_; }
     /// KVA: the end of the positions the last run approximated (they are a prefix: chunks from the run's first position
     /// on), i.e. the first position whose final rows are real; 0 when that run approximated nothing.  Raised chunk by

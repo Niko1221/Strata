@@ -905,6 +905,8 @@ struct Options {
     std::array<bool, 3> expert_cache_remote_auto{};
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
+    /// strata-mi50 (2026-10-23): the CUDA1 helper tier through a plugin DLL with its own HIP runtime ("dll" or "dll@device")
+    std::string expert_cache_plugin;
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
     /// The default policy hands out slots in arrival order from one counter shared by all 48 layers, so the
@@ -3994,6 +3996,7 @@ int main(int argc, char** argv) {
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
+        else if (a == "--expert-cache-plugin") o.expert_cache_plugin = next("--expert-cache-plugin");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -5272,6 +5275,24 @@ int main(int argc, char** argv) {
         (o.expert_cache_remote[2] > 0 && o.expert_cache_remote[1] == 0)) {
         std::fprintf(stderr, "strata generate: invalid sampling or resource parameter\n");
         return 2;
+    }
+    if (!o.expert_cache_plugin.empty()) {
+        // strata-mi50: the helper tier CUDA1 (--expert-cache-device1) runs in a plugin that sees a GPU this runtime does not
+        // (Windows: the Radeon Pro VII / MI50 under HIP 5.x beside an RX 9070 XT under HIP 6/7).  Only the first helper.
+        // 2026-10-26: --remote-expert-opt is allowed (plugin ABI 2 reduces in the plugin); was refused with the plugin
+        if (o.expert_cache_remote[0] <= 0 || o.expert_cache_remote[1] > 0) {
+            std::fprintf(stderr, "strata generate: --expert-cache-plugin needs --expert-cache-device1 (only that helper)\n");
+            return 2;
+        }
+        std::string dll = o.expert_cache_plugin;
+        int pdev = 0;
+        const size_t at = dll.rfind('@');
+        if (at != std::string::npos && at + 1 < dll.size() && std::isdigit((unsigned char) dll[at + 1])) {
+            pdev = std::atoi(dll.c_str() + at + 1);
+            dll.resize(at);
+        }
+        strata::core::RemoteExperts::set_plugin(dll, o.pack, pdev);
+        std::fprintf(stderr, "strata generate: helper tier CUDA1 through the plugin %s (its device %d)\n", dll.c_str(), pdev);
     }
     if (o.expert_cache_remote_placement != "stripe" && o.expert_cache_remote_placement != "layer") {
         std::fprintf(stderr, "strata generate: --expert-cache-remote-placement must be stripe or layer\n");
@@ -10121,6 +10142,25 @@ int main(int argc, char** argv) {
     }
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
+    // strata-mi50 (2026-11-11): the MI50 tier only pays when the main card's expert cache is small.  Measured (changelog 0.2.2-mi50.49/.50):
+    // with ~2,800 slots (much free VRAM) decode is equal with and without it but prompt reads are 35-60% slower (its experts have no RAM
+    // copy; the prompt path fetches them over PCIe); with ~1,600 slots (a game or browser holding VRAM) it gives +61% decode.  So with the
+    // plugin tier and a cache of at least STRATA_MI50_TIER_MAX_SLOTS slots (default 2500) the tier is not opened.  STRATA_MI50_TIER=1 keeps it.
+    if (!o.expert_cache_plugin.empty() && o.expert_cache_remote[0] > 0) {
+        const char* force = std::getenv("STRATA_MI50_TIER");
+        const char* mx = std::getenv("STRATA_MI50_TIER_MAX_SLOTS");
+        const int64_t max_slots = mx != nullptr ? std::atoll(mx) : 2500;
+        if (!(force != nullptr && std::atoi(force) != 0) && max_slots > 0 && (int64_t) xcache.slots() >= max_slots) {
+            std::fprintf(stderr, "strata generate: the main card's expert cache has %lld slots (>= %lld): the MI50 helper tier is left off "
+                                 "(STRATA_MI50_TIER=1 keeps it, STRATA_MI50_TIER_MAX_SLOTS changes the limit)\n",
+                         (long long) xcache.slots(), (long long) max_slots);
+            o.expert_cache_remote[0] = 0;
+            o.remote_expert_opt = false;
+        } else {
+            std::fprintf(stderr, "strata generate: the main card's expert cache has %lld slots: the MI50 helper tier stays on\n",
+                         (long long) xcache.slots());
+        }
+    }
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
     if (o.remote_expert_opt && o.expert_cache_remote[0] > 0) remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
@@ -13152,6 +13192,22 @@ int main(int argc, char** argv) {
                     (void) cudaGetLastError();   // (as above)
                 }
             }
+            // 2026-10-27 STRATA_PREFILL_HELPER=1 (opt-in): the helper GPU behind the plugin (the MI50) computes the fraction
+            // STRATA_PREFILL_HELPER_FRAC (default 0.66) of the experts it holds that this GPU would stream in the prompt path's
+            // fused layers, in parallel with this GPU.  Off (default): the prompt path is as it was.
+            if (const char* hv = std::getenv("STRATA_PREFILL_HELPER"); hv != nullptr && std::atoi(hv) != 0 && !multi_gpu && stages.empty() &&
+                o.batch <= 0 && !prefill_helpers.empty()) {
+                double frac = 0.66;
+                if (const char* fv = std::getenv("STRATA_PREFILL_HELPER_FRAC")) frac = std::clamp(std::atof(fv), 0.0, 1.0);
+                std::string herr;
+                bool on = false;
+                for (strata::core::RemoteExperts* h : prefill_helpers)
+                    if (h->prefill_supported() && sp.set_helper_prefill(h, frac, herr)) { on = true; break; }
+                if (on) std::fprintf(stderr, "strata serve: the helper GPU computes %.0f%% of the experts it holds in prompt reads (STRATA_PREFILL_HELPER)\n",
+                                     100.0 * frac);
+                else std::fprintf(stderr, "strata serve: STRATA_PREFILL_HELPER is off: %s\n", herr.empty() ? "no helper with the prefill entry points" : herr.c_str());
+                err.clear();
+            }
             // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
             // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
             if (multi_gpu && !stages.empty()) {
@@ -16066,6 +16122,60 @@ int main(int argc, char** argv) {
                     if (ids[i] >= 0 && ids[i] < g.n_expert) sd[ids[i]] += per;
             };
         }
+        // 2026-10-27 STRATA_PREFILL_MI50_STATS=1 (measurement only, nothing changes): per prompt read, the routed rows and
+        // the expert weights by where the expert lives - resident on the primary (host_res), held by a helper (the MI50
+        // through the plugin) and not resident, or streamed. Sizes what a helper computing its own experts in the prompt
+        // path would take off the primary: its rows, its weight bytes, the activations it would have to receive and send.
+        struct Mi50Stats {
+            bool on = false;
+            int64_t tokens = 0, chunks = 0, last_l = -1;
+            int64_t rows[3] = {}, pairs[3] = {};
+            uint64_t wbytes[3] = {};
+            std::vector<int32_t> cnt;
+        } mi50s;
+        mi50s.on = [] { const char* v = std::getenv("STRATA_PREFILL_MI50_STATS"); return v != nullptr && std::atoi(v) != 0; }();
+        if (mi50s.on && drive.d.remote_count > 0) {
+            mi50s.cnt.assign((size_t) g.n_expert, 0);
+            sp.on_routes_fused = true;
+            auto prev = sp.on_routes;
+            sp.on_routes = [&, prev](int64_t l, const int32_t* ids, int64_t n) {
+                if (prev) prev(l, ids, n);
+                if (l < 0 || l >= g.n_layers || n <= 0) return;
+                if (l <= mi50s.last_l || mi50s.last_l < 0) { ++mi50s.chunks; mi50s.tokens += n / std::max<int64_t>(1, g.n_expert_used); }
+                mi50s.last_l = l;
+                std::fill(mi50s.cnt.begin(), mi50s.cnt.end(), 0);
+                for (int64_t i = 0; i < n; ++i)
+                    if (ids[i] >= 0 && ids[i] < g.n_expert) ++mi50s.cnt[(size_t) ids[i]];
+                for (int32_t e = 0; e < g.n_expert; ++e) {
+                    const int32_t c = mi50s.cnt[(size_t) e];
+                    if (c == 0) continue;
+                    int k = 2;
+                    if (!host_res.empty() && host_res[(size_t) (l * g.n_expert + e)] >= 0) k = 0;
+                    else for (int r = 0; r < drive.d.remote_count; ++r)
+                        if (drive.d.remote[r]->holds(l, e)) { k = 1; break; }
+                    mi50s.rows[k] += c;
+                    ++mi50s.pairs[k];
+                    mi50s.wbytes[k] += (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(l);
+                }
+            };
+        }
+        auto mi50s_flush = [&] {
+            if (const std::string hr = sp.helper_prefill_report(true); !hr.empty()) { std::fprintf(stderr, "%s\n", hr.c_str()); std::fflush(stderr); }
+            if (!mi50s.on || mi50s.chunks == 0) return;
+            const int64_t all = mi50s.rows[0] + mi50s.rows[1] + mi50s.rows[2];
+            const char* nm[3] = {"resident primary", "held by helper", "streamed"};
+            std::fprintf(stderr, "strata mi50 stats: %lld tokens, %lld chunk(s), %lld routed rows\n",
+                         (long long) mi50s.tokens, (long long) mi50s.chunks, (long long) all);
+            for (int k = 0; k < 3; ++k)
+                std::fprintf(stderr, "strata mi50 stats:   %-16s %6.1f%% rows (%lld), %lld expert-layers, %.2f GiB weights\n", nm[k],
+                             all > 0 ? 100.0 * (double) mi50s.rows[k] / (double) all : 0.0, (long long) mi50s.rows[k],
+                             (long long) mi50s.pairs[k], (double) mi50s.wbytes[k] / (1024.0 * 1024.0 * 1024.0));
+            // activations a helper would receive and return for its rows: fp16 in, fp16 out, hidden size wide
+            std::fprintf(stderr, "strata mi50 stats:   helper activations %.2f GiB each way (fp16, %lld wide)\n",
+                         (double) mi50s.rows[1] * (double) g.n_embd * 2.0 / (1024.0 * 1024.0 * 1024.0), (long long) g.n_embd);
+            std::fflush(stderr);
+            mi50s = Mi50Stats{true, 0, 0, -1, {}, {}, {}, std::move(mi50s.cnt)};
+        };
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -20888,6 +20998,7 @@ int main(int argc, char** argv) {
                         kva_floors.note(ids.data(), sp.kva_floor());
                         if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
                     }
+                    mi50s_flush();   // strata-mi50: the helper's per-layer tallies of this read
                     return run_ok;
                 };
                 // STRATA_BATCH_CONCURRENT_READ=1 (opt-in, one GPU, --batch with --no-prefill-borrow): the prompt is read on a
@@ -21193,6 +21304,7 @@ int main(int argc, char** argv) {
                             try {   // (an exception leaving a std::thread ends the process: a failed read instead)
                                 if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
                                 read_ok = sp.run(ids.data() + q0, b0 - q0, q0, read_err);
+                                mi50s_flush();
                             } catch (const std::exception& x) {
                                 read_ok = false;
                                 read_err = std::string("the prompt read failed: ") + x.what();
