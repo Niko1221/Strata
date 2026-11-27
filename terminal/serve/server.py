@@ -33,6 +33,7 @@ if sys.platform == "win32":
 
 import argparse
 import contextlib
+import functools
 import collections
 import base64
 import hashlib
@@ -4721,6 +4722,37 @@ class Service:
     def is_strata_model_id(cls, asked_l: str) -> bool:
         return asked_l.startswith(cls._STRATA_MODEL_PREFIXES) or bool(cls._STRATA_SIZE_NAME.match(asked_l))
 
+    def model_list(self) -> list[dict]:
+        """GET /v1/models' entries: the model, its aliases and the image model (serve/model_host.py lists every model's)."""
+        loaded = self.loaded()
+        ctx = self.reported_ctx()
+        created = int(getattr(self, "started_at", 0) or time.time())
+        cap = self.output_cap()
+        # #6402: the answer cap under the names clients already look for: OpenAI-shaped tools read
+        # `limit.output` (with `limit.context` beside it), llama-swap's readers read
+        # meta.llamaswap.max_output_tokens.  Without them a client guesses (1,024, 32k, or its own default)
+        # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
+        # context_length), so a client that sizes its window from /v1/models reads it
+        model = {"id": self.model, "object": "model", "created": created, "owned_by": "strata",
+                 "status": {"value": "loaded"},
+                 "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx,
+                 "limit": {"context": ctx, "output": cap},
+                 "meta": {"n_ctx": ctx, "llamaswap": {"max_output_tokens": cap}},
+                 "architecture": {"input_modalities": ["text", "image"] if self.has_vision() else ["text"],
+                                  "output_modalities": ["text"]}}
+        if not loaded and (self.idle_unload_s or getattr(self.engine, "unloaded", False)):
+            model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
+            loaded = True
+        if self.aliases:                       # #297: the aliases, and each one listed under its own id
+            model["aliases"] = list(self.aliases)
+        data = [model, *({**model, "id": x, "alias_of": self.model} for x in self.aliases)]
+        data = data if loaded else []
+        if self.images is not None:            # the image model: POST /v1/images/generations
+            data.append({"id": self.images.model, "object": "model", "created": created, "owned_by": "strata",
+                         "status": {"value": "loaded"},
+                         "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
+        return data
+
     def check_model(self, req) -> dict | None:
         """#6621: reject mismatched Strata catalog model IDs (e.g. requesting `inkling-2-mini-sq-10` while Qwen is
         loaded) and, when strict_model is enabled (--strict-model / strict_model: true / STRATA_STRICT_MODEL=1), any
@@ -7894,33 +7926,7 @@ def make_handler(svc: Service):
                 self._json(200, s)
             elif path in ("/v1/models", "/models") or path.startswith(("/v1/models/", "/models/")):
                 if self._authorized():
-                    loaded = svc.loaded()
-                    ctx = svc.reported_ctx()
-                    created = int(getattr(svc, "started_at", 0) or time.time())
-                    cap = svc.output_cap()
-                    # #6402: the answer cap under the names clients already look for: OpenAI-shaped tools read
-                    # `limit.output` (with `limit.context` beside it), llama-swap's readers read
-                    # meta.llamaswap.max_output_tokens.  Without them a client guesses (1,024, 32k, or its own default)
-                    # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
-                    # context_length), so a client that sizes its window from /v1/models reads it
-                    model = {"id": svc.model, "object": "model", "created": created, "owned_by": "strata",
-                             "status": {"value": "loaded"},
-                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx,
-                             "limit": {"context": ctx, "output": cap},
-                             "meta": {"n_ctx": ctx, "llamaswap": {"max_output_tokens": cap}},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.has_vision() else ["text"],
-                                              "output_modalities": ["text"]}}
-                    if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
-                        model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
-                        loaded = True
-                    if svc.aliases:                       # #297: the aliases, and each one listed under its own id
-                        model["aliases"] = list(svc.aliases)
-                    data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
-                    data = data if loaded else []
-                    if svc.images is not None:            # the image model: POST /v1/images/generations
-                        data.append({"id": svc.images.model, "object": "model", "created": created, "owned_by": "strata",
-                                     "status": {"value": "loaded"},
-                                     "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
+                    data = svc.model_list()
                     if path in ("/v1/models", "/models"):
                         self._json(200, {"object": "list", "data": data})
                     else:                                 # #5460: GET /v1/models/{model_id} (OpenAI model retrieve)
@@ -9396,7 +9402,126 @@ def thinking_level_line(config_effort: str | None, inkling: bool) -> str | None:
     return None
 
 
-def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+def _process_state() -> dict:
+    """The serve settings a run config keeps in modules rather than in its Service: the model family's reasoning-effort
+    words (frontend.use_family), "env_to_user" and "engine_ready_s".  A one-model server sets them once; a models server
+    (--models) holds several configs in one process, so each member keeps its own and takes them back with the GPU."""
+    import serve.frontend as _frontend
+    return {"family": _frontend._FAMILY, "env_to_user": _frontend.ENV_TO_USER, "engine_ready_s": ENGINE_READY_S}
+
+
+def _apply_process_state(state: dict) -> None:
+    global ENGINE_READY_S
+    import serve.frontend as _frontend
+    _frontend.use_family(state["family"])
+    _frontend.ENV_TO_USER = state["env_to_user"]
+    ENGINE_READY_S = state["engine_ready_s"]
+
+
+def _build_member(argv: list, entry: dict, baseline: dict):
+    """One models-file entry -> (Service, closers, its _process_state), built by _main exactly as a one-model server of
+    that config, starting from `baseline` (a fresh server's settings) so nothing carries over from the member before."""
+    from serve import model_host as mh
+    _apply_process_state(baseline)
+    got = []
+    rc = _main(mh.member_argv(argv, entry), _member=lambda svc, closers: got.append((svc, closers)))
+    if not got:
+        raise mh.ModelsFileError(f"{entry['config']}: the model could not be set up (exit {rc})")
+    svc, closers = got[0]
+    return svc, [c for c in closers if c], _process_state()
+
+
+def _main_models(a, argv: list, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+    """--models FILE (serve/model_host.py): one Service per run config, each built by _main exactly as a one-model
+    server of that config, all served on this port; one model holds the GPU at a time."""
+    from serve import model_host as mh
+    if a.ready_file or a.owner_fd is not None:
+        print("[strata] --models does not take --ready-file or --owner-fd", file=sys.stderr)
+        return 2
+    try:
+        spec = mh.load_models_file(a.models)
+    except mh.ModelsFileError as e:
+        print(f"[strata] {e}", file=sys.stderr)
+        return 2
+    host_addr = a.host or "127.0.0.1"
+    termination = "sigint"
+    finished = threading.Event()
+
+    def request_stop(reason: str):
+        nonlocal termination
+        termination = reason
+        if threading.current_thread() is threading.main_thread():
+            raise KeyboardInterrupt
+        import _thread
+        _thread.interrupt_main()
+    lifeline.install_stop_handlers(request_stop, finished)
+    try:                                                # before the members are built: is the port free?
+        Server((host_addr, a.port), BaseHTTPRequestHandler).server_close()
+    except OSError as e:
+        print(f"[strata] {listen_problem(host_addr, a.port, e)}", file=sys.stderr)
+        return 2
+    members: list = []
+    host = None
+    try:
+        baseline = _process_state()                     # the settings a one-model server starts from
+        for entry in spec["models"]:
+            print(f"[strata] models: setting up {entry['config']} ...", flush=True)
+            svc, closers, state = _build_member(argv, entry, baseline)
+            members.append(mh.Member(svc, make_handler(svc), closers,
+                                     activate=functools.partial(_apply_process_state, state)))
+        default = spec["default"]
+        if a.default_model is not None:
+            default = None if a.default_model.strip().lower() == "none" else a.default_model
+        host = mh.ModelHost(members, default=default, auto_swap=spec["auto_swap"], swap_wait_s=spec["swap_wait_s"],
+                            settle_s=spec["settle_s"])
+    except (mh.ModelsFileError, SystemExit) as e:
+        for m in members:
+            for close in m.closers:
+                try:
+                    close()
+                except Exception:                       # noqa: BLE001 - the error below is the one to read
+                    pass
+        print(f"[strata] models: {e}" if isinstance(e, mh.ModelsFileError) else
+              f"[strata] models: a model's settings were refused (exit {e.code})", file=sys.stderr)
+        return 2
+    interrupted = False
+    httpd = None
+    try:
+        if host.default is not None and not a.lazy:
+            try:
+                host.switch(host.default)
+            except mh.SwitchError as e:
+                print(f"[strata] models: {e}", file=sys.stderr)
+                return 1
+        httpd = Server((host_addr, a.port), mh.make_router_handler(host, bad_body=BadBody))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        here = ("[::1]" if host_addr == "::" else "127.0.0.1" if host_addr in ("0.0.0.0", "") else
+                f"[{host_addr}]" if ":" in host_addr else host_addr)
+        print(f"ready: http://{here}:{httpd.server_address[1]}/v1  (models: {', '.join(m.name for m in members)}; "
+              f"loaded: {host.active or 'none'}{'; API key required' if members[0].svc.api_key else ''})", flush=True)
+        while True:
+            time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n[strata] stopping (Ctrl+C again to end the engines at once) ...", flush=True)
+    finally:
+        for m in members:
+            m.svc.begin_drain()
+        if a.shutdown_timeout is not None:
+            for m in members:
+                m.svc.wait_for_drain(a.shutdown_timeout)
+        if httpd is not None:
+            httpd.shutdown()
+        host.close()
+        finished.set()
+        if interrupted:
+            print("[strata] stopped", flush=True)
+    return interrupt_exit_code if interrupted and termination == "sigint" else 0
+
+
+def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, _member=None) -> int:
+    """`_member` (serve/model_host.py, --models): build this config's Service and hand it to `_member(svc, closers)`
+    instead of serving it; the process-level steps (stop signals, the listening port) are the models server's."""
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
@@ -9495,8 +9620,16 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                     help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
                          "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
                          "{\"prefill_gpu\": 0, \"decode_gpu\": 1}; docs/SPLIT_SERVE.md)")
+    ap.add_argument("--models", default=None, metavar="FILE",
+                    help="serve several models from one port (opt-in): FILE lists their run configs; one model holds the "
+                         "GPU at a time and POST /v1/load {\"model\": NAME} switches (serve/model_host.py)")
+    ap.add_argument("--default-model", default=None, metavar="NAME",
+                    help="with --models: the model loaded at start (\"none\": no model until the first request or "
+                         "/v1/load); default: the models file's \"default\"")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    if a.models and _member is None:                    # opt-in: several models behind this port (serve/model_host.py)
+        return _main_models(a, launch_args, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code)
     if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
         print("[strata] WARNING: " + _rt, flush=True)
     global OPENS_BROWSER
@@ -9515,7 +9648,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise KeyboardInterrupt
         import _thread
         _thread.interrupt_main()
-    lifeline.install_stop_handlers(request_stop, finished)
+    if _member is None:                                 # a models server's member: the models server installs them
+        lifeline.install_stop_handlers(request_stop, finished)
     if a.owner_fd is not None:
         try:
             owner_guard.start(a.owner_fd, grace=(a.shutdown_timeout or 0) + 40)
@@ -9992,6 +10126,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
+    if _member is not None:                             # --models: the models server serves it (serve/model_host.py)
+        svc.host_names = host_names_for(a.host, svc.allowed_hosts, svc.trusted_origins)
+        svc.start_telemetry()
+        svc.start_idle_unload()
+        svc.start_vision_idle()
+        _member(svc, [getattr(engine, "close", None), vision.shutdown if vision else None,
+                      hub.close if hub is not None else None, getattr(getattr(svc, "telemetry", None), "close", None)])
+        return 0
     httpd = serve(svc, host=a.host, port=a.port)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
