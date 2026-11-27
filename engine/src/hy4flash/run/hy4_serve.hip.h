@@ -5,7 +5,7 @@
 //
 //   stdout, at start:        INFO engine=... arch=hy4flash ...   then exactly one   READY <max_context> stop
 //   stdin, per request:      GEN <max_new> [temperature=F top_p=F top_k=N min_p=F penalty_repeat=F penalty_freq=F penalty_present=F penalty_last_n=N seed=N] id,id,...
-//   stdout, per request:     [RESUME n]  PP <read> <total> <ms> <tok/s> (per prefill chunk)  T <id> (per token)  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish>
+//   stdout, per request:     [RESUME n]  PP <read> <total> <ms> <tok/s> (per prefill chunk)  T <id> (per token)  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
 //   stdin, any time:         STOP (end the running request at the next token / chunk boundary: DONE ... cancel)   QUIT (or EOF: free the GPU and exit)
 //
 // Only protocol lines go to stdout; everything else goes to stderr. v1 keeps no session between requests (each GEN reads its whole prompt) unless --session-reuse 1: then a
@@ -544,6 +544,9 @@ inline int hy4_serve_main(const ServeOpts& o) {
         const bool greedy_fast = q.s.greedy() && !q.s.penalties();
         bool first = true;
         const bool spec_path = use_spec && limit > 0;
+        // SpecStats accumulates for the process. Snapshot before this request so DONE carries its own drafts.
+        const long acc0 = spec ? spec->S.accepted : 0;
+        const long off0 = spec ? spec->S.drafted : 0;
         if (spec_path) {
             // DFly2 lossless greedy + exact probabilistic rejection sampling: tokens are emitted as they are accepted
             std::string fin, e2;
@@ -602,7 +605,8 @@ inline int hy4_serve_main(const ServeOpts& o) {
         if (!reuse || has_images) fwd = 0;
         r.vis = nullptr;
         const double decode_ms = (now_s() - t1) * 1000.0;
-        proto("DONE %d %d %.1f %.1f %s 0 0 %d", made, T0, prompt_ms, decode_ms, finish, start);
+        proto("DONE %d %d %.1f %.1f %s %ld %ld %d", made, T0, prompt_ms, decode_ms, finish,
+              spec ? spec->S.accepted - acc0 : 0L, spec ? spec->S.drafted - off0 : 0L, start);
     }
     if (cc.on && dirty && fwd >= cc.min_tokens) cc.park(r, tok, fwd);
     HCK(hipDeviceSynchronize());
