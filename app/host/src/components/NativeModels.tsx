@@ -34,7 +34,7 @@ import { NativePresets } from './NativePresets';
 import { NativeTune } from './NativeTune';
 import { NativeTuneBadge } from './NativeTuneBadge';
 import { commitWarning } from '../lib/commit-warning';
-import { nativeCatalogModels, catalogVersionLabel, fetchesPictures, hasKvChoice, HY4_FAMILY, INKLING_FAMILY } from '../lib/native-catalog';
+import { nativeCatalogModels, catalogVersionLabel, fetchesPictures, hasKvChoice, HY4_FAMILY, INKLING_FAMILY, sc117Contexts } from '../lib/native-catalog';
 export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine }: {
     onOtherModels: () => void;
     onImport?: () => void;
@@ -70,9 +70,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     }, [expert]);
     const selectedFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family)) ?? families[0], selectedSize = selectedFamily?.sizes.find(s => s.id === size) ?? selectedFamily?.sizes[0];
     const isHy4Selected = selectedFamily?.family === HY4_FAMILY || selectedFamily?.family === INKLING_FAMILY;
+    const isSc117Inkling = selectedFamily?.family === INKLING_FAMILY && (selectedSize?.custom === true || /^inkling-2-mini-sc117-sq-(10|15|20)$/i.test(selectedSize?.id ?? ''));
     const installed = native?.installed?.models.find(m => m.model === selectedSize?.id), listPending = installedListPending(native);
     // The sizes this model offers for the conversation context; it opens at 128K (or its largest size when that is smaller).
-    const contextList = native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144];
+    const contextList = isSc117Inkling ? sc117Contexts(installed?.context) : (native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144]);
     // The model that is running is shown as running, with Unload: not offered for loading again.
     const downloaded = native?.installed?.models ?? [], allSizes = families.flatMap(f => f.sizes);
     // A DeepSeek model of an earlier Strata (Control: no longer run): one line with where its files are, nothing to load or delete here.
@@ -228,8 +229,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     // The model is on this computer and only its picture files are missing: the Load fetches those files itself (about 0.9 GB, once) and goes on; it does not run the installer again.
     const picturesByLoad = fetchesPictures(selectedSize, native?.packaged);
     async function load() { if (!selectedSize)
-        return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || picturesByLoad || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
-        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked && !installed.contextChosen ? { contextChosen: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && (customRoles || savedDiffers) ? { gpuRoles: effectiveRoles, ...(!isHy4Selected ? { layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, ...(!isHy4Selected ? { layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) } : {}) : {}) } });
+        return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && (context === installed.context || isSc117Inkling) && (!selectedSize?.images || vision === 'no' || picturesByLoad || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
+        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, ...(isSc117Inkling && context !== installed.context ? { context } : {}), resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked && !installed.contextChosen ? { contextChosen: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && (customRoles || savedDiffers) ? { gpuRoles: effectiveRoles, ...(!isHy4Selected ? { layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, ...(!isHy4Selected ? { layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) } : {}) : {}) } });
         setJobId(result.id);
     }
     else {
