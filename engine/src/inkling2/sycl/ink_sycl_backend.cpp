@@ -95,6 +95,7 @@ public:
         effective_chunk_ = (acfg.active && opts.chunk_auto) ? acfg.effective_chunk : 0;
         const int run_chunk = (effective_chunk_ > 0) ? effective_chunk_ : opts.chunk;
         const int batch_cap = std::max(256, std::max(run_chunk, par));
+        if (opts.draft_forced && !std::getenv("STRATA_INK_DRAFTER")) ink_sycl::sy_setenv("STRATA_INK_DRAFTER", "dflash2", 0);   // --draft on
         std::string df2_path = opts.enable_dspark ? ink_sycl::df2_resolve_path(model.path, opts.dspark_path) : "";
         {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2 (never vetoed, never cut to plain steps)
             const char* de = std::getenv("STRATA_INK_DRAFTER");

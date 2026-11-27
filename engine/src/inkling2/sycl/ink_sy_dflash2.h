@@ -59,9 +59,13 @@ inline bool df2_file_exists(const std::string& p) {
     return f.good();
 }
 
+// DFlash 2 on SYCL loads by itself (a dflash2.safetensors beside the model, no switch) only when this is true. It is false for 0.2.23: the port is proven on one hybrid Arc card
+// (A750: acceptance 70-90%, greedy tokens equal to plain), no resident Battlemage card has measured it yet (B70 CI). --draft on and STRATA_INK_DRAFTER=dflash2 load it.
+inline constexpr bool kSyclDflash2DefaultOn = false;
+
 inline bool df2_requested_env() {
     const char* e = std::getenv("STRATA_INK_DRAFTER");
-    if (!e || !e[0]) return true;  // DFlash 2 is the default drafter (DSpark is retired)
+    if (!e || !e[0]) return kSyclDflash2DefaultOn;
     std::string s = to_lower_ascii(e);
     return s == "dflash2" || s == "df2" || s == "auto" || s == "1";
 }
