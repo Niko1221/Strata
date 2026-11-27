@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (338)
+## Switches you can turn on (340)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -203,6 +203,8 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PCIE_FRAC_DEFAULT` | on / off | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md), [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-20-0.2.1-idle-gpu/README.md) |
 | `STRATA_PCIE_K_RULE` | text | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PCIE_MIN1` | number | NVIDIA and AMD | [README.md](bench-results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md) |
+| `STRATA_PEER_AUTONOMOUS` | number | NVIDIA and AMD | - |
+| `STRATA_PEER_DIRECT_SIGNAL` | number | NVIDIA and AMD | - |
 | `STRATA_PEER_HEAD_SPLIT` | text | NVIDIA | [NVIDIA_V100.md](NVIDIA_V100.md) |
 | `STRATA_PEER_NO_P2P` | number | NVIDIA and AMD | [SECOND_GPU.md](SECOND_GPU.md) |
 | `STRATA_PENALTY_PROMPT` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |

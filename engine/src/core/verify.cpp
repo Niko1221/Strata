@@ -12,6 +12,7 @@
 #include "strata/core/device_hits_plan.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/peer_experts.hpp"
 #include "strata/core/pending_cuda_error.hpp"
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
@@ -836,6 +837,25 @@ Verifier::~Verifier() {
         if (h) cudaFreeHost(h);
 }
 
+void Verifier::set_peer(PeerExperts* peer, int parity) {
+    peer_ = peer;
+    parity_ = parity;
+    if (peer_ != nullptr && peer_->valid() && peer_->autonomous()) {
+        peer_autonomous_ = true;
+        if (!all_resident_ && !always_publish_) {
+            device_plan_ = true;
+            if (skip_ == nullptr && device_ >= 0) {
+                const OnDevice on_dev(device_);
+                if (cudaMalloc((void**) &skip_, 64) == cudaSuccess) {
+                    cudaMemset(skip_, 0, 64);
+                }
+            }
+        }
+    } else {
+        peer_autonomous_ = false;
+    }
+}
+
 int Verifier::tap_total() const {
     int n = 0;
     if (g_ == nullptr) return 0;
@@ -1418,7 +1438,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         const char* v = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
         if (v == nullptr) v = std::getenv("STRATA_VERIFY_DEVICE_HITS");
         // (not with set_always_publish: the device table may lag the host's while windows are in flight)
-        device_plan_ = !all_resident_ && !always_publish_ && (v != nullptr && std::atoi(v) != 0);
+        device_plan_ = !all_resident_ && !always_publish_ && ((v != nullptr && std::atoi(v) != 0) || peer_autonomous_);
 #if defined(STRATA_GPU_METAL)
         device_hits_ = false;
 #else
@@ -2696,7 +2716,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                               hits_.cache_base, slot_off_d_, (long long) hits_.blob,
                               plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
-                              (uint32_t) ((l - lb_) * G + grp + 1), cs);
+                              (uint32_t) ((l - lb_) * G + grp + 1), cs, nullptr, peer_autonomous_);
 #if defined(STRATA_USE_HIP)
             if (g_doorbell_store)   // #649 A/B: the step's ring stored, not incremented over PCIe
                 doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
@@ -2905,7 +2925,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 note_prio_tail(sh_cs_, -1);
                 cudaEventRecord(ev_join_, sh_cs_);
             }
-            if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
+            if (device_plan_ && !peer_autonomous_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                          skip_ + grp, ring, cs);
@@ -3875,6 +3895,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
         *(volatile uint32_t*) h_flag_ = 1;
         flag_raised = true;
+    } else if (!pre && peer_autonomous_ && do_ple) {
+        const Clock::time_point tp = Clock::now();
+        if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        strata_store_fence();
+        ms_host += ms_since(tp);
     }
     static const bool probe_on = env_on("STRATA_LAUNCH_PROBE");
     static std::atomic<int> probe_count{0};
@@ -3923,6 +3949,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 }
             });
         }
+        const int G_launch = groups_[T] > 0 ? groups_[T] : 1;
+        if (peer_ != nullptr && peer_->valid() && peer_autonomous_) {
+            if (!peer_->launch_window(parity_, lb_, le_, T, (int) ss_->k, 1, G_launch)) {
+                err = "verify: peer autonomous window launch failed";
+                return false;
+            }
+        }
         launch_o.emplace(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_, device_, threaded_launch,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
@@ -3935,6 +3968,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
 #else
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
+        const int G_launch = groups_[T] > 0 ? groups_[T] : 1;
+        if (peer_ != nullptr && peer_->valid() && peer_autonomous_) {
+            if (!peer_->launch_window(parity_, lb_, le_, T, (int) ss_->k, 1, G_launch)) {
+                err = "verify: peer autonomous window launch failed";
+                return false;
+            }
+        }
         const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_);
 #endif
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
@@ -3989,6 +4029,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         } else {
             *flag = 1;
         }
+    } else if (peer_autonomous_) {
+        // PLE rows already gathered before graph and peer launch
     } else
     for (int64_t k = 0; k < steps; ++k) {
         const int64_t l = lb_ + k / G;
@@ -4074,6 +4116,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             !adapt_gate_wait((int32_t) l, err)) return false;
         cur_layer_ = want - 1;
         set_plan_slot(grp);
+        sink_.want_flag = (k == 0 && do_ple) ? 0u : want;
+        sink_.peer_signals_flag = false;
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
@@ -4115,7 +4159,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             strata_store_fence();
             ms_host += ms_since(tp);
         }
-        if (!(test_stall && k + 1 == steps)) *flag = want;
+        if (!(test_stall && k + 1 == steps)) {
+            if (!sink_.peer_signals_flag) *flag = want;
+        }
         if (h_bal_ != nullptr) bal_p_[(size_t) ((k / G) * 2 + grp)] = ms_since(b);
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
@@ -5993,6 +6039,18 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     trace_ev("WINDOW (pipelined)", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
     strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
+    if (peer_autonomous_ && fl_ple_) {
+        if (!ss.ple.table->gather_batch(pl_ple_rows_.data(), (size_t) T, h_ple_, err)) return false;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        strata_store_fence();
+        fl_ple_ = false;
+    }
+    if (peer_ != nullptr && peer_->valid() && peer_autonomous_) {
+        if (!peer_->launch_window(parity_, lb_, le_, T, (int) ss.k, 1, G)) {
+            err = "verify: peer autonomous window launch failed";
+            return false;
+        }
+    }
     const cudaError_t le = cudaGraphLaunch(exec_[sl][T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
@@ -6012,7 +6070,12 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     // and the device switch (OnDevice: cudaGetDevice and two cudaSetDevice) made that a few driver calls each time:
     // 919 million passes before the host stalled inside one of those cudaSetDevice calls with both stages waiting
     // on it (0.1.41, Windows, an RTX 3060 + RTX 5070 Ti split).  The same answer as the loop below gives.
-    if (!ar_on() && *(volatile uint32_t*) h_seq_ < (uint32_t) (fl_k_ + 1)) {
+    if (peer_autonomous_) {
+        if (!fl_ple_ && *(volatile uint32_t*) h_seq_ < (uint32_t) fl_total_) {
+            const double now = now_ms();
+            if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= 20000.0) return 0;
+        }
+    } else if (!ar_on() && *(volatile uint32_t*) h_seq_ < (uint32_t) (fl_k_ + 1)) {
         const double now = now_ms();
         if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= 20000.0) return 0;
     }
@@ -6034,6 +6097,24 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
         // Per-window: with a loan in flight (ar_off_) the doorbell graph needs the per-layer service below.
         if (!gather_ple()) return -1;
         *(volatile uint32_t*) h_flag_ = 1;
+        fl_k_ = fl_total_;
+        progress_tick();
+        return 1;
+    }
+    if (peer_autonomous_) {
+        if (fl_k_ == 0 && !gather_ple()) return -1;
+        if (*(volatile uint32_t*) h_seq_ < (uint32_t) fl_total_) {
+            const double now = now_ms();
+            if (now - fl_flush_ms_ > 2.0) {
+                fl_flush_ms_ = now;
+                (void) cudaStreamQuery(cs_);
+            }
+            if (now - fl_since_ms_ > 20000.0) {
+                err = "verify: autonomous window timed out";
+                return -1;
+            }
+            return 0;
+        }
         fl_k_ = fl_total_;
         progress_tick();
         return 1;
@@ -6068,6 +6149,8 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
         const int grp = (int) (fl_k_ % G);
         cur_layer_ = want - 1;
         set_plan_slot(grp);
+        sink_.want_flag = (fl_k_ == 0 && fl_ple_) ? 0u : want;
+        sink_.peer_signals_flag = false;
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window (pipelined): the CPU experts of layer", l);
         if (pool != nullptr)
@@ -6089,7 +6172,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
             raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
         }
         if (fl_k_ == 0 && !gather_ple()) return -1;
-        *(volatile uint32_t*) h_flag_ = want;
+        if (!sink_.peer_signals_flag) *(volatile uint32_t*) h_flag_ = want;
         ++fl_k_;
         ms_pool += ms_since(b);
         fl_since_ms_ = fl_flush_ms_ = now_ms();

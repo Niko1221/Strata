@@ -43,6 +43,8 @@
 
 namespace strata::core {
 
+class PeerExperts;
+
 /// 0.1.43 (STRATA_ADAPT_OVERLAP): the adaptive tier's copies still landing while a decode window runs.  The window's
 /// residency tables are the baseline's (the swapped-in experts are resident from the window's first layer), but their
 /// bytes arrive layer by layer: `run` holds a layer's plan (the first thing that lets the GPU read the layer's expert
@@ -100,6 +102,12 @@ public:
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    uint32_t* h_seq() const { return h_seq_; }
+    float* h_x() const { return h_x_; }
+    int32_t* h_ids() const { return h_ids_; }
+    float* h_ymiss() const { return h_ymiss_; }
+    void set_peer(PeerExperts* peer, int parity = 0);
+    bool peer_autonomous() const { return peer_autonomous_; }
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -421,6 +429,7 @@ public:
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
     GpuPlanSink* plan_sink() { return &sink_; }
+    uint32_t* h_flag() const { return h_flag_; }
     /// Plan v0.3 P6: split the window into two token groups and pipeline the CPU experts of one with the GPU work
     /// of the other (default on).  Set before the first `run`.
     void set_split(bool on) { split_ = on; }
@@ -771,6 +780,9 @@ private:
     std::function<bool(cudaStream_t, std::string&)> pre_launch_;   // set_pre_launch
     int groups_[strata::kernels::kVerifyLongT + 1] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    PeerExperts* peer_ = nullptr;
+    int parity_ = 0;
+    bool peer_autonomous_ = false;
 
     // device
     void* arena_ = nullptr;
