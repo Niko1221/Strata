@@ -1,0 +1,386 @@
+﻿{
+    "run_id":  "swift-r10",
+    "model":  "swift-1.5-iq3_xxs",
+    "engine_line":  "[strata] 2026-11-27 20:04:05 engine started: <strata-home>\\components\\engine\\0.1.62-windows-x86_64-cuda-cuda13\\strata.exe --serve --pack <data-dir>\\packs\\swift-iq3_xxs --native <data-dir>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf <data-dir>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --expert-profile <strata-home>\\components\\control\\0.1.62\\data\\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <data-dir>\\mtp\\rt --max-context 262144 --kv q4_0 --vision --kv-resident 32768 --conversation-cache-mib 4096 --vram-reserve-mib 1536",
+    "started_utc":  "2026-11-27T19:10:47Z",
+    "green_results":  9,
+    "total_results":  12,
+    "tasks":  4,
+    "tasks_all_green":  3,
+    "reps":  3,
+    "total_wall_s":  57.8,
+    "gen_tok_total":  10258,
+    "results":  [
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  2.46,
+                        "gen_tok":  283,
+                        "decode_tps":  145.5,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  1274,
+                        "passed_first":  4,
+                        "total_first":  5,
+                        "green_first":  false,
+                        "attempts":  1,
+                        "rounds_to_green":  null,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "timed_out":  false,
+                        "total_task_s":  6.82,
+                        "total_gen_tok":  283,
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  1.49,
+                        "gen_tok":  180,
+                        "decode_tps":  175.9,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  832,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  4.25,
+                        "total_gen_tok":  180,
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  3.01,
+                        "gen_tok":  491,
+                        "decode_tps":  195.7,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  2160,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  6.02,
+                        "total_gen_tok":  491,
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T4-aq-cli",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  10,
+                        "total":  10,
+                        "green":  true,
+                        "req_s":  12.89,
+                        "gen_tok":  2348,
+                        "decode_tps":  192.1,
+                        "prompt_tok":  890,
+                        "files_written":  [
+                                              "app/Program.cs"
+                                          ],
+                        "answer_chars":  7721,
+                        "passed_first":  10,
+                        "total_first":  10,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "RESULT: 10/10",
+                        "timed_out":  false,
+                        "total_task_s":  18.99,
+                        "total_gen_tok":  2348,
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  4.27,
+                        "gen_tok":  618,
+                        "decode_tps":  148.2,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  2911,
+                        "passed_first":  4,
+                        "total_first":  5,
+                        "green_first":  false,
+                        "attempts":  1,
+                        "rounds_to_green":  null,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "timed_out":  false,
+                        "total_task_s":  7.42,
+                        "total_gen_tok":  618,
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  0.97,
+                        "gen_tok":  136,
+                        "decode_tps":  154.3,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  663,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  3.64,
+                        "total_gen_tok":  136,
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  2.41,
+                        "gen_tok":  432,
+                        "decode_tps":  185.4,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  1876,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  5.29,
+                        "total_gen_tok":  432,
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T4-aq-cli",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  10,
+                        "total":  10,
+                        "green":  true,
+                        "req_s":  11,
+                        "gen_tok":  2126,
+                        "decode_tps":  194.8,
+                        "prompt_tok":  890,
+                        "files_written":  [
+                                              "app/Program.cs"
+                                          ],
+                        "answer_chars":  7031,
+                        "passed_first":  0,
+                        "total_first":  0,
+                        "green_first":  false,
+                        "attempts":  2,
+                        "rounds_to_green":  1,
+                        "repair_gen_tok_total":  2131,
+                        "error_trail":  [
+                                            "r1: build: <tmp>\\dotnet-eval-swift-r10\\T4-aq-cli\\app\\Program.cs(203,20): error CS0136: A local or param"
+                                        ],
+                        "repair_s":  10.28,
+                        "repair_gen_tok":  2131,
+                        "repair_blocks":  [
+                                              "app/Program.cs"
+                                          ],
+                        "test_output":  "RESULT: 10/10",
+                        "timed_out":  false,
+                        "total_task_s":  28.73,
+                        "total_gen_tok":  4257,
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  1.99,
+                        "gen_tok":  276,
+                        "decode_tps":  145.7,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  1189,
+                        "passed_first":  4,
+                        "total_first":  5,
+                        "green_first":  false,
+                        "attempts":  1,
+                        "rounds_to_green":  null,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "timed_out":  false,
+                        "total_task_s":  5.14,
+                        "total_gen_tok":  276,
+                        "rep":  3
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  1.24,
+                        "gen_tok":  209,
+                        "decode_tps":  180.4,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  995,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  3.87,
+                        "total_gen_tok":  209,
+                        "rep":  3
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  2.75,
+                        "gen_tok":  532,
+                        "decode_tps":  198.9,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  2328,
+                        "passed_first":  9,
+                        "total_first":  9,
+                        "green_first":  true,
+                        "attempts":  1,
+                        "rounds_to_green":  0,
+                        "repair_gen_tok_total":  0,
+                        "error_trail":  [
+
+                                        ],
+                        "test_output":  "RESULT: 9/9",
+                        "timed_out":  false,
+                        "total_task_s":  5.6,
+                        "total_gen_tok":  532,
+                        "rep":  3
+                    },
+                    {
+                        "task":  "T4-aq-cli",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  10,
+                        "total":  10,
+                        "green":  true,
+                        "req_s":  13.29,
+                        "gen_tok":  2627,
+                        "decode_tps":  198.9,
+                        "prompt_tok":  890,
+                        "files_written":  [
+                                              "app/Program.cs"
+                                          ],
+                        "answer_chars":  8502,
+                        "passed_first":  0,
+                        "total_first":  0,
+                        "green_first":  false,
+                        "attempts":  3,
+                        "rounds_to_green":  2,
+                        "repair_gen_tok_total":  5370,
+                        "error_trail":  [
+                                            "r1: build: <tmp>\\dotnet-eval-swift-r10\\T4-aq-cli\\app\\Program.cs(161,51): error CS1061: \u0027(string, double",
+                                            "r2: tests: FAIL json --hours 6 -\u003e hours=6 :: [exit 2] Error: unknown argument \u0027<tmp>\\aq-fixture-d83480c"
+                                        ],
+                        "repair_s":  13.29,
+                        "repair_gen_tok":  2704,
+                        "repair_blocks":  [
+                                              "app/Program.cs"
+                                          ],
+                        "test_output":  "RESULT: 10/10",
+                        "timed_out":  false,
+                        "total_task_s":  52.52,
+                        "total_gen_tok":  7997,
+                        "rep":  3
+                    }
+                ]
+}

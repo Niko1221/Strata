@@ -1,0 +1,8 @@
+{
+  "id": "T1-async-timeout",
+  "title": "Async timeout a cancellation",
+  "files": ["app/Fetcher.cs"],
+  "buildArgs": [],
+  "timeoutSec": 60,
+  "prompt": "Oprav triedu Eval.Fetcher. Metoda LoadAsync(load, timeout, ct) musi:\n1) ak load dobehne skor nez timeout, vratit jeho vysledok,\n2) ak timeout vyprsi skor, zahodit výsledok load a hodit TimeoutException; zároven musí zrušiť bežiacu load (jej CancellationToken musí byť cancelled),\n3) ak je ct už zrušený (alebo sa zruší počas čakania), hodiť OperationCanceledException,\n4) ak load vyhodi výnimku skôr než timeout, tú istú výnimku propagovať (nie premeniť na TimeoutException).\nZachovaj namespace Eval, názov triedy, podpis metódy a že trieda nemá konštruktor s parametrami."
+}
