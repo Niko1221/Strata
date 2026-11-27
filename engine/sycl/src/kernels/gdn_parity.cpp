@@ -24,6 +24,7 @@
 #include "strata/kernels/gdn.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/core/geometry.hpp"
 
 #include "strata/prefill/kernels.hpp"
@@ -806,7 +807,7 @@ int main(int argc, char** argv) {
         auto d_dt = (float*) up(dt.data(), dt.size() * 4);
         auto d_sa = (float*) up(ssm_a.data(), ssm_a.size() * 4);
         auto d_gm = (float*) up(gamma.data(), gamma.size() * 4);
-        int ab_bad = 0, sn_bad = 0, ab_n = 0, sn_n = 0;
+        int ab_bad = 0, sn_bad = 0, ab_n = 0, sn_n = 0, qf_bad = 0, qf_n = 0, qf_clamped = 0;
         for (int T = 1; T <= strata::kernels::kVerifyMaxT; ++T) {
             // --- alpha/beta
             std::vector<float> x((size_t) T * n_embd);
@@ -961,6 +962,43 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // --- STRATA_QFUSE (S26): the q8_1 image written beside y must be native_quantize_q8_1 of that y, byte for
+            // byte. A gamma 3e4 times larger puts block sums past the fp16 range and 1e7 the scales too; both
+            // quantizers keep them finite (#606), so these cases check the clamp as well.
+            {
+                auto* q = &dpct::get_in_order_queue();
+                const size_t blocks = (size_t) T * vd / 32, qbytes = blocks * 36;   // 36: half2 ds + 32 int8
+                void* d_xq = dev(qbytes);
+                void* d_xr = dev(qbytes);
+                std::vector<uint8_t> xq(qbytes), xr(qbytes);
+                for (const float scale : {1.0f, 3e4f, 1e7f}) {
+                    std::vector<float> gs(gamma);
+                    for (auto& v : gs) v *= scale;
+                    auto d_gs = (float*) up(gs.data(), gs.size() * 4);
+                    q->memcpy(d_st, st0.data(), st0.size() * 4).wait();
+                    strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_gate, d_beta, d_z, d_gs, eps, d_y, h_k, h_v, T,
+                                                         nullptr, q, 0, d_xq);
+                    strata::kernels::native_quantize_q8_1(d_y, d_xr, vd, T, q);
+                    q->memcpy(xq.data(), d_xq, qbytes).wait();
+                    q->memcpy(xr.data(), d_xr, qbytes).wait();
+                    size_t diff = 0;
+                    for (size_t i = 0; i < blocks; ++i) {
+                        if (std::memcmp(&xq[i * 36], &xr[i * 36], 36) != 0) ++diff;
+                        uint16_t ds[2];
+                        std::memcpy(ds, &xr[i * 36], 4);
+                        if ((ds[0] & 0x7fff) == 0x7bff || (ds[1] & 0x7fff) == 0x7bff) ++qf_clamped;   // +-65504
+                    }
+                    ++qf_n;
+                    if (diff) {
+                        std::printf("    *** gdn_step_norm_multi T=%d gamma x%g: %zu of %zu q8_1 blocks differ from "
+                                    "native_quantize_q8_1 ***\n", T, scale, diff, blocks);
+                        ++qf_bad;
+                    }
+                    sycl::free(d_gs, *q);
+                }
+                sycl::free(d_xq, *q);
+                sycl::free(d_xr, *q);
+            }
             sycl::free(d_h, dpct::get_in_order_queue());
                 sycl::free(d_gate, dpct::get_in_order_queue());
                 sycl::free(d_beta, dpct::get_in_order_queue());
@@ -978,7 +1016,9 @@ int main(int argc, char** argv) {
             sycl::free(d_gm, dpct::get_in_order_queue());
         std::printf("\n  %-42s %s (%d cases)\n", "gdn_ab_multi T=1..8 == fused_gdn_ab", ab_bad ? "*** NO ***" : "bitwise", ab_n);
         std::printf("  %-42s %s (%d cases)\n", "gdn_step_norm_multi T=1..8 == single-token", sn_bad ? "*** NO ***" : "bitwise", sn_n);
-        bad += ab_bad + sn_bad;
+        std::printf("  %-42s %s (%d cases, %d blocks clamped to +-65504)\n", "gdn_step_norm_multi q8_1 == native quantizer",
+                    qf_bad ? "*** NO ***" : "bitwise", qf_n, qf_clamped);
+        bad += ab_bad + sn_bad + qf_bad;
     }
 
     std::printf("\ngdn: %d failures\n", bad);
