@@ -9722,6 +9722,17 @@ def shape_engine_fetch(a):
     return found
 
 
+def shape_engine_cuda_defs(gpu: dict, toolkit, yes: bool) -> list:
+    """#6952: the CUDA build of a shape engine gets code for the same cards as the Strata engine (build_engine): every card the model runs on and
+    every other card Strata can use in the PC (#4662), compiled by the toolkit setup picked.  Without CMAKE_CUDA_ARCHITECTURES,
+    engine/cmake/backends/cuda.cmake builds for sm_120 only: on an RTX 3090 strata-inkling launched no kernel and answered "!!!!" at ~1,000 tok/s."""
+    archs = local_build_archs(gpu.get("archs", [gpu["arch"]]), gpus())
+    nvcc, _vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": toolkit}, yes)
+    # #5694: build_shape_engine runs CMake itself (not through cmake_build), so the Windows paths get their forward slashes here
+    return forward_slash_defs([f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(str(x) for x in archs)}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                               *toolkit_root_defs(nvcc)])
+
+
 def build_shape_engine(shape: str, gpu: dict, hip: bool, cuda_tk=None, yes: bool = False) -> Path | None:
     """Compile a shape engine (`hy4` -> `strata-hy4`, `inkling2` -> `strata-inkling`) locally from `engine/` when `--build` is passed (#6588).
     Returns the installed engine directory containing the built executable + `BUILD.json`, or None if unsupported."""
@@ -9747,7 +9758,7 @@ def build_shape_engine(shape: str, gpu: dict, hip: bool, cuda_tk=None, yes: bool
         if hip:
             cfg_cmd += ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
         else:
-            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF"]
+            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF", *shape_engine_cuda_defs(gpu, cuda_tk, yes)]
         target = "strata-hy4"
     else:
         cfg_cmd += ["-DSTRATA_BUILD_INKLING=ON", "-DSTRATA_BUILD_HY4=OFF", "-DSTRATA_BUILD_TESTS=OFF"]
@@ -9756,7 +9767,7 @@ def build_shape_engine(shape: str, gpu: dict, hip: bool, cuda_tk=None, yes: bool
         elif sys.platform == "darwin":
             cfg_cmd += ["-DSTRATA_ENABLE_METAL=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
         else:
-            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF"]
+            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF", *shape_engine_cuda_defs(gpu, cuda_tk, yes)]
         target = "strata-inkling"
     say(f"  compiling {target} locally (--build) in {build_dir} ...")
     run(cfg_cmd)
