@@ -2203,6 +2203,7 @@ static inline void sf4_w13_chunk_s(
         const float4 wu1 = float4(kE2M1[(bu.x >> 16) & 15u], kE2M1[(bu.x >> 20) & 15u], kE2M1[(bu.x >> 24) & 15u], kE2M1[bu.x >> 28]);
         const float4 wu2 = float4(kE2M1[bu.y & 15u], kE2M1[(bu.y >> 4) & 15u], kE2M1[(bu.y >> 8) & 15u], kE2M1[(bu.y >> 12) & 15u]);
         const float4 wu3 = float4(kE2M1[(bu.y >> 16) & 15u], kE2M1[(bu.y >> 20) & 15u], kE2M1[(bu.y >> 24) & 15u], kE2M1[bu.y >> 28]);
+        #pragma unroll 4
         for (int i = 0; i < mm; ++i) {
             device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(b * 16));
             const float4 x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];
@@ -2465,27 +2466,54 @@ kernel void ink_moe_gu_sk23_mm(
         if (lane == 0) h_act[ulong(pid0) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
         return;
     }
-    for (int t0 = 0; t0 < n; t0 += 4) {
-        const int mm = min(4, n - t0);
-        uint pid[4], tk[4];
-        for (int i = 0; i < mm; ++i) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
-        float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
-        if (mm == 4) {
-            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 4>(body, r, x_in, tk, int(lane), ag, au);
-            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 4>(body, r, x_in, tk, int(lane), ag, au);
-            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
-        } else if (mm == 3) {
-            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 3>(body, r, x_in, tk, int(lane), ag, au);
-            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 3>(body, r, x_in, tk, int(lane), ag, au);
-            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
-        } else if (mm == 2) {
-            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 2>(body, r, x_in, tk, int(lane), ag, au);
-            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 2>(body, r, x_in, tk, int(lane), ag, au);
-            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
-        } else {
-            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 1>(body, r, x_in, tk, int(lane), ag, au);
-            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 1>(body, r, x_in, tk, int(lane), ag, au);
-            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+    for (int t0 = 0; t0 < n; t0 += 8) {
+        const int mm = min(8, n - t0);
+        uint pid[8], tk[8];
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) if (i < mm) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
+        float ag[8] = {0,0,0,0,0,0,0,0}, au[8] = {0,0,0,0,0,0,0,0};
+        const bool sk3 = (ed.gu_code == 3), sk2 = (ed.gu_code == 2);
+        switch (mm) {
+        case 8:
+            if (sk3)      sk_w13_chunk_mm<3, 8>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 8>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 7:
+            if (sk3)      sk_w13_chunk_mm<3, 7>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 7>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 6:
+            if (sk3)      sk_w13_chunk_mm<3, 6>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 6>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 5:
+            if (sk3)      sk_w13_chunk_mm<3, 5>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 5>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 4:
+            if (sk3)      sk_w13_chunk_mm<3, 4>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 4>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 3:
+            if (sk3)      sk_w13_chunk_mm<3, 3>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 3>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        case 2:
+            if (sk3)      sk_w13_chunk_mm<3, 2>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 2>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
+        default:
+            if (sk3)      sk_w13_chunk_mm<3, 1>(body, r, x_in, tk, int(lane), ag, au);
+            else if (sk2) sk_w13_chunk_mm<2, 1>(body, r, x_in, tk, int(lane), ag, au);
+            else          sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+            break;
         }
         for (int i = 0; i < mm; ++i) {
             const float g2 = simd_sum(ag[i]), u2 = simd_sum(au[i]);
@@ -2493,7 +2521,6 @@ kernel void ink_moe_gu_sk23_mm(
         }
     }
 }
-
 // Generic mixed-codec MoE gate/up + SITU (Apple M1/M2 G13/G14 GlobalISel-safe: pure uint indexing, single mm<=4 loop!)
 kernel void ink_moe_gu_situ(
     device const uchar* sec4        [[buffer(0)]],
