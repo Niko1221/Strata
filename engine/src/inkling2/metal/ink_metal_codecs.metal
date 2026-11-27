@@ -3026,6 +3026,107 @@ kernel void ink_moe_gu_sk23_stg(
     }
 }
 
+// Lane-run (LR) layout variant of the sk23 gate/up decode. The pack was byte-permuted
+// offline: each row is now [54B superblock-scale header][32 lane runs], where lane u's
+// run holds its 9 superblock chunks contiguously (F2: 2B/chunk, F3: 3B/chunk incl. hi byte).
+// Lane reads become dense sequential streams; warp memory transactions cover contiguous
+// spans instead of strided fragments. Math identical - pure byte rearrangement.
+template <int F>
+static inline void sk_w13_chunk_lr(
+    device const uchar* body, int r, device const float* x_in,
+    thread const uint* tk, int mm, int lane, thread float* ag, thread float* au) {
+    constexpr int CHUNK = (F == 3) ? 3 : 2;
+    constexpr int RUNLEN = 9 * CHUNK;
+    const int rowb = 9 * sk_sb_bytes(F);   // same row size as original layout
+    device const uchar* gu = body + 2304;
+    device const uchar* rg = gu + (size_t)(2 * r) * rowb;
+    device const uchar* ru = gu + (size_t)(2 * r + 1) * rowb;
+    const int u = lane, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+    device const uchar* rung = rg + 54 + u * RUNLEN;
+    device const uchar* runu = ru + 54 + u * RUNLEN;
+    for (int unit = lane; unit < 288; unit += 32) {
+        const int sbi = unit >> 5;
+        device const uchar* hg0 = rg + sbi * 6;
+        device const uchar* hu0 = ru + sbi * 6;
+        const float effg = float(as_type<half>(ld16(hg0))) * (float(hg0[2 + g]) * (1.0f / 255.0f));
+        const float effu = float(as_type<half>(ld16(hu0))) * (float(hu0[2 + g]) * (1.0f / 255.0f));
+        device const uchar* cg = rung + sbi * CHUNK;
+        device const uchar* cu = runu + sbi * CHUNK;
+        float4 wg0, wg1, wu0, wu1;
+        if (F == 2) {
+            wg0 = float4(kS2Lut[cg[0]]);
+            wg1 = float4(kS2Lut[cg[1]]);
+            wu0 = float4(kS2Lut[cu[0]]);
+            wu1 = float4(kS2Lut[cu[1]]);
+        } else {
+            const uint hg = uint(cg[2]);
+            const uint hu = uint(cu[2]);
+            wg0 = float4(kS2Lut[cg[0]] + kS3Hi[hg & 15u]);
+            wg1 = float4(kS2Lut[cg[1]] + kS3Hi[hg >> 4]);
+            wu0 = float4(kS2Lut[cu[0]] + kS3Hi[hu & 15u]);
+            wu1 = float4(kS2Lut[cu[1]] + kS3Hi[hu >> 4]);
+        }
+        for (int i = 0; i < mm; ++i) {
+            device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
+            const float4 x0 = xp[0], x1 = xp[1];
+            ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+            au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+        }
+    }
+}
+
+// LR-layout variant of ink_moe_gu_sk23. Identical signature/behavior on a lane-run pack.
+kernel void ink_moe_gu_sk23_lr(
+    device const uchar* sec4        [[buffer(0)]],
+    device const InkExpertDev* ex   [[buffer(1)]],
+    device const float* x_in        [[buffer(2)]],
+    device const int* uexp          [[buffer(3)]],
+    device const int* uoff          [[buffer(4)]],
+    device const int* ucnt          [[buffer(5)]],
+    device const int* pair_list     [[buffer(6)]],
+    device const uint* meta         [[buffer(7)]],
+    device float* h_act             [[buffer(8)]],
+    device const uchar* sec4_1      [[buffer(9)]],
+    device const uchar* sec4_2      [[buffer(10)]],
+    device const uchar* sec4_3      [[buffer(11)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int y = int(tgp.y);
+    if (y >= int(meta[0])) return;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int r = int(tgp.x) * 8 + int(sg);
+    if (r >= 1152) return;
+    const int e = uexp[y], off = uoff[y], n = ucnt[y];
+    const InkExpertDev ed = ex[e];
+    device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16 && ed.dn_code != 20);
+    const float inv_sq = is_sk_dn ? (1.0f / float(as_type<half>(ld16(body + 2 * r)))) : 1.0f;
+
+    if (n == 1) {
+        const uint pid0 = uint(pair_list[off]), tk0 = pid0 >> 3u;
+        float ag0 = 0.0f, au0 = 0.0f;
+        if (ed.gu_code == 3)      sk_w13_chunk_lr<3>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
+        else if (ed.gu_code == 2) sk_w13_chunk_lr<2>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
+        else                      sf4_w13_chunk_s<32>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
+        const float g2 = simd_sum(ag0), u2 = simd_sum(au0);
+        if (lane == 0) h_act[ulong(pid0) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        return;
+    }
+    for (int t0 = 0; t0 < n; t0 += 4) {
+        const int mm = min(4, n - t0);
+        uint pid[4], tk[4];
+        for (int i = 0; i < mm; ++i) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
+        float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
+        if (ed.gu_code == 3)      sk_w13_chunk_lr<3>(body, r, x_in, tk, mm, int(lane), ag, au);
+        else if (ed.gu_code == 2) sk_w13_chunk_lr<2>(body, r, x_in, tk, mm, int(lane), ag, au);
+        else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        for (int i = 0; i < mm; ++i) {
+            const float g2 = simd_sum(ag[i]), u2 = simd_sum(au[i]);
+            if (lane == 0) h_act[ulong(pid[i]) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        }
+    }
+}
+
 kernel void ink_moe_gu_sk23(
     device const uchar* sec4        [[buffer(0)]],
     device const InkExpertDev* ex   [[buffer(1)]],
