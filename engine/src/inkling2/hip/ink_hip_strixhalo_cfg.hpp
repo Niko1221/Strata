@@ -172,7 +172,8 @@ inline StrixHaloCfg query_strixhalo_cfg(int dev, bool ep2_active = false, int pe
     cfg.wddm_flush_stride = detail::env_int("STRATA_INK_STRIXHALO_FLUSH", 8, 0, 48);
     // In EXACT mode, match baseline's 2048 chunk (100% bit-exact!) unless overridden; Fast uses 8192 + fused SWA.
     cfg.prefill_chunk     = detail::env_int("STRATA_INK_STRIXHALO_CHUNK", cfg.exact_mode ? 2048 : 8192, 0, 16384);
-    cfg.swa_fused         = detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", !cfg.exact_mode);
+    // SWA_FUSED: wrong logits at prefill width 2048 on gfx1151 (teacher-forced KLD 10.0, top-1 3.5%, PPL 114175 against 0.000000 without it; p620/strix 11-27): opt-in only until fixed.
+    cfg.swa_fused         = detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", false);
     cfg.pass0_prune       = detail::env_truthy("STRATA_INK_STRIXHALO_PASS0_PRUNE", true);
     cfg.pass0_survive     = detail::env_int("STRATA_INK_STRIXHALO_PASS0_SURVIVE", 8, 4, 16);
     cfg.tree16            = detail::env_truthy("STRATA_INK_STRIXHALO_TREE16", true);
@@ -193,10 +194,10 @@ inline StrixHaloCfg query_strixhalo_cfg(int dev, bool ep2_active = false, int pe
         // FP16 WMMA MoE measured faster than I8/IU4 on gfx1151 (2,375ms vs 2,627ms at 8K); keep I8/IU4 opt-in!
         cfg.pf_iu4          = detail::env_truthy("STRATA_INK_STRIXHALO_PF_IU4", false);
         cfg.pf_i8_64        = detail::env_truthy("STRATA_INK_STRIXHALO_PF_I8", false);
-        cfg.tri_engine      = detail::env_truthy("STRATA_INK_STRIXHALO_TRI_ENGINE", true);
+        cfg.tri_engine      = detail::env_truthy("STRATA_INK_STRIXHALO_TRI_ENGINE", false);   // telemetry probe that loads DirectML.dll / xrt_coreutil.dll: no speed effect, off
         cfg.trunk_q8        = detail::env_truthy("STRATA_INK_STRIXHALO_TRUNK_Q8", true);
-        cfg.sf4_trunk       = detail::env_truthy("STRATA_HALO_SF4_TRUNK", true);
-        cfg.fp8_kv_c64      = detail::env_truthy("STRATA_INK_STRIXHALO_FP8_KV_C64", true);
+        cfg.sf4_trunk       = detail::env_truthy("STRATA_HALO_SF4_TRUNK", false);   // verify-width KLD 0.027 prose / 0.018 code, 4-7x the floor (strix 11-27); the Q8 trunk is 0.007 / 0.006: Q8 is the default, SF4 opt-in
+        cfg.fp8_kv_c64      = detail::env_truthy("STRATA_INK_STRIXHALO_FP8_KV_C64", false);   // FP8 K/V at C16 and above: lossy, no KL measured: opt-in
         cfg.turbo_tail_skip = detail::env_truthy("STRATA_INK_STRIXHALO_TURBO", false);
     }
     return cfg;
