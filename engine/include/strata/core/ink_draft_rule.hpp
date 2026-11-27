@@ -25,6 +25,7 @@ struct InkDraftLoadIn {
     bool full_with = false;           // all experts still fit with the drafter's weights, rings and scratch
     double tier_budget_mib = 0.0;     // VRAM left for experts without the drafter (hybrid cards: the tier's size)
     double drafter_mib = 0.0;         // what the drafter takes (weights + rings + scratch)
+    bool below_sm80 = false;          // the card is below compute capability 8.0 (V100, RTX 20, GTX 10, P100): see principle 1b
     bool user_on = false;             // --draft on / STRATA_INK_DRAFTER=dflash2: the user asked for it by name
     bool user_off = false;            // --draft off
 };
@@ -43,6 +44,10 @@ inline InkDraftLoadOut ink_draft_load_rule(const InkDraftLoadIn& in) {
     o.tier_cut = (!in.full_without && in.tier_budget_mib > 0.0) ? in.drafter_mib / in.tier_budget_mib : 0.0;
     if (in.user_on) return o;                                          // asked for by name: never vetoed
     if (o.to_hybrid || o.tier_cut >= kDraftTierCutLimit) { o.load = false; o.residency_veto = true; }
+    // 1b. BELOW sm_80: a hybrid load (some experts in host memory, drafter or not) never gets the default drafter, whatever the model. Measured on a 2080 Ti 11 GB, a P100 16 GB and a
+    //     GTX 1080 Ti 11 GB (SQ-20 v2: plain decode 23.5 / 25.1 / 12.7 tok/s on prose against 16.3 / 22.1 / 9.2 with DFlash 2; IQ3_S on the 2080 Ti 32 against 23): every draft window reads more
+    //     host experts than a plain step. A fully resident card (a V100 32 GB) keeps drafting. phaseA-tests/rel0223/nv-older/RESULTS.md.
+    if (in.below_sm80 && !in.full_without) { o.load = false; o.residency_veto = true; }
     return o;
 }
 

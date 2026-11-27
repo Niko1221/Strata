@@ -39,6 +39,20 @@ int main() {
         in.user_on = true;
         CHECK(ink_draft_load_rule(in).load);
     }
+    // below sm_80 (principle 1b): a hybrid load never gets the default drafter, a fully resident card keeps it, --draft on loads it, --draft off wins
+    {
+        InkDraftLoadIn in; in.below_sm80 = true; in.full_without = false; in.full_with = false; in.tier_budget_mib = 9000; in.drafter_mib = 450;   // a 5% tier cut: fine above sm_80
+        const InkDraftLoadOut o = ink_draft_load_rule(in);
+        CHECK(!o.load && o.residency_veto);
+        in.below_sm80 = false;
+        CHECK(ink_draft_load_rule(in).load);                              // the same load above sm_80 is accepted
+        in.below_sm80 = true; in.user_on = true;
+        CHECK(ink_draft_load_rule(in).load);                              // --draft on
+        in.user_on = false; in.user_off = true;
+        CHECK(!ink_draft_load_rule(in).load && !ink_draft_load_rule(in).residency_veto);
+        InkDraftLoadIn res; res.below_sm80 = true; res.full_without = true; res.full_with = true; res.drafter_mib = 450;   // a V100 32 GB
+        CHECK(ink_draft_load_rule(res).load && !ink_draft_load_rule(res).residency_veto);
+    }
     // the printed line: the same sentence start on every backend, the override named
     {
         const std::string s = ink_draft_veto_line("[InkCUDA]", "DFlash 2", 19.3, 14.2, 536, 14.7);

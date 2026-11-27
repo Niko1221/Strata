@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -516,12 +517,23 @@ public:
         };
         draft_forced_ = opts.draft_forced || strata::ink::df2_forced_by_env();
         VramPlan plan = plan_for(false);
-        if (!draft_forced_ && opts.enable_dspark && strata::ink::df2_drafter_env().empty() && mf.kind == ModelSourceKind::Strata && !plan_in.sm120->compact &&
-            strata::ink::df2_replaces_dspark(mf.path)) {
+        // below sm_80 (ink_draft_rule.hpp principle 1b) the rule also covers a .gguf: its expert bytes are estimated from the file (minus the dense trunk: 1.4 GiB compact, 3.4 GiB otherwise)
+        const bool legacy_arch = sm_cc < 80;
+        if (!draft_forced_ && opts.enable_dspark && strata::ink::df2_drafter_env().empty() && (mf.kind == ModelSourceKind::Strata || (legacy_arch && mf.kind == ModelSourceKind::Gguf)) &&
+            !plan_in.sm120->compact && strata::ink::df2_replaces_dspark(mf.path)) {
             const VramPlan plan_no = plan_for(true);
             size_t vf = 0, vt = 0;
             if (cudaMemGetInfo(&vf, &vt) == cudaSuccess && vt > 0) {
-                const size_t trunk = (size_t)mf.rd.header().sections[1].byte_length, sec4 = (size_t)mf.rd.header().sections[4].byte_length;
+                size_t trunk = 0, sec4 = 0;
+                if (mf.kind == ModelSourceKind::Strata) {
+                    trunk = (size_t)mf.rd.header().sections[1].byte_length;
+                    sec4 = (size_t)mf.rd.header().sections[4].byte_length;
+                } else {
+                    std::error_code fec;
+                    const size_t fsz = (size_t)std::filesystem::file_size(mf.path, fec);
+                    trunk = (mf.m.embed_host_tail ? 1400ull : 3400ull) << 20;
+                    sec4 = (fec || fsz <= trunk) ? 0u : fsz - trunk;
+                }
                 const size_t wf = strata::ink::InkCudaModel::wddm_safety_floor(vt);
                 auto reserve_of = [&](const VramPlan& p) {
                     const size_t base = ((vt >= (20ull << 30)) ? (1600ull << 20) : (vt <= (13ull << 30)) ? (960ull << 20) : (1280ull << 20)) + (wf > (512ull << 20) ? (wf - (512ull << 20)) : 0ull);
@@ -530,6 +542,7 @@ public:
                 const size_t r_with = reserve_of(plan), r_no = reserve_of(plan_no);
                 const size_t avail_no = (vf > trunk + r_no) ? (vf - trunk - r_no) : 0u, avail_with = (vf > trunk + r_with) ? (vf - trunk - r_with) : 0u;
                 strata::core::InkDraftLoadIn li;
+                li.below_sm80 = legacy_arch;
                 li.full_without = avail_no >= sec4;
                 li.full_with = avail_with >= sec4;
                 li.tier_budget_mib = (double)avail_no / 1048576.0;
