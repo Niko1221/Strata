@@ -82,7 +82,7 @@ int main() {
 
     CHECK(kSm120FastDefault);   // the owner's 11-26 decision: fast mode is the default on the measured rows
     // ---- nothing set: the old path on every card without a measured row, and nothing printed ----
-    for (const Sm120Dev* d : {&a4000, &rtx4090, &spark, &unknown, &r5080, &r5070ti, &r5060ti8}) {   /* measured rows with default_on false (5080, 5070 Ti) keep the old path too; the Ada / Ampere rows are unmeasured too */
+    for (const Sm120Dev* d : {&a4000, &rtx4090, &unknown, &r5080, &r5070ti, &r5060ti8}) {   /* measured rows with default_on false (5080, 5070 Ti) keep the old path too; the Ada / Ampere rows are unmeasured too */
         const Sm120Decision x = decide(*d, {});
         CHECK(x.mode == Sm120Decision::Off && x.parts == 0 && x.note.empty() && !x.asked && !x.refused);
     }
@@ -257,7 +257,13 @@ int main() {
         CHECK(g.measured);
         CHECK(g.spec_cost == 5.0f && g.spec_plain == 0.0f);   // the drafting numbers measured on the GB10 (the 5090's 8 / 1.02 lost to off on prose and chat)
         // default_on: see the FASTQ result in RESULTS.md; the unit test pins the value the table has
-        CHECK(g.default_on == (decide(spark, {}).mode == Sm120Decision::Fast));
+        CHECK(g.default_on && decide(spark, {}).mode == Sm120Decision::Fast);
+        {   // no switch: the Spark's fast set is the default, with the one line; =0 is the old path; exact is the empty set
+            const Sm120Decision d0 = decide(spark, {});
+            CHECK(d0.default_on_applied && d0.row && std::string(d0.row->id) == "gb10" && d0.parts == kSm120BigFast && !d0.note.empty());
+            CHECK(decide(spark, {{"STRATA_INK_SM120", "0"}}).mode == Sm120Decision::Off);
+            CHECK(decide(spark, {{"STRATA_INK_SM120_EXACT", "1"}}).parts == 0);
+        }
         // an unknown cc 12.1 card (not a GB10) gets the "no measured table row" note and the old path
         const Sm120Dev odd = dev("NVIDIA Something Else", 12, 1, 60, 24);
         const Sm120Decision u = decide(odd, {{"STRATA_INK_SM120", "1"}});

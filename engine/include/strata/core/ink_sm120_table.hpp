@@ -247,11 +247,11 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
         // at C1 (code 65 vs 115 tok/s), PDL and SPEC_ADAPT changed nothing. What the 5090 numbers got wrong is the drafting: spec_cost 8 / plain 1.02 made fast decode at the plain rate (53 tok/s) on
         // prose and chat, below off; cost 5 / plain 0 gives C1 decode prose 79 / chat 94 / json 99 / code 115 / count 183 / tool 112 against off 55 / 69 / 81 / 78 / 97 / 81 (mean 113.6 vs 76.8).
         // The exact set is EMPTY: DSPARK_OPT in it changed the window numbers and the verify tree, so exact tokens differed from off with a drafter (json, tool); with it out, exact = off on every prompt.
-        // default_on is set by the FASTQ subset on this card (rel0223/spark/RESULTS.md).
+        // default_on: FASTQ subset on the GB10 (fast vs off: needles 8/8 and 8/8, tools 24/26 and 24/26, agent 7/10 and 6/10, code 11/11 and 11/11) is not worse than off. KNOWN: with the IQ3_S GGUF the fast set is mixed (C32 167 vs 190 tok/s at the default 64 drafting slots, json / code C1 slower); see RESULTS.md.
         {"gb10", "GB10", 44, 52, 100, 128, true, "measured on a DGX Spark GB10 (cc 12.1, 48 SMs, 121 GB unified memory, 11-27)",
          kSm120BigFast, kSm120SparkExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
-         4, 12, 24, 3, 5.0f, 0.0f, 0.0f, false, 1},
+         4, 12, 24, 3, 5.0f, 0.0f, 0.0f, true, 1},
         // ---- NV-ADA-AMPERE lane: RTX 40 (cc 8.9) and RTX 30 / A-series (cc 8.6). Candidate sets until a card is measured (measured = false: old path unless STRATA_INK_SM120_ROW=<id>) ----
 #define STRATA_ADA_ROW(ID, NAME, SMLO, SMHI, GLO, GHI, NOTE, FAST, EXACT, FP8, C64, FAM)         {ID, NAME, SMLO, SMHI, GLO, GHI, false, NOTE, FAST, EXACT, FP8, C64, STRATA_SM120_ADA_MOE,          0, 0, 0, 0, 512, 768, 1536, 0, 1, 12, 24, 2, 2.0f, 1.02f, 0.28f, false, (FAM) % 10, FAM}
         STRATA_ADA_ROW("4090", "RTX 4090", 120, 136, 22, 26, "RTX 4090 24 GB", kAdaBigFast, kAdaExact, Sm120Fp8::Cache, Sm120C64::Bspec, 89),
