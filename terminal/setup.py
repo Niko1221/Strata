@@ -4500,6 +4500,7 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1032": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",   # RX 6600 / 6650 XT (same RDNA2 family)
+                "gfx1012": "https://rocm.nightlies.amd.com/v2/gfx101X-dgpu/",   # RX 5500 XT (RDNA1; the default version is in this index, no pin needed)
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
                 "gfx1150": "https://rocm.nightlies.amd.com/v2/gfx1150/",       # Strix Point: only with STRATA_EXPERIMENTAL_GFX1150=1
                 "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
@@ -4524,7 +4525,7 @@ GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150", "1") != "0"
 # The Instinct MI50 / MI60 / Radeon VII (gfx906) also runs, from a source build on a system ROCm 6.x (the last line
 # with gfx906 libraries; AMD's wheels hold 7.x families only): setup lists the card but does not drive that build
 # (docs/AMD_HIP.md, the gfx906 section).
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1032", "gfx1151", "gfx906") \
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1032", "gfx1151", "gfx906", "gfx1012") \
             + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
 # The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
 # STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
@@ -4555,6 +4556,7 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              "gfx1030": "AMD Radeon RX 6800 / 6900 series (gfx1030)",
              "gfx1031": "AMD Radeon RX 6700 XT series (gfx1031)",
              "gfx1032": "AMD Radeon RX 6600 / 6600 XT / 6650 XT (gfx1032)",
+             "gfx1012": "AMD Radeon RX 5500 XT (gfx1012)",
              "gfx1151": "AMD Radeon 8060S / 8050S / 8040S (Ryzen AI Max, Strix Halo, gfx1151)",
              # integrated Radeons of other Ryzen families: named so they are not taken for Strix Halo (not supported)
              "gfx1150": "AMD Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150)",
@@ -4564,7 +4566,8 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
              "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), and the RX 6600 / 6600 XT / 6650 XT "
-             "(gfx1032), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
+             "(gfx1032), all unvalidated; the RX 5500 XT (gfx1012, RDNA1: source build, unvalidated, docs/OLDER_GPUS.md); "
+             "and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
              "gfx1151: experimental, docs/STRIX_HALO.md), and the Instinct MI50 / MI60 / Radeon VII (gfx906: "
              "source build on a system ROCm 6.x, setup does not drive it, docs/AMD_HIP.md)")
 
@@ -4675,6 +4678,28 @@ def rdna2_notes(gpu) -> list[str]:
     if not is_rdna2(gpu):
         return []
     return ["  " + RDNA2_PACKAGE_NOTE.format(arch=str(gpu.get("arch")).split(":")[0])]
+
+
+RDNA1_ARCHS = ("gfx1012",)   # RX 5500 XT (Navi 14); gfx1010 / gfx1011 are still hand-built only (docs/OLDER_GPUS.md)
+
+
+def is_rdna1(g) -> bool:
+    """A discrete RX 5500 XT (gfx1012); never an RX 6000 / 7000 / 9000 or an APU."""
+    return isinstance(g, dict) and any(gfx_arch_is(g.get("arch"), a) for a in RDNA1_ARCHS)
+
+
+RDNA1_PACKAGE_NOTE = ("RX 5000 series (RDNA1, {arch}): setup builds the engine here from AMD's gfx101X ROCm wheels. "
+                      "There is no ready-made engine package or GEMM tuning table for it, and no run on a real RX 5500 XT "
+                      "was checked by the maintainers. It uses the portable kernels (no matrix cores, no signed dot4 "
+                      "instruction). If something goes wrong, open an issue with the end of strata-<model>.log: "
+                      "docs/OLDER_GPUS.md, \"AMD: building gfx906 and gfx1012\".")
+
+
+def rdna1_notes(gpu) -> list[str]:
+    """What setup tells the owner of an RX 5500 XT (gfx1012); nothing for any other card."""
+    if not is_rdna1(gpu):
+        return []
+    return ["  " + RDNA1_PACKAGE_NOTE.format(arch=str(gpu.get("arch")).split(":")[0])]
 
 
 def is_uma_apu(g) -> bool:
@@ -5133,6 +5158,7 @@ _WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",        
                 0x73A1: "gfx1030",                                                  # Radeon Pro V620
                 0x73DF: "gfx1031",                                                  # RX 6700 XT / 6750 XT / 6800M (#881)
                 0x73FF: "gfx1032", 0x73EF: "gfx1032", 0x73E3: "gfx1032",            # RX 6600 / 6600 XT / 6650 XT, PRO W6600 (Navi 23)
+                0x7340: "gfx1012", 0x7341: "gfx1012", 0x7347: "gfx1012", 0x734F: "gfx1012",  # Navi 14: RX 5500 (XT) / Pro 5300 / W5500 (RDNA1)
                 **AMD_IGPU_PCI}                                                     # Ryzen APUs: 0x1586 = Strix Halo (gfx1151)
 _WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),                   # Radeon 8060S / 8050S / 8040S
                  (re.compile(r"\b8[89]0M\b", re.I), "gfx1150"),                     # Radeon 890M / 880M
@@ -5144,7 +5170,8 @@ _WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),               
                  (re.compile(r"RX\s*7800|RX\s*7700(?!\s*S)|W7700", re.I), "gfx1101"),
                  (re.compile(r"RX\s*7600|W7600|W7500", re.I), "gfx1102"),
                  (re.compile(r"RX\s*6800(?!\s*[MS])|RX\s*6900|RX\s*6950|W6800", re.I), "gfx1030"),
-                 (re.compile(r"RX\s*6600|RX\s*6650|W6600", re.I), "gfx1032"))
+                 (re.compile(r"RX\s*6600|RX\s*6650|W6600", re.I), "gfx1032"),
+                 (re.compile(r"RX\s*5500|RX\s*5300|W5500|W5300", re.I), "gfx1012"))  # Navi 14: RDNA1, no matrix cores
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -12216,6 +12243,8 @@ def main() -> int:
         for line in unused_apu_notes(chosen, amd, ram_gb()):
             (warn if line.startswith("!") else say)(line.lstrip("!"))
         for line in rdna2_notes(gpu):
+            say(line)
+        for line in rdna1_notes(gpu):
             say(line)
     else:
         if not found:

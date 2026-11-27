@@ -1,6 +1,14 @@
 #pragma once
-#include <hipblas/hipblas.h>
 #include <hipblas/hipblas-version.h>
+
+// hipBLAS 2.x keeps the legacy hipblasDatatype_t overload by default, while
+// STRATA's CUDA compatibility layer uses the hipDataType values HIP_R_16F,
+// HIP_R_16BF and HIP_R_32F.  Opt into the v2 signatures before hipblas.h is
+// included so the GemmEx calls match those arguments.
+#if hipblasVersionMajor >= 2 && !defined(HIPBLAS_V2)
+#define HIPBLAS_V2
+#endif
+#include <hipblas/hipblas.h>
 
 #if hipblasVersionMajor == 0
 // Ubuntu's hipBLAS 0.54 has no workspace API or compute-type enum. Use its
@@ -58,6 +66,12 @@ inline rocblas_status cublasGemmEx(rocblas_handle h, rocblas_operation trans_a,
 #define cublasHandle_t hipblasHandle_t
 #define cublasSetMathMode hipblasSetMathMode
 #define cublasSetStream hipblasSetStream
+// hipBLAS 2.x has no public workspace setter; it manages scratch internally.
+// The engine's cuBLAS-compatible call sites only require an accepted knob.
+#if hipblasVersionMajor >= 2
+#define cublasSetWorkspace(handle, ptr, bytes) HIPBLAS_STATUS_SUCCESS
+#else
 #define cublasSetWorkspace hipblasSetWorkspace
+#endif
 #define cublasStatus_t hipblasStatus_t
 #endif

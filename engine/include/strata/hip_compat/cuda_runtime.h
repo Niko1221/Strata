@@ -164,6 +164,16 @@ inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph,
                                      hipGraphNode_t* error, char* log, size_t size) {
     return hipGraphInstantiate(exec, graph, error, log, size);
 }
+#if defined(__HIP__)
+// ROCm 6.4 exposes __ldg only through a fixed set of non-template overloads, inside an unnamed namespace. Several
+// CUDA sources in this tree call __ldg from their own unnamed namespace on other POD pointers (for example
+// const int32_t*). All unnamed namespaces in a translation unit are the same namespace, so put the direct-load
+// fallback there as well; exact non-template overloads still win.
+namespace {
+template <typename T>
+__device__ inline T __ldg(const T* ptr) { return *ptr; }
+}  // namespace
+#endif
 #define __trap() __builtin_trap()   // the compiled-out sm_80 paths (never selected on AMD)
 #define cudaMemcpyToSymbol(symbol, ...) hipMemcpyToSymbol(HIP_SYMBOL(symbol), __VA_ARGS__)
 #define cudaMemcpyFromSymbol(dst, symbol, ...) hipMemcpyFromSymbol(dst, HIP_SYMBOL(symbol), __VA_ARGS__)

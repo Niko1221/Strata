@@ -93,11 +93,21 @@ int main() {
     CHECK(!ac::select_simt2_default("gfx1030"));
     unset(kSwitch);
 
-    // the log line: only gfx1010 / gfx103x, and it says what the switch does
+    // RDNA1 classification: gfx1012 (RX 5500 XT) is RDNA1, not RDNA2/3, and shares no community switch with gfx1010
+    CHECK(strata::kernels::gfx_arch_is_rdna1("gfx1012"));
+    CHECK(strata::kernels::gfx_arch_is_rdna1("gfx1012:xnack-"));
+    CHECK(strata::kernels::gfx_arch_is_rdna1("gfx1010"));
+    CHECK(!strata::kernels::gfx_arch_is_rdna1("gfx10120"));     // exact arch, not a prefix
+    CHECK(!strata::kernels::gfx_arch_is_rdna1("gfx1030"));
+    CHECK(!strata::kernels::gfx_arch_is_rdna1("gfx1201"));
+    CHECK(!strata::kernels::gfx_arch_is_rdna1(nullptr));
+
+    // the log line: gfx1010 / gfx103x say what the switch does; gfx1012 names its always-on device-code path
     unset(kSwitch);
     CHECK(ac::startup_line("gfx1201").empty());
     CHECK(ac::startup_line("gfx1100").empty());
-    CHECK(ac::startup_line("gfx1012").empty());
+    CHECK(ac::startup_line("gfx1012").find("RDNA1") != std::string::npos);
+    CHECK(ac::startup_line("gfx1012").find("STRATA_AMD_COMMUNITY_TUNING") == std::string::npos);
     CHECK(ac::startup_line("gfx1031").find("simt2") != std::string::npos);   // gfx1031: the selector default only
     CHECK(ac::startup_line("gfx1030").find("simt2") != std::string::npos);
     CHECK(ac::startup_line("").empty());

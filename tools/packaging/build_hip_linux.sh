@@ -4,7 +4,7 @@
 # Run on a Linux box that has ROCm (TheRock Python wheels are enough); the tester packages were built in an Ubuntu 22.04 chroot
 # (glibc 2.35) so they run on every distribution since.  All settings are environment variables:
 #
-#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | rx6000 (gfx1030 gfx1031 gfx1032) | halo (gfx1151) | igpu (gfx1103 gfx1150) | a name + ARCHS=
+#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | rx6000 (gfx1030 gfx1031 gfx1032) | rdna1 (gfx1012) | halo (gfx1151) | igpu (gfx1103 gfx1150) | a name + ARCHS=
 #   ARCHS="gfx1200;gfx1201"          the code objects (default: the variant's)
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       optional override (kept for two releases): ggml comes from that checkout instead of the vendored engine/third_party/
@@ -19,7 +19,7 @@
 # Both readers get RUNPATH $ORIGIN (terminal/tools/vision/CMakeLists.txt), and every bundled library is patched to $ORIGIN, so the
 # component folder runs from anywhere with nothing from the environment (tools/packaging/binary_deps.py checks it).
 set -u
-V=${VARIANT:?VARIANT=rx9070|rx7900|rx6000|halo|igpu|<name> with ARCHS=}
+V=${VARIANT:?VARIANT=rx9070|rx7900|rx6000|rdna1|halo|igpu|<name> with ARCHS=}
 SRC=${SRC:-$(cd "$(dirname "$0")/../.." && pwd)}
 LLAMA=${LLAMA:-}      # an override: a llama.cpp checkout to take ggml from (kept for two releases); empty: the vendored engine/third_party/strata-ggml
 GGML=(); [ -z "$LLAMA" ] || GGML=("-DSTRATA_GGML_DIR=$LLAMA")
@@ -34,11 +34,14 @@ case "$V" in
   rx9070) ARCHS=${ARCHS:-gfx1200;gfx1201} ;;
   rx7900) ARCHS=${ARCHS:-gfx1100;gfx1101;gfx1102} ;;
   rx6000) ARCHS=${ARCHS:-gfx1030;gfx1031;gfx1032} ;;   # RDNA2: no WMMA (plain kernels), no hipBLASLt kernels; built, not tested on a real RX 6000 card
+  rdna1)  ARCHS=${ARCHS:-gfx1012} ;;                     # RDNA1 (RX 5500 XT): no WMMA, no native dot4, no hipBLASLt kernels; unvalidated
   halo)   ARCHS=${ARCHS:-gfx1151} ;;
   igpu)   ARCHS=${ARCHS:-gfx1103;gfx1150} ;;
   *)      ARCHS=${ARCHS:?ARCHS=gfx...} ;;
 esac
-NOTE_EXTRA=""; [ "$V" = rx6000 ] && NOTE_EXTRA=" (built, not tested on a real RX 6000 card)"
+NOTE_EXTRA=""
+[ "$V" = rx6000 ] && NOTE_EXTRA=" (built, not tested on a real RX 6000 card)"
+[ "$V" = rdna1 ] && NOTE_EXTRA=" (built, not tested on a real RX 5500 XT)"
 ARCHLIST=${ARCHS//;/ }
 DATAARCH=${ARCHS//;/,}
 mkdir -p "$OUT"; S=$OUT/build.status

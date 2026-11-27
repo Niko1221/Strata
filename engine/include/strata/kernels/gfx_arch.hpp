@@ -19,6 +19,14 @@ inline bool gfx_arch_is(const char* gcn, const char* name) {
     return std::strncmp(gcn, name, n) == 0 && (gcn[n] == '\0' || gcn[n] == ':');
 }
 
+/// RDNA1 GPUs (RX 5500 XT = gfx1012, RX 5700 / 5700 XT = gfx1010, Pro W5500 = gfx1012). They are wave32 but have
+/// no matrix cores and no native signed dot4 instruction, so every WMMA / int8-expert / tuned-GEMM rule stays off.
+/// This is a classification helper only: where a rule needs to stay byte-identical to the old build, gfx101x still
+/// takes the same portable branch it took before this helper existed.
+inline bool gfx_arch_is_rdna1(const char* gcn) {
+    return gfx_arch_is(gcn, "gfx1010") || gfx_arch_is(gcn, "gfx1011") || gfx_arch_is(gcn, "gfx1012");
+}
+
 /// Discrete RDNA3 desktop / workstation GPUs (RX 7900 XTX / XT / GRE / W7900 = gfx1100,
 /// RX 7800 XT / 7700 XT = gfx1101, RX 7600 / 7600 XT = gfx1102).
 inline bool gfx_arch_is_discrete_rdna3(const char* gcn) {

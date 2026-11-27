@@ -22,8 +22,9 @@ Source checkout on Linux ([SOURCE_INSTALL.md](SOURCE_INSTALL.md#amd-cards)):
 ./setup.sh --backend hip
 ```
 
-Setup picks `--backend hip` by itself on a PC with no NVIDIA card Strata can use. Other AMD architectures and mixed AMD/NVIDIA
-runs are not supported. Use the [package table](#ready-made-packages) to match your card.
+Setup picks `--backend hip` by itself on a PC with no NVIDIA card Strata can use. It also detects the RX 5500 XT (RDNA1,
+gfx1012) and builds the engine from source for it; there is no ready-made RDNA1 package. Other AMD architectures and mixed
+AMD/NVIDIA runs are not supported. Use the [package table](#ready-made-packages) to match your card.
 
 ## Supported cards
 
@@ -35,12 +36,14 @@ runs are not supported. Use the [package table](#ready-made-packages) to match y
 | RX 7800 XT / 7700 XT | gfx1101 | Validated by its owner |
 | RX 7600 XT | gfx1102 | Reported working, not validated |
 | RX 6800 / 6900 series, RX 6700 XT | gfx1030, gfx1031 | Has a package, not tested on a real card ([RDNA2](#rdna2-gfx1030)) |
+| RX 5500 XT | gfx1012 | Source build by setup; compiles and enumerates on one ROCm 6.4 Windows host, model run unvalidated ([RDNA1](#rdna1-gfx1012)) |
 | Ryzen AI Max (Strix Halo) | gfx1151 | [STRIX_HALO.md](STRIX_HALO.md) |
 | Radeon 780M / 760M | gfx1103 | Linux, opt-in build: [RADEON_780M.md](RADEON_780M.md) |
 | Instinct MI50 / MI60, Radeon VII | gfx906 | Source build, community-tested ([gfx906](#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source)) |
 
 Strix Point (890M / 880M, gfx1150) and Krackan (860M / 840M, gfx1152) are named and not supported by setup. RDNA1
-(gfx1012) builds by hand: [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
+(gfx1012, RX 5500 XT) is detected and built from source; there is no ready-made package ([RDNA1](#rdna1-gfx1012),
+[OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012)).
 
 <a id="ready-made-packages-023"></a>
 ## Ready-made packages
@@ -63,6 +66,11 @@ Each package carries the engine, the CPU and GPU picture readers for its archite
 data for them only. A package whose GPU code does not cover the card is refused with one line that names the card family.
 The RX 6000 packages are offered only to a PC whose card reports gfx1030 or gfx1031. They run the plain kernels: RDNA2 has no
 matrix cores, and hipBLASLt ships no gfx1030 kernels, so there is no tuning table.
+
+**RDNA1.** No `rdna1` package is published in this release. A recipe exists (`VARIANT=rdna1 tools/packaging/build_hip_linux.sh`,
+gfx1012 only; Windows: `STRATA_HIP_ARCHS=gfx1012 terminal/tools/hip/build_windows.bat`), but it has not been built into a
+published package or run on a real RX 5500 XT by the maintainers. On Linux, setup detects the card and builds the engine from
+AMD's `gfx101X-dgpu` wheels; on Windows without a package, use a source build.
 
 **Automatic card.** With no card named in the model's settings, the engine start asks the package's
 `strata-device --list-devices` and skips cards the package has no code for and integrated chips, while a card of its own can
@@ -188,7 +196,7 @@ cmake --build build-hip --target strata -j2
 ```
 
 `CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1101`, `gfx1200`, `gfx1201`, or a list such as `"gfx1100;gfx1201"` (one binary
-for both). gfx1102, gfx1030 and gfx1031 build with a warning. At startup the engine and `strata-device` compare each GPU
+for both). gfx1012, gfx1102, gfx1030 and gfx1031 build with a warning. At startup the engine and `strata-device` compare each GPU
 they use with the architectures the binary was compiled for and require wave32. A binary carried to another card stops with
 the card's name, its architecture and the build's list.
 
@@ -498,6 +506,39 @@ The shipped gfx1200 table (`gfx1200-hipblaslt-100202.txt`) against plain hipBLAS
 | 2,374 tokens | 597-599 tok/s | 396-398 tok/s | 1.50x |
 | 65,045 tokens | 754-757 tok/s | 380 tok/s | 1.99x |
 | 130,091 tokens | 719 tok/s | 363-370 tok/s | 1.98x |
+
+<a id="rdna1-gfx1012"></a>
+## RDNA1 (gfx1012)
+
+The RX 5500 XT (Navi 14, 22 CUs, 4 or 8 GB of GDDR6) is a wave32 card like RDNA2, but older: it has no matrix cores and no
+native signed dot4 instruction. The engine uses the portable kernels, with the RDNA1 SDWA byte-select sequence for signed
+byte products (`-DSTRATA_GFX1012_PORTABLE_DOT=ON` builds the portable loop instead). There is no WMMA prompt path, no
+hipBLASLt or rocBLAS solution table and no ready-made engine package.
+
+Setup sees the card through KFD on Linux (a `gfx_target_version` of 100102) or the Windows display adapter (PCI `1002:7340`
+and the RX 5500 XT name), lists it as usable and compiles the engine for it. On Linux it installs AMD's `gfx101X-dgpu`
+TheRock wheels into `.venv` and builds with `-DCMAKE_HIP_ARCHITECTURES=gfx1012`. That index carries the same preferred
+version as the other families (7.10.0a20251120), so no extra pin is needed. On Windows there is no published engine to
+download: use the source
+recipe in `terminal/tools/hip/build_windows.bat` with `STRATA_HIP_ARCHS=gfx1012`, or follow the manual build in
+[OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012). The engine's start-up check needs the binary to carry
+gfx1012 code; a build for another card is refused with a plain message.
+
+```sh
+./setup.sh --backend hip                      # Linux: detects gfx1012 and builds it
+cmake -S engine -B build-hip -DSTRATA_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1012
+```
+
+An 8 GB card has less room for the expert cache than the RX 6000 cards measured below; keep the context modest and leave
+VRAM for the desktop if the card drives a display. The card identity and build were checked on one RX 5500 XT: Windows
+reports PCI `1002:7340`, setup reads `gfx1012` from it, and the HIP runtime reports `gcnArchName: gfx1012:xnack-` with
+`warpSize: 32` (ROCm 6.4). A source build with `-DCMAKE_HIP_ARCHITECTURES=gfx1012` completed on that host (CMake 3.31.6;
+the project requires 3.24 or newer, so 3.22.1 cannot configure it), and `strata-device.exe --list-devices` printed
+`device 0: Radeon RX 5500 XT`, `arch gfx1012`, `wave32`. Those are build and enumeration checks, not an engine run. No
+answer-quality, speed or long-context result is claimed here: the maintainers have not run Strata on an RX 5500 XT. A
+report with the card, driver or ROCm version, the model, the end of `strata-<model>.log` and a first-answer speed line in
+an issue is welcome ([COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md)). The earlier community number in
+[OLDER_GPUS.md](OLDER_GPUS.md#history--older-measurements) is from a hand-built engine and one card only.
 
 ## RDNA2 (gfx1030)
 

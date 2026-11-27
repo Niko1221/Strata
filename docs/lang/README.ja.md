@@ -152,6 +152,7 @@ strata launch
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50 シリーズ** | [NVIDIA のセットアップ](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900、RX 9060 / 9070、AI PRO R9700** | [AMD のセットアップ](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · 試験的** | [RX 6000 のセットアップ](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · 試験的（ソースからビルド）** | [RDNA1 のセットアップ](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Intel のセットアップ](../INTEL_ARC.md) |
 | **Apple Silicon · M1 以降** | [Mac のセットアップ](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo のセットアップ](../STRIX_HALO.md) |

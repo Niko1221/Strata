@@ -77,8 +77,14 @@ inline bool select_simt2_default(const char* gcn_arch) {
     return tuning_on() && gcn_arch != nullptr && std::strncmp(gcn_arch, "gfx103", 6) == 0;
 }
 
-/// The one engine-log line.  Empty for every card the changes do not concern (anything but gfx1010 and gfx1030), so other cards log nothing.
+/// The one engine-log line.  Empty for every card the switches do not concern (anything but gfx1010, gfx1012 and gfx103x);
+/// gfx1012 gets a plain line naming its always-on device-code dot path, not a community switch.
 inline std::string startup_line(const char* gcn_arch) {
+    // gfx1012 is not one of the community switches: its SDWA dot4 has been in the device code all along.  The line
+    // only names the path a report should mention; no default or kernel selection changes here.
+    if (strata::kernels::gfx_arch_is_rdna1(gcn_arch) && !strata::kernels::gfx_arch_is(gcn_arch, "gfx1010"))
+        return "strata: RDNA1 (gfx1012): portable kernels, no matrix cores or GEMM tuning table; signed byte dot uses "
+               "the SDWA byte-select sequence in device code (rebuild with -DSTRATA_GFX1012_PORTABLE_DOT=ON for the portable loop)";
     const bool g1010 = strata::kernels::gfx_arch_is(gcn_arch, "gfx1010");
     const bool g1030 = strata::kernels::gfx_arch_is(gcn_arch, "gfx1030");
     const bool g103x = gcn_arch != nullptr && std::strncmp(gcn_arch, "gfx103", 6) == 0;

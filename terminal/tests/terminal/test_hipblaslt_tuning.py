@@ -33,6 +33,9 @@ PACKAGES = {
     # 0.2.2 RX 6000 packages: hipBLASLt ships no gfx1030 / gfx1031 kernels at any version, so no table, plain hipBLAS
     ("windows-x86_64", "rdna2"): (("gfx1030", "gfx1031", "gfx1032"), 100500, set()),
     ("linux-x86_64", "rx6000"): (("gfx1030", "gfx1031", "gfx1032"), 100400, set()),
+    # recipe only, not published: hipBLASLt has no gfx1012 kernels either, so RDNA1 always uses plain hipBLAS
+    ("windows-x86_64", "rdna1"): (("gfx1012",), 100500, set()),
+    ("linux-x86_64", "rdna1"): (("gfx1012",), 100200, set()),
 }
 
 

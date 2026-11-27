@@ -152,6 +152,7 @@ Folge den Anweisungen, um ein Modell herunterzuladen und zu starten. [Terminal-A
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50** | [NVIDIA-Setup](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [AMD-Setup](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · experimentell** | [RX-6000-Setup](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · experimentell, Quell-Build** | [RDNA1-Setup](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Intel-Setup](../INTEL_ARC.md) |
 | **Apple Silicon · M1 oder neuer** | [Mac-Setup](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix-Halo-Setup](../STRIX_HALO.md) |

@@ -52,6 +52,15 @@ class KfdGpus(unittest.TestCase):
         self.assertTrue(g["usable"])
         self.assertIsNone(g["problem"])
 
+    def test_an_rx_5500_xt_is_usable(self):
+        # Navi 14 reports gfx_target_version 100102 = gfx1012; setup builds its engine from the gfx101X wheels
+        with tempfile.TemporaryDirectory() as tmp:
+            node(Path(tmp), 0, 100102, 44, 128, 8 << 30, "AMD Radeon RX 5500 XT")
+            (g,) = M.kfd_gpus(tmp)
+        self.assertEqual(g["arch"], "gfx1012")
+        self.assertTrue(g["usable"])
+        self.assertIsNone(g["problem"])
+
     def test_no_amd_driver_is_an_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(M.kfd_gpus(tmp), [])

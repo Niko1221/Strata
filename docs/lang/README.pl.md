@@ -153,6 +153,7 @@ Postępuj zgodnie z podpowiedziami, aby pobrać i uruchomić model. [Przewodnik 
 | **NVIDIA GeForce RTX serii 20 / 30 / 40 / 50** | [Konfiguracja NVIDIA](../INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [Konfiguracja AMD](../AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · eksperymentalnie** | [Konfiguracja RX 6000](../AMD_HIP.md#rdna2-gfx1030) |
+| **AMD Radeon RX 5500 XT · eksperymentalnie, kompilacja ze źródeł** | [Konfiguracja RDNA1](../AMD_HIP.md#rdna1-gfx1012) |
 | **Intel Arc · Linux** | [Konfiguracja Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 lub nowszy** | [Konfiguracja Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Konfiguracja Strix Halo](../STRIX_HALO.md) |
