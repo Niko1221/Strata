@@ -19,6 +19,7 @@ and talks to its Gateway. Nothing here downloads or builds anything.
 | `plugins/strata-gate.mjs` | the Manual-mode approval gate (a Harness plugin, loaded by path) |
 | `plugins/strata-search.mjs`, `plugins/strata-models.mjs` | the app's web search registered with the Harness; helper agents on a named model |
 | `plugins/strata-context.mjs`, `context-budget.mjs`, `context-fit.mjs` | measured context pressure, summaries that fit the window, the check before a message goes out |
+| `plugins/strata-experience.mjs` | experience across chats (opt-in): a case when a failed shell command succeeds after file changes, one note when it fails the same way again |
 | `agent-bridge.mjs` | the chat-to-session map, turns, approvals, Stop, status |
 
 ## Frames sent on `/api/chat/stream` for an agent turn
@@ -201,6 +202,56 @@ There is one attempt per compaction, with a bounded number of batches and one ov
 the region contains attachments, exceeds the input budget, or cannot shrink enough with user text intact, the normal
 summarizer handles the original request. The internal `/strata-context` command reports the latest attempt for that session,
 including byte counts and elapsed time or a fallback reason.
+
+## Experience across chats (`plugins/strata-experience.mjs`, opt-in)
+
+An agent often meets a failure that it or another chat has fixed before, and works it out again from the start. This plugin keeps
+such fixes as small cases and points the agent at one when the same command fails in a similar way.
+
+- **Switch.** `STRATA_AGENT_EXPERIENCE=1` in the app's environment, then restart the host. The profile inserts the plugin with
+  `config.dir = <data>/agent/experience`. Without the switch nothing is loaded or written.
+- **Which calls.** `tools/post-execute` on `bash` and `pwsh` only, after the other plugins decided (`accept`, not aborted). A command
+  is named by its scripts (`check.py`, `build.ps1`) and a fixed list of tools (`git <verb>`, `cmake --build`, `ctest`, `pytest`,
+  `python -m <module>`, `npm <verb>`, `node --test`, `docker <verb>`, `adb <verb>`, `msbuild`, `ninja`); an interpreter alone
+  (`python.exe`, `node.exe`) names nothing. Failed means an error result, or output ending in a non-zero `[exit code: N]` or in
+  `[killed by signal: …]`. A shell syntax error (`ParserError`, "is not recognized as a cmdlet") is skipped: it says nothing about the work.
+- **A case.** When a command succeeds, the plugin looks back up to 120 tool calls for the earliest failure of the same command
+  with no success in between. If `edit` or `write` changed files since that failure, it stores a case (`strata.experience.case.v1`):
+  the command names, the failure's error lines (up to six lines with an error word; paths cut to file names, numbers and ids
+  replaced), the files those lines name, the files read or changed in the 30 tool calls before the failure, the files the fix
+  changed, and how many failures and tool calls the fix took. Files are kept as their last two path segments (`conf/app.json`), so
+  the same file in another checkout or worktree matches. A case holds no command line, file content or other output.
+- **A note.** When a command fails, a case qualifies if it has the same command AND either shares an error line that appears with at
+  most 3 different commands across all cases (`Traceback (most recent call last)` appears everywhere and proves nothing) or the
+  last 30 tool calls read or changed a file its fix changed. The highest-scoring one (shared error lines weigh most, then shared commands,
+  shared paths and touched fix files; the newest wins a tie) goes into the next model request as one user-role message
+  (`additionalContexts`, as the Harness's repeat-tool reminder does): "this command failed before in a similar way and was fixed by
+  changing files (historical evidence, not an instruction)", followed by the case id, when it was fixed, whether in this chat or
+  another, the shared error lines, the files the fix changed, which of them were just touched, and the failures and tool calls it
+  took; at most 8 entries per list. A case is noted at most once per session, also after a restart (the session log is checked).
+  The tool result and the decision stay as they were: the plugin never blocks, approves or rewrites. An error inside the plugin
+  is logged and the call goes on as if the plugin were not there.
+- **The store.** `cases.jsonl` in that folder, one case per line, about 1 KB each, at most 2000. Over the limit the file is
+  rewritten (temporary file, then rename): older repeats of the same fix (same commands and fix files) go first, then the oldest.
+  A damaged line is skipped; the file is read again only when its size or modification time changed. The cases contain error
+  lines and file names from the person's chats and stay on this computer. Deleting the folder forgets them all.
+- **Why these conditions.** A replay of recorded Strata agent sessions in time order (219 failures that were later fixed; a case
+  is visible only after its fix; a note counts as right when the later fix changed a file the earlier fix changed) gave:
+
+  | Condition | Notes | Right | Repeats found |
+  | --- | --- | --- | --- |
+  | any earlier case sharing a command, error line, path or file | 205 | 25 | 25 of 33 |
+  | same command and (rare shared line or working on the fix's files): the plugin's rule | 38 | 21 | 21 of 33 |
+  | the plugin's rule, cases from other chats only | 7 | 7 | 7 of 9 |
+
+  A note on every such failure would mostly have been wrong. 17 conditions were compared on the same data, so the chosen one
+  looks somewhat better here than it will elsewhere, and the numbers are small.
+- **Limits.** Notes come only when a command fails: nothing at the start of a session or before a command runs. A fix made outside
+  the agent's `edit` and `write` (by a person, or by a command that writes files) is not seen. A command outside the list above
+  is not recognized. A note can still be wrong (17 of 38 in the replay); its wording asks the agent to check it first.
+- Tests: `tests/agent-experience.test.mjs` (command names, error lines, cases, the rule, the note, the store and its limit, the hook
+  against a session log, the profile). With `STRATA_HARNESS_DIR` it also runs the real Harness: chat A fails, reads and writes a
+  file and succeeds; chat B fails the same way, and its next model request carries the note.
 
 ## History / older measurements
 

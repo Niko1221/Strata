@@ -60,6 +60,7 @@ export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', im
 export const CONTEXT_PLUGIN = fileURLToPath(new URL('./plugins/strata-context.mjs', import.meta.url));
 const WORKING_MEMORY_PLUGIN = fileURLToPath(new URL('./plugins/strata-working-memory.mjs', import.meta.url));
 const EDIT_RECOVERY_PLUGIN = fileURLToPath(new URL('./plugins/strata-edit-recovery.mjs', import.meta.url));
+const EXPERIENCE_PLUGIN = fileURLToPath(new URL('./plugins/strata-experience.mjs', import.meta.url));
 export const MODELS_PLUGIN = fileURLToPath(new URL('./plugins/strata-models.mjs', import.meta.url));
 const QUESTIONS_PLUGIN = fileURLToPath(new URL('./plugins/strata-questions.mjs', import.meta.url));
 export const SEARCH_PLUGIN = fileURLToPath(new URL('./plugins/strata-search.mjs', import.meta.url));
@@ -310,7 +311,7 @@ const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template',
 // the same request hides the missing answer and can take six model calls to report it.
 const AGENT_RETRY_POLICY = { mode: 'normal', retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'], backoff: {} };
 
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null, defaultLocalId = null, workingMemory = false, contextOptimizer = null }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null, defaultLocalId = null, workingMemory = false, experience = null, contextOptimizer = null }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -462,6 +463,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       { id: 'strata-working-memory', name: WORKING_MEMORY_PLUGIN, config: {} },
       { id: 'strata-edit-recovery', name: EDIT_RECOVERY_PLUGIN, config: {} },
     ] }] : []),
+    // Cases from earlier chats: `experience` is the folder of the cases file (plugins/strata-experience.mjs). Off unless the host passes one.
+    ...(typeof experience === 'string' && experience ? [{ insert: [{ id: 'strata-experience', name: EXPERIENCE_PLUGIN, config: { dir: experience } }] }] : []),
     ...(!tools.off.has('questions') ? [{ insert: [{ id: 'strata-questions', name: QUESTIONS_PLUGIN, config: {} }] }] : []),
     // Helper agents on a model the person names: every model the app can reach is allowed, and the plugin makes the choice forgiving (plugins/strata-models.mjs).
     ...(subagentRoutes.length ? [{ id: 'subagent-model-selection-settings', config: { enabled: true, allowedModels: subagentRoutes.map(r => ({ provider: r.provider, model: r.model })) } }] : []),

@@ -253,7 +253,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const optimizer = contextOptimizer();
     const profile = buildProfile({
       local: localInstances(), connections: connections(), gate, tools: toolSettings, skillsDir: skillsDir(),
-      proxyBase, searchMock, defaultLocalId: defaultLocalId(), workingMemory: env.STRATA_AGENT_WORKING_MEMORY === '1', contextOptimizer: optimizer,
+      proxyBase, searchMock, defaultLocalId: defaultLocalId(), workingMemory: env.STRATA_AGENT_WORKING_MEMORY === '1',
+      experience: env.STRATA_AGENT_EXPERIENCE === '1' ? join(root, 'experience') : null, contextOptimizer: optimizer,
     });
     profile.optimizerKey = optimizer?.enabled ? JSON.stringify(optimizer) : null;
     shapeTargets = profile.shapeTargets ?? {};
