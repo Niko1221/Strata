@@ -7319,12 +7319,13 @@ inline void launch_bf16_linear(
     }
 }
 
-// Grouped MoE launches for the cards without WMMA (RDNA2). With B >= 96 tokens in the step (about 6 or more per expert) the experts go through the tiled fdot2 form of
-// k_moe_grouped_w13_situ_wmma / k_moe_grouped_w2_wmma (weights decoded once per 64-token tile into LDS, 4 x 8 outputs per thread); below that, and with STRATA_HIP_RDNA2_MOE=0,
-// the per-row kernels that stream the weights once per 8 tokens.
+// Grouped MoE launches for the cards without WMMA (RDNA2). OPT-IN (STRATA_HIP_RDNA2_MOE=1), default off: with B >= 96 tokens in the step (about 6 or more per expert) the experts go through the
+// tiled fdot2 form of k_moe_grouped_w13_situ_wmma / k_moe_grouped_w2_wmma (weights decoded once per 64-token tile into LDS, 4 x 8 outputs per thread). Its sums are not in the order of the
+// per-row kernels: teacher-forced KL against them on the RX 6700 XT, SQ-10: 0.0006 (2047 tokens, floor 0.0002), 0.0004 and 0.0022 (327 and 263 tokens), for +3% prefill at 4K (rel0223/amd-rdna32/RESULTS.md);
+// so by default, and below B = 96, the per-row kernels that stream the weights once per 8 tokens run.
 inline bool rdna2_moe_tiles(int B) {
-    static const bool off = (std::getenv("STRATA_HIP_RDNA2_MOE") != nullptr && std::getenv("STRATA_HIP_RDNA2_MOE")[0] == '0');
-    return !off && B >= 96;
+    static const bool on = (std::getenv("STRATA_HIP_RDNA2_MOE") != nullptr && std::getenv("STRATA_HIP_RDNA2_MOE")[0] == '1');
+    return on && B >= 96;
 }
 inline void launch_moe_w13_rdna2(const GpuExpertDesc* exps, const int32_t* off, const int32_t* btk, const half_t* x, half_t* act,
                                  int B, int D, int inter, int n_experts, float beta, float lb, hipStream_t st) {
