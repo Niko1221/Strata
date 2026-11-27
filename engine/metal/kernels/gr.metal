@@ -108,15 +108,23 @@ kernel void gr_norm2(device float* R [[buffer(0)]], device const float* bo [[buf
 // rows: 0 .. hc_lr - 1 = w_down, hc_lr .. hc_lr + hc - 1 = w_inject (both bf16 rows of hc * n_embd).
 // SG simdgroups split the row's units KS ways; LPR = 32 (a simdgroup per row); RS = SG / KS rows per threadgroup.
 // one row's K-split partial over xn (units of format F)
-template <int F>
+template <int F, bool Planes = false>
 static inline void grd_acc(device const uchar* w, int nin, int ks, int KS, ushort lane, device const float* xn,
-                           thread float* acc, threadgroup const uint* notab) {
+                           thread float* acc, threadgroup const uint* notab, device const half* scales = nullptr) {
     constexpr int UNIT = fmt<F>::UNIT;
     const int U = nin / UNIT, u0 = ks * U / KS, u1 = (ks + 1) * U / KS;
     for (int u = u0 + lane; u < u1; u += 32) {
         float q[UNIT];
         float4 sc;
-        Dec<F>::run(w, u, q, sc, notab);
+        if (Planes) {
+            device const char4* codes = (device const char4*)(w + UNIT * u);
+            for (int i = 0; i < UNIT / 4; ++i) {
+                const float4 v = float4(codes[i]);
+                for (int j = 0; j < 4; ++j) q[4 * i + j] = v[j];
+            }
+            const float scale = float(scales[u]);
+            sc = float4(scale, scale, 0.0f, 0.0f);
+        } else Dec<F>::run(w, u, q, sc, notab);
         for (int t = 0; t < GR_NTOK; ++t) {
             float xs[UNIT], xsum[2] = {0.0f, 0.0f};
             for (int k = 0; k < UNIT; k += 16) load16(xn + t * nin + UNIT * u + k, xs + k);
@@ -176,7 +184,13 @@ kernel void gr_down_f(device const uchar* w_down [[buffer(0)]], device const uch
     const uint rb = uint(nin / fmt<F>::QK * fmt<F>::BB), rbi = uint(nin / fmt<FI>::QK * fmt<FI>::BB);
     float acc[8];
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
-    if (PF) {
+    if (PF == 2) {
+        if (rr < int(a.hc_lr)) {
+            device const half* scales = (device const half*)(w_down + ulong(a.hc_lr) * nin);
+            grd_acc<F, true>(w_down + ulong(rr) * nin, nin, ks, KS, lane, xn, acc, notab,
+                            scales + ulong(rr) * (nin / 32));
+        } else grd_acc<FI>(w_inject + ulong(rr - int(a.hc_lr)) * rbi, nin, ks, KS, lane, xn, acc, notab);
+    } else if (PF) {
         if (rr < int(a.hc_lr)) grd_acc_p<F>(w_down + ulong(rr) * rb, nin, ks, KS, lane, xn, acc, notab);
         else grd_acc_p<FI>(w_inject + ulong(rr - int(a.hc_lr)) * rbi, nin, ks, KS, lane, xn, acc, notab);
     } else {
@@ -290,4 +304,6 @@ template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8
 template [[host_name("gr_downp_q8_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>) gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>;
 template [[host_name("gr_downp_q8f_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_F32, 1>) gr_down_f<8, 8, T_Q8_0, T_F32, 1>;
 template [[host_name("gr_downp_bf16f_8_8")]] kernel decltype(gr_down_f<8, 8, T_BF16, T_F32, 1>) gr_down_f<8, 8, T_BF16, T_F32, 1>;
+template [[host_name("gr_down_planes_q8_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_Q8_0, 2>) gr_down_f<8, 8, T_Q8_0, T_Q8_0, 2>;
+template [[host_name("gr_down_planes_q8f_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_F32, 2>) gr_down_f<8, 8, T_Q8_0, T_F32, 2>;
 template [[host_name("gr_upp_q8")]] kernel decltype(gr_up_f<T_Q8_0, 1>) gr_up_f<T_Q8_0, 1>;
