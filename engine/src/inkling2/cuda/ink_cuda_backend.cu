@@ -544,6 +544,7 @@ public:
                 const size_t avail_no = (vf > trunk + r_no) ? (vf - trunk - r_no) : 0u, avail_with = (vf > trunk + r_with) ? (vf - trunk - r_with) : 0u;
                 strata::core::InkDraftLoadIn li;
                 li.below_sm80 = legacy_arch;
+                li.sm60 = (sm_cc == 60);   // the Tesla P100 keeps the default drafter on a hybrid load (ink_draft_rule.hpp, 1b)
                 li.full_without = avail_no >= sec4;
                 li.full_with = avail_with >= sec4;
                 li.tier_budget_mib = (double)avail_no / 1048576.0;

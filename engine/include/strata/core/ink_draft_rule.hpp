@@ -32,6 +32,7 @@ struct InkDraftLoadIn {
     double tier_budget_mib = 0.0;     // VRAM left for experts without the drafter (hybrid cards: the tier's size)
     double drafter_mib = 0.0;         // what the drafter takes (weights + rings + scratch)
     bool below_sm80 = false;          // the card is below compute capability 8.0 (V100, RTX 20, GTX 10, P100): see principle 1b
+    bool sm60 = false;                // compute capability 6.0 exactly (Tesla P100): the one card of principle 1b that keeps the default drafter on a hybrid load (owner, 11-27)
     bool user_on = false;             // --draft on / STRATA_INK_DRAFTER=dflash2: the user asked for it by name
     bool user_off = false;            // --draft off
 };
@@ -53,7 +54,9 @@ inline InkDraftLoadOut ink_draft_load_rule(const InkDraftLoadIn& in) {
     // 1b. BELOW sm_80: a hybrid load (some experts in host memory, drafter or not) never gets the default drafter, whatever the model. Measured on a 2080 Ti 11 GB, a P100 16 GB and a
     //     GTX 1080 Ti 11 GB (SQ-20 v2: plain decode 23.5 / 25.1 / 12.7 tok/s on prose against 16.3 / 22.1 / 9.2 with DFlash 2; IQ3_S on the 2080 Ti 32 against 23): every draft window reads more
     //     host experts than a plain step. A fully resident card (a V100 32 GB) keeps drafting. phaseA-tests/rel0223/nv-older/RESULTS.md.
-    if (in.below_sm80 && !in.full_without) { o.load = false; o.residency_veto = true; }
+    //     Exception, owner decision 11-27 ("Turn drafter on at P100"): the Tesla P100 (cc 6.0) keeps DFlash 2 by default on a hybrid load (SQ-20 v2 code 29.0 tok/s against 21.8 with the
+    //     shipped DSpark and 12.8 plain, json 29.4 / 22.1, tool 19.7 / 15.3; prose and chat lower than plain). Principle 1 (the residency veto) and principle 2 (plain steps) still apply to it.
+    if (in.below_sm80 && !in.sm60 && !in.full_without) { o.load = false; o.residency_veto = true; }
     return o;
 }
 

@@ -53,6 +53,22 @@ int main() {
         InkDraftLoadIn res; res.below_sm80 = true; res.full_without = true; res.full_with = true; res.drafter_mib = 450;   // a V100 32 GB
         CHECK(ink_draft_load_rule(res).load && !ink_draft_load_rule(res).residency_veto);
     }
+    // the Tesla P100 (sm_60) exception of principle 1b: a hybrid load keeps the default drafter; sm_61 (GTX 10), sm_70 hybrid and sm_75 (RTX 20) stay vetoed; the other principles still apply
+    {
+        InkDraftLoadIn p; p.below_sm80 = true; p.sm60 = true; p.full_without = false; p.full_with = false; p.tier_budget_mib = 10500; p.drafter_mib = 728;   // the P100 SQ-20 case: a 6.9% tier cut
+        CHECK(ink_draft_load_rule(p).load && !ink_draft_load_rule(p).residency_veto);
+        InkDraftLoadIn g = p; g.sm60 = false;                              // GTX 10 (sm_61), hybrid V100 (sm_70) or RTX 20 (sm_75): vetoed as before
+        CHECK(!ink_draft_load_rule(g).load && ink_draft_load_rule(g).residency_veto);
+        InkDraftLoadIn big = p; big.tier_budget_mib = 3000;                // principle 1 still applies to the P100: a 24% tier cut is vetoed
+        CHECK(!ink_draft_load_rule(big).load && ink_draft_load_rule(big).residency_veto);
+        InkDraftLoadIn tohy = p; tohy.full_without = true; tohy.full_with = false;   // a resident model the drafter would push to hybrid: vetoed
+        CHECK(!ink_draft_load_rule(tohy).load && ink_draft_load_rule(tohy).to_hybrid);
+        InkDraftLoadIn off = p; off.user_off = true;                       // --draft off wins
+        CHECK(!ink_draft_load_rule(off).load);
+        InkDraftLoadIn res = p; res.full_without = true; res.full_with = true;       // a resident P100 load: loaded
+        CHECK(ink_draft_load_rule(res).load);
+        CHECK(ink_draft_plain_step(true, kDraftPlainCtxHybrid, false));    // principle 2 is unchanged on the hybrid P100
+    }
     // the printed line: the same sentence start on every backend, the override named
     {
         const std::string s = ink_draft_veto_line("[InkCUDA]", "DFlash 2", 19.3, 14.2, 536, 14.7);
