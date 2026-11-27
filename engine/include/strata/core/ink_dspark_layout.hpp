@@ -17,6 +17,15 @@
 namespace strata::core {
 
 inline bool ink_dspark_layout_check(const std::set<std::string>& plain_names, std::string* why = nullptr) {
+    // llama.cpp-mainline layout: the same drafter, with fuse_weight split into per-block
+    // ctx_mix (4 values) + ctx_norm, and the Markov head folded through the output head
+    // into markov_w2 (rank x vocab) + bias.  The HIP loader maps these onto the old
+    // structures, so both layouts run.
+    if (plain_names.count("markov_w2.weight") && plain_names.count("markov_ctx_mix.weight") &&
+        plain_names.count("blk.0.ctx_mix.weight") && plain_names.count("blk.0.ctx_norm.weight") &&
+        plain_names.count("markov_head.markov_w1.weight") && plain_names.count("mask_embed")) {
+        return true;
+    }
     static const char* const kRequired[] = {
         "fuse_weight", "mask_embed", "markov_head.hidden_out.weight", "markov_head.hidden_out.bias", "markov_head.dflare_norm.weight",
         "markov_head.markov_w1.weight", "layers.0.self_attn.q_proj.weight", "layers.0.dflare_norm.weight"};

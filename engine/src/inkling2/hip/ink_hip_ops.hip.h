@@ -3628,6 +3628,78 @@ __global__ void __launch_bounds__(256) k5_dspark_base_top2_screen(
 
 // Fast 1,024-Candidate Markov Argmax Stage 1: scores ONLY the shortlisted candidates (< 0.02 ms/step!)
 // Grid: ((n_cand + 7) / 8,), Block: 256 (8 waves = 8 candidates/block)
+// Mainline-layout drafter: the Markov head arrives folded through the output head, i.e.
+// markov_w2 is (rank x vocab) and markov_w2.bias is (vocab,).  The old path scores
+//   base + unemb[v] . (hidden_out^T latent + hidden_out.bias)
+// where base = unemb[v] . hidden comes from the top-2 screen; folding hidden_out and its
+// bias through unemb gives exactly
+//   base + latent . w2[v] + w2.bias[v]
+// so this kernel scores the shortlisted candidates with the folded head and keeps the
+// per-position base term.  Same 1,024-candidate shortlist and argmax reduce as the old path.
+// Grid: ((n_cand + 7) / 8,), Block: 256 (8 waves = 8 candidates/block)
+__global__ void __launch_bounds__(256) k5_dspark_w2_stage1(
+    const uint16_t* __restrict__ w2,
+    const float* __restrict__ bias,
+    const float* __restrict__ latent,
+    const float* __restrict__ cand_base_val,
+    const int32_t* __restrict__ cand_id,
+    float* __restrict__ blk_max_val,
+    int32_t* __restrict__ blk_max_id,
+    int n_cand, int rank, int V) {
+    const int tid = threadIdx.x;
+    const int wave = tid >> 5;
+    const int lane = tid & 31;
+
+    __shared__ alignas(16) float s_lat[256];
+    for (int r = tid; r < rank && r < 256; r += 256) s_lat[r] = latent[r];
+    __syncthreads();
+
+    const int ci = blockIdx.x * 8 + wave;
+    float my_v = -1e30f;
+    int32_t my_i = V;
+    if (ci < n_cand) {
+        const int v = cand_id[ci];
+        if (v >= 0 && v < V) {
+            const uint16_t* wr = w2 + static_cast<size_t>(v) * rank;
+            float acc = 0.0f;
+            for (int r = lane * 8; r < rank; r += 256) {
+                if (r + 8 <= rank) {
+                    const uint4 w8 = *reinterpret_cast<const uint4*>(wr + r);
+                    acc = fmaf(bf16_to_f32(w8.x & 0xFFFFu), s_lat[r + 0], acc);
+                    acc = fmaf(bf16_to_f32(w8.x >> 16),     s_lat[r + 1], acc);
+                    acc = fmaf(bf16_to_f32(w8.y & 0xFFFFu), s_lat[r + 2], acc);
+                    acc = fmaf(bf16_to_f32(w8.y >> 16),     s_lat[r + 3], acc);
+                    acc = fmaf(bf16_to_f32(w8.z & 0xFFFFu), s_lat[r + 4], acc);
+                    acc = fmaf(bf16_to_f32(w8.z >> 16),     s_lat[r + 5], acc);
+                    acc = fmaf(bf16_to_f32(w8.w & 0xFFFFu), s_lat[r + 6], acc);
+                    acc = fmaf(bf16_to_f32(w8.w >> 16),     s_lat[r + 7], acc);
+                } else {
+                    for (int q = r; q < rank; ++q) acc = fmaf(bf16_to_f32(wr[q]), s_lat[q], acc);
+                }
+            }
+            acc = wave32_sum(acc);
+            if (lane == 0) {
+                my_v = cand_base_val[ci] + acc + (bias ? bias[v] : 0.0f);
+                my_i = v;
+            }
+        }
+    }
+
+    __shared__ float s_val[8];
+    __shared__ int32_t s_id[8];
+    if (lane == 0) { s_val[wave] = my_v; s_id[wave] = my_i; }
+    __syncthreads();
+    if (tid == 0) {
+        float bv = -1e30f;
+        int32_t bi = V;
+        for (int w = 0; w < 8; ++w) {
+            if (s_val[w] > bv || (s_val[w] == bv && s_id[w] < bi)) { bv = s_val[w]; bi = s_id[w]; }
+        }
+        blk_max_val[blockIdx.x] = bv;
+        blk_max_id[blockIdx.x] = bi;
+    }
+}
+
 __global__ void __launch_bounds__(256) k5_dspark_cand_argmax_stage1(
     const uint8_t* __restrict__ unemb_raw,
     int fmt, int vocab_rows,
