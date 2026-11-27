@@ -1,0 +1,78 @@
+{
+  "task": "Write a Python function `roman_to_int(s: str) -> int` that converts a Roman numeral (I, V, X, L, C, D, M, including subtractive forms like IV, IX, XL, XC, CD, CM) to an integer, and raises ValueError for an empty string or any character that is not a Roman numeral. Reply with one Python code block only.",
+  "reasoning_effort": "low",
+  "elapsed_s": 6.64,
+  "usage": {
+    "prompt_tokens": 99,
+    "completion_tokens": 801,
+    "total_tokens": 900,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "passed": 10,
+  "total": 10,
+  "results": [
+    {
+      "input": "III",
+      "expected": 3,
+      "got": 3,
+      "ok": true
+    },
+    {
+      "input": "IV",
+      "expected": 4,
+      "got": 4,
+      "ok": true
+    },
+    {
+      "input": "IX",
+      "expected": 9,
+      "got": 9,
+      "ok": true
+    },
+    {
+      "input": "LVIII",
+      "expected": 58,
+      "got": 58,
+      "ok": true
+    },
+    {
+      "input": "MCMXCIV",
+      "expected": 1994,
+      "got": 1994,
+      "ok": true
+    },
+    {
+      "input": "MMXXVI",
+      "expected": 2026,
+      "got": 2026,
+      "ok": true
+    },
+    {
+      "input": "CDXLIV",
+      "expected": 444,
+      "got": 444,
+      "ok": true
+    },
+    {
+      "input": "",
+      "expected": "ValueError",
+      "got": "ValueError",
+      "ok": true
+    },
+    {
+      "input": "ABC",
+      "expected": "ValueError",
+      "got": "ValueError",
+      "ok": true
+    },
+    {
+      "input": "MMX1",
+      "expected": "ValueError",
+      "got": "ValueError",
+      "ok": true
+    }
+  ],
+  "code": "def roman_to_int(s: str) -> int:\n    if not s:\n        raise ValueError(\"empty string\")\n    values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}\n    for ch in s:\n        if ch not in values:\n            raise ValueError(f\"invalid character: {ch!r}\")\n    total = 0\n    for i, ch in enumerate(s):\n        if i + 1 < len(s) and values[ch] < values[s[i + 1]]:\n            total -= values[ch]\n        else:\n            total += values[ch]\n    return total\n"
+}

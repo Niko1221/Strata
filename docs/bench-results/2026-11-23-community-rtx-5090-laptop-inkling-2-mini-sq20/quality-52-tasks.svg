@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 770" width="1200" height="770" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif">
+<rect width="1200" height="770" fill="#f5f2eb"/>
+<rect x="0" y="0" width="14" height="770" fill="#c2593f"/>
+<text x="70" y="52" font-size="27" font-weight="700" fill="#2b2623">Which one is smarter? 52 everyday tasks, three passes each</text>
+<text x="70" y="82" font-size="15" fill="#52796f">Share of passed attempts per group; German prompts, reasoning low, Strata 0.2.19, RTX 5090 Laptop</text>
+<text x="286" y="145" font-size="15" fill="#2b2623" text-anchor="end">Tool calls</text>
+<rect x="300" y="119" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="119" width="712.5" height="11" fill="#52796f"/>
+<text x="1068" y="129" font-size="12" fill="#8a8178">45/48</text>
+<rect x="300" y="133" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="133" width="633.3" height="11" fill="#c2593f"/>
+<text x="1068" y="143" font-size="12" fill="#8a8178">40/48</text>
+<rect x="300" y="147" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="147" width="601.7" height="11" fill="#d98a6f"/>
+<text x="1068" y="157" font-size="12" fill="#8a8178">38/48</text>
+<rect x="300" y="161" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="161" width="617.5" height="11" fill="#ecc2b0"/>
+<text x="1068" y="171" font-size="12" fill="#8a8178">39/48</text>
+<text x="286" y="217" font-size="15" fill="#2b2623" text-anchor="end">JSON extraction</text>
+<rect x="300" y="191" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="191" width="665.0" height="11" fill="#52796f"/>
+<text x="1068" y="201" font-size="12" fill="#8a8178">21/24</text>
+<rect x="300" y="205" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="205" width="696.7" height="11" fill="#c2593f"/>
+<text x="1068" y="215" font-size="12" fill="#8a8178">22/24</text>
+<rect x="300" y="219" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="219" width="696.7" height="11" fill="#d98a6f"/>
+<text x="1068" y="229" font-size="12" fill="#8a8178">22/24</text>
+<rect x="300" y="233" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="233" width="728.3" height="11" fill="#ecc2b0"/>
+<text x="1068" y="243" font-size="12" fill="#8a8178">23/24</text>
+<text x="286" y="289" font-size="15" fill="#2b2623" text-anchor="end">Arithmetic &amp; logic</text>
+<rect x="300" y="263" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="263" width="734.7" height="11" fill="#52796f"/>
+<text x="1068" y="273" font-size="12" fill="#8a8178">29/30</text>
+<rect x="300" y="277" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="277" width="760.0" height="11" fill="#c2593f"/>
+<text x="1068" y="287" font-size="12" fill="#8a8178">30/30</text>
+<rect x="300" y="291" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="291" width="760.0" height="11" fill="#d98a6f"/>
+<text x="1068" y="301" font-size="12" fill="#8a8178">30/30</text>
+<rect x="300" y="305" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="305" width="734.7" height="11" fill="#ecc2b0"/>
+<text x="1068" y="315" font-size="12" fill="#8a8178">29/30</text>
+<text x="286" y="361" font-size="15" fill="#2b2623" text-anchor="end">Code (hidden tests)</text>
+<rect x="300" y="335" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="335" width="760.0" height="11" fill="#52796f"/>
+<text x="1068" y="345" font-size="12" fill="#8a8178">24/24</text>
+<rect x="300" y="349" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="349" width="728.3" height="11" fill="#c2593f"/>
+<text x="1068" y="359" font-size="12" fill="#8a8178">23/24</text>
+<rect x="300" y="363" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="363" width="760.0" height="11" fill="#d98a6f"/>
+<text x="1068" y="373" font-size="12" fill="#8a8178">24/24</text>
+<rect x="300" y="377" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="377" width="665.0" height="11" fill="#ecc2b0"/>
+<text x="1068" y="387" font-size="12" fill="#8a8178">21/24</text>
+<text x="286" y="433" font-size="15" fill="#2b2623" text-anchor="end">Exact instructions</text>
+<rect x="300" y="407" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="407" width="760.0" height="11" fill="#52796f"/>
+<text x="1068" y="417" font-size="12" fill="#8a8178">18/18</text>
+<rect x="300" y="421" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="421" width="633.3" height="11" fill="#c2593f"/>
+<text x="1068" y="431" font-size="12" fill="#8a8178">15/18</text>
+<rect x="300" y="435" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="435" width="633.3" height="11" fill="#d98a6f"/>
+<text x="1068" y="445" font-size="12" fill="#8a8178">15/18</text>
+<rect x="300" y="449" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="449" width="633.3" height="11" fill="#ecc2b0"/>
+<text x="1068" y="459" font-size="12" fill="#8a8178">15/18</text>
+<text x="286" y="505" font-size="15" fill="#2b2623" text-anchor="end">Long context (32K/96K)</text>
+<rect x="300" y="479" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="479" width="760.0" height="11" fill="#52796f"/>
+<text x="1068" y="489" font-size="12" fill="#8a8178">4/4</text>
+<rect x="300" y="493" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="493" width="380.0" height="11" fill="#c2593f"/>
+<text x="1068" y="503" font-size="12" fill="#8a8178">2/4</text>
+<rect x="300" y="507" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="507" width="380.0" height="11" fill="#d98a6f"/>
+<text x="1068" y="517" font-size="12" fill="#8a8178">2/4</text>
+<rect x="300" y="521" width="760.0" height="11" fill="#ddd6c8" opacity="0.45"/>
+<rect x="300" y="521" width="380.0" height="11" fill="#ecc2b0"/>
+<text x="1068" y="531" font-size="12" fill="#8a8178">2/4</text>
+<line x1="300" y1="551" x2="1060" y2="551" stroke="#2b2623" stroke-width="1.2"/>
+<text x="286" y="587" font-size="16" font-weight="700" fill="#2b2623" text-anchor="end">Total</text>
+<rect x="300" y="561" width="724.1" height="11" fill="#52796f"/>
+<text x="1068" y="571" font-size="12" font-weight="700" fill="#2b2623">95.3 %</text>
+<rect x="300" y="575" width="677.8" height="11" fill="#c2593f"/>
+<text x="1068" y="585" font-size="12" font-weight="700" fill="#2b2623">89.2 %</text>
+<rect x="300" y="589" width="672.7" height="11" fill="#d98a6f"/>
+<text x="1068" y="599" font-size="12" font-weight="700" fill="#2b2623">88.5 %</text>
+<rect x="300" y="603" width="662.4" height="11" fill="#ecc2b0"/>
+<text x="1068" y="613" font-size="12" font-weight="700" fill="#2b2623">87.2 %</text>
+<rect x="70" y="675" width="22" height="12" fill="#52796f"/>
+<text x="100" y="686" font-size="14" fill="#2b2623">Qwen3.8-Flash-Next Q2_0</text>
+<rect x="630" y="675" width="22" height="12" fill="#c2593f"/>
+<text x="660" y="686" font-size="14" fill="#2b2623">Inkling-2-Mini, effort 0.1 + Unsloth sampling</text>
+<rect x="70" y="699" width="22" height="12" fill="#d98a6f"/>
+<text x="100" y="710" font-size="14" fill="#2b2623">Inkling-2-Mini, effort 0.1</text>
+<rect x="630" y="699" width="22" height="12" fill="#ecc2b0"/>
+<text x="660" y="710" font-size="14" fill="#2b2623">Inkling-2-Mini, Strata default (effort 0)</text>
+<text x="1170" y="756" font-size="12" fill="#8a8178" text-anchor="end">96K tasks: the Inkling server refuses above 73K · KI SOUVERÄN · measured, not claimed</text>
+</svg>
