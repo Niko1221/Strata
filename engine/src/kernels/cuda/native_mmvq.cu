@@ -60,6 +60,7 @@ namespace strata::kernels {
 bool rdna_q6k_enabled();
 bool rdna_q6k_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 bool rdna_kq_mmvq(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+bool rdna_iq4nl_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 bool rdna_q80_wmma_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 
 namespace {
@@ -3722,12 +3723,27 @@ void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,
 
 void native_iq4_nl_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream) {
+    validate_shape(n_in, ncols, 32);
+    if (n_out <= 0) throw std::invalid_argument("native MMVQ requires n_out > 0");
+    validate_pointer(weights);
+    validate_pointer(x_q8_1);
+    validate_pointer(y);
+    validate_stream(stream);
+    if (rdna_iq4nl_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     small_mmvq<IQ4NLBlock, 4>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 
 void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
                       float* y, int n_in, int n_out, int ncols, void* stream) {
-    small_f32<IQ4NLBlock, 4>(weights, x, scratch_q8_1, y, n_in, n_out, ncols, stream);
+    validate_shape(n_in, ncols, 32);
+    if (n_out <= 0) throw std::invalid_argument("native MMVQ requires n_out > 0");
+    validate_pointer(weights);
+    validate_pointer(x);
+    validate_pointer(scratch_q8_1);
+    validate_pointer(y);
+    validate_stream(stream);
+    native_quantize_q8_1(x, scratch_q8_1, n_in, ncols, stream);
+    native_iq4_nl_mmvq(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
 bool native_mmvq_supported(int ggml_type) noexcept {

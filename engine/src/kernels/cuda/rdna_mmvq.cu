@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 // SPDX-License-Identifier: MIT
 //
-// src/kernels/cuda/rdna_mmvq.cu - RDNA3/RDNA3.5 (gfx1100..gfx1151) Wave32 multi-column decode GEMV & T=8..16 WMMA verify:
+// src/kernels/cuda/rdna_mmvq.cu - RDNA3/RDNA3.5/RDNA4 (gfx1100..gfx1151, gfx1200..gfx1201) Wave32 multi-column decode GEMV & T=8..16 WMMA verify:
 //   - rdna_q6k_kernel<NC>: Q6_K x q8_1 decode GEMV (one Wave32 per row, DPP reduction, NC=1..8, sliced for 9..16)
 //   - rdna_kq_kernel<FMT, NC>: Q4_K (12), Q5_K (13), IQ4_XS (23), IQ3_S (21) using strata-quant-common.h iq3s_grid
+//   - rdna_iq4nl_kernel<NC>: IQ4_NL (20) x q8_1 decode GEMV (opt-in via STRATA_RDNA_IQ4NL=1, one Wave32 per row, DPP reduction)
 //   - rdna_q80_wmma_t8_kernel: T=8..16 Q8_0 x q8_1 direct Wave32 INT8 WMMA (__builtin_amdgcn_wmma_i32_16x16x16_iu8_w32)
-// Enabled via STRATA_RDNA_Q6K=1 or STRATA_HIP_FAST_DEC=1 on gfx1100..gfx1151 (zero rocWMMA dependency).
+// Enabled via STRATA_RDNA_Q6K=1 or STRATA_HIP_FAST_DEC=1 on gfx1100..gfx1151 (zero rocWMMA dependency);
+// IQ4_NL is gated independently by STRATA_RDNA_IQ4NL=1 (default off).
 #include "strata/kernels/gfx_arch.hpp"
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
@@ -20,6 +22,7 @@
 #if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
 #include "strata/kernels/hip_unsloth_wmma.hpp"
 #include "strata/kernels/hip_unsloth_dp4a.hpp"
+#include "s26_tsum.cuh"
 #endif
 
 namespace strata::kernels {
@@ -31,6 +34,10 @@ bool rdna_q6k_mmvq2(const void* w, const void* xq, float* y, int n_in, int n_out
 bool rdna_kq_mmvq(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 bool rdna_kq_mmvq2(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream,
                    const void* w2, float* y2, int n_out2);
+bool rdna_iq4nl_enabled();
+bool rdna_iq4nl_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+bool rdna_iq4nl_mmvq2(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream,
+                      const void* w2, float* y2, int n_out2);
 bool rdna_q80_wmma_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 
 #if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
@@ -264,6 +271,136 @@ void kq_launch_slice(const uint8_t* wb, const Q81* x, float* y, int n_in, int n_
     }
 }
 
+__device__ __forceinline__ float add_nocontract(float a, float b) {
+#pragma clang fp contract(off)
+    return a + b;
+}
+
+__device__ __forceinline__ float mul_nocontract(float a, float b) {
+#pragma clang fp contract(off)
+    return a * b;
+}
+
+// Bitwise equal to native_small_mmvq_kernel<IQ4NLBlock, 4> and native_mmvq_multi_kernel<SmallTraits<IQ4NLBlock, 4>>
+// (exact layout): lane l runs the blocks of the 4-warp layout's threads 32*v + l (v = 0..3, stride 64), sums across
+// virtual warps in warp order without cross-warp FMA contraction, then reduces across the Wave32 via s26ts::tsum
+// (transposed 16/8/4/2/1 DPP butterfly, zero LDS).
+template <int NC, bool SmallK>
+__global__ void __launch_bounds__(256) rdna_iq4nl_kernel(const uint8_t* __restrict__ w, const Q81* __restrict__ x,
+                                                         float* __restrict__ y, int n_in, int n_out,
+                                                         const uint8_t* __restrict__ w2, float* __restrict__ y2, int n_out2) {
+    const int lane = threadIdx.x & 31;
+    int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    if (w2 != nullptr && row >= n_out) {
+        row -= n_out;
+        w = w2;
+        y = y2;
+        n_out = n_out2;
+    }
+    if (row >= n_out) return;
+    const int nb = n_in / 32;
+    const int sub = lane & 1;
+    const uint8_t* wr = w + (size_t) row * nb * 18;
+    float acc[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) acc[c] = 0.0f;
+
+    if constexpr (SmallK) {
+        // Each virtual warp v=0..3 visits at most one block per lane (nb <= 64, e.g. n_in=640 -> nb=20): no tmp[].
+#pragma unroll
+        for (int v = 0; v < 4; ++v) {
+            const int kb = 16 * v + (lane >> 1);
+            if (kb >= nb) break;
+            const uint8_t* blk = wr + (size_t) kb * 18;
+            uint16_t dbits;
+            __builtin_memcpy(&dbits, blk, sizeof(dbits));
+            const float d = __half2float(__ushort_as_half(dbits));
+            uint2 qraw;
+            __builtin_memcpy(&qraw, blk + 2 + sub * 8, sizeof(qraw));
+            const int2 v0 = strata::kernels::hip_unsloth::hip_iq4_lut16(qraw.x);
+            const int2 v1 = strata::kernels::hip_unsloth::hip_iq4_lut16(qraw.y);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                const Q81* xb8 = x + (size_t) c * nb + kb;
+                const int* q = reinterpret_cast<const int*>(xb8->qs) + sub * 2;
+                int s = dot4_s8(v0.x, q[0], 0);
+                s = dot4_s8(v0.y, q[4], s);
+                s = dot4_s8(v1.x, q[1], s);
+                s = dot4_s8(v1.y, q[5], s);
+                const float prod = mul_nocontract(d * __low2float(xb8->ds), (float) s);
+                acc[c] = add_nocontract(acc[c], prod);
+            }
+        }
+    } else {
+        // General nb > 64: accumulate each virtual warp v=0..3 over stride 64, then add across v in warp order.
+        for (int v = 0; v < 4; ++v) {
+            float tmp[NC];
+#pragma unroll
+            for (int c = 0; c < NC; ++c) tmp[c] = 0.0f;
+            for (int kb = 16 * v + (lane >> 1); kb < nb; kb += 64) {
+                const uint8_t* blk = wr + (size_t) kb * 18;
+                uint16_t dbits;
+                __builtin_memcpy(&dbits, blk, sizeof(dbits));
+                const float d = __half2float(__ushort_as_half(dbits));
+                uint2 qraw;
+                __builtin_memcpy(&qraw, blk + 2 + sub * 8, sizeof(qraw));
+                const int2 v0 = strata::kernels::hip_unsloth::hip_iq4_lut16(qraw.x);
+                const int2 v1 = strata::kernels::hip_unsloth::hip_iq4_lut16(qraw.y);
+#pragma unroll
+                for (int c = 0; c < NC; ++c) {
+                    const Q81* xb8 = x + (size_t) c * nb + kb;
+                    const int* q = reinterpret_cast<const int*>(xb8->qs) + sub * 2;
+                    int s = dot4_s8(v0.x, q[0], 0);
+                    s = dot4_s8(v0.y, q[4], s);
+                    s = dot4_s8(v1.x, q[1], s);
+                    s = dot4_s8(v1.y, q[5], s);
+                    const float dd = d * __low2float(xb8->ds);
+                    tmp[c] += dd * (float) s;
+                }
+            }
+#pragma unroll
+            for (int c = 0; c < NC; ++c) acc[c] = add_nocontract(acc[c], tmp[c]);
+        }
+    }
+
+    if constexpr (NC == 1) {
+        const float sum = s26ts::tplain<16>(acc[0]);
+        if (lane == 0) y[row] = sum;
+    } else {
+        constexpr int P = s26ts::pow2_ceil(NC);
+        float vals[P];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) vals[c] = acc[c];
+#pragma unroll
+        for (int c = NC; c < P; ++c) vals[c] = 0.0f;
+        const float sum = s26ts::tsum<P>(vals, lane);
+        const int c = s26ts::tsum_token<P>(lane);
+        if (lane == s26ts::tsum_lane<P>(c) && c < NC) y[(size_t) c * n_out + row] = sum;
+    }
+}
+
+template <bool SmallK>
+void iq4nl_launch_kind(const uint8_t* wb, const Q81* x, float* y, int n_in, int n_out, int ncols, cudaStream_t s,
+                       const uint8_t* w2, float* y2, int n_out2) {
+    const unsigned blocks = (unsigned) ((n_out + 7) / 8 + (w2 ? (n_out2 + 7) / 8 : 0));
+    switch (ncols) {
+        case 1: rdna_iq4nl_kernel<1, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 2: rdna_iq4nl_kernel<2, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 3: rdna_iq4nl_kernel<3, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 4: rdna_iq4nl_kernel<4, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 5: rdna_iq4nl_kernel<5, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 6: rdna_iq4nl_kernel<6, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        case 7: rdna_iq4nl_kernel<7, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+        default: rdna_iq4nl_kernel<8, SmallK><<<blocks, 256, 0, s>>>(wb, x, y, n_in, n_out, w2, y2, n_out2); break;
+    }
+}
+
+void iq4nl_launch_slice(const uint8_t* wb, const Q81* x, float* y, int n_in, int n_out, int ncols, cudaStream_t s,
+                        const uint8_t* w2, float* y2, int n_out2) {
+    if (n_in <= 2048) iq4nl_launch_kind<true>(wb, x, y, n_in, n_out, ncols, s, w2, y2, n_out2);
+    else iq4nl_launch_kind<false>(wb, x, y, n_in, n_out, ncols, s, w2, y2, n_out2);
+}
+
 // ---- T=8..16 Wave32 INT8 WMMA target-verify GEMM for Q8_0 x Q8_1 (direct __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32) ----
 #if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
     defined(__gfx1150__) || defined(__gfx1151__)
@@ -384,12 +521,44 @@ bool rdna_q6k_enabled() {
     return env == 1 ? true : arch_is_rdna3_or_4();
 }
 
+bool rdna_iq4nl_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_RDNA_IQ4NL");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on && arch_is_rdna3_or_4();
+}
+
+bool rdna_iq4nl_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream) {
+    return rdna_iq4nl_mmvq2(w, xq, y, n_in, n_out, ncols, stream, nullptr, nullptr, 0);
+}
+
+bool rdna_iq4nl_mmvq2(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream,
+                      const void* w2v, float* y2, int n_out2) {
+    if (!rdna_iq4nl_enabled() || n_in <= 0 || n_in % 32 != 0 || ncols < 1 || ncols > 16) return false;
+    if (w2v != nullptr && n_out % 8 != 0) return false;
+    const auto* wb = static_cast<const uint8_t*>(w);
+    const auto* w2 = static_cast<const uint8_t*>(w2v);
+    const auto* x = static_cast<const Q81*>(xq);
+    cudaStream_t s = (cudaStream_t) stream;
+    const int xs = n_in / 32;
+    for (int c0 = 0; c0 < ncols; c0 += 8) {
+        const int nc = (ncols - c0) < 8 ? (ncols - c0) : 8;
+        const Q81* xc = x + (size_t) c0 * xs;
+        float* yc = y + (size_t) c0 * n_out;
+        float* y2c = y2 ? (y2 + (size_t) c0 * n_out2) : nullptr;
+        iq4nl_launch_slice(wb, xc, yc, n_in, n_out, nc, s, w2, y2c, n_out2);
+    }
+    return true;
+}
+
 bool rdna_kq_mmvq(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream) {
     return rdna_kq_mmvq2(type, w, xq, y, n_in, n_out, ncols, stream, nullptr, nullptr, 0);
 }
 
 bool rdna_kq_mmvq2(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream,
                    const void* w2v, float* y2, int n_out2) {
+    if (type == 20) return rdna_iq4nl_mmvq2(w, xq, y, n_in, n_out, ncols, stream, w2v, y2, n_out2);
     if (!rdna_q6k_enabled() || n_in % QK != 0 || ncols < 1 || ncols > 16) return false;
     if (w2v != nullptr && n_out % 8 != 0) return false;
     const auto* wb = static_cast<const uint8_t*>(w);
@@ -488,6 +657,9 @@ bool rdna_q6k_mmvq(const void*, const void*, float*, int, int, int, void*) { ret
 bool rdna_q6k_mmvq2(const void*, const void*, float*, int, int, int, void*, const void*, float*, int) { return false; }
 bool rdna_kq_mmvq(int, const void*, const void*, float*, int, int, int, void*) { return false; }
 bool rdna_kq_mmvq2(int, const void*, const void*, float*, int, int, int, void*, const void*, float*, int) { return false; }
+bool rdna_iq4nl_enabled() { return false; }
+bool rdna_iq4nl_mmvq(const void*, const void*, float*, int, int, int, void*) { return false; }
+bool rdna_iq4nl_mmvq2(const void*, const void*, float*, int, int, int, void*, const void*, float*, int) { return false; }
 bool rdna_q80_wmma_mmvq(const void*, const void*, float*, int, int, int, void*) { return false; }
 
 #endif
