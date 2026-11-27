@@ -54,3 +54,15 @@ For each of the two full-pack runs above, 820 rounds offered 5,740 drafts and th
 We summed target command-buffer GPU duration within each request's post-first interval. It accounted for 73.71 of 90.32 seconds and 71.34 of 86.95 seconds (81.6% and 82.0%). In the same intervals, worker time from receipt of the request header to candidate selection accounted for 16.1% and 16.0%. These measurements prioritize target verification cost for this workload.
 
 A four-request screening run changed the eight-position Q8 row projection from two output rows per SIMD group to four on aligned shapes. All four reference sequences matched. Across 164 verification graphs, median GPU duration was 90.05 ms compared with 91.94 and 87.61 ms on the matching first four requests of the two control runs. This result supports retaining the existing two-row kernel.
+
+## Compile-time unrolling for two-token down projections
+
+In the verification blocks used above, one selected expert served one token in 771 cases, two in 328, three in 153 and four in 102. A test build specialized the two-token outer loop and the one-token remainder of the down projection into separate compile-time loops. Independent 20-request runs produced all correct token sequences, with the full pack locked in every process:
+
+| Build | Median GPU per verification graph (ms) | Max GPU per graph (ms) | Native P95 (s) | Decode tokens/s |
+|---|---:|---:|---:|---:|
+| Existing control | 86.93 | 111.89 | 7.73 | 63.54 |
+| Specialized loop | 85.11 | 106.02 | 9.57 | 59.70 |
+| Specialized loop, fresh launch | 93.83 | 114.92 | 10.55 | 54.11 |
+
+The earlier full-pack controls had medians of 87.96 and 85.71 ms. Combined footprint peaks were 13.26–13.34 GB. The result gives no basis for adopting the specialized loop. Retain the existing implementation.
