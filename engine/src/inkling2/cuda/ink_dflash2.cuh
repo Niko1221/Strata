@@ -151,7 +151,7 @@ struct InkDFlash2 {
         const int V_u = (m.unembed_screen.V_pad > 0) ? m.unembed_screen.V_pad : V;
         V_gemm = V_u & ~3;   // the int8 tensor-core GEMM wants multiples of 4: the last <= 3 vocabulary rows (never drafted) are left out of the candidates
         f32 = m.sm_cc < 80;
-        screen_cublas = m.sm_cc >= 61;   // the cuBLAS INT8 GEMM exists from sm_61; sm_60 (P100) has the dp4a kernel
+        screen_cublas = m.sm_cc >= 61 && m.sm_cc != 70;   // the cuBLAS INT8 GEMM exists from sm_61; sm_60 (P100, emulated dp4a) and sm_70 (V100: hardware dp4a, the kernel is 0.4 ms a draft faster than the cuBLAS INT8 GEMM) run the dp4a kernel
         if (const char* e = std::getenv("STRATA_INK_DFLASH2_SCREEN")) {   // for the A/B of the two screens (the cuBLAS INT8 GEMM wants sm_61 or newer)
             if (std::string(e) == "kernel") screen_cublas = false;
             else if (std::string(e) == "cublas" && m.sm_cc >= 61) screen_cublas = true;

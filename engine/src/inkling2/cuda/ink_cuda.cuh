@@ -393,10 +393,10 @@ __device__ __forceinline__ float situ_f32(float g, float u) {
     return ga * ua;
 }
 
-// Hardware dp4a.s32.s32 exists ONLY on sm_61 (Pascal GP102/104/106) and sm_75+ (Turing..Blackwell).
-// On sm_60 (P100) and sm_70 (V100), PTX dp4a is software-emulated; use single-instruction PRMT.S4E + IMAD!
+// Hardware dp4a (SASS IDP.4A.S8.S8) exists on sm_61 (Pascal GP102/104/106), sm_70 (Volta: measured on a V100, cuobjdump shows IDP.4A and __dp4a runs 2.1x faster than the four-multiply form) and
+// sm_75+ (Turing..Blackwell). Only sm_60 (P100) has none: there the exact integer emulation below runs.
 __device__ __forceinline__ int32_t dp4a_i8(uint32_t a, uint32_t b, int32_t c) {
-#if defined(__CUDA_ARCH__) && ((__CUDA_ARCH__ == 610) || (__CUDA_ARCH__ >= 750))
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 610)
     return __dp4a((int)a, (int)b, c);
 #else
     const int32_t a0 = (int32_t)(int8_t)(a),        b0 = (int32_t)(int8_t)(b);
