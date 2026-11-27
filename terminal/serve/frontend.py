@@ -1439,6 +1439,35 @@ def function_end(text: str) -> int:
 _JSON_FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n\s*", re.I)
 
 
+_STRING_ENDS = re.compile(r'\s*(?:\Z|[:}\]]|,\s*(?:["{\[\-0-9]|true\b|false\b|null\b))')
+
+
+def requote_json(text: str) -> str:
+    """`text` with the double quotes a model left unescaped inside its JSON strings escaped (`{"message": "it says "aborted"
+    again"}`).  Inside a string a `"` closes it only where JSON can go on after a string: before `:`, `}`, `]`, the end of
+    the text, or a `,` that the next member or element follows (`"`, `{`, `[`, a digit, `-`, true/false/null); any other
+    `"` is text.  Only for text json.loads has refused; the caller parses the result again and drops it if that fails too."""
+    out, i, n, inside = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if not inside:
+            inside = c == '"'
+            out.append(c)
+        elif c == "\\":
+            out.append(text[i:i + 2])
+            i += 1
+        elif c == '"':
+            if _STRING_ENDS.match(text, i + 1):
+                inside = False
+                out.append(c)
+            else:
+                out.append('\\"')
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     """`{"name": N, "arguments": {...}}` (or "parameters", or the arguments as a JSON string) of a declared tool -> its
     call; anything else -> None.  #2037: the object may sit in a Markdown fence (```json ... ```)."""
@@ -1450,7 +1479,10 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     try:
         obj = json.loads(body)
     except ValueError:
-        return None
+        try:                                    # a `"` the model left unescaped inside a string argument
+            obj = json.loads(requote_json(body), strict=False)
+        except ValueError:
+            return None
     if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or obj["name"] not in schemas:
         return None
     args = obj.get("arguments", obj.get("parameters", {}))

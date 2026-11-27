@@ -71,7 +71,11 @@ def _parse_tool_body(header_name: str, body: str, kind: str, *, truncated: bool 
                 try:
                     obj = json.loads(m.group(0))
                 except ValueError:
-                    obj = None
+                    try:                        # a `"` left unescaped inside a string argument
+                        from serve import frontend
+                        obj = json.loads(frontend.requote_json(m.group(0)), strict=False)
+                    except ValueError:
+                        obj = None
         if isinstance(obj, dict):
             name = str(obj.get("name") or fallback_name).strip()
             args = obj.get("args") if "args" in obj else obj.get("arguments")

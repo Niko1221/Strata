@@ -42,6 +42,28 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual("".join(ev.text for ev in events if ev.kind == "reasoning"), "Let me check 2 + 2 = 4.")
         self.assertEqual("".join(ev.text for ev in events if ev.kind == "content"), "The answer is 4.")
 
+    def test_unescaped_quotes_in_an_argument_still_make_the_call(self):
+        tools = [{"name": "send_message", "parameters": {"type": "object"}}]
+        msg = 'My tools fail with repeated "aborted" errors, so I can\'t read "a.txt", or b. Paste them?'
+        body = '{"name": "send_message", "arguments": {"message": "' + msg + '"}}'
+        for raw in ("<|message_model|><|content_text|><tool_call> " + body + " </tool_call><|end_message|>",
+                    "<|message_model|>send_message<|content_invoke_tool_json|>" + body + "<|end_message|>"):
+            for stream in (False, True):
+                p = frontend.InklingOutputParser(tools=tools, stream_tools=stream)
+                events = [ev for ch in raw for ev in p.feed(ch)] + p.finish()
+                calls = [ev.call for ev in events if ev.kind == "tool_call"]
+                self.assertEqual([(c.name, c.arguments) for c in calls], [("send_message", {"message": msg})], raw[:60])
+                self.assertEqual("".join(ev.text or "" for ev in events if ev.kind == "content").strip(), "")
+
+    def test_requote_json_leaves_what_it_cannot_read(self):
+        self.assertEqual(json.loads(frontend.requote_json('{"a": "x "y" z", "b": [1, "p"]}')), {"a": 'x "y" z', "b": [1, "p"]})
+        self.assertEqual(json.loads(frontend.requote_json('{"a": "say \\"hi\\" and "bye""}')), {"a": 'say "hi" and "bye"'})
+        tools = [{"name": "send_message", "parameters": {"type": "object"}}]
+        raw = '<|message_model|><|content_text|><tool_call> {"name": "send_message", "arguments": {"message": "cut <|end_message|>'
+        p = frontend.InklingOutputParser(tools=tools)
+        events = [ev for ch in raw for ev in p.feed(ch)] + p.finish()
+        self.assertEqual([ev for ev in events if ev.kind == "tool_call"], [])
+
     def test_call_is_streamed_while_it_is_written(self):
         tools = [{"name": "write_file", "parameters": {"type": "object"}}]
         args = {"path": "a.py", "content": 'x = "}{" # </tool_call> <b>\n' * 40, "n": 3}
