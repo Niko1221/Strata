@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../../image/vae/safetensors_lite.hpp"
+#include "../ink_dflash2_mix.h"
 #include "ink_sy_codecs.h"
 #include "ink_sy_common.h"
 #include "ink_sy_intelarc_cfg.h"
@@ -771,12 +772,43 @@ struct InkSyDFlash2 {
         };
 
         auto load_q8 = [&](const std::string& name, int N, int K) -> uint8_t* {
-            const auto* t = find_t(name);
-            if (!t) return nullptr;
-            const unsigned char* raw = blob.get() + t->begin;
             const size_t ne = (size_t)N * K;
             std::vector<uint16_t> bf;
             const uint16_t* bf_ptr = nullptr;
+            // the pre-quantized file ("strata-dflash2-q1" mix): NAME.q / NAME.s (/ NAME.o) instead of NAME
+            if (sf.tensors.find(name + ".q") != sf.tensors.end()) {
+                const auto* tq = find_t(name + ".q");
+                const auto* ts = tq ? find_t(name + ".s") : nullptr;
+                if (!tq || !ts) return nullptr;
+                const unsigned char* rq = blob.get() + tq->begin;
+                const unsigned char* rs = blob.get() + ts->begin;
+                if (tq->dtype == "I8" && ts->dtype == "F32" && (size_t)(tq->end - tq->begin) == ne && (size_t)(ts->end - ts->begin) == (size_t)N * 4) {
+                    std::vector<uint8_t> q8((size_t)N * 4 + ne);
+                    std::memcpy(q8.data(), rs, (size_t)N * 4);
+                    std::memcpy(q8.data() + (size_t)N * 4, rq, ne);
+                    uint8_t* d = track_dalloc<uint8_t>(q8.size());
+                    h2d_sync(d, q8.data(), q8.size());
+                    return d;
+                }
+                const auto* to = find_t(name + ".o");
+                if (!to) return nullptr;
+                if (!(tq->dtype == "U8" && ts->dtype == "U8" && to->dtype == "F32" && (size_t)(tq->end - tq->begin) == ne / 2 &&
+                      (size_t)(ts->end - ts->begin) == ne / 16 && (size_t)(to->end - to->begin) == 4 && K % 16 == 0)) {
+                    err = "dflash2 unsupported pre-quantized tensor " + name;
+                    return nullptr;
+                }
+                float outer; std::memcpy(&outer, blob.get() + to->begin, 4);
+                bf.resize(ne);
+                ink2::df2mix::sf4_to_bf16(rq, rs, outer, N, K, bf.data());
+                bf_ptr = bf.data();
+                std::vector<uint8_t> q8 = quantize_bf16_to_q8row(bf_ptr, N, K);
+                uint8_t* d = track_dalloc<uint8_t>(q8.size());
+                h2d_sync(d, q8.data(), q8.size());
+                return d;
+            }
+            const auto* t = find_t(name);
+            if (!t) return nullptr;
+            const unsigned char* raw = blob.get() + t->begin;
             if (t->dtype == "BF16" && (size_t)(t->end - t->begin) >= ne * 2) {
                 bf_ptr = reinterpret_cast<const uint16_t*>(raw);
             } else {

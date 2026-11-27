@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ink_metal_common.h"
+#include "../ink_dflash2_mix.h"
 #include "../cuda/ink_dflash2_path.cuh"
 #include "../../image/vae/safetensors_lite.hpp"
 
@@ -213,6 +214,47 @@ struct InkMetalDFlash2 {
 
         mtl::Buffer b_tmp = cx->alloc((size_t)kFF * kHidden * 2);
         auto up_q8 = [&](const std::string& name, int N, int K, mtl::Buffer& bq, mtl::Buffer& bs) -> bool {
+            // the pre-quantized file ("strata-dflash2-q1" mix): NAME.q / NAME.s (/ NAME.o) instead of NAME (see ../ink_dflash2_mix.h)
+            auto itq = st.tensors.find(name + ".q");
+            if (itq != st.tensors.end()) {
+                auto its = st.tensors.find(name + ".s");
+                if (its == st.tensors.end()) { err = "dflash2 missing tensor: " + name + ".s"; return false; }
+                const size_t ne = (size_t)N * K;
+                const size_t hq = (size_t)(itq->second.end - itq->second.begin), hs = (size_t)(its->second.end - its->second.begin);
+                if (itq->second.dtype == "I8" && its->second.dtype == "F32" && hq == ne && hs == (size_t)N * 4) {
+                    bq = alloc_w(ne);
+                    bs = alloc_w((size_t)N * 4);
+                    std::string e = strata::image::st_read_tensor(path, st, itq->second, host);
+                    if (!e.empty()) { err = "dflash2 read " + name + ".q: " + e; return false; }
+                    std::memcpy(bq.ptr, host.data(), ne);
+                    e = strata::image::st_read_tensor(path, st, its->second, host);
+                    if (!e.empty()) { err = "dflash2 read " + name + ".s: " + e; return false; }
+                    std::memcpy(bs.ptr, host.data(), (size_t)N * 4);
+                    return true;
+                }
+                auto ito = st.tensors.find(name + ".o");
+                if (!(itq->second.dtype == "U8" && its->second.dtype == "U8" && ito != st.tensors.end() && ito->second.dtype == "F32" &&
+                      hq == ne / 2 && hs == ne / 16 && (size_t)(ito->second.end - ito->second.begin) == 4 && K % 16 == 0)) {
+                    err = "dflash2 unsupported pre-quantized tensor " + name;
+                    return false;
+                }
+                std::vector<unsigned char> hq_buf, hs_buf, ho_buf;
+                std::string e = strata::image::st_read_tensor(path, st, itq->second, hq_buf);
+                if (e.empty()) e = strata::image::st_read_tensor(path, st, its->second, hs_buf);
+                if (e.empty()) e = strata::image::st_read_tensor(path, st, ito->second, ho_buf);
+                if (!e.empty()) { err = "dflash2 read " + name + ": " + e; return false; }
+                float outer; std::memcpy(&outer, ho_buf.data(), 4);
+                ink2::df2mix::sf4_to_bf16(hq_buf.data(), hs_buf.data(), outer, N, K, reinterpret_cast<uint16_t*>(b_tmp.ptr));
+                bq = alloc_w(ne);
+                bs = alloc_w((size_t)N * 4);
+                mtl::Dispatch d;
+                d.p = &p_bf16_to_q8;
+                d.grid[0] = (uint32_t)N;
+                d.tg[0] = 256;
+                d.args = {mtl::Arg::B(b_tmp), mtl::Arg::B(bq), mtl::Arg::B(bs), mtl::Arg::V(N), mtl::Arg::V(K)};
+                cx->run({d});
+                return true;
+            }
             if (!get_bf16(name, (size_t)N * K)) return false;
             bq = alloc_w((size_t)N * K);
             bs = alloc_w((size_t)N * 4);
