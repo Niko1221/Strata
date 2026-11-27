@@ -8598,9 +8598,25 @@ def make_handler(svc: Service):
         def _completions(self, req):
             """OpenAI legacy text completions over a caller-tokenized prompt (no chat template)."""
             req = svc.with_shared(req, "openai")
-            prompt = req.get("prompt")
-            if not isinstance(prompt, str):
-                raise ValueError("prompt must be a string")
+            prompt, ids = req.get("prompt"), None
+            if isinstance(prompt, list) and len(prompt) == 1 and isinstance(prompt[0], list):
+                prompt = prompt[0]                      # one prompt in the batch form, [[ids]]
+            if isinstance(prompt, list):
+                # token ids, as OpenAI, vLLM and llama.cpp take them: a client that renders and tokenizes its own
+                # prompt sends exactly the ids the engine reads, so message text it tokenized as plain text stays text
+                if not prompt or not all(type(t) is int and t >= 0 for t in prompt):
+                    raise ValueError("prompt must be a string or a non-empty list of token ids")
+                n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+                bad = [t for t in prompt if n_vocab and t >= n_vocab]
+                if bad:
+                    raise ValueError(f"prompt: token id {bad[0]} is outside the vocabulary (0..{n_vocab - 1})")
+                ids = list(prompt)
+                try:
+                    prompt = svc.tok.decode(ids)        # for echo and the open-thinking check below
+                except (IndexError, ValueError) as e:
+                    raise ValueError(f"prompt: a token id this tokenizer does not have ({e})") from None
+            elif not isinstance(prompt, str):
+                raise ValueError("prompt must be a string or a non-empty list of token ids")
             for key in ("n", "best_of"):
                 value = req.get(key, 1)
                 if value != 1:
@@ -8625,7 +8641,8 @@ def make_handler(svc: Service):
             # Raw clients may be resuming content after an already closed reasoning block.
             thinking = thinking and prompt.rfind("<think>") > prompt.rfind(THINK_END)
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            ids = svc.tok.encode(prompt, parse_special=True)
+            if ids is None:
+                ids = svc.tok.encode(prompt, parse_special=True)
             try:
                 max_new = int(req.get("max_tokens") or 0)
             except (TypeError, ValueError):

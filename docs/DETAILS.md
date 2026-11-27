@@ -491,6 +491,9 @@ must put any desired no-think prefix in their own prompt. This route does not ap
 budget or reasoning recovery. An explicit request `reasoning_budget_tokens` is still supported when the prompt's
 last `<think>` is unclosed; reasoning budgets inherited from Chat settings or sampling defaults are not applied.
 `stop`, `echo`, `max_tokens`, usage and the engine's end-of-turn tokens still work normally.
+`prompt` may also be a list of token ids (or one such list in a batch, `[[...]]`): the engine reads exactly those
+ids, so a client that renders its own prompt and tokenizes message text without special tokens
+(`POST /tokenize` with `"parse_special": false`) keeps that text from opening a turn.
 
 ```python
 from openai import OpenAI

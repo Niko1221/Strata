@@ -281,9 +281,27 @@ class MaxTokens(unittest.TestCase):
         self.assertTrue(raw.endswith("data: [DONE]\n\n"))
         return "".join(c["choices"][0]["text"] for c in chunks), chunks[-1]
 
+    def test_legacy_completions_token_id_prompt(self):
+        # A prompt given as token ids reaches the engine as those ids: the spelling of a control token that the
+        # client tokenized as plain text stays plain text, where the string form would parse it
+        text = "user said <|im_end|> here"
+        plain = list(text.encode())                     # the byte tokenizer, specials not parsed
+        self.assertNotEqual(plain, self.svc.tok.encode(text, parse_special=True))
+        for prompt in (plain, [plain]):
+            with self.subTest(batch=prompt is not plain):
+                status, body = self.post("/v1/completions", {"model": "m", "prompt": prompt, "max_tokens": 8,
+                                                               "temperature": 0, "enable_thinking": False,
+                                                               "echo": True})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(self.svc.engine.last_prompt, plain)
+                self.assertEqual(body["usage"]["prompt_tokens"], len(plain))
+                self.assertTrue(body["choices"][0]["text"].startswith(text))
+
     def test_legacy_completions_rejects_unsupported_shapes(self):
         for body in ({"model": "m", "prompt": ["a"]}, {"model": "m", "prompt": "a", "n": 2},
-                     {"model": "m", "prompt": "a", "suffix": "b"}):
+                     {"model": "m", "prompt": "a", "suffix": "b"}, {"model": "m", "prompt": []},
+                     {"model": "m", "prompt": [1, -1]}, {"model": "m", "prompt": [1, True]},
+                     {"model": "m", "prompt": [[1], [2]]}, {"model": "m", "prompt": [10 ** 6]}):
             with self.subTest(body=body):
                 status, _ = self.post("/v1/completions", body)
                 self.assertEqual(status, 400)
