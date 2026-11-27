@@ -36,16 +36,41 @@ the host threads of the engines (the expert workers) do not compete.  "replica_c
 from __future__ import annotations
 
 import collections
+import contextlib
 import copy
 import os
 import sys
 import threading
 import time
 
+from serve.server_parts.engines import QueueCancelled, QueueWaitExpired
+
 BLOCK = 64                          # tokens per hashed block of a prompt
 LOAD_TOKENS = 3000                  # the cost of one request already running on a replica, in prompt tokens
 INDEX_MAX = 262144                  # block hashes kept (about 17M tokens of prompts)
 HEAL_COOLDOWN_S = 60.0              # a replica that died is started again at most this often
+
+
+
+@contextlib.contextmanager
+def inference_turn(lock, deadline, cancel):
+    def remaining():
+        if cancel is not None and cancel.is_set():
+            raise QueueCancelled("the client disconnected while waiting for the engine")
+        if deadline is None:
+            return 0.25
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+        return min(left, 0.1)
+
+    while not lock.acquire(timeout=remaining()):
+        pass
+    try:
+        remaining()
+        yield
+    finally:
+        lock.release()
 
 
 class ReplicaConfigError(ValueError):
@@ -171,6 +196,8 @@ def shared_arena_plan(cfg: dict, n_replicas: int, *, shm: str = "/dev/shm", plat
         want = str(environ.get("STRATA_REPLICA_SHARED_ARENA", "")).strip().lower() in ("1", "true", "on", "yes")
     if not want or n_replicas < 2:
         return None, ""
+    if cfg.get("arch") == "hy4-flash":
+        return None, "hy4-flash replicas use their own expert placement"
     if platform.startswith("win"):
         # a named pagefile-backed section the engines open by name (src/core/pinned.cu); it lives while any engine holds it
         name = f"Local{chr(92)}strata-replicas-{os.getpid()}"
@@ -575,7 +602,7 @@ class ReplicaEngine:
         self.tl.cur = e
         _ = self.last                                         # the caller's figures exist before this request (#2892)
         produced: list[int] = []
-        held = False
+        turn = contextlib.ExitStack()
         gen = None
         native_before = None
         nonfinite = False
@@ -583,13 +610,9 @@ class ReplicaEngine:
             selected = getattr(cancel, "_strata_replica_selected", None)
             if selected is not None:
                 selected(k)
-            self.router.note(k, ids)
             if not int(getattr(e, "batch", 0) or 0):          # no slots: this replica takes one request at a time
-                lock = self.run_locks[k]
-                while not lock.acquire(timeout=0.25):
-                    if cancel is not None and cancel.is_set():
-                        return
-                held = True
+                turn.enter_context(inference_turn(self.run_locks[k], getattr(cancel, "_strata_queue_deadline", None), cancel))
+            self.router.note(k, ids)
             native_before = e.last
             if embeddings is not None:
                 gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings)
@@ -622,8 +645,7 @@ class ReplicaEngine:
                     if gen is not None and e.last is not native_before:
                         self.tl.last = dict(e.last)
                 finally:
-                    if held:
-                        self.run_locks[k].release()
+                    turn.close()
                     with self.lock:
                         self.inflight[k] -= 1
                     if nonfinite:                       # #879: the engine dropped every cached conversation

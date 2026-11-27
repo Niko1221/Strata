@@ -22,7 +22,7 @@ struct Kv {
     std::string s;
     uint64_t u = 0;
     float f = 0;
-    uint32_t elem = 4;                 ///< arrays: 4 u32 (`arr`) or 8 string (`sarr`)
+    uint32_t elem = 4;                 ///< arrays: 4 u32 or 10 u64 (`arr`), 8 string (`sarr`)
     std::vector<uint64_t> arr;
     std::vector<std::string> sarr;
 };
@@ -39,6 +39,14 @@ inline Kv i32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 5); r.u = v;
 inline Kv u32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 4); r.u = v; return r; }
 inline Kv f32(const std::string& k, float v) { Kv r = make_kv(k, 6); r.f = v; return r; }
 inline Kv u32s(const std::string& k, std::vector<uint64_t> v) { Kv r = make_kv(k, 9); r.arr = std::move(v); return r; }
+/// A u64 array.  The hash multipliers of an Engram table are ~10^14, so writing them through u32s would
+/// truncate them silently and a test built on that would be checking the wrong numbers.
+inline Kv u64s(const std::string& k, std::vector<uint64_t> v) {
+    Kv r = make_kv(k, 9);
+    r.elem = 10;
+    r.arr = std::move(v);
+    return r;
+}
 inline Kv strs(const std::string& k, std::vector<std::string> v) {
     Kv r = make_kv(k, 9);
     r.elem = 8;
@@ -52,6 +60,10 @@ struct Tensor {
     std::vector<uint64_t> shape;   ///< GGUF order: dim 0 varies fastest
     uint32_t type = 0;
     uint8_t seed = 1;              ///< payload byte i is (seed * 131 + i * 7 + i / 4093) & 0xff
+    /// Payload size, when the shape and type do not give a whole-block one. A loader that must REFUSE a
+    /// malformed tensor - a 96-value row declared as a 256-block quant, say - can only be tested against a file
+    /// that holds one, and `write` otherwise computes the size and rejects exactly that case.
+    uint64_t bytes_override = 0;
 };
 
 inline uint8_t pattern(uint8_t seed, uint64_t i) { return (uint8_t) ((seed * 131u + i * 7u + i / 4093u) & 0xffu); }
@@ -90,6 +102,10 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
             put32(4);
             put64(k.arr.size());
             for (uint64_t x : k.arr) put32((uint32_t) x);
+        } else if (k.type == 9 && k.elem == 10) {
+            put32(10);
+            put64(k.arr.size());
+            for (uint64_t x : k.arr) put64(x);
         } else if (k.type == 9 && k.elem == 8) {
             put32(8);
             put64(k.sarr.size());
@@ -103,8 +119,10 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
         strata::TensorInfo info;
         info.shape = t.shape;
         info.type = t.type;
-        const uint64_t n = strata::tensor_payload_bytes(info);
-        if (n == 0) throw std::runtime_error("fixture: " + t.name + " has no whole-block byte count");
+        const uint64_t n = t.bytes_override ? t.bytes_override : strata::tensor_payload_bytes(info);
+        if (n == 0)
+            throw std::runtime_error("fixture: " + t.name + " has no whole-block byte count (set "
+                                     "bytes_override to write it anyway)");
         puts(t.name);
         put32((uint32_t) t.shape.size());
         for (uint64_t d : t.shape) put64(d);

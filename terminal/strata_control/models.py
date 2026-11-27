@@ -163,7 +163,7 @@ def _missing_parts(report: dict) -> list[dict]:
 
 
 def _summary(model_id: str, path: Path, raw: bytes, cfg: dict, report: dict) -> dict:
-    context = _arg(cfg["args"], "--max-context")
+    context = _arg(cfg["args"], "--context" if cfg.get("arch") == "hy4-flash" else "--max-context")
     context_tokens = int(context) if isinstance(context, str) and 1 <= len(context) <= 8 and \
         context.isascii() and context.isdecimal() and 1 <= int(context) <= 16_777_216 else None
     backend = cfg.get("backend")
@@ -973,10 +973,12 @@ def plan_import(raw_path: str) -> dict:
                 continue
             if metadata is None:
                 metadata = inspected
+            elif inspected["architecture"] is not None and inspected["architecture"] != metadata["architecture"]:
+                issues.append(f"{item.name}: unsupported_architecture")
             observed_experts.update(inspected["expert_tensor_types"])
             observed_tensor_count += inspected["tensor_count_scanned"]
             observed_payload += int(inspected.get("payload_bytes_required") or 0)
-            if inspected["architecture"] is not None and inspected["architecture"] not in ("qwen4exp", "qwen35moe", *INKLING_ARCHS):
+            if inspected["architecture"] is not None and inspected["architecture"] not in ("qwen4exp", "qwen35moe", "hy_v4_flash", *INKLING_ARCHS):
                 issues.append(f"{item.name}: unsupported_architecture")
     q36_candidate = None
     inkling_candidate = None
@@ -988,7 +990,7 @@ def plan_import(raw_path: str) -> dict:
             q36_candidate = _qwen36_candidate(shards, issues, notes)       # #5869: Qwen3.6-35B-A3B, the files its engine loads
         elif arch in INKLING_ARCHS and not issues:
             inkling_candidate = _inkling_candidate(shards, total_bytes, observed_experts, observed_tensor_count, model_dir, notes)
-        elif arch != "qwen4exp":
+        elif arch not in ("qwen4exp", "hy_v4_flash"):
             issues.append("unsupported_or_missing_architecture")
         if arch in INKLING_ARCHS:
             if metadata["tokenizer_model"] not in ("gpt2", "bpe", "tiktoken", None) or (
@@ -1020,6 +1022,16 @@ def plan_import(raw_path: str) -> dict:
     elif projectors:
         messages.extend(p["plain"] for p in projectors)
     candidate = q36_candidate or inkling_candidate or (_candidate_selection(shards) if not (metadata and metadata["architecture"] in ("qwen35moe", *INKLING_ARCHS)) else None)
+    if metadata is not None and metadata["architecture"] == "hy_v4_flash":
+        candidate = None
+        if observed_experts and observed_experts <= {"Q4_K", "Q6_K", "Q8_0", "BF16"} and "Q4_K" in observed_experts:
+            candidate = {"family": "hy4-flash", "model": "Q4_K_M", "expected_expert_types": ["Q4_K", "Q6_K", "Q8_0", "BF16"]}
+        # An ADDITIONAL build, not a relaxation: which expert quantizations are accepted is a claim about
+        # which engine implements them, and the IQ2 experts are implemented by the Metal engine only. Naming
+        # IQ2_XXS positively keeps this from widening the Q4_K-family case, which a bare subset test would.
+        elif (sys.platform == "darwin" and observed_experts
+              and observed_experts <= {"Q4_K", "IQ2_XXS", "BF16"} and "IQ2_XXS" in observed_experts):
+            candidate = {"family": "hy4-flash", "model": "IQ2_AH", "expected_expert_types": ["Q4_K", "IQ2_XXS", "BF16"]}
     if candidate is None and metadata is not None and not issues and metadata["architecture"] == "qwen4exp":
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
         if candidate is None:

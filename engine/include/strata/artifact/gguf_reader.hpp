@@ -44,6 +44,7 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -115,6 +116,8 @@ inline const char* ggml_type_name(uint32_t t) {
         return "Q1_0";
     case 42:
         return "Q2_0";
+    case 43:
+        return "F8_E4M3";
     // Agention's llama.cpp fork: the APR trellis expert types (docs/GYRO.md)
     case 143:
         return "PTQ1_0";
@@ -228,6 +231,7 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
         elems = 256;
         bytes = 56;
         return true;
+    case 43:   // F8_E4M3: one OCP FP8 value per byte (hy4-flash Engram table)
     case 24:   // I8: raw bytes (the FP8 PLE table of tools/ple_fp8_pack.py)
         elems = 1;
         bytes = 1;
@@ -442,6 +446,25 @@ public:
         return it == meta_.end() ? nullptr : &it->second;
     }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
+
+    // On POSIX read into the owning pool without faulting the model mapping into RSS.
+    bool pread_at(uint64_t offset, void* dst, std::size_t bytes) const {
+        if (offset > size_ || bytes > size_ - offset) return false;
+#ifdef _WIN32
+        std::memcpy(dst, base_ + offset, bytes);
+#else
+        auto* out = static_cast<uint8_t*>(dst);
+        while (bytes) {
+            const auto n = ::pread(fd_, out, std::min<std::size_t>(bytes, 1u << 30), offset);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) return false;
+            out += n;
+            offset += n;
+            bytes -= n;
+        }
+#endif
+        return true;
+    }
 
 private:
     void open() {
@@ -753,6 +776,73 @@ inline std::string check_architecture_qwen35moe(const GgufFile& g) {
     return {};
 }
 
+/// Require the metadata keys used to construct the hy4-flash geometry.
+inline std::string check_architecture_hy4_flash(const GgufFile& g) {
+    static const char* const nums[] = {
+        "hy_v4_flash.block_count", "hy_v4_flash.embedding_length", "hy_v4_flash.attention.head_count_kv",
+        "hy_v4_flash.leading_dense_block_count", "hy_v4_flash.expert_count", "hy_v4_flash.expert_used_count",
+        "hy_v4_flash.expert_latent_length", "hy_v4_flash.expert_feed_forward_length",
+        "hy_v4_flash.expert_shared_count", "hy_v4_flash.expert_gating_func",
+        "hy_v4_flash.rope.dimension_count", "hy_v4_flash.nextn_predict_layers",
+        "hy_v4_flash.embedding_length_per_layer_input", "hy_v4_flash.ple.ngram_size",
+        "hy_v4_flash.ple.heads_per_ngram",
+    };
+    for (const char* k : nums) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+    }
+    // Read the full per-layer arrays. The metadata preview retains only the first 64 elements.
+    static const char* const arrays[] = {
+        "hy_v4_flash.attention.head_count", "hy_v4_flash.attention.sliding_window_pattern",
+        "hy_v4_flash.attention.indexer.types", "hy_v4_flash.ple.layers", "hy_v4_flash.ple.head_offsets",
+        "hy_v4_flash.ple.head_vocab_sizes", "hy_v4_flash.ple.layer_multipliers",
+    };
+    for (const char* k : arrays) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (v->type != MetaType::ARRAY) return std::string(k) + " is not an array";
+        if (v->count > v->items.size())
+            return std::string(k) + " has " + std::to_string(v->count) + " entries but this reader keeps " +
+                   std::to_string(v->items.size()) + "; raise the array sample cap in gguf_reader.hpp first";
+    }
+
+    // One attention head count per layer, including the draft block where present.
+    const uint64_t blocks = g.get("hy_v4_flash.block_count")->u;
+    const uint64_t mtp = g.get("hy_v4_flash.nextn_predict_layers")->u;
+    if (mtp >= blocks) return "hy_v4_flash.nextn_predict_layers is not smaller than hy_v4_flash.block_count";
+    const uint64_t columns = (g.get("hy_v4_flash.ple.ngram_size")->u - 1) *
+                             g.get("hy_v4_flash.ple.heads_per_ngram")->u;
+    if (columns == 0)
+        return "hy_v4_flash.ple.ngram_size and .heads_per_ngram give no lookup column (a hash needs a token, at "
+               "least one predecessor and at least one head)";
+    const uint64_t tables = g.get("hy_v4_flash.ple.layers")->count;
+    const struct {
+        const char* key;
+        uint64_t want;
+    } lengths[] = {
+        // Per block, the draft block included: its attention kind and head count.
+        {"hy_v4_flash.attention.head_count", blocks},
+        {"hy_v4_flash.attention.sliding_window_pattern", blocks},
+        // Compressed indexer flags cover trunk blocks only.
+        {"hy_v4_flash.attention.indexer.types", blocks - mtp},
+        {"hy_v4_flash.ple.head_vocab_sizes", tables * columns},
+        {"hy_v4_flash.ple.head_offsets", tables * columns},
+        {"hy_v4_flash.ple.layer_multipliers", tables * g.get("hy_v4_flash.ple.ngram_size")->u},
+    };
+    for (const auto& e : lengths)
+        if (g.get(e.key)->count != e.want)
+            return std::string(e.key) + " has " + std::to_string(g.get(e.key)->count) + " entries, not " +
+                   std::to_string(e.want);
+
+    // An Engram table on the MTP block would be a different hash contract (the draft block has no table).
+    for (const MetaValue& layer : g.get("hy_v4_flash.ple.layers")->items)
+        if (layer.u >= blocks - mtp)
+            return "hy_v4_flash.ple.layers names block " + std::to_string(layer.u) + ", past the " +
+                   std::to_string(blocks - mtp) + " trunk blocks";
+    return {};
+}
+
 // ---- the model's geometry from its metadata, and the architecture guard (P1.S2).  The engine runs ONE
 // architecture, qwen4exp.  Its dimensions are read from the file (llama.cpp's key names under the arch prefix)
 // and then checked against the shape the kernels are compiled for (core/geometry.hpp), so a file of another
@@ -933,13 +1023,14 @@ inline std::string geometry_unsupported(const core::ModelGeometry& g) {
 }
 
 /// The architecture guard: "" when the engine can read the model whose metadata shard is `f`.  Qwen3.8-Flash-Next
-/// (qwen4exp) is read and checked against the shape the kernels are compiled for; Qwen3.6-35B-A3B (qwen35moe) must
-/// carry every key its geometry is read from (core::geometry_from_gguf).
+/// (qwen4exp) is read and checked against the shape the kernels are compiled for; Qwen3.6-35B-A3B (qwen35moe) and
+/// hy4-flash (hy_v4_flash) must carry every key their own geometry is read from.
 inline std::string check_architecture(const GgufFile& f) {
     const MetaValue* arch = f.get("general.architecture");
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::Hy4Flash) return check_architecture_hy4_flash(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);

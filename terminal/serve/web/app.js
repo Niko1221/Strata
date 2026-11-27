@@ -661,7 +661,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-gpu", h.gpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
+                  : eng.expert_slots != null ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   // #5457: a card the server cannot read (a Mac has no temperature or power without root and no PCIe link; a Windows AMD card)
   // says so, with the server's own reason, whether or not the GPU has a name
@@ -741,7 +741,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // context fill (#4636): the running request in its parts, else the last one
   renderContext(live, eng, last, on);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  $("slots-text").textContent = eng.expert_slots != null ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
@@ -804,7 +804,7 @@ function renderAbout(eng, hw, st) {
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    ["Experts in VRAM", eng.expert_slots != null ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     // #5080: the MTP line only when the MTP is the drafter (eng.drafting, strata_control/drafting.py engine_info; an engine too old to say had only the MTP)
     ["Speculation", eng.spec && (eng.drafting == null || eng.drafting === "mtp") ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],

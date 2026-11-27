@@ -130,7 +130,11 @@ int main(int argc, char**) {
     // ---- the combine
     struct Cfg { const char* name; int k; bool shared; int out_off; };
     const Cfg cfgs[] = {{"k=10 + shared (float4 kernel)", 10, true, 0}, {"k=10 + shared, output misaligned", 10, true, 1},
-                        {"k=10 without shared", 10, false, 0}, {"k=9 + shared", 9, true, 0}};
+                        {"k=10 without shared", 10, false, 0}, {"k=9 + shared", 9, true, 0},
+                        // The generic weighted reduction supports up to 16 routed experts.
+                        {"k=16 + shared (hy4-flash)", 16, true, 0},
+                        {"k=16 without shared", 16, false, 0},
+                        {"k=15 + shared (the old bound)", 15, true, 0}};
     const int N = 2048;
     for (const Cfg& c : cfgs) {
         int cfg_bad = 0, cases = 0;

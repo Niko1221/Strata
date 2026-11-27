@@ -1857,6 +1857,9 @@ def engine_info(args: list[Any], log_text: str = "", note: str = "") -> dict[str
     """The facts of one engine start for /metrics and the apps: ``drafting`` (mtp | dflash2 | dspark | off) and ``drafting_note`` (plain words, or ""): the one drafter this
     start loads (``--draft dflash2`` without ``--mtp``, ``--draft dspark``, ``--mtp`` without ``--draft``), and why it is not the one asked for. The engine's own log wins over the choice."""
     items = [str(a) for a in args]
+    if ("--draft", "dfly") in zip(items, items[1:]):
+        disabled = ("--draft-max", "0") in zip(items, items[1:])
+        return {"drafting": "off" if disabled else "dfly", "drafting_note": ""}
     asked_dflash2 = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dflash2" for i in range(len(items)))
     asked_dspark = any(items[i] == "--draft" and i + 1 < len(items) and items[i + 1] == "dspark" for i in range(len(items)))
     fell_back = fallback_note(log_text) if asked_dflash2 else ""

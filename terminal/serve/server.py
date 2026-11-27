@@ -316,9 +316,11 @@ from serve.server_parts.openai_api import (  # noqa: F401  (moved unchanged, fil
 from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_END, ChatTemplate, Event, OutputParser,  # noqa: E402
                             parser_for_template, anthropic_to_messages, anthropic_tools,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
-                            tool_choice_of, unmark_think_literals)
+                            tool_choice_of, unmark_think_literals, thinking_enabled)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
 from serve import appendlog  # noqa: E402
+from serve.replicas import inference_turn
+from serve.hy4_flash_pictures import Hy4FlashPictures
 from serve import runconfig  # noqa: E402
 from serve import expert_heat  # noqa: E402
 from serve import commit_limit  # noqa: E402
@@ -769,7 +771,8 @@ class StrataEngine:
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
         self.ended, self.unloaded = True, True
-        self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
+        ctx_flag = "--max-context" if "--max-context" in args else "--context"
+        self.max_context = int(args[args.index(ctx_flag) + 1]) if ctx_flag in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_hold = False            # the engine takes GEN hold=N:ID (READY <ctx> ... hold)
         self.can_hold_batch = False      # ... and its --batch slots end at the hold too, BDONE hold (READY ... holdb)
@@ -852,9 +855,7 @@ class StrataEngine:
             if line is None:
                 break
             if line.startswith("INFO "):
-                for kv in line.split()[1:]:
-                    k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                self._update_info(line)
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])
@@ -1012,6 +1013,13 @@ class StrataEngine:
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
 
+    def _update_info(self, line):
+        fields = {}
+        for kv in line.split()[1:]:
+            k, _, v = kv.partition("=")
+            fields[k] = int(v) if v.lstrip("-").isdigit() else v
+        self.info.update(fields)
+
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
@@ -1038,6 +1046,10 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("INFO expert_slots="):
+                if self.proc is proc:
+                    self._update_info(line)
+                continue
             if line.startswith("BSTAT"):
                 sample = parse_batch_window_sample(line)
                 if sample is not None and self.proc is proc:
@@ -1325,6 +1337,10 @@ class StrataEngine:
     @staticmethod
     def sampling_keys(sampling: dict, *, hy4: bool = False, inkling: bool = False) -> str:
         keys = ""
+        raw = sampling.get("_hy4_flash_raw")
+        if raw is not None:
+            reuse, ignore = raw
+            keys += f" temperature=0 cache_prompt={int(reuse)} ignore_eos={int(ignore)}"
         t = sampling.get("temperature")
         if isinstance(t, (int, float)) and float(t) > 0.0:
             keys += f" temperature={float(t)!r}"
@@ -3549,6 +3565,10 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     mine = user_args.capture(cfg)
     if mine:
         args = user_args.merge(args, mine)
+    if cfg.get("arch") == "hy4-flash":
+        if cfg.get("parallel", 1) != 1 or cfg.get("vision") or len(gpu_list(cfg)) > 1:
+            raise ValueError("hy4-flash supports one GPU, one inference slot and text only.")
+        return args
     # "drafting": auto | mtp | dflash2 | off (strata_control/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
     # guesses ahead. ONE drafter per run: DFlash2 alone (no --mtp, --draft-fallback none) or the MTP alone (no DFlash2 option). Auto is DFlash2 where the engine
     # has it, on one card and on a layer split over several cards. A choice that cannot be applied (no drafter file yet, several requests at once) starts the other one if it is on this computer,
@@ -4148,6 +4168,7 @@ class Service:
             self.literals = literal_tags(list(getattr(tokenizer, "control_tokens", ())) + inkling_kind.literal_tags(tokenizer))
         self.family = None                            # the model family: set_family() below (None: the Qwen form)
         self.parser_cls = parser_for_template(getattr(template, "source", None))   # reads the model's output (reasoning, content, tool calls): by the template's tool-call form
+        self.think_end = THINK_END
         # #567: a prompt re-encodes only what follows the last special token it shares with a recent prompt (the
         # same ids as a full encode: tools/strata_tokenizer.py PromptEncoder).  Tokenizers without resume points
         # encode in full.
@@ -4163,6 +4184,26 @@ class Service:
     def set_family(self, family: str | None) -> None:
         """The model family (None: the Qwen form this server was written for)."""
         self.family = family
+        if family == "hy4-flash":
+            # hy4-flash writes `<think:TK>` and `<tool_call:TK>NAME<arg_key:TK>...`, and TK is set by the TEMPLATE
+            # (`{%- set HYTK = ':6124c78e' %}`) rather than by the grammar - so it is read from the template
+            # this service renders with, which is also the one the model saw. See serve/hytk.py.
+            from serve import hytk
+            suffix = hytk.suffix_from_template(getattr(self.template, "source", "") or "")
+            if suffix is None:
+                print("[strata] this pack's chat template does not look like hy4-flash's (no HYTK and no <arg_key>); "
+                      "tool calls and the thinking split will not be parsed", flush=True)
+            else:
+                hytk.configure(suffix)
+                self.think_end = hytk.Markers(suffix).think_close
+                self.parser_cls = hytk.HyOutputParser
+                self._force_text = hytk.to_hy_force
+                print(f"[strata] hy4-flash markers: suffix {suffix!r} (read from the chat template)", flush=True)
+            # The turn ends on the template's own hy_end, which is this model's eos. Named here rather than
+            # left to end_token_ids, which looks for Qwen's <|im_end|> and would not find one.
+            eos = (getattr(self.tok, "special_ids", None) or {}).get("eos", None)
+            if eos is not None:
+                self.stop_ids = {int(eos)}
         import serve.frontend as _frontend
         _frontend.use_family(family)
 
@@ -4246,29 +4287,6 @@ class Service:
                 if active:
                     self.client_disconnect_cancels += 1
 
-    @contextlib.contextmanager
-    def _inference_fifo(self, deadline: float | None, cancel: threading.Event | None = None):
-        if deadline is None:
-            with self.fifo:
-                yield
-            return
-        while True:
-            if cancel is not None and cancel.is_set():
-                raise QueueCancelled("the client disconnected while waiting for the engine")
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-            if self.fifo.acquire(timeout=min(0.1, left)):
-                break
-        try:
-            if cancel is not None and cancel.is_set():
-                raise QueueCancelled("the client disconnected while waiting for the engine")
-            if time.monotonic() >= deadline:
-                raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-            yield
-        finally:
-            self.fifo.release()
-
     def begin_drain(self) -> int:
         """Stop new inference admission and return the number of owned calls to drain."""
         with self.admission_changed:
@@ -4301,6 +4319,8 @@ class Service:
         def error(code, message):
             return code, {"error": {"code": code, "message": message,
                                     "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if self.model_arch == "hy4-flash":
+            return error(501, "hy4-flash does not support session files")
         if not self.slot_save_path or not hasattr(self.engine, "session_file"):
             return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
         if getattr(self.engine, "batch", 0):
@@ -5181,7 +5201,7 @@ class Service:
             rendered = self.template.render(inkling_dialect.prepare_messages(messages), tools=tools, **inkling_dialect.template_kwargs(kwargs))
             return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools))
         effort = kwargs.get("reasoning_effort")
-        off = kwargs.get("enable_thinking") is False
+        off = not thinking_enabled(kwargs)
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
             return self.template.render(messages, tools=tools, **kwargs)
         base = {k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
@@ -5293,13 +5313,14 @@ class Service:
                         part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
-        if force and kwargs.get("enable_thinking", True) is False:
+        if force and not thinking_enabled(kwargs):
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
         self.embeddings.hy4 = self._drop_hy4_images(getattr(self.embeddings, "hy4", None))
         self.embeddings.inkling = self._drop_hy4_images(getattr(self.embeddings, "inkling", None))      # an earlier pass of this request left its files: gone first
+        gguf_images = False
         if images and (self.hy4 or self.inkling):                     # Hy4-Flash / Inkling-2-Mini: in-process engine reads pictures directly (INFO images=1)
             kind_mod = inkling_kind if self.inkling else hy4_kind
             if (getattr(self.engine, "info", None) or {}).get("images") != 1:
@@ -5327,6 +5348,10 @@ class Service:
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
+            if isinstance(self.vision, Hy4FlashPictures):
+                ids, self.embeddings.path = self.vision.build(ids, [Vision.load(src) if isinstance(src, str) else src for src in images])
+                images = []
+                gguf_images = True
         if images:
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
@@ -5415,8 +5440,8 @@ class Service:
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or gguf_images)
+        return ids, thinking_enabled(kwargs), max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
@@ -5454,7 +5479,7 @@ class Service:
             """The ids the rendered `msgs` start with (a message's trailing marker cut at PREFIX_END when it is there)."""
             marked, marked_tools, changed = mark_think_literals(msgs, tools, self.literals)
             effort = kwargs.get("reasoning_effort")
-            off = kwargs.get("enable_thinking") is False        # render_prompt's rule for #458's effort_end
+            off = not thinking_enabled(kwargs)                # render_prompt's rule for #458's effort_end
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
                   if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
             kw["add_generation_prompt"] = False
@@ -5753,7 +5778,7 @@ class Service:
                     if not par:
                         self.ensure_loaded()
                     elif not (self.loaded() and not self._vision_down()):
-                        with self._inference_fifo(deadline, cancel):
+                        with inference_turn(self.fifo, deadline, cancel):
                             self.ensure_loaded()
                     with self.status_lock:
                         if par:
@@ -5964,7 +5989,7 @@ class Service:
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            extra = self.tok.encode(REASONING_CLOSE.replace(THINK_END, self.think_end), parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -6039,7 +6064,7 @@ class Service:
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
                             budget = st["thinking_budget"] = None
-                            text = REASONING_WRAP_UP + (force or "")
+                            text = REASONING_WRAP_UP.replace(THINK_END, self.think_end) + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -7354,7 +7379,7 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
-            if path.startswith("/v1/") and self._foreign_page():
+            if (path.startswith("/v1/") or path == "/completion") and self._foreign_page():
                 return
             if path == "/settings":
                 self._settings()
@@ -7395,7 +7420,7 @@ def make_handler(svc: Service):
                 return
             reserved = False
             try:
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/completion", "/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     reserved = svc.reserve_inference()
                     if reserved is None:
                         error = {"type": "server_error", "code": "server_draining",
@@ -7469,6 +7494,7 @@ def make_handler(svc: Service):
                                                                  code="model_not_found")
                                        if path == "/v1/responses" else {"error": model_err})
                             return
+                if path in ("/completion", "/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -7481,6 +7507,8 @@ def make_handler(svc: Service):
                         code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
                                                      "the engine again", "type": "server_error"}}
                     self._json(code, body)
+                elif path == "/completion":
+                    self._hy4_flash_completion(req)
                 elif path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
@@ -7802,6 +7830,51 @@ def make_handler(svc: Service):
                     yield item
             finally:
                 items.close()
+
+        def _hy4_flash_completion(self, req):
+            """Greedy, non-streaming raw hy4-flash completion with native timing counters."""
+            if svc.model_arch != "hy4-flash":
+                self._json(404, {"error": {"message": "raw completion requires hy4-flash"}})
+                return
+            text, count = req.get("prompt"), req.get("n_predict")
+            supported = {"prompt", "n_predict", "temperature", "seed", "ignore_eos", "cache_prompt", "stream"}
+            if set(req) - supported or req.get("stream", False) is not False or req.get("temperature", 0) != 0:
+                raise ValueError("hy4-flash /completion supports non-streaming greedy text generation")
+            if not isinstance(text, str) or type(count) is not int or count < 1:
+                raise ValueError("send a text prompt and a positive integer n_predict")
+            reuse, ignore, seed = req.get("cache_prompt", True), req.get("ignore_eos", False), req.get("seed", 42)
+            if type(reuse) is not bool or type(ignore) is not bool or type(seed) is not int or seed < 0:
+                raise ValueError("invalid cache_prompt, ignore_eos or seed")
+            ids = svc.tok.encode(text, parse_special=True)
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            with svc._turn(cancel):
+                svc.ensure_loaded()
+                engine = svc.engine
+                if not getattr(engine, "info", {}).get("hy4_flash_raw_completion"):
+                    raise ValueError("installed hy4-flash engine lacks raw completion support")
+                if not ids or len(ids) + count > engine.max_context:
+                    raise ValueError("empty prompt or request exceeds engine context")
+                sampling = {"temperature": 0, "seed": seed, "_hy4_flash_raw": (reuse, ignore)}
+                svc.last_request_at = time.time()
+                tokens = [t for t in engine.generate(ids, count, sampling, cancel) if t is not None]
+                last = dict(engine.last)
+                svc.last_request_at = time.time()
+            if last.get("generated") != len(tokens) or last.get("prompt_tokens") != len(ids):
+                raise ValueError("hy4-flash completion token counters disagree")
+            if last["finish"] not in ("length", "stop"):
+                raise ValueError("hy4-flash engine ended with " + last["finish"])
+            timings = request_timings(len(ids), len(tokens), last)
+            steps = max(0, len(tokens) - 1)
+            elapsed = last["decode_ms"]
+            timings["predicted_per_second"] = steps * 1000 / elapsed if elapsed > 0 else 0
+            timings["predicted_per_token_ms"] = elapsed / steps if steps else 0
+            if last["prompt_ms"] > 0:
+                timings["prompt_per_second"] = timings["prompt_n"] * 1000 / last["prompt_ms"]
+            self._json(200, {"content": svc.tok.decode(tokens), "model": engine.model_path,
+                             "tokens_predicted": len(tokens), "tokens_evaluated": len(ids),
+                             "truncated": False, "stop_type": "limit" if last["finish"] == "length" else "eos",
+                             "timings": timings})
 
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
@@ -8413,6 +8486,10 @@ def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bo
                           arena_file=arena)
 
 
+def arch_from_tokenizer(arch, pre):
+    return arch or ("hy4-flash" if pre == "hy_v4" else None)
+
+
 #: AMD (HIP): the rule works there (the HIP reader starts on the first picture, +5.4 s on an R9700, and stops when idle) but is OFF by default: with no shrinking
 #: expert cache on HIP the room has to stay in the reserve, so the engine gets no more slots (R9700, Qwen UD-Q4_K_XL: 7,959 against 7,943 with the reader on the card).
 #: "elastic": true in the vision section asks for it.  Set True if the expert cache can give its room on HIP.
@@ -8853,6 +8930,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
         except ST.UnknownPreTokenizer as e:             # a model with its own splitting rule: stop here, never split with another's
             ap.error(f"the model's tokenizer ({tpath}): {e}")
+    if a.engine == "strata" and not cfg.get("arch") and arch_from_tokenizer(None, tcfg.get("pre")):
+        cfg["arch"] = arch_from_tokenizer(None, tcfg.get("pre"))
+        print(f"[strata] inferred model family {cfg['arch']} from the tokenizer; "
+              f"add \"arch\": \"{cfg['arch']}\" to the config to say it outright", flush=True)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.offline and (hub is not None or cfg.get("before_load") or a.before_load):
         ap.error("--offline requires MCP servers and before_load commands to be disabled in this profile")
@@ -8907,8 +8988,18 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                             env=vision_env(cfg, env), lazy=lazy)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
-        warn_budget_over_ram(engine_args(cfg, announce=False) if "args" in cfg else [])      # #1080
-        note = card_note(cfg, env)
+        from serve import replicas as rp
+        try:
+            groups = rp.gpu_groups(cfg)
+        except rp.ReplicaConfigError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if cfg.get("arch") == "hy4-flash" and groups:
+            devices = [card for group in groups for card in group]
+            if any(len(group) != 1 for group in groups) or len(set(devices)) != len(devices):
+                ap.error("each hy4-flash replica needs one distinct GPU")
+        if not groups:  # start_replicas checks the per-engine budget on its own card group
+            warn_budget_over_ram(engine_args(cfg, announce=False) if "args" in cfg else [])
+        note = None if groups else card_note(cfg, env)
         if note:
             print(note, flush=True)
         arch_line = engine_arch_note(cfg)
@@ -8917,13 +9008,13 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         igpu_line = igpu_split_warning(cfg)
         if igpu_line:
             print(igpu_line, flush=True)
-        if layer_split_of(cfg):
+        if not groups and layer_split_of(cfg):
             try:
                 split = layer_split_value(cfg)          # #644: before the (minutes-long) start
             except ValueError as e:
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
-        elif len(gpu_list(cfg)) > 1:
+        elif not groups and len(gpu_list(cfg)) > 1:
             print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
                   flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
@@ -8940,11 +9031,6 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         try:
             effort_end = effort_end_args(cfg, exe, tok)  # #458
         except ValueError as e:
-            raise SystemExit(f"[strata] config {e}")
-        from serve import replicas as rp
-        try:
-            groups = rp.gpu_groups(cfg)
-        except rp.ReplicaConfigError as e:
             raise SystemExit(f"[strata] config {e}")
         from serve import split as split_mod
         try:
@@ -8978,12 +9064,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
+    if cfg.get("arch") == "hy4-flash" and "--vision-shard" in cfg.get("args", []) and a.engine == "strata":
+        svc.vision = Hy4FlashPictures(tmp_dir=Path(cfg["log"]).parent / "hy4-flash-pictures" if cfg.get("log") else None)
     svc.offline = a.offline
     svc.max_queue = max_queue
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
         svc.model_arch = cfg.get("arch") or "qwen4exp"
-        svc.set_family("hy4" if svc.hy4 else "inkling2" if svc.inkling else None)
+        svc.set_family("hy4" if svc.hy4 else "inkling2" if svc.inkling else "hy4-flash" if svc.model_arch == "hy4-flash" else None)
         if svc.hy4:
             svc._force_text = hy4_dialect.force_text
         elif svc.inkling:

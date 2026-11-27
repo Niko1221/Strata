@@ -38,6 +38,9 @@ namespace strata::core {
 /// What the loader had to DO for a tensor, decided by `tools/pack_index.py` and written into the index
 /// rather than inferred here.  The four cases are distinguishable in the manifest only by combining
 /// `source_type` with `values_fp16`, and getting that combination wrong yields a plausible tensor.
+/// Pack format v4 adds ne2 for three-dimensional tensors. Earlier versions omit it.
+inline constexpr int kPackIndexVersion = 4;
+
 enum class WeightKind : int {
     Verbatim = 0,   ///< quantized planes, or F16 already stored as 2 bytes: copy straight through
     Bf16InF32 = 1,  ///< the pack holds the bf16 value promoted to f32: take the HIGH 16 BITS (exact)
@@ -50,6 +53,9 @@ struct WeightRef {
     uint64_t bytes = 0;
     int64_t ne0 = 0;              ///< the manifest's own shape, ne0 the CONTIGUOUS axis
     int64_t ne1 = 0;
+    /// The third dimension, 0 when there is none (as ne1 is for a 1-D tensor). hy4-flash's MLA keeps kv_b split
+    /// per head, so blk.N.attn_k_b.weight is [192, 512, heads] and a consumer needs the head count from here.
+    int64_t ne2 = 0;
     int64_t elements = 0;
     WeightKind kind = WeightKind::Verbatim;
     /// The canonical-form attributes, valid only for a quantized VERBATIM tensor (`code_bits != 0`).
@@ -125,6 +131,9 @@ public:
     /// to know this before it builds the skip set.
     static bool index_code_bits(const std::string& pack_dir, const std::string& name, int& code_bits,
                                 std::string& err);
+
+    /// Skip shape-only tensors whose quantized data is loaded separately.
+    static bool index_shape_only(const std::string& pack_dir, std::set<std::string>& out, std::string& err);
 
     /// Load every tensor in `<pack_dir>/index.txt` into `arena_base`.
     ///

@@ -218,6 +218,16 @@ int main(int argc, char** argv) {
               "a qwen35moe file without ssm.time_step_rank is refused, naming the key");
     }
     {
+        // Test architecture recognition separately from engine availability.
+        check(strata::model_family_from_arch("hy_v4_flash") == strata::ModelFamily::Hy4Flash,
+              "model_family_from_arch: hy_v4_flash -> Hy4Flash");
+        const std::string e = strata::model_family_not_supported(strata::ModelFamily::Hy4Flash);
+        check(e.find("hy_v4_flash") != std::string::npos && e.find("STRATA_BUILD_HY4_FLASH") != std::string::npos,
+              "its refusal names the architecture and the build flag");
+        check(!strata::model_family_runs(strata::ModelFamily::Hy4Flash),
+              "Flash-Next's engine path does not claim to run it");
+    }
+    {
         // the geometry of the real models, from their metadata values
         const fs::path q36 = d.path / "q36g.gguf", fn = d.path / "fng.gguf";
         fixture::write(q36, metadata("qwen35moe", kQwen36, 248320), {});

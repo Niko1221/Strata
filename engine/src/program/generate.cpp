@@ -170,6 +170,9 @@
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#if defined(STRATA_HAVE_HY4_FLASH)
+#include "strata/hy4flash_gguf/engine.hpp"
+#endif
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
 #endif
@@ -3701,11 +3704,17 @@ int main(int argc, char** argv) {
         }
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
+            // List only families enabled for discovery in this build.
+            std::printf("qwen4exp");
 #if defined(STRATA_HAVE_QWEN35)
-            std::printf("qwen4exp qwen35moe\n");
-#else
-            std::printf("qwen4exp\n");
+            std::printf(" qwen35moe");
 #endif
+#if defined(STRATA_HY4_FLASH_RUNS)
+            // Not STRATA_HAVE_HY4_FLASH: that path is compiled by default but still refuses to run, and this list
+            // is what setup and `strata launch` take as "a model of this family can be downloaded and served".
+            std::printf(" hy_v4_flash");
+#endif
+            std::printf("\n");
             return 0;
         }
         // `strata --geometry`: the name of the model shape the kernels are compiled for (the geometry header's kGeometryName: flash_next for the default build);
@@ -3796,21 +3805,26 @@ int main(int argc, char** argv) {
 #endif
         break;
     }
-#if defined(STRATA_HAVE_QWEN35)
-    // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) runs on its own engine path
-    // (src/qwen35), decided here from the file's header before any of this engine's state exists; every other file
-    // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
+#if defined(STRATA_HAVE_QWEN35) || defined(STRATA_HAVE_HY4_FLASH)
+    // Dispatch models with dedicated engines before entering the Flash-Next path.
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
-        bool qwen35 = false;
+        strata::ModelFamily family = strata::ModelFamily::Unknown;
         try {
+            // A split model carries general.architecture in its first shard only, and the flag may name any
+            // shard, so resolve the set before reading the header.
             const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
-            qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+            family = strata::model_family(meta);
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }
-        if (qwen35) return strata::qwen35::run(argc, argv);
-        break;
+#if defined(STRATA_HAVE_QWEN35)
+        if (family == strata::ModelFamily::Qwen35Moe) return strata::qwen35::run(argc, argv);
+#endif
+#if defined(STRATA_HAVE_HY4_FLASH)
+        if (family == strata::ModelFamily::Hy4Flash) return strata::hy4_flash::run(argc, argv);
+#endif
+        break;   // the first model flag decides; Flash-Next and anything unknown go on into this engine
     }
 #endif
 #if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)

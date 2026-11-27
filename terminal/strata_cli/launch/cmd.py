@@ -84,6 +84,13 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
     g.add_argument("--dsv41-package", metavar="FILE", help=argparse.SUPPRESS)        # DeepSeek (no longer run): accepted, answered in plain words
     g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
+    g.add_argument("--engine-path", metavar="FILE", help="hy4-flash: locally built Strata engine (default: build-local-h20/strata or build/strata)")
+    g.add_argument("--pack-path", metavar="DIR", help="hy4-flash: prepared pack (default: pack beside the GGUF); missing packs are prepared locally")
+    g.add_argument("--expert-vram", type=float, metavar="GiB", help="hy4-flash: resident GPU expert budget")
+    g.add_argument("--resident-experts", action=argparse.BooleanOptionalAction, default=None,
+                   help="hy4-flash: split trunk experts across GPU and RAM (default: full host preload)")
+    g.add_argument("--dfly-model", metavar="GGUF", help="hy4-flash external Q8_0 draft GGUF (selects Dfly)")
+    g.add_argument("--draft-tokens", type=int, metavar="N", help="hy4-flash: MTP guesses 1..7, Dfly 1..5 tokens per verify window (default depends on the card and model)")
     g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
     g.add_argument("--move-data", action="store_true",
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
@@ -98,9 +105,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
-    g.add_argument("--drafting", type=_choice("a drafting setting", S.DRAFTING_MODES), metavar="auto|mtp|dflash2|off",
+    g.add_argument("--drafting", type=_choice("a drafting setting", (*S.DRAFTING_MODES, "dfly")), metavar="auto|mtp|dflash2|dfly|off",
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
-                        "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
+                        "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Hy4-Flash GGUF also accepts dfly with --dfly-model. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
                         "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
     g.add_argument("--draft-vocab", type=_choice("a draft vocabulary", S.DRAFT_VOCAB_MODES), metavar="cjk|en|cyrillic|fr|latin",
                    help="which tokens the drafter may guess: cjk (the default: with Chinese, Japanese and Korean), en (English and code), "
@@ -217,6 +224,18 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     from strata_cli.launch import store
     notices: list[str] = []
     s = store.load(a.preset) if a.preset else S.LaunchSettings()
+    if a.preset and s.family == "hy4-flash" and getattr(a, "resident_experts", None) is not None:
+        s.extra.pop("--expert-host", None)
+    if a.preset and getattr(a, "dfly_model", None):
+        s.mtp = s.drafting = None
+        if not s.dfly_model:
+            s.draft_tokens = None
+    elif s.dfly_model and (a.drafting not in (None, "dfly") or (a.mtp == "on" and a.drafting is None)):
+        s.dfly_model = s.drafting = s.draft_tokens = s.mtp = None
+    for key in ("engine_path", "pack_path", "expert_vram", "resident_experts", "draft_tokens", "dfly_model"):
+        value = getattr(a, key, None)
+        if value is not None:
+            setattr(s, key, value)
     if a.preset:
         s.name = s.name or a.preset
     if a.model_path:
@@ -235,8 +254,10 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.family, s.model = catalog.resolve(a.model, a.family)
         if not a.model_path:
             s.model_path = None
-    elif a.family and s.model:
+    elif a.family:
         s.family = a.family
+        if S.is_hy4_gguf(s) and not s.model:
+            s.model = "Q4_K_M"
     if a.data_dir:
         from strata_control import folders
         found = folders.problem(a.data_dir)
@@ -346,6 +367,19 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     notices: list[S.Notice] = []
     comp = catalog.computer()
     hw = comp.raw
+    if S.is_hy4_gguf(s):
+        from strata_control import hy4_flash
+        hy4_flash.defaults(s, comp, catalog.src)
+    elif s.drafting == "dfly":
+        raise ValueError("--drafting dfly requires --family hy4-flash and --dfly-model GGUF")
+    elif s.resident_experts or any(getattr(s, k) is not None for k in ("engine_path", "pack_path", "expert_vram", "dfly_model")):
+        raise ValueError("--engine-path, --pack-path, --expert-vram, --dfly-model and --resident-experts are currently hy4-flash launch options.")
+    if s.family == "hy4-flash" and not s.model and not s.model_path:
+        from strata_control import hy4_fit
+        cards = comp.usable_gpus
+        unified = bool(hw.get("mac") or any(card.get("unified_gb") for card in cards))
+        s.model = hy4_fit.recommend(comp.main_vram_gb, comp.ram_gb or 0, unified, s.context,
+                                    s.vision not in ("off", "no"))["build"]
     if not (s.family and s.model) and not s.model_path:
         rec = catalog.recommendation(hw)
         if rec.get("model"):
@@ -390,7 +424,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
             elif r.verdict == "tight":
                 words = r.words[len("tight:"):].strip() if r.words.startswith("tight:") else r.words
                 notices.append(S.Notice("warn", f"{r.title} is a tight fit: {words}.", "Close other programs before you start."))
-            if s.vision not in (None, "off") and not r.images:
+            if s.family != "hy4-flash" and s.vision not in (None, "off") and not r.images:
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
             if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
@@ -692,9 +726,10 @@ def running_launches() -> list[dict]:
 
 def _cfg_context(cfg: dict) -> int | None:
     args = [str(x) for x in cfg.get("args") or []]
-    if "--max-context" in args and args.index("--max-context") + 1 < len(args):
+    flag = "--context" if cfg.get("arch") == "hy4-flash" else "--max-context"
+    if flag in args and args.index(flag) + 1 < len(args):
         try:
-            return int(args[args.index("--max-context") + 1])
+            return int(args[args.index(flag) + 1])
         except ValueError:
             return None
     return None
@@ -846,7 +881,7 @@ def run_launch(a: argparse.Namespace) -> int:
             notices.append(S.Notice("warn", backend_note, ""))
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or a.draft_vocab or
+        have_choices = bool(a.preset or a.family or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or a.draft_vocab or
                             getattr(a, "split_engine", None))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
@@ -920,6 +955,9 @@ def run_launch(a: argparse.Namespace) -> int:
                 line = roles_line(s, catalog)
                 if line:
                     _say(f"  cards     {line}")
+                if plan.get("hy4_flash_runtime"):
+                    enabled = [k.removeprefix("STRATA_HY4_FLASH_") for k, v in plan["hy4_flash_runtime"].items() if v == "1"]
+                    _say("  hy4-flash " + (", ".join(enabled) if enabled else "legacy execution"))
                 _say(f"  same as   {S.flags_text(s)}")
                 _say("Nothing was changed.")
             return 0

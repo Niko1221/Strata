@@ -20,6 +20,18 @@ constant int NTOK [[function_constant(0)]];   // tokens of the window (1..8): th
 // 2 = tokens past the first skip the combine (wrong values)
 constant int GEMV_PROBE [[function_constant(9)]];
 constant int gemv_probe = is_function_constant_defined(GEMV_PROBE) ? GEMV_PROBE : 0;
+// Per-head weights in ONE dispatch (hy4-flash's attn_k_b / attn_v_b; function constants 10 / 11 / 12): grid.y is the head,
+// and head h reads W + h * GEMV_HW bytes and x (and s16) + h * GEMV_HX floats, and writes y + h * GEMV_HY floats.
+// Thread group (x, h) then runs exactly the instructions of thread group x of a separate dispatch whose buffers were
+// bound at those offsets - the same row0, the same clamp to n_out, the same unit sequence, lane_sum tree and K-split
+// merge - so the output is bitwise that of the per-head dispatches; only the scheduling changes.  Undefined (every
+// other pipeline): no offset is applied and the kernel is the one it was.  RAW-x formats only: s16 is offset like x,
+// which is right only because those formats never read it (the host enforces this).
+constant uint GEMV_HW [[function_constant(10)]];
+constant uint GEMV_HX [[function_constant(11)]];
+constant uint GEMV_HY [[function_constant(12)]];
+constant bool gemv_heads = is_function_constant_defined(GEMV_HW) && is_function_constant_defined(GEMV_HX) &&
+                           is_function_constant_defined(GEMV_HY);
 
 template <int F, int LPR, int NR, int SG, int KS>
 kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[buffer(1)]],
@@ -27,6 +39,12 @@ kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[b
                  uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                  ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int UNIT = fmt<F>::UNIT, RS = SG / KS, RG = 32 / LPR;
+    if (gemv_heads) {
+        W += ulong(tg.y) * GEMV_HW;
+        xp += ulong(tg.y) * GEMV_HX;
+        s16 += ulong(tg.y) * GEMV_HX;
+        y += ulong(tg.y) * GEMV_HY;
+    }
     threadgroup uint tab[fmt<F>::TAB];
     threadgroup float red[KS > 1 ? KS * RS * RG * NR * 8 : 1];
     load_tab<F>(tab, tid, SG * 32);
@@ -93,7 +111,7 @@ kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[b
 #define GV(F, L, R, S, K) template [[host_name("gemv_" #F "_" #L "_" #R "_" #S "_" #K)]] kernel decltype(gemv<F, L, R, S, K>) gemv<F, L, R, S, K>;
 #define GV_SET(F) GV(F, 32, 1, 4, 1) GV(F, 32, 2, 4, 1) GV(F, 16, 1, 4, 1) GV(F, 16, 2, 4, 1) GV(F, 8, 1, 4, 1) \
                   GV(F, 8, 2, 4, 1) GV(F, 4, 2, 4, 1) GV(F, 4, 1, 4, 1) GV(F, 32, 1, 4, 4) GV(F, 32, 2, 4, 2) \
-                  GV(F, 32, 1, 8, 8) GV(F, 16, 1, 8, 4) GV(F, 32, 1, 8, 2) GV(F, 8, 1, 8, 1)                   GV(F, 1, 1, 4, 1) GV(F, 1, 2, 4, 1) GV(F, 2, 1, 4, 1) GV(F, 2, 2, 4, 1) GV(F, 1, 1, 2, 1) GV(F, 4, 4, 4, 1)
+                  GV(F, 32, 1, 8, 8) GV(F, 16, 1, 8, 4) GV(F, 32, 1, 8, 2) GV(F, 32, 2, 8, 2) GV(F, 8, 1, 8, 1)                   GV(F, 1, 1, 4, 1) GV(F, 1, 2, 4, 1) GV(F, 2, 1, 4, 1) GV(F, 2, 2, 4, 1) GV(F, 1, 1, 2, 1) GV(F, 4, 4, 4, 1)
 #ifndef GEMV_TYPES
 #define GEMV_TYPES GV_SET(T_F32) GV_SET(T_BF16) GV_SET(T_Q8_0) GV_SET(T_Q4_0) GV_SET(T_Q5_0) GV_SET(T_IQ4_NL) GV_SET(T_IQ4_XS) \
                    GV_SET(T_Q2_0) GV_SET(T_IQ3_XXS) GV_SET(T_IQ3_S) GV_SET(T_Q2_K) GV_SET(T_Q3_K) GV_SET(T_Q4_K) GV_SET(T_Q5_K) \
@@ -279,8 +297,8 @@ GVC(T_F32, 32, 1, 4) GVC(T_F32, 32, 1, 8) GVC(T_F32, 16, 1, 4) GVC(T_F32, 32, 2,
 
 // gemv_x: gemv (KS = 1) with the window's prepared x (the format's plane, NTOK rows, and its per-16 sums) staged in
 // threadgroup memory once per threadgroup, so the per-unit x reads of every token come from threadgroup memory
-// instead of L1 (on the M4 the x traffic through L1 - 4 B a weight a token, shared by the rows in a simdgroup - is
-// what a window token costs).  Same tile meaning and the same arithmetic as gemv_<F>_<LPR>_<NR>_<SG>_1: bitwise.
+// instead of L1 (that x traffic - 4 B a weight a token, shared by the rows in a simdgroup - is what a window token
+// costs).  Same tile meaning and the same arithmetic as gemv_<F>_<LPR>_<NR>_<SG>_1: bitwise.
 // Dynamic threadgroup memory 0: 4 * NTOK * (n_in + n_in / 16) bytes.
 template <int F, int LPR, int NR, int SG>
 kernel void gemv_x(device const uchar* W [[buffer(0)]], device const float* xp [[buffer(1)]],

@@ -81,6 +81,13 @@ void silu_inplace(float* x, int64_t n, void* stream);
 /// which); this one does not, and the same `sqrt(cols)`-sized argument applies to getting it wrong.
 void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, float eps, void* stream);
 
+/// Use a full block per row when decode supplies too few rows to saturate the GPU.
+void rms_norm_weighted_wide(float* x, const float* w, int64_t rows, int64_t cols, float eps, void* stream);
+
+/// Reuse the block-per-row normalization with optional weights.
+void rms_norm_block(const float* x, const float* w, float* out, int64_t rows, int64_t cols, float eps,
+                    void* stream);
+
 /// *seq = v in MAPPED PINNED memory - THE DOORBELL.  A KERNEL and not cudaEventRecord, because round 199
 /// found that an event record inside a capture is SILENTLY DROPPED while a kernel is captured normally, and
 /// round 209 measured the host seeing this one's result 0.050 ms into a 39.8 ms graph.

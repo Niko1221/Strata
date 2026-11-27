@@ -208,6 +208,92 @@ int sweep(bool exact, cudaStream_t s, Totals& t) {
     return bad;
 }
 
+/// Compare grouped multi-column output against independent calls on the same inputs.
+int grouped_sweep(cudaStream_t s) {
+    const Case& c = CASES[1];   // Q8_0: the only type the entry covers today, and the one k_b / v_b use
+    const int n_group = 4;
+    int bad = 0;
+    std::printf("\n=== grouped multi-column, %s, %d groups, against per-group single-column calls ===\n",
+                c.name, n_group);
+    const std::size_t wbytes = strata::kernels::native_mmvq_weight_bytes(c.type, c.n_in, c.n_out);
+    const std::size_t qcol = strata::kernels::native_q8_1_bytes(c.n_in, 1);
+    for (int T : WIDTHS) {
+        if (T < 2) continue;
+        const int cols = n_group * T;
+        std::mt19937 rng(777u + (unsigned) T);
+        std::vector<uint8_t> w((std::size_t) n_group * wbytes);
+        for (auto& b : w) b = (uint8_t) (rng() & 0xff);
+        const std::size_t n_blocks = (std::size_t) c.n_out * (std::size_t) (c.n_in / c.block_elems);
+        for (int g = 0; g < n_group; ++g)
+            for (std::size_t k = 0; k < n_blocks; ++k)
+                for (int at : c.scale_at)
+                    if (at >= 0) {
+                        const uint16_t h = sane_half(rng);
+                        std::memcpy(&w[(std::size_t) g * wbytes + k * (std::size_t) c.block_bytes +
+                                       (std::size_t) at], &h, 2);
+                    }
+        std::vector<float> x((std::size_t) cols * c.n_in);
+        std::normal_distribution<float> nd(0.f, 1.f);
+        for (auto& v : x) v = nd(rng);
+
+        void* dw = nullptr; void* xq = nullptr; float* dx = nullptr;
+        float* dmulti = nullptr; float* dsingle = nullptr;
+        const std::size_t ybytes = (std::size_t) cols * c.n_out * 4;
+        if (!ck(cudaMalloc(&dw, w.size()), "malloc w") ||
+            !ck(cudaMalloc(&xq, qcol * (std::size_t) cols), "malloc xq") ||
+            !ck(cudaMalloc(&dx, x.size() * 4), "malloc x") ||
+            !ck(cudaMalloc(&dmulti, ybytes), "malloc multi") ||
+            !ck(cudaMalloc(&dsingle, ybytes), "malloc single")) return 1;
+        if (!ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "copy w") ||
+            !ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "copy x")) return 1;
+        if (!ck(cudaMemset(dmulti, 0xcd, ybytes), "poison multi")) return 1;
+        strata::kernels::quantize_q8_1_rows(dx, cols, c.n_in, xq, s);
+        if (!ck(cudaStreamSynchronize(s), "quantize")) return 1;
+
+        bool took = false;
+        try {
+            took = strata::kernels::native_mmvq_grouped_multi(c.type, dw, wbytes, xq, qcol * (std::size_t) T,
+                                                              dmulti, c.n_in, c.n_out, n_group, T, s,
+                                                              nullptr);
+            for (int g = 0; g < n_group; ++g)
+                for (int j = 0; j < T; ++j)
+                    strata::kernels::native_mmvq(c.type, (const uint8_t*) dw + (std::size_t) g * wbytes,
+                                                 (const uint8_t*) xq + (std::size_t) (g * T + j) * qcol,
+                                                 dsingle + (std::size_t) (g * T + j) * c.n_out,
+                                                 c.n_in, c.n_out, 1, s);
+        } catch (const std::exception& e) {
+            std::printf("%-12s T=%d: %s\n", c.name, T, e.what());
+            return 1;
+        }
+        if (!ck(cudaStreamSynchronize(s), "mmvq")) return 1;
+        if (!took) {
+            // A DECLINE IS A FAILURE HERE, unlike at the call site. The entry promises these widths for
+            // this type, and silently keeping the old path is exactly how an unused optimisation looks.
+            std::printf("%-12s T=%d  DECLINED - the entry refuses a width and type it documents\n",
+                        c.name, T);
+            ++bad;
+            cudaFree(dw); cudaFree(xq); cudaFree(dx); cudaFree(dmulti); cudaFree(dsingle);
+            continue;
+        }
+        std::vector<uint32_t> a((std::size_t) cols * c.n_out), b(a.size());
+        if (!ck(cudaMemcpy(a.data(), dmulti, ybytes, cudaMemcpyDeviceToHost), "read multi") ||
+            !ck(cudaMemcpy(b.data(), dsingle, ybytes, cudaMemcpyDeviceToHost), "read single")) return 1;
+        long long diff = 0, nonfinite = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            float fa, fb;
+            std::memcpy(&fa, &a[i], 4);
+            std::memcpy(&fb, &b[i], 4);
+            if (!std::isfinite(fa) || !std::isfinite(fb)) ++nonfinite;
+            if (a[i] != b[i]) ++diff;
+        }
+        std::printf("%-12s T=%d %10zu compared %10lld differ %6lld non-finite  %s\n", c.name, T, a.size(),
+                    diff, nonfinite, (diff == 0 && nonfinite == 0) ? "ok" : "FAIL");
+        if (diff != 0 || nonfinite != 0) ++bad;
+        cudaFree(dw); cudaFree(xq); cudaFree(dx); cudaFree(dmulti); cudaFree(dsingle);
+    }
+    return bad;
+}
+
 }  // namespace
 
 int main() {
@@ -218,6 +304,7 @@ int main() {
     const int bad = sweep(true, s, on);
     const int bad_off = sweep(false, s, off);
     strata::kernels::native_mmvq_set_multi_exact(true);   // back to the default
+    const int bad_grouped = grouped_sweep(s);
 
     std::printf("\nmulti_exact on:   %lld outputs compared, %lld differ bitwise, %lld non-finite\n",
                 on.checked, on.diff, on.nonfinite);
@@ -234,6 +321,12 @@ int main() {
                     "or did not run, %d case(s) did not run with it off. If they differ, the sentence in "
                     "native_mmvq.hpp does not hold, and neither does the bit-exactness verify.hpp claims.\n",
                     bad, bad_off);
+        return 1;
+    }
+    if (bad_grouped != 0) {
+        std::printf("\nmmvq_multi_parity: FAILED. %d grouped multi-column width(s) differ from per-group "
+                    "single-column calls or were declined. A verify window's per-head projections take that "
+                    "entry, so a difference here is a difference in the window's logits.\n", bad_grouped);
         return 1;
     }
     // THE NEGATIVE CONTROL, asserted where it can see something: past T = 4 the generic layout is a different one,

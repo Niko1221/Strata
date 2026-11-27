@@ -21,6 +21,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_router.hpp"
+#include "strata/kernels/pdl.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cfloat>
@@ -233,6 +234,115 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
+// Rank experts with biased sigmoid scores and combine using the original scores.
+template <int K, bool Pdl, bool Publish = false, bool DeviceEpoch = false>
+__launch_bounds__(256, 1)
+__global__ void route_sigmoid_bias(const float* logits_, const float* __restrict__ bias,
+                                   int32_t* ids_, float* weights_, float scale,
+                                   int n_tok, int n_expert, NativeRouterPublishPlan plan) {
+    if constexpr (Pdl) {
+        pdl_trigger();
+        pdl_wait();
+    }
+    const int tk = blockIdx.x * blockDim.y + threadIdx.y;
+    if (tk >= n_tok) return;
+    const float* STRATA_PDL_RESTRICT logits = logits_ + (size_t) tk * n_expert;
+    int32_t* STRATA_PDL_RESTRICT ids = ids_ + (size_t) tk * K;
+    float* STRATA_PDL_RESTRICT weights = weights_ + (size_t) tk * K;
+    const int lane = threadIdx.x;
+
+    // No lane can contribute more than K winners. Cache its first K candidates
+    // in registers, then retain the best K if a larger router has additional rows.
+    float scores[K];
+    int expert_ids[K];
+#pragma unroll
+    for (int i = 0; i < K; ++i) {
+        const int id = lane + 32 * i;
+        expert_ids[i] = id;
+        scores[i] = id < n_expert ? 1.f / (1.f + expf(-logits[id])) + (bias ? bias[id] : 0.f) : -INFINITY;
+    }
+    for (int64_t id = lane + 32 * K; id < n_expert; id += 32) {
+        const float score = 1.f / (1.f + expf(-logits[id])) + (bias ? bias[id] : 0.f);
+        int worst = 0;
+#pragma unroll
+        for (int i = 1; i < K; ++i)
+            if (scores[i] < scores[worst] || (scores[i] == scores[worst] && expert_ids[i] > expert_ids[worst]))
+                worst = i;
+        if (score > scores[worst]) {
+            scores[worst] = score;
+            expert_ids[worst] = (int) id;
+        }
+    }
+
+    int selected_id = -1;
+    float selected = 0.f, selected_sum = 0.f;
+    for (int rank = 0; rank < K; ++rank) {
+        int slot = 0;
+#pragma unroll
+        for (int i = 1; i < K; ++i)
+            if (scores[i] > scores[slot] || (scores[i] == scores[slot] && expert_ids[i] < expert_ids[slot]))
+                slot = i;
+        float best = scores[slot];
+        int expert = expert_ids[slot];
+#pragma unroll
+        for (int mask = 16; mask; mask >>= 1) {
+            const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
+            const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
+            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+        }
+        float picked = 0.f;
+        if ((expert & 31) == lane) {
+            picked = 1.f / (1.f + expf(-logits[expert]));
+            scores[slot] = -INFINITY;
+            selected_sum += picked;
+        }
+        picked = __shfl_sync(0xffffffffu, picked, expert & 31, 32);
+        if (lane == 0) ids[rank] = expert;
+        if (rank == lane) { selected = picked; selected_id = expert; }
+    }
+    // Sum on each winning expert's lane before the warp reduction, as in the
+    // reference fused router. The selection bias never enters the weights.
+    selected_sum = fmaxf(warp_sum(selected_sum), 6.103515625e-5f);
+    const float inv_sum = __fdividef(1.0f, selected_sum);
+    if (lane < K) weights[lane] = __fmul_rn(__fmul_rn(selected, inv_sum), (scale != 0.0f ? scale : 1.0f));
+    if constexpr (!Publish) return;
+    // T1: only warp0 survives tk>=n_tok. Preserve every operation above and publish only afterwards.
+    // Map/mailbox reads occur after the original PDL wait and route arithmetic, never in a prefetch.
+    uint32_t epoch=0;
+    if(lane==0) {
+        if constexpr(DeviceEpoch) epoch=static_cast<volatile uint32_t*>(plan.device_epoch)[0]+1;
+        else epoch=*plan.request+1;
+    }
+    epoch=__shfl_sync(0xffffffffu,epoch,0);
+    unsigned healthy=lane==0?(*plan.error==0):0;
+    healthy=__shfl_sync(0xffffffffu,healthy,0);
+    int slot=-1;
+    bool valid_slot=true;
+    if(lane<K) {
+        const bool id_ok=selected_id>=0 && selected_id<plan.n_expert && plan.slot_of!=nullptr;
+        const volatile int32_t* map=plan.slot_of;
+        slot=id_ok?map[selected_id]:-1;
+        valid_slot=id_ok && slot>=0 && slot<plan.permanent_slots;
+        plan.host_ids[lane]=selected_id;
+    }
+    const bool fast=healthy && __all_sync(0xffffffffu,valid_slot);
+    if(fast && lane<K) {
+        plan.host_hit[lane]=slot;
+        plan.hit[lane]=slot;
+        plan.miss[lane]=-1;
+    }
+    if(lane==0) {
+        *plan.fast_epoch=fast?epoch:0;
+        if constexpr(DeviceEpoch) {
+            volatile uint32_t* shadow=plan.device_epoch;
+            shadow[0]=epoch;shadow[1]=fast?epoch:0;
+        }
+    }
+    __threadfence_system();
+    __syncwarp(0xffffffffu);
+    if(lane==0)*plan.request=epoch;
+}
+
 bool native_router_topk_supported(int n_expert, int k) { return (n_expert == 512 && k == 10) || (n_expert == 256 && k == 8); }
 void native_router_topk(const float* logits, int32_t* ids, float* weights, int n_expert, int k, int n_tok, void* stream) {
     if (n_expert == 512 && k == 10) {   // Flash-Next: the pinned kernels above, unchanged
@@ -248,6 +358,43 @@ void native_router_topk(const float* logits, int32_t* ids, float* weights, int n
         logits, ids, weights, n_tok);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
+bool native_router_sigmoid_supported(int n_expert, int k) { return k == 16 && n_expert >= k; }
+void native_router_sigmoid(const float* logits, const float* bias, int32_t* ids, float* weights, int n_expert,
+                           int k, int n_tok, float scale, void* stream) {
+    if (!stream || n_tok < 1 || !native_router_sigmoid_supported(n_expert, k) ||
+        !valid(logits, (size_t) n_tok * n_expert * 4) || !valid(ids, (size_t) n_tok * k * 4) ||
+        !valid(weights, (size_t) n_tok * k * 4) || (bias != nullptr && !valid(bias, (size_t) n_expert * 4)) ||
+        overlap(ids, (size_t) n_tok * k * 4, weights, (size_t) n_tok * k * 4))
+        throw std::invalid_argument(
+            "native_router_sigmoid: a stream, a supported (experts, k), aligned buffers and disjoint outputs");
+    launch_pdl_pair(route_sigmoid_bias<16, true>, route_sigmoid_bias<16, false>,
+                    (unsigned) ((n_tok + 7) / 8), dim3(32, 8), 0, static_cast<cudaStream_t>(stream),
+                    logits, bias, ids, weights, scale, n_tok, n_expert, NativeRouterPublishPlan{});
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
+
+void native_router_sigmoid_publish(const float* logits, const float* bias, int32_t* ids,
+                                   float* weights, float scale, const NativeRouterPublishPlan& plan, void* stream) {
+    if(!stream || !native_router_sigmoid_supported(plan.n_expert,16) || plan.permanent_slots<=0 || !plan.request ||
+       !plan.fast_epoch || !plan.error || !plan.host_ids || !plan.host_hit ||
+       !plan.slot_of || !plan.hit || !plan.miss ||
+       !valid(logits,(size_t)plan.n_expert*4) || !valid(ids,16*4) || !valid(weights,16*4) ||
+       (bias!=nullptr && !valid(bias,(size_t)plan.n_expert*4)) || overlap(ids,16*4,weights,16*4))
+        throw std::invalid_argument("native_router_sigmoid_publish: invalid T1 plan/buffers");
+    if(plan.device_epoch)
+        launch_pdl_pair(route_sigmoid_bias<16,true,true,true>,route_sigmoid_bias<16,false,true,true>,
+                        1,dim3(32,8),0,static_cast<cudaStream_t>(stream),
+                        logits,bias,ids,weights,scale,1,plan.n_expert,plan);
+    else
+    launch_pdl_pair(route_sigmoid_bias<16,true,true>,route_sigmoid_bias<16,false,true>,
+                    1,dim3(32,8),0,static_cast<cudaStream_t>(stream),
+                    logits,bias,ids,weights,scale,1,plan.n_expert,plan);
+    const auto error=cudaGetLastError();
+    if(error!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(error));
 }
 
 // STRATA_ROUTE_RESIDENT (EXPERIMENTAL, opt-in, changes the output): residency-biased routing for 512 x 10.

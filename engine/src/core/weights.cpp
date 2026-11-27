@@ -37,6 +37,8 @@ struct IndexRow {
     WeightKind kind = WeightKind::Verbatim;
     uint64_t src_off = 0, src_bytes = 0, dst_off = 0, dst_bytes = 0;
     int64_t ne0 = 0, ne1 = 0;
+    /// Use zero for a missing third dimension.
+    int64_t ne2 = 0;
     int code_bits = 0, code_bias = 0, group_elems = 0, codebook = 0, has_offset = 0;
     uint64_t codes_bytes = 0, scales_bytes = 0, offset_bytes = 0;
     int scales_fp16 = 0;
@@ -122,27 +124,90 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
     return true;
 }
 
-bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string& name, int& code_bits,
-                                  std::string& err) {
+namespace {
+
+/// The index's version from its header line, or 3 when it has none (every index before v4).
+int index_version(std::FILE* f) {
+    char line[1024];
+    const long at = std::ftell(f);
+    int version = 3;
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] != '#') break;
+        int v = 0;
+        if (std::sscanf(line, "# strata pack index v%d", &v) == 1) { version = v; break; }
+    }
+    std::fseek(f, at, SEEK_SET);
+    return version;
+}
+
+/// `name file kind src_off src_bytes dst_off dst_bytes ne0 ne1 [ne2] code_bits` - the leading fields of a row,
+/// which is as far as the callers below need to read. v4 put ne2 between ne1 and code_bits, so a reader that
+/// stops at a fixed column has to know the version or it takes one field for another.
+bool row_head(const char* line, int version, char (&name)[256], int64_t& dst_bytes, int& code_bits) {
+    unsigned long long dummy = 0, dst = 0;
+    long long ne = 0, ne2 = 0;
+    int i1 = 0, i2 = 0, bits = 0;
+    const int want = version >= 4 ? 11 : 10;
+    const int got = version >= 4
+        ? std::sscanf(line, "%255s %d %d %llu %llu %llu %llu %lld %lld %lld %d", name, &i1, &i2, &dummy, &dummy,
+                      &dummy, &dst, &ne, &ne, &ne2, &bits)
+        : std::sscanf(line, "%255s %d %d %llu %llu %llu %llu %lld %lld %d", name, &i1, &i2, &dummy, &dummy,
+                      &dummy, &dst, &ne, &ne, &bits);
+    if (got != want) return false;
+    dst_bytes = (int64_t) dst;
+    code_bits = bits;
+    return true;
+}
+
+}  // namespace
+
+bool WeightTable::index_shape_only(const std::string& pack_dir, std::set<std::string>& out, std::string& err) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "cannot open " + path; return false; }
+    const int version = index_version(f);
+    char line[1024];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
+        char name[256] = {0};
+        int64_t dst_bytes = 0;
+        int bits = 0;
+        if (!row_head(line, version, name, dst_bytes, bits)) continue;
+        // The rows `load` refuses unless the caller skips them: a quantized tensor the pack carries as a shape
+        // only, because the GGUF form is what serves it.
+        if (bits != 0 && dst_bytes == 0) out.insert(name);
+    }
+    std::fclose(f);
+    return true;
+}
+
+namespace {
+
+bool index_code_bits_impl(const std::string& pack_dir, const std::string& name, int& code_bits,
+                          std::string& err) {
+    const std::string path = pack_dir + "/index.txt";
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { err = "cannot open " + path; return false; }
+    const int version = index_version(f);
     char line[1024];
     code_bits = -1;
     while (std::fgets(line, sizeof line, f)) {
         if (line[0] == '#') continue;
         char row[256] = {0};
-        unsigned long long dummy = 0;
-        long long ne = 0;
-        int i1 = 0, i2 = 0, bits = 0;
-        // the first ten fields of the row `load` parses: name file kind src_off src_bytes dst_off dst_bytes ne0 ne1 code_bits
-        if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu %lld %lld %d", row, &i1, &i2, &dummy, &dummy, &dummy,
-                        &dummy, &ne, &ne, &bits) != 10)
-            continue;
+        int64_t dst_bytes = 0;
+        int bits = 0;
+        if (!row_head(line, version, row, dst_bytes, bits)) continue;
         if (name == row) { code_bits = bits; break; }
     }
     std::fclose(f);
     return true;
+}
+
+}  // namespace
+
+bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string& name, int& code_bits,
+                                  std::string& err) {
+    return index_code_bits_impl(pack_dir, name, code_bits, err);
 }
 
 bool WeightTable::read_bf16_host(const std::string& name, std::vector<uint16_t>& out, std::string& err) const {
@@ -181,12 +246,25 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
 
     uint64_t pool = 0;
     int align = 0;
+    // The index's own version, from its first line. v4 adds ne2 after ne1; a v3 file has no such column and its
+    // tensors are all two-dimensional. A version this engine does not know may have columns it would misread,
+    // so it is refused rather than parsed as far as the known ones go - the same rule native_experts.txt uses.
+    int version = 3;
     std::vector<IndexRow> rows;
     char line[1024];
     while (std::fgets(line, sizeof line, idx)) {
         if (line[0] == '#') {
             unsigned long long p = 0;
-            int a = 0, t = 0;
+            int a = 0, t = 0, v = 0;
+            if (std::sscanf(line, "# strata pack index v%d", &v) == 1) {
+                if (v < 3 || v > kPackIndexVersion) {
+                    err = "index.txt is v" + std::to_string(v) + "; this engine reads v3 to v" +
+                          std::to_string(kPackIndexVersion) + " (repack with tools/iq_pack.py)";
+                    std::fclose(idx);
+                    return false;
+                }
+                version = v;
+            }
             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &t) == 3) { pool = p; align = a; }
             continue;
         }
@@ -195,16 +273,25 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         int kind = 0;
         // The format is written by tools/pack_index.py and is space-separated with no quoting; a name with a
         // space in it would break the parse, which is why the parser REFUSES rather than taking what it got.
-        const int n = std::sscanf(line,
-                                  "%255s %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNd64 " %" SCNd64 " %d %d %d %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %d %d",
-                                  name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
-                                  &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
-                                  &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
-                                  &r.scales_fp16, &r.act_kind);
-        if (n != 19) {
+        const int want = version >= 4 ? 20 : 19;
+        const int n = version >= 4
+            ? std::sscanf(line,
+                          "%255s %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNd64 " %" SCNd64 " %" SCNd64 " %d %d %d %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %d %d",
+                          name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+                          &r.ne0, &r.ne1, &r.ne2, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+                          &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+                          &r.scales_fp16, &r.act_kind)
+            : std::sscanf(line,
+                          "%255s %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNd64 " %" SCNd64 " %d %d %d %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %d %d",
+                          name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+                          &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+                          &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+                          &r.scales_fp16, &r.act_kind);
+        if (n != want) {
             // A malformed index line is a WRONG BYTE OFFSET waiting to happen, and a wrong offset decodes to
             // a plausible weight.  Refuse loudly instead of loading the rows that happened to parse.
-            err = "index.txt: could not parse a row (" + std::to_string(n) + " of 19 fields)";
+            err = "index.txt: could not parse a row (" + std::to_string(n) + " of " + std::to_string(want) +
+                  " fields, index v" + std::to_string(version) + ")";
             std::fclose(idx);
             return false;
         }
@@ -280,7 +367,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
             wr.bytes = r.dst_bytes;
             wr.ne0 = r.ne0;
             wr.ne1 = r.ne1;
-            wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+            wr.ne2 = r.ne2;
+            wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1) * (r.ne2 > 0 ? r.ne2 : 1);
             wr.kind = r.kind;
             wr.code_bits = r.code_bits;
             wr.code_bias = r.code_bias;
@@ -350,7 +438,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
             if (r.raw16) c = Conv::Copy;
             else if (r.kind == WeightKind::Bf16InF32) c = Conv::Bf16High;
             else if (r.kind == WeightKind::F16InF32) c = Conv::ToF16;
-            const uint64_t elems = (uint64_t) r.ne0 * (uint64_t) (r.ne1 > 0 ? r.ne1 : 1);
+            const uint64_t elems = (uint64_t) r.ne0 * (uint64_t) (r.ne1 > 0 ? r.ne1 : 1) *
+                               (uint64_t) (r.ne2 > 0 ? r.ne2 : 1);
             if (c != Conv::Copy && (r.src_bytes != elems * 4 || r.dst_bytes != elems * 2)) {
                 // A promoted type is 4 B/elem in and 2 B/elem out, and nothing else.  If those two numbers do
                 // not say so, the shape and the byte counts disagree and the element count this loop would
@@ -476,7 +565,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         wr.bytes = r.dst_bytes;
         wr.ne0 = r.ne0;
         wr.ne1 = r.ne1;
-        wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+        wr.ne2 = r.ne2;
+        wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1) * (r.ne2 > 0 ? r.ne2 : 1);
         wr.kind = r.kind;
         wr.code_bits = r.code_bits;
         wr.code_bias = r.code_bias;

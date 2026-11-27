@@ -60,6 +60,7 @@ UNICODE_TO_BYTE = {v: k for k, v in BYTE_TO_UNICODE.items()}
 # Writing the QWEN3 pattern for `qwen35` looks right, round-trips perfectly, and is wrong: a combining mark
 # is `\p{M}`, so without it the mark gets swallowed into the following punctuation run and a token like `_j`
 # never forms.  It cost 3 strings out of 1875 and only `tokenize_oracle_check` could see it.
+
 QWEN35_PATTERN = (
     r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
     r"|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+"
@@ -75,6 +76,9 @@ QWEN35_PATTERN = (
 # JoyAI and Hunyuan-dense).  UNLIKE the single-pattern families it is a SEQUENCE: each pattern splits the pieces the
 # one before it left (a span a pattern does not match stays a piece of its own), so digits (runs of 1..3) and CJK
 # runs are cut out before the general word / punctuation / whitespace pattern sees the rest.
+# Match exact GGUF pre-tokenizer names. Plain hunyuan uses a different regex.
+DEEPSEEK3_PRES = ("deepseek-v3", "hunyuan-dense", "joyai-llm", "hy_v4")
+
 DEEPSEEK3_PATTERNS = (
     r"\p{N}{1,3}",
     "[一-龥぀-ゟ゠-ヿ]+",
@@ -141,11 +145,11 @@ def pre_tokenizer_kind(pre) -> str | None:
     """The splitting rule `pre` (the GGUF's tokenizer.ggml.pre, or a pack's tokenizer.json "pre") stands for: "qwen35", "qwen2", "deepseek3", "o200k", or
     None for a type this file does not know.  An empty or missing value is the qwen35 default, as it always was."""
     p = "qwen35" if pre is None or pre == "" else str(pre)
-    if p == "qwen35":
+    if p in ("qwen35", "qwen3"):
         return "qwen35"
     if p == "qwen2":
         return "qwen2"
-    if p.startswith("deepseek"):
+    if p.startswith("deepseek") or p in DEEPSEEK3_PRES:
         return "deepseek3"
     if p in O200K_PRES:
         return "o200k"
@@ -164,7 +168,13 @@ class Tokenizer:
             raise UnknownPreTokenizer("This model splits text with a rule Strata doesn't have yet (%r), so it isn't loaded: "
                                       "running it with the wrong rule would change what it reads." % (pre,))
         self.token_types = token_types
-        self.special_ids = special_ids or {}
+        self.special_ids = dict(special_ids or {})
+        # Exported packs and GGUF metadata may keep fully qualified token-id keys.
+        # Both entry points must present the same EOS/BOS contract to the server.
+        for name in ("bos", "eos", "padding"):
+            value = self.special_ids.get(f"tokenizer.ggml.{name}_token_id")
+            if value is not None:
+                self.special_ids.setdefault(name, int(value))
         self.ids = {t: i for i, t in enumerate(tokens)}
         if len(self.ids) != len(tokens):
             raise ValueError("vocabulary has duplicate tokens: %d entries, %d unique"
@@ -195,7 +205,6 @@ class Tokenizer:
         else:
             self._re = regex.compile(QWEN35_PATTERN)
             self._split = self._re.findall
-
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
         #
