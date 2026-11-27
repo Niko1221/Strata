@@ -61,6 +61,7 @@
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/pdl.hpp"
 #include "strata/kernels/ple.hpp"
@@ -2035,13 +2036,41 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // #783 PR-f (stuchapin909): the per-head RMSNorm and the rope in one launch, bit-identical to the pair
                 // (rope_parity check 6); STRATA_NO_NORM_ROPE=1 keeps the two; off on HIP until its parity check passes
                 const bool fuse_nr = native_qsa_enabled() && native_rope_enabled() && native_norm_rope_usable((int) HD, (int) s.n_rot);
-                auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos) {
-                    if (fuse_nr && native_norm_rope_usable(cols, (int) s.n_rot)) {
-                        native_qsa_rms_norm_rope(data, cols, (const float*) norm->data, data, rows, cols, (int) s.n_rot, EPS,
-                                                 rope_scaling(), pos, cs);
-                        return;
+                // Batch slots: a slot's rows rotate by that slot's own image positions (a picture's cells differ per
+                // request). The kernels take the table when they are recorded, so a window that spans slots is recorded
+                // slot by slot, with the same kernel a single request uses: its tokens stay those of the request alone.
+                auto private_positions = [&](int first, int count) {
+                    if (!batch_rec_) return false;
+                    if (mrope_table() != nullptr) return true;
+                    for (int t = 0; t < count; ++t)
+                        if (slot_ss(first + t).mrope != nullptr) return true;
+                    return false;
+                };
+                // fn(first row, rows) once per run of rows of one slot, with that slot's table selected
+                auto by_slot = [&](int first, int count, const auto& fn) {
+                    if (!private_positions(first, count)) { fn(first, count); return; }
+                    for (int t = first; t < first + count;) {
+                        const int from = t;
+                        const SessionState* owner = &slot_ss(from);
+                        while (t < first + count && &slot_ss(t) == owner) ++t;
+                        MropeScope positions(owner->mrope);
+                        fn(from, t - from);
                     }
-                    norm_rope_on(data, norm, rows, cols, pos, cs);
+                };
+                auto norm_rope_s = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos, int first, int count,
+                                       cudaStream_t ns) {
+                    const int per = rows / count;   // rows of one token
+                    by_slot(first, count, [&](int from, int m) {
+                        float* d = data + (size_t) (from - first) * per * cols;
+                        const int32_t* q = pos + (size_t) (from - first) * per;
+                        if (fuse_nr && native_norm_rope_usable(cols, (int) s.n_rot))
+                            native_qsa_rms_norm_rope(d, cols, (const float*) norm->data, d, m * per, cols, (int) s.n_rot, EPS,
+                                                     rope_scaling(), q, ns);
+                        else norm_rope_on(d, norm, m * per, cols, q, ns);
+                    });
+                };
+                auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos, int first, int count) {
+                    norm_rope_s(data, norm, rows, cols, pos, first, count, cs);
                 };
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
                 // the per-token GEMVs / norms / RoPEs / copies of this layer as one launch over the
@@ -2067,12 +2096,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                 (int) (NH * 2 * HD), n, df_side_[0]);
                     copy_rows_strided(qcur_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, (int64_t) n * NH, HD, 2 * HD,
                                       df_side_[0]);
-                    norm_rope_on(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, df_side_[0]);
+                    norm_rope_s(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, tb, n, df_side_[0]);
                     if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, df_side_[0]);   // <Hq, Hk> = <q, k>
                     fork(1);
                     bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID,
                                               IQ * ID, N, IQ * ID, n, df_side_[1]);
-                    norm_rope_on(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, df_side_[1]);
+                    norm_rope_s(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, tb, n, df_side_[1]);
                 }
                 // STRATA_SIDE_MIXER=1 / =2 (fork Eddoursul 34a35db + b063c13): the indexer's key projection,
                 // the tail's snapshot, its keys appended, its query projection, norm and RoPE, the block scores and the
@@ -2080,14 +2109,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // attention's projections; =2 also the queries' chain on a second branch.  Each step below is
                 // the in-line code with its stream as a parameter; with the switch off they run on cs in the same order
                 // as before (STRATA_DF_BRANCH, the same idea for fewer of these steps, is off whenever this is on).
-                auto norm_rope_s = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos, cudaStream_t ns) {
-                    if (fuse_nr && native_norm_rope_usable(cols, (int) s.n_rot)) {
-                        native_qsa_rms_norm_rope(data, cols, (const float*) norm->data, data, rows, cols, (int) s.n_rot, EPS,
-                                                 rope_scaling(), pos, ns);
-                        return;
-                    }
-                    norm_rope_on(data, norm, rows, cols, pos, ns);
-                };
                 auto idx_key = [&](cudaStream_t ns) {
                     if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, ns);
                     else for (int t = tb; t < te; ++t)
@@ -2112,6 +2133,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         for (int t = tb; t < te;) {
                             const int first = t;
                             t = run_end(first, te, slot_runs && !g_no_batch_kv);
+                            // A slot's indexer keys rotate by that slot's own positions (image cells differ per slot).
+                            MropeScope positions(batch_rec_ ? slot_ss(first).mrope : mrope_table());
                             const QsaState& sx = slot_ss(first).qsa_states[qi];
                             const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
                             if (t - first > 1)   // a slot's rows: one launch (slot_runs)
@@ -2129,12 +2152,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (qb) {
                         bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
                                                   N, IQ * ID, n, ns);
-                        norm_rope_s(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, ns);
+                        norm_rope_s(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, tb, n, ns);
                     } else
                         for (int t = tb; t < te; ++t) {
                             float* qx = qidx_ + t * IQ * ID;
                             bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), ns);
-                            norm_rope_s(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH, ns);
+                            norm_rope_s(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH, t, 1, ns);
                         }
                 };
                 // Precompute batch QSA slot groups & mode flags so selection, resolve, and attention can be batched
@@ -2288,27 +2311,31 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                      (int) (NH * 2 * HD), n, ns);
                     if (qb) {
                         if (fuse_nr) {   // the q/gate split reads q straight out of the q|gate rows (stride 2 * HD)
-                            native_qsa_rms_norm_rope(qfull_ + tb * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data,
-                                                     qcur_ + tb * NH * HD, (int) (n * NH), (int) HD, (int) s.n_rot, EPS,
-                                                     rope_scaling(), pos_ + tb * NH, ns);
+                            by_slot(tb, n, [&](int from, int m) {
+                                native_qsa_rms_norm_rope(qfull_ + from * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data,
+                                                         qcur_ + from * NH * HD, (int) (m * NH), (int) HD, (int) s.n_rot, EPS,
+                                                         rope_scaling(), pos_ + from * NH, ns);
+                            });
                         } else {
                             copy_rows_strided(qcur_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, (int64_t) n * NH, HD, 2 * HD, ns);
-                            norm_rope_s(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, ns);
+                            norm_rope_s(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, tb, n, ns);
                         }
                         if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, ns);   // <Hq, Hk> = <q, k>
                     } else {
                         for (int t = tb; t < te; ++t) {
                             float* qc = qcur_ + t * NH * HD;
                             if (fuse_nr) {
-                                native_qsa_rms_norm_rope(qfull_ + t * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data, qc,
-                                                         (int) NH, (int) HD, (int) s.n_rot, EPS, rope_scaling(), pos_ + t * NH, ns);
+                                by_slot(t, 1, [&](int, int) {
+                                    native_qsa_rms_norm_rope(qfull_ + t * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data, qc,
+                                                             (int) NH, (int) HD, (int) s.n_rot, EPS, rope_scaling(), pos_ + t * NH, ns);
+                                });
                             } else {
                                 if (cudaMemcpy2DAsync(qc, (size_t) HD * 4, qfull_ + t * NH * 2 * HD, (size_t) HD * 2 * 4,
                                                       (size_t) HD * 4, (size_t) NH, cudaMemcpyDeviceToDevice, ns) != cudaSuccess) {
                                     err = "verify: the q/gate split failed";
                                     return false;
                                 }
-                                norm_rope_s(qc, wqn, (int) NH, (int) HD, pos_ + t * NH, ns);
+                                norm_rope_s(qc, wqn, (int) NH, (int) HD, pos_ + t * NH, t, 1, ns);
                             }
                             if (st.kv_rot) fwht256_inplace_cuda(qc, NH, ns);   // <Hq, Hk> = <q, k>
                         }
@@ -2337,8 +2364,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 7, grp);
                 mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
                 mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
-                if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
-                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
+                if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV, tb, n);
+                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH, t, 1);
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
                     fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
@@ -4778,6 +4805,7 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                 for (int t = 0; t < S;) {
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
+                    MropeScope positions(slots_[(size_t) rows[first]]->mrope);
                     const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
                     copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS,
                                      TS, cs_);
@@ -4957,6 +4985,7 @@ bool Verifier::capture_deferred(const int* rows, int S, int hbase, std::string& 
                     for (int t = 0; t < S;) {
                         const int first = t;
                         while (t < S && rows[t] == rows[first]) ++t;
+                        MropeScope positions(slots_[(size_t) rows[first]]->mrope);
                         const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
                         copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS, TS, cs_);
                         const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
