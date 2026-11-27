@@ -17085,7 +17085,7 @@
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 1065,
+     "line": 1173,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17283,7 +17283,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MODELS.md:358"
+    "docs/MODELS.md:359"
    ],
    "first_commit": "08536e7d61",
    "first_date": "2026-11-26",
@@ -17304,13 +17304,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 1387,
+     "line": 1496,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 1387,
+     "line": 1496,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17343,7 +17343,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 1447,
+     "line": 1556,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17515,13 +17515,13 @@
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 922,
+     "line": 999,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 1444,
+     "line": 1553,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17613,6 +17613,45 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_DFLASH2_SF4",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1082,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1082,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9e8e44f9de",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "9e8e44f9de",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "bf16 = widen the DFlash 2 file SF4 feed-forward matrices on the host to bf16 (HIP; default runs them as native SF4) (AMD-RDNA32, 11-27).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DFLASH2_SLOTS",
    "backends": [
     "cuda-hip"
@@ -17693,7 +17732,7 @@
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 996,
+     "line": 1073,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17739,7 +17778,7 @@
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
-     "line": 996,
+     "line": 1073,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17756,8 +17795,8 @@
    "first_commit": "7a0d50b15f",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "0b493c7d80",
-   "last_date": "2026-11-26",
+   "last_commit": "9e8e44f9de",
+   "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "DFlash 2 drafter tuning / format switches (weights format, slots, codebook, confidence exponent, profile, dump).",
@@ -19900,7 +19939,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 421,
+     "line": 424,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19936,7 +19975,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 422,
+     "line": 425,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19971,7 +20010,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 421,
+     "line": 424,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -20007,7 +20046,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 422,
+     "line": 425,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -20042,7 +20081,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 421,
+     "line": 424,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -20318,7 +20357,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 422,
+     "line": 425,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -20757,7 +20796,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 462,
+     "line": 465,
      "backend": "cuda",
      "fn": "env_get"
     }
