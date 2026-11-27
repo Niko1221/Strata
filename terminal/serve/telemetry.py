@@ -391,6 +391,7 @@ class _AmdWin:
         self.data = None
         self._stall = 0
         self._sig = None
+        self._bus_gen_max = None   # the highest slot-link generation PMLog's BUS_SPEED reported (see _adl_link)
         if self.lib is not None:
             try:
                 self._setup(index)
@@ -504,7 +505,7 @@ class _AmdWin:
         if d is None:
             self._start_pmlog()
             d = self._read_pmlog()
-        lanes = None
+        lanes = bus = None
         if d is not None:
             def val(sid):
                 s = d.sensors[sid]
@@ -523,6 +524,9 @@ class _AmdWin:
             lim = val(self.adl.S_TOTAL_POWERLIMIT)
             out["power_limit"] = float(lim) if lim else None
             lanes = val(self.adl.S_BUS_LANES)
+            bus = _bus_gen(val(self.adl.S_BUS_SPEED))
+            if bus is not None:
+                self._bus_gen_max = max(bus, self._bus_gen_max or 0)
         used = ctypes.c_int(0)
         if self._call("ADL2_Adapter_DedicatedVRAMUsage_Get", self.ctx, ctypes.c_int(self.adapter), ctypes.byref(used)) == 0 \
                 and used.value > 0:
@@ -534,7 +538,7 @@ class _AmdWin:
         # an integrated Radeon has no PCIe slot: Device Manager still records an internal x16 link for it (Strix Halo: Gen4 x16), which
         # is not a link the Monitor should show
         if not self.integrated:
-            out.update(_adl_link(_dm_link_map().get(self.dev_code or ""), lanes))
+            out.update(_adl_link(_dm_link_map().get(self.dev_code or ""), lanes, bus, self._bus_gen_max))
         self._watch_stall(out)
         return out
 
@@ -560,22 +564,45 @@ def _pick_card(adl_names, index, hip_names):
     return index if 0 <= index < len(adl_names) else None
 
 
-def _adl_link(dm, lanes):
-    """The link fields from Device Manager's (current speed, current width, max speed, max width) of the card and PMLog's
-    BUS_LANES.  PMLog's BUS_SPEED is the GPU's internal bus (power-saved to Gen4 at idle), so the generation is Device
-    Manager's; Device Manager's CurrentLinkWidth reports the slot's capability, so the width is BUS_LANES.  None for a
-    field that cannot be read (an APU's on-die GPU has no PCIe link)."""
+def _bus_gen(value):
+    """PMLog's BUS_SPEED as a PCIe generation: the sensor counts from 0 (0 = Gen1 ... 4 = Gen5).  Measured on an RX 9070 XT in a
+    Gen4 slot (Ryzen 5000 root port): 3 at idle and under load, with the engine's PCIe probe at 28 GB/s (Gen4 x16).  None for no
+    or an implausible value."""
+    if value is None or not 0 <= value <= 5:
+        return None
+    return int(value) + 1
+
+
+def _adl_link(dm, lanes, bus_gen=None, bus_gen_max=None):
+    """The link fields from Device Manager's (current speed, current width, max speed, max width[, behind a switch]) of the card
+    and PMLog's BUS_LANES / BUS_SPEED.  Device Manager's CurrentLinkWidth reports the slot's capability, so the width is BUS_LANES.
+
+    The generation is Device Manager's - unless the card sits behind its own PCIe switch (an RX 9070 XT: the GPU hangs off an
+    on-board downstream port, the switch's upstream port goes to the slot; Device Manager's DeviceType 10 and 9 above the GPU).  Device Manager then reports the GPU's link to that
+    switch, which is the card's own Gen5 whatever slot it is in (an RX 9070 XT in a Gen4 slot read "Gen5 x16"), and Windows
+    records no link speed for the switch ports.  PMLog's BUS_SPEED is the slot link in that case: it is the current
+    generation (it may drop while the card idles, like NVML's), the highest one seen so far is the generation the link
+    reaches, and Device Manager's number stays aside as `pcie_own_gen` (the card's own capability, as on Linux).
+    None for a field that cannot be read (an APU's on-die GPU has no PCIe link)."""
     out = {}
     if dm:
-        cur_speed, _cur_width, max_speed, max_width = dm
+        cur_speed, _cur_width, max_speed, max_width = dm[:4]
+        behind_switch = len(dm) > 4 and bool(dm[4])
         out["pcie_gen"] = cur_speed or None
         out["pcie_gen_max"] = max_speed or None
         out["pcie_width_max"] = max_width or None
+        if behind_switch and bus_gen is not None:
+            reach = bus_gen_max or bus_gen
+            if max_speed:
+                reach = min(reach, max_speed)
+            out["pcie_gen"] = min(bus_gen, reach)
+            out["pcie_gen_max"] = reach
+            out["pcie_own_gen"] = max_speed or cur_speed or None
     out["pcie_width"] = lanes or None
     return out
 
 
-_DM_LINK = None        # {DEV code: (current speed, current width, max speed, max width)} from Device Manager, once read
+_DM_LINK = None        # {DEV code: (current speed, current width, max speed, max width, behind its own switch)} from Device Manager, once read
 _DM_LINK_RETRY = 0.0   # a failed query is retried after this monotonic time, not on every 1-second sample
 _DM_LINK_STARTED = False
 _DM_LINK_LOCK = threading.Lock()
@@ -606,7 +633,13 @@ def _dm_link_query():
           "ForEach-Object { $id = $_.InstanceId; if ($id -match 'DEV_([0-9A-Fa-f]{4})') { $dev = $matches[1] } else { return }; "
           "$v = foreach ($k in 'CurrentLinkSpeed','CurrentLinkWidth','MaxLinkSpeed','MaxLinkWidth') { "
           "(Get-PnpDeviceProperty -InstanceId $id -KeyName ('DEVPKEY_PciDevice_' + $k) -ErrorAction SilentlyContinue).Data }; "
-          "Write-Output ('DEV_' + $dev + ' ' + ($v -join ' ')) }")
+          # DEVPKEY_PciDevice_DeviceType 10 = downstream, 9 = upstream switch port: the GPU behind a switch on its own board
+          "$p = (Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Parent -ErrorAction SilentlyContinue).Data; "
+          "$sw = 0; if ($p) { $g = (Get-PnpDeviceProperty -InstanceId $p -KeyName DEVPKEY_Device_Parent -ErrorAction SilentlyContinue).Data; "
+          "$tp = (Get-PnpDeviceProperty -InstanceId $p -KeyName DEVPKEY_PciDevice_DeviceType -ErrorAction SilentlyContinue).Data; "
+          "$tg = if ($g) { (Get-PnpDeviceProperty -InstanceId $g -KeyName DEVPKEY_PciDevice_DeviceType -ErrorAction SilentlyContinue).Data }; "
+          "if ($tp -eq 10 -and $tg -eq 9) { $sw = 1 } }; "
+          "Write-Output ('DEV_' + $dev + ' ' + ($v -join ' ') + ' ' + $sw) }")
     try:
         done = subprocess.run(["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
                               text=True, timeout=20, stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -617,7 +650,7 @@ def _dm_link_query():
     m = {}
     for line in (done.stdout or "").splitlines():
         parts = line.split()
-        if len(parts) == 5 and parts[0].startswith("DEV_"):
+        if len(parts) in (5, 6) and parts[0].startswith("DEV_"):
             try:
                 m[parts[0][4:].upper()] = tuple(int(x) for x in parts[1:])
             except ValueError:

@@ -135,6 +135,28 @@ class Mapping(unittest.TestCase):
         self.assertEqual(t._adl_link(None, None), {"pcie_width": None})                    # an APU: no link at all
         self.assertEqual(t._adl_link((0, 0, 0, 0), None)["pcie_gen_max"], None)
 
+    def test_card_behind_its_own_switch_takes_the_slot_generation_from_bus_speed(self):
+        # RX 9070 XT in a Gen4 slot: Device Manager reports the GPU's Gen5 link to the switch on its own board, PMLog's
+        # BUS_SPEED 3 (= Gen4) the slot; the engine's PCIe probe measured 28 GB/s on that box
+        self.assertEqual(t._adl_link((5, 16, 5, 16, 1), 16, t._bus_gen(3), t._bus_gen(3)),
+                         {"pcie_gen": 4, "pcie_gen_max": 4, "pcie_width_max": 16, "pcie_width": 16, "pcie_own_gen": 5})
+        # in a Gen5 slot an idle drop to Gen4 stays the current number, the highest seen is what the link reaches
+        out = t._adl_link((5, 16, 5, 16, 1), 16, 4, 5)
+        self.assertEqual((out["pcie_gen"], out["pcie_gen_max"]), (4, 5))
+        # never more than the card itself can do, and without a BUS_SPEED reading Device Manager's numbers stay
+        self.assertEqual(t._adl_link((4, 16, 4, 16, 1), 16, 5, 5)["pcie_gen_max"], 4)
+        self.assertEqual(t._adl_link((5, 16, 5, 16, 1), 16, None, None)["pcie_gen"], 5)
+
+    def test_card_without_a_switch_keeps_device_manager(self):
+        out = t._adl_link((4, 16, 4, 16, 0), 16, 3, 3)
+        self.assertEqual((out["pcie_gen"], out["pcie_gen_max"]), (4, 4))
+        self.assertNotIn("pcie_own_gen", out)
+
+    def test_bus_speed_counts_from_zero(self):
+        self.assertEqual([t._bus_gen(v) for v in (0, 3, 4)], [1, 4, 5])
+        self.assertIsNone(t._bus_gen(None))
+        self.assertIsNone(t._bus_gen(255))
+
 
 class WindowsAmdCards(unittest.TestCase):
     """The card list _pick_card and hardware_static use, rows measured on a 7900 XTX desktop (0.2.16): its Ryzen iGPU
@@ -191,6 +213,11 @@ class Sensors(unittest.TestCase):
             self.assertEqual(apu["power"], 45.0)
             self.assertFalse(any(k.startswith("pcie") for k in apu))
 
+    def test_card_behind_a_switch_reads_the_slot_from_bus_speed(self):
+        with mock.patch.object(t, "_dm_link_map", return_value={"1586": (5, 16, 5, 16, 1)}):
+            out = self.reader({73: 300, 40: 3, 41: 16}).read()
+        self.assertEqual((out["pcie_gen"], out["pcie_gen_max"], out["pcie_own_gen"], out["pcie_width"]), (4, 4, 5, 16))
+
 
 class Stall(unittest.TestCase):
     def test_stalled_sensors_restart_the_stream_once(self):
@@ -239,9 +266,9 @@ class DmLinkMap(unittest.TestCase):
 
     def test_success_caches_upper_case_codes(self):
         with mock.patch.object(t.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="DEV_744c 4 16 4 16\nDEV_7550 5 8 5 16\njunk\n")
+            run.return_value = mock.Mock(returncode=0, stdout="DEV_744c 4 16 4 16\nDEV_7550 5 16 5 16 1\njunk\n")
             t._dm_link_query()
-        self.assertEqual(t._DM_LINK, {"744C": (4, 16, 4, 16), "7550": (5, 8, 5, 16)})
+        self.assertEqual(t._DM_LINK, {"744C": (4, 16, 4, 16), "7550": (5, 16, 5, 16, 1)})
 
 
 @unittest.skipIf(os.name != "nt", "the ADL reader is Windows only")
