@@ -351,7 +351,7 @@ DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.99 GB,
 drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
 without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,
 `--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 port, MIT).
-The first measurements (RTX 5090 and RTX 5060 Ti, [phaseA-tests/rel0223/dflash2](../phaseA-tests/rel0223/dflash2/RESULTS.md)): faster in 24 of 36 cells, level in 5, slower in 7.
+The first measurements (RTX 5090 and RTX 5060 Ti, the DFlash 2 lane's results of 11-26): faster in 24 of 36 cells, level in 5, slower in 7.
 Its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
 
 ### Inkling-2-Mini: the 0.2.23 pins
