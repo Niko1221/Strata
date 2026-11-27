@@ -6566,6 +6566,23 @@ private:
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
                         aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
+            } else if (is_contiguous_single_slot && B >= 64 && attn_qtile_) {
+                // RDNA2 prompt chunks: query-tiled kernel (K/V tiles shared by 8 queries in LDS)
+                const dim3 qgrid(c_.n_head, (B + 7) / 8);
+                if (is_fp8) {
+                    k3_flash_swa_gqa_qtile<true><<<qgrid, 256, 0, stream_>>>(
+                        q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                        reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                } else {
+                    k3_flash_swa_gqa_qtile<false><<<qgrid, 256, 0, stream_>>>(
+                        q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                }
             } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
                 // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
                 float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
@@ -10165,6 +10182,7 @@ private:
     };
     int blaslt_moe_min_b_ = 999999;
     bool moe_y_f16_ = false;
+    bool attn_qtile_ = [] { const char* e = std::getenv("STRATA_INK_ATTN_TILED"); return !(e && e[0] == '0'); }();
     bool dense_f16_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_DENSE"); return !(e && e[0] == '0'); }();
     GpuBuffer dense_w16_, dense_x16_, dense_y16_;   // RDNA2 rocBLAS dense route scratch
     GpuBuffer sc_bucket_y32_, sc_small_exps_;   // grouped small experts of the RDNA2 rocBLAS route
