@@ -13,3 +13,15 @@ Four directory extraction prompts were replayed in fixed order five times per pr
 The experiment called `mx.set_wired_limit(1085614672)` after loading the draft weights and packed head, using their combined tensor byte size. The MLX allocator cache limit stayed at 32 MiB. The footprint column sums `ri_phys_footprint` for the target, draft and a resident embedding service at each 20 ms sample. File-backed pages make this metric unsuitable for estimating the entire resident working set.
 
 Request 13 in the fresh launch returned its first token in 2.71 s and spent 104.63 s decoding. Two commit-to-start waits accounted for 40.46 s and 28.90 s. Memory pressure varied across the sequential runs. Keep the default worker configuration. For changes intended to fix this tail, compare repeated launches under similar pressure, count timed-out requests and report the worst complete request alongside P95 and throughput. Measure at the HTTP client separately for deployment decisions.
+
+## Random-access advice on the target mapping
+
+Two fresh launches added `madvise(base, fsize, MADV_RANDOM)` immediately after mapping the target pack and kept the draft wired limit above. A third launch restored the original target binary with the same worker. Each replay used the same 20 requests.
+
+| Target mapping | P95 (s) | Max (s) | Decode tokens/s | Exact sequences |
+|---|---:|---:|---:|---:|
+| Random-access advice | 14.18 | 19.87 | 52.85 | 20/20 |
+| Same advice, fresh launch | 7.81 | 14.43 | 60.63 | 20/20 |
+| Advice removed | 8.45 | 12.06 | 61.67 | 20/20 |
+
+With the advice enabled, a decode buffer still waited 9.89 s before 86 ms of GPU execution. The target read 2.27 GB and the host swapped in 4.36 GB over that wait. Removing the hint gave the shortest maximum and highest aggregate decode rate of these three runs. The withdrawal control gives no basis for enabling this hint by default.
