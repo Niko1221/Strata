@@ -1,0 +1,83 @@
+{
+  "kind": "strata-long-synthetic-thinking-xhigh-v3",
+  "status": "complete",
+  "started_utc": "2026-11-21T01:52:23+00:00",
+  "model": "qwen3.8-flash-next-q2_0",
+  "engine": {
+    "model": "qwen3.8-flash-next-q2_0",
+    "max_context": 65536,
+    "images": false,
+    "gen": 1,
+    "version": "0.1.63",
+    "logit_bias": 1,
+    "context": 65536,
+    "kv": "int8",
+    "kv_resident": 32768,
+    "expert_slots": 4717,
+    "experts": 24576,
+    "expert_cache_mib": 6218,
+    "expert_slots_primary": 4717,
+    "expert_cache_primary_mib": 6218,
+    "spec": 12,
+    "mtp_max": 4,
+    "lookup": 3,
+    "vram_free_mib": 671,
+    "cvec": 0,
+    "arena_mib": 32400,
+    "pool_workers": 7,
+    "pcie_frac": "0.10",
+    "spec_min_p": "0.00",
+    "conversation_cache_mib": 8192,
+    "conversation_cache_slots": 4,
+    "conversation_cache_min_free_mib": 2560,
+    "conversation_cache_min_tokens": 0,
+    "tail_role_token": -1,
+    "vram_elastic": 0,
+    "prefill_cap": 14080,
+    "prefill_stages": 1,
+    "stream_all_min": 1536,
+    "prefill_pipe": 0,
+    "engine": "0.1.63",
+    "drafting": "off",
+    "drafting_note": ""
+  },
+  "tokenizer": {
+    "vocabulary_size": 248320,
+    "pre_tokenizer": "qwen35",
+    "source_sha256": "847b510673945008606593458e357eb517721c0d7a8b191b310f9a8c73fc2753",
+    "file_sha256": {
+      "vocab.json": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+      "merges.txt": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+      "token_type.json": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+      "tokenizer.json": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
+    }
+  },
+  "target_input_tokens": 64000,
+  "context_tokens": 65536,
+  "backend": "CUDA",
+  "gpu_unlock": "ON, checked by calling shell wrapper",
+  "drafting": "off",
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "reasoning_effort": "xhigh",
+    "reasoning_budget_tokens": 0,
+    "chat_template_kwargs": {
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  "speed_output_cap": 512,
+  "recall_output_cap": 2048,
+  "speed_repeats": 3,
+  "recall_depths": [
+    10,
+    90
+  ],
+  "note": "Same thinking and sampling as Strata standard draft.1. Different prompts/lengths; NONSTANDARD LONG-CONTEXT extension. First-to-answer latency may be null if output cap is reached while reasoning.",
+  "finished_utc": "2026-11-21T01:56:36+00:00"
+}

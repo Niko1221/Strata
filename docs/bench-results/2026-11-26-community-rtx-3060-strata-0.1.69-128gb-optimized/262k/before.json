@@ -1,0 +1,192 @@
+{
+  "engine": {
+    "model": "qwen3.8-flash-next-q2_0",
+    "max_context": 262144,
+    "images": false,
+    "gen": 1,
+    "version": "0.1.69",
+    "logit_bias": 1,
+    "context": 262144,
+    "kv": "int8",
+    "kv_resident": 32768,
+    "expert_slots": 4419,
+    "experts": 24576,
+    "expert_cache_mib": 5825,
+    "expert_slots_primary": 4419,
+    "expert_cache_primary_mib": 5825,
+    "spec": 12,
+    "mtp_max": 4,
+    "lookup": 3,
+    "vram_free_mib": 657,
+    "cvec": 0,
+    "arena_mib": 32400,
+    "pool_workers": 7,
+    "pcie_frac": "0.20",
+    "spec_min_p": "0.00",
+    "conversation_cache_mib": 30976,
+    "conversation_cache_slots": 4,
+    "conversation_cache_min_free_mib": 2560,
+    "conversation_cache_min_tokens": 0,
+    "tail_role_token": -1,
+    "vram_elastic": 0,
+    "prefill_cap": 12032,
+    "prefill_stages": 1,
+    "stream_all_min": 1536,
+    "prefill_pipe": 0,
+    "engine": "0.1.69",
+    "drafting": "off",
+    "drafting_note": ""
+  },
+  "live": {
+    "state": "idle",
+    "queued": 0,
+    "phase": null,
+    "prompt_tokens": null,
+    "prompt_read": null,
+    "prompt_total": null,
+    "generated": null,
+    "max_tokens": null,
+    "elapsed_s": null,
+    "tok_s": null,
+    "tok_s_mean": null,
+    "prefill_tok_s_mean": null,
+    "reused": null,
+    "tok_s_window_s": null
+  },
+  "requests": [
+    {
+      "projection": null,
+      "time": 1795650609.2351258,
+      "duration_s": 0.7,
+      "finish": "length",
+      "gen": 1,
+      "prompt_tokens": 53,
+      "reused": 0,
+      "output_tokens": 1,
+      "first_engine_token_s": 0.724,
+      "prompt_total": 53,
+      "prompt_read": 53,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1,
+      "prompt_ms": 703.8,
+      "decode_ms": 18.8,
+      "decode_tok_s": null,
+      "hit_rate": 0.825,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 0,
+      "drafts_accepted": 0
+    }
+  ],
+  "conversation_cache": {
+    "enabled": true,
+    "budget_mib": 30976,
+    "slots": 4,
+    "parked": 0,
+    "bytes": 0,
+    "evictions": 0,
+    "parks": 0,
+    "restores": 0,
+    "last_event": null,
+    "last_tokens": null,
+    "last_at": null,
+    "refused": {},
+    "refused_total": 0,
+    "last_refused": null,
+    "requests": 1,
+    "requests_reused": 0,
+    "reused_tokens": 0,
+    "prompt_tokens": 53,
+    "last_reused": 0,
+    "last_prompt": 53
+  },
+  "requests_kept": 1,
+  "totals": {
+    "since": 1795650609.1156945,
+    "requests": 1,
+    "prompt_tokens": 53,
+    "reused": 0,
+    "output_tokens": 1,
+    "prompt_ms": 703.8,
+    "decode_ms": 18.8,
+    "drafts_offered": 0,
+    "drafts_accepted": 0
+  },
+  "hardware": {
+    "gpu_util": 72,
+    "gpu_mem_used": 12331319296,
+    "gpu_mem_total": 12884901888,
+    "gpu_temp": 59,
+    "gpu_power": 57.64,
+    "gpu_power_limit": 170.0,
+    "gpu_pcie_gen": 4,
+    "gpu_pcie_gen_max": 4,
+    "gpu_pcie_width": 4,
+    "gpu_pcie_width_max": 16,
+    "gpu_pcie_rx_mb": 0.380859375,
+    "gpu_pcie_tx_mb": 0.4287109375,
+    "gpu_pcie_bottleneck": {
+      "card": 0,
+      "gen": 4,
+      "gen_max": 4,
+      "width": 4,
+      "width_max": 16
+    },
+    "cpu": 0.0,
+    "ram_used": 45730906112,
+    "ram_total": 130283839488,
+    "disk_read_mb": null,
+    "disk_write_mb": null,
+    "tok_s": 0.0,
+    "tok_s_mean": 0,
+    "prefill_tok_s_mean": 0.0
+  },
+  "hardware_static": {
+    "gpu_name": "NVIDIA GeForce RTX 3060",
+    "gpu_vram_total_mib": null,
+    "gpu_count": 1,
+    "gpu_note": null,
+    "cpu_name": "AMD Ryzen 7 255 w/ Radeon 780M Graphics",
+    "cores": 8,
+    "threads": 16,
+    "sockets": 1,
+    "numa_nodes": 1,
+    "psutil": true
+  },
+  "history": {
+    "gpu_util": [
+      72
+    ],
+    "gpu_mem_used": [
+      12331319296
+    ],
+    "gpu_temp": [
+      59
+    ],
+    "gpu_power": [
+      57.64
+    ],
+    "gpu_pcie_rx_mb": [
+      0.38
+    ],
+    "cpu": [
+      0.0
+    ],
+    "ram_used": [
+      45730906112
+    ],
+    "disk_read_mb": [
+      null
+    ],
+    "tok_s": [
+      0.0
+    ],
+    "prefill_tok_s_mean": [
+      0.0
+    ]
+  },
+  "time": 1795650610.0714843
+}

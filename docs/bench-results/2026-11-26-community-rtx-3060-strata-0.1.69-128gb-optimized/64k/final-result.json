@@ -1,0 +1,21 @@
+{
+  "context": 65536,
+  "target": 64000,
+  "prefill_tps": 1401.9,
+  "decode_tps": 48.1,
+  "ttft_s": 45.7302,
+  "expert_slots": 4681,
+  "expert_cache_mib": 6171,
+  "prefill_cap": 13568,
+  "kv_resident": 32768,
+  "conversation_cache_mib": 30976,
+  "vram_free_mib": 655,
+  "recall_passed": 2,
+  "recall_total": 2,
+  "speed_answers": 3,
+  "speed_capped": 0,
+  "recall_capped": 0,
+  "cached_tokens": 0,
+  "prompt_tokens": 318656,
+  "peak_gpu_temp_c": 72.0
+}

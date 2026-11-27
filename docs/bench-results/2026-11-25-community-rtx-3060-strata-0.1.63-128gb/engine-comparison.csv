@@ -1,0 +1,4 @@
+context,old_conversation_cache_mib,new_conversation_cache_mib,new_expert_cache_mib,new_prefill_cap
+64k,8192,8192,6218,14080
+128k,7936,8192,6102,13568
+262k,7168,8192,5873,12288

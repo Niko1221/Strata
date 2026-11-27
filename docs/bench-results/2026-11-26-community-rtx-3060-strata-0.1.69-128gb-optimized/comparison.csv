@@ -1,0 +1,15 @@
+series,context,prefill_tok_s,decode_tok_s,ttft_s,source
+0.1.63 / 64 GB,32k,1422.1,49.3,22.57,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 64 GB,64k,1386.9,49.6,46.23,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 64 GB,128k,1308.1,47.8,97.95,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 64 GB,262k,1160.3,42.8,224.25,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 128 GB,64k,1387.1,52.5,46.2159,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 128 GB,128k,1309.8,48.8,97.8195,https://github.com/Niko1221/Strata/pull/6498
+0.1.63 / 128 GB,262k,1161.7,44.7,223.9745,https://github.com/Niko1221/Strata/pull/6498
+0.1.69 / 128 GB default,64k,1279.1,46.0,50.1184,historical conversation / not independently reverified
+0.1.69 / 128 GB default,128k,1202.5,46.5,106.5538,historical conversation / not independently reverified
+0.1.69 / 128 GB default,262k,1083.6,44.3,240.0981,historical conversation / not independently reverified
+0.1.69 / 128 GB optimized,32k,1450.7,48.9,22.1269,verified final archive
+0.1.69 / 128 GB optimized,64k,1401.9,48.1,45.7302,verified final archive
+0.1.69 / 128 GB optimized,128k,1331.1,47.9,96.2543,verified final archive
+0.1.69 / 128 GB optimized,262k,1181.3,44.1,220.2646,verified final archive
