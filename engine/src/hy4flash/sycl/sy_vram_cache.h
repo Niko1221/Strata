@@ -666,6 +666,9 @@ public:
 
     ~SyVramExpertCache() { release(); }
 
+    // Drain the promotion copy queue without freeing anything (exit-path drain before hy4s_exit_fast).
+    void wait_copy() { if (cq_) cq_->wait(); }
+
     void release() {
         if (cq_) { cq_->wait(); delete cq_; cq_ = nullptr; }
         for (auto& s : slabs_) if (s.d) dfree(s.d);

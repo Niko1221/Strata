@@ -107,9 +107,19 @@ public:
     }
 
     void release() {
+        // Drain EVERY queue before freeing or exiting: a command still in flight on any queue at process
+        // teardown faults the xe driver's bcs engines on this driver stack (v0.2.20 dual-B70 teardown bug).
+        try { Q().wait(); } catch (...) {}
         for (auto& p : peers_) {
             if (p.q) {
                 try { p.q->wait(); } catch (...) {}
+#if defined(SYCL_EXT_ONEAPI_PEER_ACCESS)
+                if (p.p2p_ok) {  // cleanly drop the bidirectional peer mappings probe_p2p() enabled
+                    try { Q().get_device().ext_oneapi_disable_peer_access(p.q->get_device()); } catch (...) {}
+                    try { p.q->get_device().ext_oneapi_disable_peer_access(Q().get_device()); } catch (...) {}
+                    p.p2p_ok = false;
+                }
+#endif
                 for (auto& sl : p.slabs) if (sl.d) sycl::free(sl.d, *p.q);
                 if (p.d_z) sycl::free(p.d_z, *p.q);
                 if (p.d_zout) sycl::free(p.d_zout, *p.q);
@@ -141,15 +151,24 @@ public:
         const char* force_pinned = std::getenv("HY4S_PEER_PINNED");
         if (force_pinned && force_pinned[0] == '1') return false;
 #if defined(SYCL_EXT_ONEAPI_PEER_ACCESS)
+        sycl::device d0, dp;
+        bool en01 = false, en10 = false;
+        // A failed/exceptional probe must not leave dangling cross-context peer mappings behind:
+        // they outlive this call until process exit and fault the xe driver's bcs engines at teardown.
+        auto disable_access = [&]() {
+            if (en01) try { d0.ext_oneapi_disable_peer_access(dp); } catch (...) {}
+            if (en10) try { dp.ext_oneapi_disable_peer_access(d0); } catch (...) {}
+            en01 = en10 = false;
+        };
         try {
-            auto d0 = q0.get_device();
-            auto dp = qp.get_device();
+            d0 = q0.get_device();
+            dp = qp.get_device();
             if (!d0.ext_oneapi_can_access_peer(dp, sycl::ext::oneapi::peer_access::access_supported) ||
                 !dp.ext_oneapi_can_access_peer(d0, sycl::ext::oneapi::peer_access::access_supported)) {
                 return false;
             }
-            d0.ext_oneapi_enable_peer_access(dp);
-            dp.ext_oneapi_enable_peer_access(d0);
+            d0.ext_oneapi_enable_peer_access(dp); en01 = true;
+            dp.ext_oneapi_enable_peer_access(d0); en10 = true;
             uint32_t h_tx[4] = {0x12345678u, 0xCAFEBABEu, 0xA5A55A5Au, 0xDEADBEEFu};
             uint32_t h_rx01[4] = {0, 0, 0, 0};
             uint32_t h_rx10[4] = {0, 0, 0, 0};
@@ -169,8 +188,10 @@ public:
             }
             if (p0) sycl::free(p0, q0);
             if (p1) sycl::free(p1, qp);
+            if (!ok) disable_access();  // roundtrip failed: peer mapping must not stay enabled
             return ok;
         } catch (...) {
+            disable_access();
             return false;
         }
 #else
