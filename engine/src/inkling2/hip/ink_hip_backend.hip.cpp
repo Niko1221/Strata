@@ -38,6 +38,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1892,14 +1893,17 @@ public:
                     }
                 };
                 for (int il = 0; il < c_.n_phys; ++il) {
-                    if (r9700_fp8_keeps_layer(il)) continue;   // the layers whose output the drafter taps keep their shipped format (acceptance)
+                    const bool tapped_il = r9700_tap_layer(il);
+                    if (tapped_il && max_slots_ <= 16 && !r9700_taps_fp8_env()) continue;   // the layers whose output the drafter taps keep their shipped format (acceptance)
                     if (trunk_qkvrg_[il].dev_ptr) {
                         quant_add(reinterpret_cast<const uint16_t*>(trunk_qkvrg_[il].dev_ptr), tot_qkvrg, D, true);
+                        if (tapped_il && !r9700_taps_fp8_env()) { const uint16_t* wq = reinterpret_cast<const uint16_t*>(trunk_qkvrg_[il].dev_ptr); r9700_tap_ws_.insert(wq); r9700_tap_ws_.insert(wq + static_cast<size_t>(qrg_n) * D); r9700_tap_ws_.insert(wq + static_cast<size_t>(qrg_n + kv_dim) * D); }
                     }
                     const std::string wo_k = "model.llm.layers." + std::to_string(il) + ".attn.wo_ud.weight";
                     auto it_wo = trunk_bf16_.find(wo_k);
                     if (it_wo != trunk_bf16_.end() && it_wo->second.dev_ptr) {
                         quant_add(reinterpret_cast<const uint16_t*>(it_wo->second.dev_ptr), D, q_dim, false);
+                        if (tapped_il && !r9700_taps_fp8_env()) r9700_tap_ws_.insert(reinterpret_cast<const uint16_t*>(it_wo->second.dev_ptr));
                     }
                 }
             }
@@ -4871,7 +4875,7 @@ private:
         }
         if (r9700_ && r9700_->cfg.fp8_trunk && r9700_fp8_now_ && !exact_rows_ && (M > 16 || r9700_->cfg.fp8_decode) && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
             auto it = r9700_->fp8_map.find(W);
-            if (it != r9700_->fp8_map.end() && it->second.K == K && N <= it->second.N &&
+            if (it != r9700_->fp8_map.end() && !(!r9700_taps_fp8_now_ && r9700_tap_ws_.count(W)) && it->second.K == K && N <= it->second.N &&
                 (M <= 4 || r9700_->ensure_x_fp8(M, K))) {
                 if (M >= 128 && (N & 3) == 0 && r9700_->fp8_blaslt.ready()) {
                     r9700::k_r9700_quant_f32_to_fp8_row<<<M, 256, 0, stream_>>>(
@@ -5399,6 +5403,7 @@ private:
                              CandRows* cand_out = nullptr, int32_t* argmax_out_host = nullptr) {
         const int B = batch.n_tokens;
         r9700_fp8_now_ = !r9700_ || r9700_fp8_rows_ok(batch);
+        r9700_taps_fp8_now_ = r9700_ && r9700_taps_fp8_rows_ok(batch);
         const int D = c_.hidden;
         const int q_dim = c_.n_head * c_.head_dim;
         const int kv_dim = c_.n_kv * c_.head_dim;
@@ -9764,12 +9769,25 @@ private:
         return !taps_4bit && (il == 5 || il == 11 || il == 17 || il == 23);
     }
 
-    // R9700 FP8 trunk / FP8 MoE: true for the layers whose output the DFlash 2 / DSpark drafter taps (5, 11, 17, 23); they keep their shipped format.
-    // STRATA_INK_R9700_FP8_TAPS=1 puts them in FP8 too (the owner's first version; measurement only).
-    static bool r9700_fp8_keeps_layer(int il) {
-        static const bool taps_fp8 = [] { const char* e = std::getenv("STRATA_INK_R9700_FP8_TAPS"); return e && e[0] == '1'; }();
-        return !taps_fp8 && (il == 5 || il == 11 || il == 17 || il == 23);
+    // R9700 FP8 trunk / FP8 MoE and the drafter-tapped layers (5, 11, 17, 23: the layers whose output DFlash 2 / DSpark reads). They keep their shipped format, except in a step of a
+    // multi-slot batch with more than 16 rows (the C17..C64 decode rows): a lone request (rows from one slot) keeps exact taps, also on a --parallel 64 server.
+    // STRATA_INK_R9700_FP8_TAPS=1 puts the tapped layers in FP8 everywhere (the owner's first version; measurement only).
+    // p620 11-27: C64 serve 285 -> 360 tok/s e2e, 360 -> 462 steady; KLD at width 64 0.0110 prose / 0.0099 code against 0.0098 / 0.0092 for the default, floor 0.0055 / 0.0047.
+    static bool r9700_tap_layer(int il) { return il == 5 || il == 11 || il == 17 || il == 23; }
+    static bool r9700_taps_fp8_env() {
+        static const bool v = [] { const char* e = std::getenv("STRATA_INK_R9700_FP8_TAPS"); return e && e[0] == '1'; }();
+        return v;
     }
+    // may the step's tapped layers run in FP8? (rows > 16 from at least two slots, or the explicit switch)
+    bool r9700_taps_fp8_rows_ok(const StepBatch& batch) const {
+        if (r9700_taps_fp8_env()) return true;
+        if (max_slots_ <= 16 || batch.n_tokens <= 16) return false;
+        for (int b = 1; b < batch.n_tokens; ++b) if (batch.slot_ids[b] != batch.slot_ids[0]) return true;
+        return false;
+    }
+    bool r9700_fp8_keeps_layer(int il) const { return r9700_tap_layer(il) && !r9700_taps_fp8_now_; }
+    std::unordered_set<const void*> r9700_tap_ws_;   // bf16 weight pointers of the tapped layers that were also converted to FP8 (only with more than 16 slots)
+    bool r9700_taps_fp8_now_ = false;
 
     void cleanup() {
         invalidate_graph();
