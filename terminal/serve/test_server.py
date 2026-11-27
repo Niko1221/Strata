@@ -4784,6 +4784,122 @@ class ThinkingEngine(MockEngine):
             yield t
 
 
+class SentencesEngine(ThinkingEngine):
+    """Thinks in short sentences (720 reasoning tokens, a sentence end every 18), then answers."""
+    THOUGHT = "Step one is done. " * 40
+
+
+class NoSentenceEngine(ThinkingEngine):
+    """Thinks without ever ending a sentence (720 reasoning tokens), then answers."""
+    THOUGHT = "and then more " * 51 + "and then"
+
+
+class HeadingsEngine(ThinkingEngine):
+    """Thinks in lines that end on a heading's colon or on no punctuation at all (720 reasoning tokens), then answers."""
+    THOUGHT = "Vehicles:\nsome words then more words\n" * 20
+
+
+class SoftLanding(unittest.TestCase):
+    """reasoning_soft_landing (opt-in): a note when LANDING_NOTE_SHARE of the budget is left, then the wrap-up at the
+    end of a sentence (or once the grace is spent), whatever set the budget."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.make(SentencesEngine)
+
+    def make(self, cls):
+        if getattr(self, "httpd", None):
+            self.tearDown()
+        self.engine = cls(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.svc.reasoning_soft_landing = True
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def openai(self, **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": 2000, **extra}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+
+    def test_the_plan_follows_the_budget(self):
+        from serve.server import soft_landing_plan
+        self.assertEqual(soft_landing_plan(8000, None), (6800, 400))
+        self.assertEqual(soft_landing_plan(8000, 0), (6800, 400))
+        self.assertEqual(soft_landing_plan(16000, None), (16000 - 2048, 512))  # both are clamped
+        self.assertEqual(soft_landing_plan(100_000, None), (100_000 - 2048, 512))
+        self.assertEqual(soft_landing_plan(300, None), (300 - 128, 32))      # the note's floor
+        self.assertEqual(soft_landing_plan(8000, 8100), (6800, 25))          # the answer keeps its room
+        self.assertIsNone(soft_landing_plan(255, None))
+        self.assertIsNone(soft_landing_plan(None, 4000))
+
+    def test_off_by_default_cuts_where_it_did(self):
+        from serve.server import REASONING_WRAP_UP
+        self.svc.reasoning_soft_landing = False
+        msg = self.openai(reasoning_budget_tokens=300)["choices"][0]["message"]
+        self.assertEqual(msg["reasoning_content"], SentencesEngine.THOUGHT[:300] + REASONING_WRAP_UP.split("</think>")[0])
+
+    def test_a_small_budget_is_cut_as_before(self):
+        from serve.server import REASONING_WRAP_UP
+        msg = self.openai(reasoning_budget_tokens=20)["choices"][0]["message"]
+        self.assertEqual(msg["reasoning_content"], SentencesEngine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
+
+    def test_a_note_then_a_wrap_up_at_the_end_of_a_sentence(self):
+        from serve.server import REASONING_LANDING_NOTE, REASONING_WRAP_UP
+        b = self.openai(reasoning_budget_tokens=300)
+        msg = b["choices"][0]["message"]
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        # the note: after the first sentence end at or past 300 - 128 = 172 thinking tokens (the 10th sentence, 180)
+        first = SentencesEngine.THOUGHT[:179]
+        note = REASONING_LANDING_NOTE.format(left=300 - 179)
+        self.assertTrue(msg["reasoning_content"].startswith(first + note), msg["reasoning_content"][:400])
+        self.assertTrue(first.endswith("."))
+        # then the thinking goes on (counted with the note) and is wrapped up at a sentence's end, within the grace
+        after = msg["reasoning_content"][len(first + note):]
+        self.assertTrue(after.endswith(wrap))
+        thought = after[:-len(wrap)]
+        self.assertTrue(thought.endswith("."), thought[-40:])
+        counted = 179 + len(self.tok.encode(note, parse_special=True)) + len(thought)
+        self.assertGreaterEqual(counted, 300)
+        self.assertLess(counted, 300 + 32)
+        self.assertEqual(msg["content"], SentencesEngine.ANSWER)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(len(self.engine.prompts), 3)                       # the thinking, after the note, the answer
+
+    def test_no_sentence_end_waits_only_the_grace(self):
+        from serve.server import REASONING_WRAP_UP
+        self.make(NoSentenceEngine)
+        msg = self.openai(reasoning_budget_tokens=300)["choices"][0]["message"]
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        self.assertEqual(msg["reasoning_content"], NoSentenceEngine.THOUGHT[:300 + 32] + wrap)   # no note, cut at the grace
+
+    def test_a_line_break_alone_is_no_sentence_end(self):
+        from serve.server import REASONING_WRAP_UP
+        self.make(HeadingsEngine)
+        msg = self.openai(reasoning_budget_tokens=300)["choices"][0]["message"]
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        self.assertEqual(msg["reasoning_content"], HeadingsEngine.THOUGHT[:300 + 32] + wrap)  # no note, cut at the grace
+
+    def test_what_ends_a_sentence(self):
+        from serve.server import landing_sentence_end as end
+        for text in ("Done.", "Done. ", "Done.\n", "Done.\n\n", "Why?", "Yes!\n"):
+            self.assertTrue(end(text), repr(text))
+        for text in ("", "\n\n", "Vehicles:\n", "Vehicles:\n\n", "words\n", "pi is 3.", "a, b", "x = 1;\n"):
+            self.assertFalse(end(text), repr(text))
+
+    def test_a_budget_from_max_tokens_lands_too(self):
+        from serve.server import REASONING_LANDING_NOTE
+        # no budget of its own: answer_room makes one from max_tokens 1024 (1024 - 512 = 512); the note comes 128 before
+        msg = self.openai(max_tokens=1024)["choices"][0]["message"]
+        self.assertIn(REASONING_LANDING_NOTE.split("{left}")[0], msg["reasoning_content"])
+        self.assertEqual(msg["content"], SentencesEngine.ANSWER)
+
+
 class EndsInsideThinkingEngine(ThinkingEngine):
     """The #1053 reply: one sentence of reasoning, then the end-of-turn token, no </think>.  A prompt that ends the
     thinking (the retry) gets the answer."""

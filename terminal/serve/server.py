@@ -361,6 +361,38 @@ from serve.responses import ResponsesError, error_body as responses_error_body  
 from serve import images as images_api  # noqa: E402
 
 
+# Opt-in "reasoning_soft_landing": true.  Whatever set the budget (the config, the request, POST /settings, or the
+# answer room left by max_tokens), the thinking is landed instead of cut: a note once LANDING_NOTE_SHARE of the budget
+# is left (at the end of a sentence), then, at the budget, the wrap-up waits for the end of a sentence for at most
+# LANDING_GRACE_SHARE of it more.  Both are shares of the budget, clamped, so they follow whatever budget applies.
+REASONING_LANDING_NOTE = ("\n\nI have about {left} tokens of thinking left: time to finish my plan and get ready to "
+                          "answer.\n\n")
+LANDING_MIN_BUDGET = 256                    # below this, no landing: the budget is cut as before
+LANDING_NOTE_SHARE, LANDING_NOTE_MIN, LANDING_NOTE_MAX = 0.15, 128, 2048
+LANDING_GRACE_SHARE, LANDING_GRACE_MIN, LANDING_GRACE_MAX = 0.05, 32, 512
+LANDING_ENDS = ".!?"                        # what ends a sentence (the last visible character written)
+
+
+def landing_sentence_end(text):
+    """True when the text written so far ends a sentence: its last visible character is . ! or ? (a line break alone,
+    as after a heading such as "Vehicles:", does not count; nor does a digit's point, as in "3.")."""
+    s = text.rstrip()
+    return bool(s) and s[-1] in LANDING_ENDS and not (s[-1] == "." and len(s) > 1 and s[-2].isdigit())
+
+
+def soft_landing_plan(budget, max_new):
+    """(note_at, grace) for a thinking budget, or None below LANDING_MIN_BUDGET.  note_at: the thinking token from
+    which the note is written; grace: how many tokens past the budget the wrap-up may wait for a sentence's end (never
+    more than a quarter of the room max_tokens leaves past the budget, so the answer keeps its room)."""
+    if not budget or budget < LANDING_MIN_BUDGET:
+        return None
+    note = min(LANDING_NOTE_MAX, max(LANDING_NOTE_MIN, int(budget * LANDING_NOTE_SHARE)))
+    grace = min(LANDING_GRACE_MAX, max(LANDING_GRACE_MIN, int(budget * LANDING_GRACE_SHARE)))
+    if max_new and max_new > 0:
+        grace = min(grace, max(0, (max_new - budget) // 4))
+    return budget - note, grace
+
+
 def popen(what: str, args: list, role: str = "engine", **kw):
     """#735: subprocess.Popen, but Windows' refusal to start a program (WinError 4551, or 1260 when a policy blocks it:
     Smart App Control on a clean Windows 11 blocks an exe that is not signed) is said in words instead of a bare
@@ -4358,6 +4390,7 @@ class Service:
         self.inkling_cfg = {}                         # the run config (its inkling_image_max_mp and --vision-reader), for the cap that follows the engine's reader
         self.inkling_image_max_px = 0                # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.reasoning_soft_landing = False           # opt-in: a note before the budget, the wrap-up at a sentence's end
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -6133,6 +6166,8 @@ class Service:
                     print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                           f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
+        landing = soft_landing_plan(budget, max_new) if (thinking and self.reasoning_soft_landing) else None
+        noted = False                                   # the landing note was written
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
@@ -6187,6 +6222,7 @@ class Service:
         if force and not thinking:                      # the parser reads it as if the model had written it
             opening, force = parser.feed(force), None
         tail = ""                                       # the last characters written (the newlines before a call)
+        ltail = ""                                      # the last characters written (reasoning_soft_landing)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
@@ -6325,7 +6361,8 @@ class Service:
                         held = hold_end is not None and budget is not None
                         if held:   # the reasoning tokens left before the budget (at least one: a cut not yet clean)
                             pass_sampling = {k: v for k, v in (sampling or {}).items() if k != HOLD_KEY}   # (a copy: the hold is this pass's own)
-                            pass_sampling[HOLD_KEY] = (max(1, int(budget) - thought), int(hold_end))
+                            pass_sampling[HOLD_KEY] = (max(1, int(budget) + (landing[1] if landing else 0) - thought),
+                                                       int(hold_end))   # (soft landing: the grace's end)
                         elif sampling and HOLD_KEY in sampling:   # (never a client's: strip it from a copy)
                             pass_sampling = {k: v for k, v in sampling.items() if k != HOLD_KEY}
                         else:
@@ -6342,6 +6379,7 @@ class Service:
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
+                        note = False                    # the landing note is due (reasoning_soft_landing)
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
                         try:
@@ -6384,6 +6422,7 @@ class Service:
                                     break
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
+                                ltail = (ltail + piece)[-16:]
                                 if inkling_special_ids is not None:
                                     evs = cut(parser.feed_token(piece, is_special=(t in inkling_special_ids)))
                                 else:
@@ -6420,9 +6459,20 @@ class Service:
                                 if budget and (parser.state == "reasoning" or getattr(parser, "reasoning_now", False)):
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
-                                    if thought >= budget and parser.clean and not detok.pending():
-                                        wrap = True
-                                        break
+                                    if parser.clean and not detok.pending():
+                                        if landing is None:
+                                            if thought >= budget:
+                                                wrap = True
+                                                break
+                                        else:
+                                            # soft landing: at the end of a sentence, or once the grace is spent
+                                            ended = landing_sentence_end(ltail)
+                                            if thought >= budget and (ended or thought >= budget + landing[1]):
+                                                wrap = True
+                                                break
+                                            if not noted and thought >= landing[0] and ended:
+                                                note = True
+                                                break
                                 if force:
                                     if any(ev.kind in ("tool_start", "tool_call") for ev in evs):
                                         force = None    # the model is writing a call of its own
@@ -6597,6 +6647,29 @@ class Service:
                                     finish = "length"
                                     continue
                             break
+                        if note and not cancel.is_set():
+                            # reasoning_soft_landing: tell the model how much thinking is left, inside its thinking,
+                            # and go on from there (the same prefix + more as the wrap-up below)
+                            noted = True
+                            extra = self.tok.encode(REASONING_LANDING_NOTE.format(left=max(0, budget - thought)),
+                                                    parse_special=True)
+                            if max_new - n - len(extra) >= 1:
+                                print(f"[strata] thinking budget nearly reached ({thought} of {budget} tokens): "
+                                      "landing note written (reasoning_soft_landing)", flush=True)
+                                for t in extra:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    thinking_n += (parser.state in ("reasoning", "rcall") or getattr(parser, "reasoning_now", False))
+                                    evs = cut(parser.feed(detok.push(t)))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        yield "event", ev
+                                thought += len(extra)
+                                tail, ltail = "\n\n", ""
+                                prompt = prompt + seg + extra
+                                continue
+                            prompt = prompt + seg       # no room for the note: go on without it
+                            continue
                         if not (wrap or opens) or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -6629,7 +6702,10 @@ class Service:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
                             print(f"[strata] thinking budget reached ({reached} tokens): wrapping up the thinking"
-                                  + (" (a thinking turn the model opened again: the answer is opened too)" if opener else ""),
+                                  + (" (a thinking turn the model opened again: the answer is opened too)" if opener else "")
+                                  + ((" at the end of a sentence" if landing_sentence_end(ltail) else
+                                      ": no sentence ended within the grace") + " (reasoning_soft_landing)"
+                                     if landing else ""),
                                   flush=True)
                         for t in extra:
                             n += 1
@@ -9796,6 +9872,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise SystemExit(f"[strata] config \"inkling_budget_cap\" must be true or false, not {cfg['inkling_budget_cap']!r}")
         svc.inkling_budget_cap = cfg["inkling_budget_cap"]
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.reasoning_soft_landing = cfg.get("reasoning_soft_landing") is True  # opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
