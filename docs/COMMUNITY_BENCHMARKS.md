@@ -73,7 +73,11 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
-
+- [2026-11-27: 2x Tesla V100-SXM2-16GB (sm_70, no NVLink — host-bridge PHB, p2p probe failed), Xeon E5-2699 v4, 126 GB RAM](bench-results/2026-11-27-community-2x-tesla-v100-sxm2-16gb-hy4-flash-sq-64-q8/README.md):
+  first Hy4-Flash community report: prebuilt CUDA-12 shape engine 0.1.67, SQ-64 + Engram-Q8 + Vision, 131,072-token context, dfly2 draft, `--layer-split auto`; `tools/strata_bench.py` medians: chat decode 21.9 tok/s, prefill 451 (4K) / 436 (16K) tok/s, agent cache hit 70.8%. Notes the structural single-trunk-GPU layout: the engine keeps the trunk (attention of all 42 layers) on the primary GPU and `--layer-split` only partitions the expert arena, so observed GPU utilisation was ~95% vs ~4% and the prefill numbers are effectively single-V100 trunks with expert tiers (39.86 GB of experts CPU-resident).
+- [2026-11-27: same rig, Hy4-Flash SQ-96](bench-results/2026-11-27-community-2x-tesla-v100-sxm2-16gb-hy4-flash-sq-96-q8/README.md):
+  same suite, same machine, SQ-96 (66.75 GB of experts CPU-resident vs 39.86 GB for SQ-64): decode 18.8 tok/s, prefill 322 (4K) / 317 (16K) tok/s — about 25-30% below SQ-64 — and two 330-350 s TTFT outliers from page-cache pressure over the expert streaming; on 126 GB RAM the smaller SQ-64 is the practical choice.
+  
 ## Run the standard benchmark
 
 ```sh
