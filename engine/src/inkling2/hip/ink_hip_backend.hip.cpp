@@ -5413,7 +5413,7 @@ private:
             !re(sc_sinks_, static_cast<size_t>(B) * c_.n_head * 4) || !re(sc_gate_a_, static_cast<size_t>(B) * q_dim * 4) ||
             !re(sc_k_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) || !re(sc_v_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) ||
             !re(sc_attn_out_, static_cast<size_t>(B) * q_dim * 4) ||
-            !re(sc_splitkv_part_, static_cast<size_t>(std::max(B, 4)) * c_.n_head * 32 * 130 * 4) ||
+            !re(sc_splitkv_part_, std::max(static_cast<size_t>(std::max(std::min(B, 64), 4)) * 32, static_cast<size_t>(std::max(B, 4)) * 4) * c_.n_head * 130 * 4) ||
             !re(sc_o_proj_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_a_sconv_, static_cast<size_t>(B) * D * 4) || !re(sc_mlp_in_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_mlp_f16_, static_cast<size_t>(moe_gu_cap) * D * sizeof(half_t)) ||
@@ -6621,7 +6621,8 @@ private:
                     }
                     k3_flash_splitkv_reduce<KS><<<dim3(c_.n_head, B), 32, 0, stream_>>>(sp_part, gatea, aout, B, c_.n_head);
                 };
-                if (dec_splits_ == 32) launch_splitkv(std::integral_constant<int, 32>{});
+                if (B > 64) launch_splitkv(std::integral_constant<int, 4>{});   // the partials hold 32 splits for <= 64 rows only
+                else if (dec_splits_ == 32) launch_splitkv(std::integral_constant<int, 32>{});
                 else if (dec_splits_ == 16) launch_splitkv(std::integral_constant<int, 16>{});
                 else launch_splitkv(std::integral_constant<int, 4>{});
             } else if (B <= 8 || (halo_ && halo_->cfg.c64_opt && !halo_->cfg.exact_mode && all_distinct_slots && B <= 64)) {
