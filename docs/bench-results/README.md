@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 152 folders and 3 loose files, 2268 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 153 folders and 3 loose files, 2275 files in all.
 
 
 ## 2026-09
@@ -173,6 +173,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-11-23-standard-rx-9070-xt-3900x-0e6041d3](2026-11-23-standard-rx-9070-xt-3900x-0e6041d3/) | Strata standard benchmark: AMD Radeon | 8 |
 | [2026-11-23-standard-rx-9070-xt-3900x-1e463ce6](2026-11-23-standard-rx-9070-xt-3900x-1e463ce6/) | Strata standard benchmark: AMD Radeon | 8 |
 | [2026-11-23-standard-rx-9070-xt-3900x-bbb73d60](2026-11-23-standard-rx-9070-xt-3900x-bbb73d60/) | Strata standard benchmark: AMD Radeon | 8 |
+| [2026-11-26-sm75-split-top64](2026-11-26-sm75-split-top64/) | SM75 split head Top64 selector | 7 |
 
 ## Loose files
 

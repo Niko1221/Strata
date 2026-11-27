@@ -93,3 +93,31 @@ with two big cards, and contexts over 128K have not been run. The copy-engine ri
 
 `-DSTRATA_BUILD_SPLIT=ON [-DSTRATA_SPLIT_CARDS="2;3"] [-DSTRATA_SPLIT_ARCH=86]` builds
 `strata-split-N` per card count; `tools/packaging/build_split_cuda.sh` does that with the release engine's toolchain rules and checks the result (`tools/packaging/build_split_hip.sh` for AMD).
+
+### Optional SM75 head Top64 selector
+
+A Linux CUDA source build for SM75 can enable a tiled implementation of the existing head-logit Top64 selector:
+add `-DSTRATA_SPLIT_SM75_TOP64=ON` alongside `-DSTRATA_BUILD_SPLIT=ON`, `-DSTRATA_SPLIT_ARCH=75`,
+`-DCMAKE_CUDA_ARCHITECTURES=75` and `-DCMAKE_CUDA_RUNTIME_LIBRARY=Shared`, then build `strata-split-2`. The build option is off
+by default. At runtime, `FNX_SM75_TOP64=1` selects the new implementation; an unset or zero variable uses the reference.
+This leaves the launcher's supported-card rules and the host-memory exchange unchanged.
+
+The new path selects 64 candidates from each of 32 disjoint vocabulary tiles, then merges the sorted lists by the
+same float-bit key and token-ID tie order as the reference. It applies the same penalties in place and retains the
+nonfinite-logit error flag. Slices smaller than 65,536 logits use the reference because allocation and merge overhead
+outweighed their shorter scan in the measurements.
+
+Scratch is local to a call: `rows * 32 * 64 * 8` bytes, at most 256 KiB for 16 rows. Matched `cudaMallocAsync` and
+`cudaFreeAsync` calls become [CUDA graph memory nodes](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html#graph-memory-nodes)
+when captured. The tests exercise replay with changed inputs, the engine's update-or-reinstantiate pattern, and
+concurrent streams.
+
+On two RTX 2080 Ti cards (22 GiB each), CUDA 13.0, the isolated selector with 124,160 logits and 1/3/4/7 rows was
+2.91–3.47 times faster in the measured random-input cases. This is selector timing; no full-model throughput gain is
+claimed for this individual change. [Raw measurements and validation](bench-results/2026-11-26-sm75-split-top64/README.md)
+include the smaller-slice regressions that led to the fallback threshold.
+
+With `STRATA_BUILD_TESTS=ON`, build `split_top64_sm75_test` and run
+`ctest --test-dir <build> -R '^split_top64_sm75' --output-on-failure`. `split_top64_sm75_test --benchmark` prints the
+paired selector timings; `--sweep` measures the vocabulary-size crossover. The measured runtime/toolchain is Linux
+CUDA 13.0 on SM75. Other backends do not build this optional translation unit.

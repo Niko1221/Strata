@@ -73,10 +73,22 @@ elseif(NOT STRATA_SPLIT_ARCH)
   endif()
 endif()
 
+option(STRATA_SPLIT_SM75_TOP64 "Build the opt-in CUDA SM75 tiled Top64 selector" OFF)
+set(_sp_sm75_top64 OFF)
+if(STRATA_SPLIT_SM75_TOP64)
+  if(_fnx_hip OR NOT STRATA_SPLIT_ARCH STREQUAL "75")
+    message(FATAL_ERROR "STRATA_SPLIT_SM75_TOP64 requires the CUDA SM75 split build")
+  endif()
+  set(_sp_sm75_top64 ON)
+endif()
+
 set(_sp ${CMAKE_CURRENT_SOURCE_DIR})
 set(_sp_engine
     ${_sp}/src/gguf.cpp ${_sp}/src/model.cpp ${_sp}/src/store.cpp ${_sp}/src/moe_mma.cu ${_sp}/src/engine.cu
     ${_sp}/src/engine_common.cu ${_sp}/src/prefill.cu ${_sp}/src/session.cpp ${_sp}/src/batch.cpp ${_sp}/tools/sfnx.cpp)
+if(_sp_sm75_top64)
+  list(APPEND _sp_engine ${_sp}/src/cuda/topk_sm75.cu)
+endif()
 if(_fnx_hip)
   list(APPEND _sp_engine ${_sp}/src/selftest.cu)   # the kernel self-test of a card Strata has not run the split on (hip/selftest_policy.hpp)
 endif()
@@ -100,6 +112,13 @@ foreach(_p RANGE 0 8)
   endif()
   list(APPEND _sp_kparts ${_f})
 endforeach()
+
+# Only the CUDA SM75 reference kernel definition is renamed. Engine callers
+# keep top_tokens; the opt-in translation unit supplies that dispatcher.
+if(_sp_sm75_top64)
+  set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/kernels_p0.cu
+    PROPERTIES COMPILE_DEFINITIONS top_tokens=top_tokens_reference_sm75)
+endif()
 
 # DFlash2 on the split (src/split/src/df2_bridge.*): the main tree's drafter (src/core/dflash2.cpp, bind() compiled out: it copies head rows between cards with
 # the peer API, which this engine never calls) and its kernels, in a library of their own; the fnx sources see only df2_bridge.hpp. CUDA builds of the split
@@ -231,4 +250,28 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(split_fnx_run PRIVATE CUDA::cublas CUDA::cublasLt CUDA::cuda_driver Threads::Threads)
     set_target_properties(split_fnx_run PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
   endif()
+endif()
+
+if(STRATA_BUILD_TESTS AND _sp_sm75_top64)
+  add_executable(split_top64_sm75_test ${_sp}/tools/top64_sm75_test.cu
+    ${_sp}/src/cuda/topk_sm75.cu ${CMAKE_CURRENT_BINARY_DIR}/kernels_p0.cu)
+  target_include_directories(split_top64_sm75_test PRIVATE ${_sp}/src ${_sp}/tools ${_sp_quant})
+  target_compile_definitions(split_top64_sm75_test PRIVATE FNX_NCARD=2 FNX_ARCH=75 FNX_27B=0 FNX_HOSTRING=1)
+  target_compile_options(split_top64_sm75_test PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
+  set_target_properties(split_top64_sm75_test PROPERTIES CUDA_ARCHITECTURES "75-real"
+    CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CXX_STANDARD 17 CUDA_RUNTIME_LIBRARY Shared)
+  target_link_libraries(split_top64_sm75_test PRIVATE CUDA::cublas CUDA::cublasLt Threads::Threads)
+  add_test(NAME split_top64_sm75_test COMMAND split_top64_sm75_test)
+  set_tests_properties(split_top64_sm75_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+  foreach(_mode default enabled)
+    add_test(NAME split_top64_sm75_${_mode} COMMAND split_top64_sm75_test --dispatch)
+    if(_mode STREQUAL "enabled")
+      set(_enabled 1)
+    else()
+      set(_enabled 0)
+    endif()
+    set_tests_properties(split_top64_sm75_${_mode} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300
+      ENVIRONMENT "FNX_SM75_TOP64=${_enabled}")
+  endforeach()
 endif()

@@ -1,0 +1,98 @@
+CASE device=0 n=2048 rows=1 mode=0 first_token=124160
+PASS dev=0 n=2048 T=1 mode=0 old_us=32.5850 new_us=32.5870 speedup=0.99994 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=1 mode=1 first_token=124160
+PASS dev=0 n=2048 T=1 mode=1 old_us=45.0305 new_us=45.0165 speedup=1.00031 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=1 mode=2 first_token=124160
+PASS dev=0 n=2048 T=1 mode=2 old_us=49.5510 new_us=49.5425 speedup=1.00017 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=3 mode=0 first_token=124160
+PASS dev=0 n=2048 T=3 mode=0 old_us=35.2615 new_us=35.2185 speedup=1.00122 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=3 mode=1 first_token=124160
+PASS dev=0 n=2048 T=3 mode=1 old_us=45.0310 new_us=45.0010 speedup=1.00067 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=3 mode=2 first_token=124160
+PASS dev=0 n=2048 T=3 mode=2 old_us=49.6060 new_us=49.5900 speedup=1.00032 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=4 mode=0 first_token=124160
+PASS dev=0 n=2048 T=4 mode=0 old_us=37.6320 new_us=37.6235 speedup=1.00023 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=4 mode=1 first_token=124160
+PASS dev=0 n=2048 T=4 mode=1 old_us=44.5760 new_us=44.5810 speedup=0.99989 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=4 mode=2 first_token=124160
+PASS dev=0 n=2048 T=4 mode=2 old_us=49.0560 new_us=49.0240 speedup=1.00065 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=7 mode=0 first_token=124160
+PASS dev=0 n=2048 T=7 mode=0 old_us=36.9030 new_us=36.8640 speedup=1.00106 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=7 mode=1 first_token=124160
+PASS dev=0 n=2048 T=7 mode=1 old_us=32.3840 new_us=32.3840 speedup=1.00000 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=2048 rows=7 mode=2 first_token=124160
+PASS dev=0 n=2048 T=7 mode=2 old_us=35.6440 new_us=35.6485 speedup=0.99987 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=1 mode=0 first_token=124160
+PASS dev=0 n=124160 T=1 mode=0 old_us=174.9435 new_us=51.7120 speedup=3.38304 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=1 mode=1 first_token=124160
+PASS dev=0 n=124160 T=1 mode=1 old_us=212.3950 new_us=57.7040 speedup=3.68077 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=1 mode=2 first_token=124160
+PASS dev=0 n=124160 T=1 mode=2 old_us=213.1515 new_us=60.3540 speedup=3.53169 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=3 mode=0 first_token=124160
+PASS dev=0 n=124160 T=3 mode=0 old_us=188.3915 new_us=54.2420 speedup=3.47317 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=3 mode=1 first_token=124160
+PASS dev=0 n=124160 T=3 mode=1 old_us=212.3200 new_us=60.0185 speedup=3.53758 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=3 mode=2 first_token=124160
+PASS dev=0 n=124160 T=3 mode=2 old_us=213.0975 new_us=62.4855 speedup=3.41035 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=4 mode=0 first_token=124160
+PASS dev=0 n=124160 T=4 mode=0 old_us=179.7120 new_us=53.9840 speedup=3.32899 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=4 mode=1 first_token=124160
+PASS dev=0 n=124160 T=4 mode=1 old_us=212.3405 new_us=60.2560 speedup=3.52397 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=4 mode=2 first_token=124160
+PASS dev=0 n=124160 T=4 mode=2 old_us=213.1610 new_us=62.8570 speedup=3.39121 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=7 mode=0 first_token=124160
+PASS dev=0 n=124160 T=7 mode=0 old_us=180.1290 new_us=61.9200 speedup=2.90906 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=7 mode=1 first_token=124160
+PASS dev=0 n=124160 T=7 mode=1 old_us=212.3105 new_us=70.1745 speedup=3.02546 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=0 n=124160 rows=7 mode=2 first_token=124160
+PASS dev=0 n=124160 T=7 mode=2 old_us=218.2445 new_us=72.7025 speedup=3.00188 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+PASS device=0 cases=24 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=0
+CASE device=1 n=2048 rows=1 mode=0 first_token=124160
+PASS dev=1 n=2048 T=1 mode=0 old_us=32.3475 new_us=32.3480 speedup=0.99998 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=1 mode=1 first_token=124160
+PASS dev=1 n=2048 T=1 mode=1 old_us=44.6400 new_us=44.6400 speedup=1.00000 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=1 mode=2 first_token=124160
+PASS dev=1 n=2048 T=1 mode=2 old_us=49.1765 new_us=49.1835 speedup=0.99986 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=3 mode=0 first_token=124160
+PASS dev=1 n=2048 T=3 mode=0 old_us=31.1360 new_us=31.1380 speedup=0.99994 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=3 mode=1 first_token=124160
+PASS dev=1 n=2048 T=3 mode=1 old_us=39.8380 new_us=39.8370 speedup=1.00003 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=3 mode=2 first_token=124160
+PASS dev=1 n=2048 T=3 mode=2 old_us=43.8420 new_us=43.8365 speedup=1.00013 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=4 mode=0 first_token=124160
+PASS dev=1 n=2048 T=4 mode=0 old_us=33.5360 new_us=33.5340 speedup=1.00006 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=4 mode=1 first_token=124160
+PASS dev=1 n=2048 T=4 mode=1 old_us=40.9575 new_us=40.9325 speedup=1.00061 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=4 mode=2 first_token=124160
+PASS dev=1 n=2048 T=4 mode=2 old_us=43.7715 new_us=43.7440 speedup=1.00063 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=7 mode=0 first_token=124160
+PASS dev=1 n=2048 T=7 mode=0 old_us=32.9215 new_us=32.9040 speedup=1.00053 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=7 mode=1 first_token=124160
+PASS dev=1 n=2048 T=7 mode=1 old_us=39.7350 new_us=39.7440 speedup=0.99977 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=2048 rows=7 mode=2 first_token=124160
+PASS dev=1 n=2048 T=7 mode=2 old_us=34.5325 new_us=34.6030 speedup=0.99796 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=1 mode=0 first_token=124160
+PASS dev=1 n=124160 T=1 mode=0 old_us=169.7265 new_us=50.1505 speedup=3.38434 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=1 mode=1 first_token=124160
+PASS dev=1 n=124160 T=1 mode=1 old_us=206.0445 new_us=55.9680 speedup=3.68147 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=1 mode=2 first_token=124160
+PASS dev=1 n=124160 T=1 mode=2 old_us=206.7245 new_us=58.6570 speedup=3.52429 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=3 mode=0 first_token=124160
+PASS dev=1 n=124160 T=3 mode=0 old_us=170.9760 new_us=52.6720 speedup=3.24605 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=3 mode=1 first_token=124160
+PASS dev=1 n=124160 T=3 mode=1 old_us=206.3005 new_us=58.0800 speedup=3.55201 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=3 mode=2 first_token=124160
+PASS dev=1 n=124160 T=3 mode=2 old_us=206.8690 new_us=60.5385 speedup=3.41715 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=4 mode=0 first_token=124160
+PASS dev=1 n=124160 T=4 mode=0 old_us=174.4715 new_us=52.3140 speedup=3.33508 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=4 mode=1 first_token=124160
+PASS dev=1 n=124160 T=4 mode=1 old_us=206.1150 new_us=58.2675 speedup=3.53739 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=4 mode=2 first_token=124160
+PASS dev=1 n=124160 T=4 mode=2 old_us=206.7840 new_us=60.8320 speedup=3.39926 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=7 mode=0 first_token=124160
+PASS dev=1 n=124160 T=7 mode=0 old_us=174.8160 new_us=60.1345 speedup=2.90708 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=7 mode=1 first_token=124160
+PASS dev=1 n=124160 T=7 mode=1 old_us=206.0165 new_us=68.0640 speedup=3.02681 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+CASE device=1 n=124160 rows=7 mode=2 first_token=124160
+PASS dev=1 n=124160 T=7 mode=2 old_us=206.8625 new_us=70.4350 speedup=2.93693 exact_candidates=1 exact_penalties=1 cpu_oracle=1
+PASS device=1 cases=24 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=0

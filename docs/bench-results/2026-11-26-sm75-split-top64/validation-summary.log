@@ -1,0 +1,106 @@
+
+=== ctest-final.log ===
+Internal ctest changing into directory: $CHECK_ROOT/build-on
+Test project $CHECK_ROOT/build-on
+      Start 410: split_expert_residency_test
+ 1/15 Test #410: split_expert_residency_test ......   Passed    0.07 sec
+      Start 411: split_batch_plan_test
+ 2/15 Test #411: split_batch_plan_test ............   Passed    0.23 sec
+      Start 412: split_pf_ring_plan_test
+ 3/15 Test #412: split_pf_ring_plan_test ..........   Passed    0.64 sec
+      Start 413: split_pf_pick_test
+ 4/15 Test #413: split_pf_pick_test ...............   Passed    0.00 sec
+      Start 414: split_card_check_test
+ 5/15 Test #414: split_card_check_test ............   Passed    0.00 sec
+      Start 415: split_rope_test
+ 6/15 Test #415: split_rope_test ..................   Passed    0.00 sec
+      Start 416: split_sfnx_input_test
+ 7/15 Test #416: split_sfnx_input_test ............   Passed    0.00 sec
+      Start 417: split_peer_policy_test
+ 8/15 Test #417: split_peer_policy_test ...........   Passed    0.00 sec
+      Start 418: split_rccl_policy_test
+ 9/15 Test #418: split_rccl_policy_test ...........   Passed    0.00 sec
+      Start 419: split_selftest_policy_test
+10/15 Test #419: split_selftest_policy_test .......   Passed    0.00 sec
+      Start 420: split_memlock_test
+11/15 Test #420: split_memlock_test ...............   Passed    0.07 sec
+      Start 421: split_qdot_golden
+12/15 Test #421: split_qdot_golden ................   Passed    0.59 sec
+      Start 422: split_top64_sm75_test
+13/15 Test #422: split_top64_sm75_test ............   Passed    7.80 sec
+      Start 423: split_top64_sm75_default
+14/15 Test #423: split_top64_sm75_default .........   Passed    7.36 sec
+      Start 424: split_top64_sm75_enabled
+15/15 Test #424: split_top64_sm75_enabled .........   Passed    7.69 sec
+
+100% tests passed, 0 tests failed out of 15
+
+Total Test time (real) =  24.47 sec
+
+=== top64-repeat.log ===
+Internal ctest changing into directory: $CHECK_ROOT/build-on
+Test project $CHECK_ROOT/build-on
+    Start 422: split_top64_sm75_test
+    Test #422: split_top64_sm75_test ............   Passed    7.68 sec
+    Start 422: split_top64_sm75_test
+    Test #422: split_top64_sm75_test ............   Passed    7.67 sec
+    Start 422: split_top64_sm75_test
+1/3 Test #422: split_top64_sm75_test ............   Passed    7.67 sec
+    Start 423: split_top64_sm75_default
+    Test #423: split_top64_sm75_default .........   Passed    7.33 sec
+    Start 423: split_top64_sm75_default
+    Test #423: split_top64_sm75_default .........   Passed    7.34 sec
+    Start 423: split_top64_sm75_default
+2/3 Test #423: split_top64_sm75_default .........   Passed    7.33 sec
+    Start 424: split_top64_sm75_enabled
+    Test #424: split_top64_sm75_enabled .........   Passed    7.69 sec
+    Start 424: split_top64_sm75_enabled
+    Test #424: split_top64_sm75_enabled .........   Passed    7.66 sec
+    Start 424: split_top64_sm75_enabled
+3/3 Test #424: split_top64_sm75_enabled .........   Passed    7.63 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =  68.00 sec
+
+=== split-python.log ===
+........................................................................
+----------------------------------------------------------------------
+Ran 72 tests in 0.196s
+
+OK
+
+=== cpu-check-driver.log ===
+tools/check: 2026-11-26 16:28:45, python 3.12.15, scratch $CHECK_ROOT/cpu-check
+... cmake-cpu
+    cmake-cpu passed
+
+step       status  passed  failed  skipped   time
+---------  ------  ------  ------  -------  -----
+cmake-cpu  passed     173       0        4  2m41s
+
+SKIPPED, with the reason:
+  cmake-cpu          2  SKIP_RETURN_CODE=77
+  cmake-cpu          2  SKIP_REGULAR_EXPRESSION_MATCHED
+
+check: 1 passed, 0 failed, 0 not run (of 1 steps)
+scratch kept: $CHECK_ROOT/cpu-check
+
+=== sanitizer-memcheck (CASE banners omitted) ===
+========= COMPUTE-SANITIZER
+PASS device=0 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+PASS device=1 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors
+
+=== sanitizer-racecheck (CASE banners omitted) ===
+========= COMPUTE-SANITIZER
+PASS device=0 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+PASS device=1 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+=== sanitizer-synccheck (CASE banners omitted) ===
+========= COMPUTE-SANITIZER
+PASS device=0 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+PASS device=1 cases=462 exact_values=1 exact_ids=1 exact_penalties=1 nonfinite=1 graph_replays=3 concurrent_streams=1
+========= ERROR SUMMARY: 0 errors
