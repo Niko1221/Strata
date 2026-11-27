@@ -419,7 +419,8 @@ struct InkCudaModel {
             const size_t compact_margin = (768ull << 20) + (64ull << 20) + (plan_slots_pre == 1 ? df2_pre_bytes : 0u);   // + DFlash 2's real total for 1 slot (the precheck did not count it); 16 and more slots: the rings that fit
             std::fprintf(stderr, "[Ink5060Ti] COMPACT check: free %zu MiB, trunk %zu MiB + experts %zu MiB + headroom %zu MiB = %zu MiB needed\n",
                          vfree_pre >> 20, est_trunk >> 20, est_sec4 >> 20, compact_margin >> 20, (est_trunk + est_sec4 + compact_margin) >> 20);
-            if (do_compact_vram && opt5060_ld.compact_hybrid && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin)) {
+            const bool hybrid_going = do_compact_vram && opt5060_ld.compact_hybrid && (!all_sf4_or_mx8_pre || vfree_pre < est_trunk + est_sec4 + compact_margin);
+            if (hybrid_going) {
                 // COMPACT_HYBRID: the experts do not all fit (8 / 12 GB card): build the compact trunk anyway (it is 2.3 GiB smaller than the BF16 trunk) and let the normal hybrid
                 // placement (adaptive expert tier, hottest experts first, looped layers weighted by their visits) fill what is left of the card; the rest stay in RAM.
                 std::fprintf(stderr, "[Ink5060Ti] COMPACT_HYBRID: not all experts fit (free %zu MiB, all-VRAM needs about %zu MiB): compact trunk %zu MiB, the experts that fit go to the card, the rest stay in RAM\n",
@@ -434,7 +435,7 @@ struct InkCudaModel {
             // The crash margin (1 slot; 16 and more slots keep the SWA ring and the K/V on the host): what the runner and DFlash 2 really take after the load must leave at least 256 MiB free at the end
             // of the start, with no device K/V (the K/V is the elastic part: the sizing moves it to mapped host memory). RTX 5080 (15,558 MiB free): 147 MiB predicted, 144 measured, refused;
             // RTX 5060 Ti (15,698 MiB free): 290 predicted, 285 measured, runs.
-            if (do_compact_vram && plan_slots_pre == 1) {
+            if (do_compact_vram && plan_slots_pre == 1 && !hybrid_going) {   // COMPACT_HYBRID has no all-VRAM end state: the hybrid loader keeps its own reserve (the estimate would refuse every 8 / 12 GB card)
                 const size_t per_visit = (size_t)kInkKVDim * 2u + (size_t)(2 * kInkKVHeads * 4);   // the FP8 K/V of COMPACT (InkCudaRunner::kv_bytes_per_visit_pos)
                 int n_swa = 0, n_glob = 0;
                 for (int v = 0; v < kInkVisits; ++v) {

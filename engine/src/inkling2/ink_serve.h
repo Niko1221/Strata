@@ -942,6 +942,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
             reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
             reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
+            !backend.draft_plain_now(reqs[sole_slot].cur_pos) &&   // the one drafter rule: a plain step skips the whole block (the tree step AND the dspark_draft path below)
             !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {
             auto& rq = reqs[sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)

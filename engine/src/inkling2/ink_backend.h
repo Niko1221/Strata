@@ -172,6 +172,10 @@ public:
         return 0;
     }
 
+    // The one drafter rule (strata/core/ink_draft_rule.hpp): true when the step at `ctx_pos` is a plain step (no drafting at all: neither the fused tree step nor the
+    // dspark_draft + forward_batch path). The serve loop skips its whole single-stream drafting block on it. Default false (no rule).
+    virtual bool draft_plain_now(int ctx_pos) const { (void)ctx_pos; return false; }
+
     // Optional fused on-device greedy speculative step (W=4 Adaptive Beam Tree + zero-logits-D2H verify + commit).
     // Returns n_emit in 1..min(8, max_emit) on success, 0 to fall back to dspark_draft + forward_batch, or -1 on error.
     virtual int dspark_spec_step_greedy(

@@ -1632,6 +1632,10 @@ public:
         return best_nd;
     }
 
+    bool draft_plain_now(int ctx_pos) const override {
+        return strata::core::ink_draft_plain_step(model_.n_host_experts > 0, ctx_pos, draft_forced_, dev_cc_);
+    }
+
     int dspark_spec_step_greedy(
         int slot,
         int32_t anchor_tok,
