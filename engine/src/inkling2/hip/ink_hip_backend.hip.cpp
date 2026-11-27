@@ -2775,7 +2775,7 @@ public:
         (void)hipMemGetInfo(&f1, &t1);
         std::fprintf(stderr, "[ink-hip] DFlash 2 drafter: %s (weights %.0f MiB, scratch %.0f MiB, %.0f MiB of the card; block weights %s, codebooks %s, window ratio %.2f)\n", path.c_str(),
                      d->bytes_weights / 1048576.0, d->bytes_scratch / 1048576.0, (f0 > f1 ? f0 - f1 : 0) / 1048576.0,
-                     d->var.attn == 0 ? "bf16" : (d->var.ffn == 3 ? "pre-quantized mix (Q8 attention, SF4 feed-forward)" : (d->var.attn == 2 ? "4-bit" : (d->var.ffn == 2 ? "Q8 attention, 4-bit feed-forward" : "Q8"))), d->host_codebooks ? "host (mapped)" : "GPU", df2_ratio_);
+                     d->L[0].kg == 3 ? "pre-quantized mix (Q8 attention, SF4 feed-forward)" : (d->L[0].kg == 0 ? "bf16" : (d->L[0].kg == 2 ? (d->L[0].kq == 2 ? "4-bit" : "Q8 attention, 4-bit feed-forward") : "Q8")), d->host_codebooks ? "host (mapped)" : "GPU", df2_ratio_);
         // the drafter reads the target's taps after visits 5, 23, 41 and the final normed state; a model file without an embedded DSpark does not name them
         if (dspark_cfg_.target_visits.size() < 4) dspark_cfg_.target_visits = {5, 23, 41, c_.n_visits};
         df2_ = std::move(d);
