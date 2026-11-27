@@ -102,6 +102,30 @@ def real_model_file(path: Path) -> Path:
     return target
 
 
+def general_name(path: Path) -> str | None:
+    """The maker's name for the model (`general.name`) of one GGUF file, only to suggest a name for the person's own list; None when there is none or the
+    header cannot be read. Read within the same bounds as inspect_metadata; never raises."""
+    try:
+        target = real_model_file(Path(path))
+        with open(target, "rb") as stream:
+            reader = _Reader(stream, os.fstat(stream.fileno()).st_size)
+            if reader.take(4) != b"GGUF":
+                return None
+            _version, _tensors, keys = reader.u32(), reader.u64(), reader.u64()
+            if keys > MAX_METADATA_KEYS:
+                return None
+            for _ in range(keys):
+                key = reader.string(capture=True)
+                kind = reader.u32()
+                if key == "general.name":
+                    value = reader.value(kind, capture=True)
+                    return value if isinstance(value, str) else None
+                reader.value(kind)
+    except (ProfileError, OSError, struct.error):
+        return None
+    return None
+
+
 def tensor_types(path: Path) -> dict[str, int]:
     """name -> GGML type of every tensor in one GGUF v3 shard's directory (a link to one is followed), read within the same bounds as
     inspect_metadata; the metadata values are skipped. For the Qwen3.6 loader check (strata_control/q36_types.py)."""
@@ -200,7 +224,6 @@ def inspect_metadata(path: Path) -> dict:
             if not 0 <= tensors <= MAX_TENSORS or keys > MAX_METADATA_KEYS:
                 raise ProfileError("GGUF tensor or metadata count exceeds the inspection limit", 5)
             found: dict[str, object] = {}
-            general_name: str | None = None
             for _ in range(keys):
                 key = reader.string(capture=True)
                 if key is None or len(key) > 256:
@@ -209,9 +232,7 @@ def inspect_metadata(path: Path) -> dict:
                 if key in CAPTURE_STRINGS and value_type != 8:
                     raise ProfileError("GGUF architecture or tokenizer model is not a string", 5)
                 value = reader.value(value_type, capture=key in CAPTURE_STRINGS or
-                                     key == "general.alignment" or (key == "general.name" and value_type == 8))
-                if key == "general.name":                         # the maker's name for the model: only a suggestion for the person's own name for it
-                    general_name = value if isinstance(value, str) else None
+                                     key == "general.alignment")
                 if key in CAPTURE_STRINGS:
                     found[key] = value
                 elif key in PRESENCE_KEYS:
@@ -271,6 +292,6 @@ def inspect_metadata(path: Path) -> dict:
                     "expert_tensor_types": dict(sorted(expert_types.items())),
                     "header_bytes_scanned": reader.used,
                     "payload_bytes_required": required_payload_bytes,
-                    "payload_extent_valid": True, "general_name": general_name}
+                    "payload_extent_valid": True}
     except OSError:
         raise ProfileError("GGUF metadata could not be read", 5) from None

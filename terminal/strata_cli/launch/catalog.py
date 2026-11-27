@@ -167,10 +167,10 @@ def pick_row(rows, s) -> "ModelRow | None":
     """The list row these settings stand for: the custom build's own row when they name one, else the official row of (family, model)."""
     cid = getattr(s, "custom_id", None)
     if cid:
-        found = next((x for x in rows if x.custom and x.id == cid), None)
+        found = next((x for x in rows if getattr(x, "custom", False) and x.id == cid), None)
         if found is not None:
             return found
-    return next((x for x in rows if not x.custom and x.family == s.family and x.model == s.model), None)
+    return next((x for x in rows if not getattr(x, "custom", False) and x.family == s.family and x.model == s.model), None)
 
 
 @dataclass

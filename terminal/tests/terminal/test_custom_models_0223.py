@@ -205,6 +205,23 @@ class GgufImportPlan(Base):
         self.assertEqual(cand["suggested_label"], "My-Flash-Next-Tune-IQ3_S")
         self.assertEqual(plan["file_kind"], "gguf")
 
+    def test_the_makers_general_name_is_the_suggested_label_when_the_file_has_one(self):
+        from strata_control import gguf_preflight
+
+        def s(v):
+            raw = v.encode()
+            return struct.pack("<Q", len(raw)) + raw
+        pairs = [("general.architecture", 8, s("inkling2_loop")), ("general.name", 8, s("Ink Remix 7")),
+                 ("tokenizer.ggml.model", 8, s("gpt2")), ("tokenizer.ggml.tokens", 9, struct.pack("<IQ", 8, 1) + s("a")),
+                 ("tokenizer.ggml.merges", 9, struct.pack("<IQ", 8, 1) + s("a b"))]
+        head = b"GGUF" + struct.pack("<IQQ", 3, 1, len(pairs)) + b"".join(s(k) + struct.pack("<I", t) + v for k, t, v in pairs)
+        head += s("blk.0.ffn_gate_exps.weight") + struct.pack("<IQIQ", 1, 32, 8, 0)
+        f = self.folder("named")
+        (f / "file-name-is-different.gguf").write_bytes(head + b"\0" * (-len(head) % 32) + b"\0" * 34)
+        self.assertEqual(gguf_preflight.general_name(f / "file-name-is-different.gguf"), "Ink Remix 7")
+        self.assertIsNone(gguf_preflight.general_name(f / "missing.gguf"))
+        self.assertEqual(models.plan_import(str(f / "file-name-is-different.gguf"))["candidate_selection"]["suggested_label"], "Ink Remix 7")
+
     def test_an_exact_header_match_is_the_official_build_not_custom(self):
         f = self.folder("q38exact")
         p = f / "renamed-copy.gguf"

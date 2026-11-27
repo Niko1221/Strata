@@ -7817,7 +7817,8 @@ _OWN_FIRST: Path | None = None                         # --gguf-dir FILE with --
 
 def custom_requested(a) -> bool:
     """A custom build: the person's own model files (--gguf-dir) with a name of their own (--custom-label). Never for a download."""
-    return bool(str(getattr(a, "custom_label", None) or "").strip()) and bool(getattr(a, "gguf_dir", None))
+    label, folder = getattr(a, "custom_label", None), getattr(a, "gguf_dir", None)
+    return isinstance(label, str) and bool(label.strip()) and isinstance(folder, (str, os.PathLike)) and bool(str(folder))
 
 
 def custom_tags_in_use() -> dict:

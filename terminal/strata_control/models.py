@@ -24,6 +24,7 @@ from pathlib import Path
 
 from strata_control import custom_models, discovery, strata_manifest
 from strata_control.doctor import inspect as inspect_components
+from strata_control import gguf_preflight
 from strata_control.gguf_preflight import inspect_metadata, real_model_file
 from strata_control.profiles import ProfileError
 
@@ -1108,7 +1109,7 @@ def plan_import(raw_path: str) -> dict:
             (basis == "inkling2_gguf" and len(shards) == 1 and _official_inkling_gguf(shards[0].name, total_bytes))
         stem = SHARD.sub(lambda m: m.group(1) + ".gguf", shards[0].name)
         _custom_candidate_info(candidate, official=official, kind="gguf",
-                               suggestion=(metadata or {}).get("general_name") or re.sub(r"(?i)\.gguf\Z", "", stem))
+                               suggestion=gguf_preflight.general_name(shards[0]) or re.sub(r"(?i)\.gguf\Z", "", stem))
     return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
             "file_count": len(files), "total_bytes": total_bytes, "file_kind": "gguf",
             "custom": bool(candidate and candidate.get("custom")),

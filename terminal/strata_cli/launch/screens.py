@@ -25,6 +25,11 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch import custom
 from strata_cli.launch.catalog import pick_row
+
+
+def row_key(row) -> tuple:
+    """The list key of a model row: its own (a custom build has three parts), else (family, model)."""
+    return getattr(row, "key", None) or (row.family, row.model)
 from strata_cli.launch.widgets import (ACCENT, BAD, DARK, FG, LIGHT, MUTE, WARN, Cell, Item, Menu, bar)
 
 STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context", "Context"), ("pictures", "Pictures"),
@@ -551,7 +556,7 @@ class ModelScreen(Base):
         cur = m.current if m else None
         out = Text()
         if cur is not None and hasattr(self, "rows"):
-            r = next((x for x in self.rows if x.key == cur.key), None)
+            r = next((x for x in self.rows if row_key(x) == cur.key), None)
             if r:
                 out.append(f"{r.title}: {r.about}.\n", style=FG)
                 if r.custom:
@@ -564,7 +569,7 @@ class ModelScreen(Base):
                     out.append(f"{r.sentence}. ", style=BAD if r.verdict == "no" else WARN)
         # At 80 x 24 the box holds four lines: with a verdict sentence (three lines for a model that does not fit) this last, general sentence was cut
         # in the middle ("... stays on your SSD and is"). It stays in the help (?); a tall window shows it whole (GUI-TUI 0.2.17 QA).
-        verdict_shown = cur is not None and hasattr(self, "rows") and any(x.key == cur.key and x.verdict != "fits" for x in self.rows)
+        verdict_shown = cur is not None and hasattr(self, "rows") and any(row_key(x) == cur.key and x.verdict != "fits" for x in self.rows)
         if not verdict_shown or self.app.size.height >= 30:
             out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
         for title, why in self.unavailable_lines():
@@ -615,7 +620,7 @@ class ModelScreen(Base):
                 s.tune = "skip"
                 s.kv = None
                 s.extra = {}
-            r = next(x for x in self.rows if x.key == cur.key)
+            r = next(x for x in self.rows if row_key(x) == cur.key)
             if r.verdict == "no":
                 self.ctx.notes.append(f"{r.title} does not fit this computer; it may be slow or run out of memory.")
 
