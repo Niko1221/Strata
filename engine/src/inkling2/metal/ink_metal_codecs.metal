@@ -2355,6 +2355,143 @@ static inline void sk_w13_chunk_tg(
     }
 }
 
+// Compile-time MM-specialized variant: the token loop fully unrolls and the
+// accumulators stay in registers. The runtime-mm version forces indexed array
+// accesses that Metal keeps in thread-local memory.
+template <int F, int MM>
+static inline void sk_w13_chunk_mm(
+    device const uchar* body, int r, device const float* x_in,
+    thread const uint* tk, int lane, thread float* ag, thread float* au) {
+    constexpr int SB = sk_sb_bytes(F);
+    const size_t rowb = 9ul * SB;
+    device const uchar* gu = body + 2304;
+    device const uchar* rg = gu + (size_t)(2 * r) * rowb;
+    device const uchar* ru = gu + (size_t)(2 * r + 1) * rowb;
+    if (F == 2 || F == 3) {
+        const int u = lane, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+        for (int unit = lane; unit < 288; unit += 32) {
+            const int sbi = unit >> 5;
+            device const uchar* bg = rg + (size_t)sbi * SB;
+            device const uchar* bu = ru + (size_t)sbi * SB;
+            const float effg = float(as_type<half>(ld16(bg))) * (float(bg[2 + g]) * (1.0f / 255.0f));
+            const float effu = float(as_type<half>(ld16(bu))) * (float(bu[2 + g]) * (1.0f / 255.0f));
+            device const uchar* bgp = bg + 6;
+            device const uchar* bup = bu + 6;
+            const uchar2 pg = uchar2(bgp[j >> 2], bgp[(j >> 2) + 1]);
+            const uchar2 pu = uchar2(bup[j >> 2], bup[(j >> 2) + 1]);
+            uint hg = 0, hu = 0;
+            if (F == 3) {
+                hg = uint(bgp[64 + (j >> 3)]);
+                hu = uint(bup[64 + (j >> 3)]);
+            }
+            float4 wg0, wg1, wu0, wu1;
+            if (F == 2) {
+                wg0 = float4(kS2Lut[pg.x]);
+                wg1 = float4(kS2Lut[pg.y]);
+                wu0 = float4(kS2Lut[pu.x]);
+                wu1 = float4(kS2Lut[pu.y]);
+            } else {
+                wg0 = float4(kS2Lut[pg.x] + kS3Hi[hg & 15u]);
+                wg1 = float4(kS2Lut[pg.y] + kS3Hi[hg >> 4]);
+                wu0 = float4(kS2Lut[pu.x] + kS3Hi[hu & 15u]);
+                wu1 = float4(kS2Lut[pu.y] + kS3Hi[hu >> 4]);
+            }
+            #pragma unroll
+            for (int i = 0; i < MM; ++i) {
+                device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
+                const float4 x0 = xp[0], x1 = xp[1];
+                ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+                au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+            }
+        }
+        return;
+    }
+    // F>3: fall back to the generic loop structure with MM unroll hint
+    for (int unit = lane; unit < 288; unit += 32) {
+        const int sbi = unit >> 5, u = unit & 31, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+        device const uchar* bg = rg + (size_t)sbi * SB;
+        device const uchar* bu = ru + (size_t)sbi * SB;
+        const float effg = float(as_type<half>(ld16(bg))) * (float(bg[2 + g]) * (1.0f / 255.0f));
+        const float effu = float(as_type<half>(ld16(bu))) * (float(bu[2 + g]) * (1.0f / 255.0f));
+        float4 wg0, wg1, wu0, wu1;
+        sk_w8<F>(bg + 6, j, wg0, wg1);
+        sk_w8<F>(bu + 6, j, wu0, wu1);
+        #pragma unroll
+        for (int i = 0; i < MM; ++i) {
+            device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
+            const float4 x0 = xp[0], x1 = xp[1];
+            ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+            au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+        }
+    }
+}
+
+// mm-specialized kernel variant of ink_moe_gu_sk23 (chunk loop unrolled, registers pinned)
+kernel void ink_moe_gu_sk23_mm(
+    device const uchar* sec4        [[buffer(0)]],
+    device const InkExpertDev* ex   [[buffer(1)]],
+    device const float* x_in        [[buffer(2)]],
+    device const int* uexp          [[buffer(3)]],
+    device const int* uoff          [[buffer(4)]],
+    device const int* ucnt          [[buffer(5)]],
+    device const int* pair_list     [[buffer(6)]],
+    device const uint* meta         [[buffer(7)]],
+    device float* h_act             [[buffer(8)]],
+    device const uchar* sec4_1      [[buffer(9)]],
+    device const uchar* sec4_2      [[buffer(10)]],
+    device const uchar* sec4_3      [[buffer(11)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int y = int(tgp.y);
+    if (y >= int(meta[0])) return;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int r = int(tgp.x) * 8 + int(sg);
+    if (r >= 1152) return;
+    const int e = uexp[y], off = uoff[y], n = ucnt[y];
+    const InkExpertDev ed = ex[e];
+    device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16 && ed.dn_code != 20);
+    const float inv_sq = is_sk_dn ? (1.0f / float(as_type<half>(ld16(body + 2 * r)))) : 1.0f;
+
+    if (n == 1) {
+        const uint pid0 = uint(pair_list[off]), tk0 = pid0 >> 3u;
+        float ag0 = 0.0f, au0 = 0.0f;
+        if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 1>(body, r, x_in, &tk0, int(lane), &ag0, &au0);
+        else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 1>(body, r, x_in, &tk0, int(lane), &ag0, &au0);
+        else                      sf4_w13_chunk_s<32>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
+        const float g2 = simd_sum(ag0), u2 = simd_sum(au0);
+        if (lane == 0) h_act[ulong(pid0) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        return;
+    }
+    for (int t0 = 0; t0 < n; t0 += 4) {
+        const int mm = min(4, n - t0);
+        uint pid[4], tk[4];
+        for (int i = 0; i < mm; ++i) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
+        float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
+        if (mm == 4) {
+            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 4>(body, r, x_in, tk, int(lane), ag, au);
+            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 4>(body, r, x_in, tk, int(lane), ag, au);
+            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        } else if (mm == 3) {
+            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 3>(body, r, x_in, tk, int(lane), ag, au);
+            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 3>(body, r, x_in, tk, int(lane), ag, au);
+            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        } else if (mm == 2) {
+            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 2>(body, r, x_in, tk, int(lane), ag, au);
+            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 2>(body, r, x_in, tk, int(lane), ag, au);
+            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        } else {
+            if (ed.gu_code == 3)      sk_w13_chunk_mm<3, 1>(body, r, x_in, tk, int(lane), ag, au);
+            else if (ed.gu_code == 2) sk_w13_chunk_mm<2, 1>(body, r, x_in, tk, int(lane), ag, au);
+            else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        }
+        for (int i = 0; i < mm; ++i) {
+            const float g2 = simd_sum(ag[i]), u2 = simd_sum(au[i]);
+            if (lane == 0) h_act[ulong(pid[i]) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        }
+    }
+}
+
 // Generic mixed-codec MoE gate/up + SITU (Apple M1/M2 G13/G14 GlobalISel-safe: pure uint indexing, single mm<=4 loop!)
 kernel void ink_moe_gu_situ(
     device const uchar* sec4        [[buffer(0)]],
