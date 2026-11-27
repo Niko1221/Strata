@@ -180,6 +180,12 @@ public:
 
     bool dspark_ready() const override { return runner_.use_dflash2 || runner_.use_dspark; }
 
+    // The one drafter rule, principle 2 (strata/core/ink_draft_rule.hpp): on a Mac that pages its model a draft step reads more pages, so from 2048 tokens on the step is plain.
+    bool draft_plain_now(int ctx_pos) const override {
+        if (!runner_.use_dflash2) return false;
+        return strata::core::ink_draft_plain_step(runner_.draft_hybrid, ctx_pos, runner_.draft_user_on);
+    }
+
     std::string device_info() const override {
         return cx_.device_name() + " (workSet=" +
                std::to_string((int)(cx_.recommended_working_set() / (1024ull * 1024ull * 1024ull))) + " GiB)";
@@ -225,6 +231,11 @@ public:
         const int batch_cap = std::max(256, std::max(want_chunk, par));
         const bool enable_draft = opts.enable_dspark &&
                                   (strata::ink::df2_requested() || ink2::dormant_dspark_allowed());
+        {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2
+            const char* de = std::getenv("STRATA_INK_DRAFTER");
+            const std::string dl = de ? std::string(de) : std::string();
+            runner_.draft_user_on = opts.draft_forced || dl == "dflash2" || dl == "DFLASH2" || dl == "df2";
+        }
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
                           enable_draft, opts.vision_path, "", err)) {
             return false;

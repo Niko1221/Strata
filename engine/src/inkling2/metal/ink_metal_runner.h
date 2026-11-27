@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "strata/core/ink_draft_rule.hpp"
 #include "ink_metal_common.h"
 #include "ink_metal_m5max_cfg.h"
 #include "ink_metal_dflash2.h"
@@ -111,6 +112,10 @@ struct InkMetalRunner {
     InkMetalDFlash2 df2;
     bool use_dflash2 = false;
     bool kv_is_fp8 = false;
+    bool draft_user_on = false;   // --draft on / STRATA_INK_DRAFTER=dflash2: asked for by name (never vetoed, never cut to plain steps)
+    bool draft_hybrid = false;    // the model does not fit in memory with room to spare (paged): a draft step costs extra page reads
+    // What DFlash 2 takes: the widened weights and the Q8 unembed screen (about 1.1 GiB) plus the per-slot context rings (about 43 MiB each); the load prints what it really took.
+    static uint64_t df2_bytes_estimate(int slots) { return (1100ull << 20) + (uint64_t)std::max(1, slots) * (43ull << 20); }
     bool is_apple10 = false;
     bool use_mpp = false, use_mpp_trunk_f16 = false, use_mpp_trunk_i8 = false, use_dspark_f16 = false;
     int mpp_decomp_cap = 0;
@@ -971,12 +976,36 @@ struct InkMetalRunner {
 
         // Native Metal DFlash 2 drafter (loads dflash2.safetensors beside model when --draft is active)
         if (want_df2 && lib_dflash2 >= 0) {
-            const std::string df2_path = strata::ink::df2_resolve_path(mod->path);
+            std::string df2_path = strata::ink::df2_resolve_path(mod->path);
+            if (!df2_path.empty()) {
+                // The one drafter rule, principle 1 (strata/core/ink_draft_rule.hpp). Unified memory: the model is "resident" while what the process holds, the drafter and 4 GiB for the system
+                // fit in the machine's memory; a Mac that pages the model already (a 16 GB Mac with a 19 GB pack) does not get the default drafter, its weights only cost cache.
+                const uint64_t phys = cx->physical_memory_bytes();
+                const uint64_t used = std::max<uint64_t>(cx->allocated(), (uint64_t)mod->map_len);
+                const uint64_t draft_b = df2_bytes_estimate(max_slots);
+                const uint64_t headroom = 4ull << 30;
+                strata::core::InkDraftLoadIn in;
+                in.full_without = phys > 0 && used + headroom <= phys;
+                in.full_with = phys > 0 && used + draft_b + headroom <= phys;
+                in.tier_budget_mib = phys > used + headroom ? (double)(phys - used - headroom) / 1048576.0 : 0.0;
+                in.drafter_mib = (double)draft_b / 1048576.0;
+                in.user_on = draft_user_on;
+                const auto rule = strata::core::ink_draft_load_rule(in);
+                draft_hybrid = !in.full_without;
+                if (!rule.load) {
+                    fprintf(stderr, "%s\n", strata::core::ink_draft_veto_line("[ink_metal]", "DFlash 2", (double)used / 1073741824.0, (double)(phys > headroom ? phys - headroom : 0) / 1073741824.0,
+                                                                              in.drafter_mib, (double)(phys > used + headroom ? phys - used - headroom : 0) / 1073741824.0).c_str());
+                    df2_path.clear();
+                }
+            }
             if (!df2_path.empty()) {
                 std::string df2_err;
+                const uint64_t df2_alloc0 = cx->allocated();
                 if (df2.init(*cx, *mod, lib_dflash2, df2_path, max_slots,
                              m5.active && m5.use_flat_tape, m5.active && m5.use_untracked_scratch, df2_err)) {
                     use_dflash2 = true;
+                    fprintf(stderr, "[ink_metal] DFlash 2 loaded: %.0f MiB allocated (the memory rule counted %.0f MiB)\n",
+                            (double)(cx->allocated() - df2_alloc0) / 1048576.0, (double)df2_bytes_estimate(max_slots) / 1048576.0);
                 } else {
                     fprintf(stderr, "[ink_metal] DFlash 2 init skipped (%s): %s\n", df2_path.c_str(), df2_err.c_str());
                 }
