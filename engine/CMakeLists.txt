@@ -144,10 +144,25 @@ option(STRATA_Q6K_EXPERTS "Build the Q6_K gate/up grouped expert kernels (UD-Q6_
 if(STRATA_Q6K_EXPERTS)
   add_compile_definitions(STRATA_Q6K_EXPERTS=1)
 endif()
-if(STRATA_ENABLE_CUDA AND STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)
+option(STRATA_HYBRID "Compile the shared kernels for CUDA and HIP and dispatch by device" OFF)
+if(STRATA_ENABLE_CUDA AND STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906 AND NOT STRATA_HYBRID)
   message(FATAL_ERROR "STRATA_ENABLE_CUDA and STRATA_ENABLE_HIP are separate backends; enable only one")
 endif()
-if(STRATA_ENABLE_HIP)
+if(STRATA_HYBRID AND NOT STRATA_ENABLE_CUDA)
+  message(FATAL_ERROR "STRATA_HYBRID keeps the CUDA host path and adds a HIP device path")
+endif()
+if(STRATA_HYBRID)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    message(FATAL_ERROR "STRATA_HYBRID is Linux x86-64 only. The host trampoline is System V amd64 and the runtime shim uses dlopen.")
+  endif()
+  if(STRATA_HIP_GFX906)
+    message(FATAL_ERROR "STRATA_HYBRID cannot be combined with STRATA_HIP_GFX906")
+  endif()
+  if(STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_HYBRID keeps STRATA_ENABLE_HIP off and adds the HIP devices itself")
+  endif()
+endif()
+if(STRATA_ENABLE_HIP AND NOT STRATA_HYBRID)
   include(cmake/hip_backend.cmake)
 endif()
 # Tests are on by default when the build can run them.  What they need: their sources (src/**/*_test.cpp, tests/core,
@@ -226,9 +241,16 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_file_test src/core/conversation_file_test.cpp src/core/conversation_file.cpp)
   target_include_directories(conversation_file_test PRIVATE include)
   add_test(NAME conversation_file_test COMMAND conversation_file_test)
+  add_executable(conversation_append_test src/core/conversation_append_test.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_append_test PRIVATE include)
+  add_test(NAME conversation_append_test COMMAND conversation_append_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # the incremental-save watermark: pure host bookkeeping on SessionState, no device
+  add_executable(session_watermark_test src/core/session_watermark_test.cpp)
+  target_include_directories(session_watermark_test PRIVATE include)
+  add_test(NAME session_watermark_test COMMAND session_watermark_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -1034,4 +1056,17 @@ if(STRATA_BUILD_TESTS)
   message(STATUS "strata tests: ON - ${_strata_test_kinds}")
 else()
   message(STATUS "strata tests: OFF (STRATA_BUILD_TESTS=OFF)")
+endif()
+
+# The hybrid patching is target surgery on targets the whole file creates: hybrid.cmake
+# adds definitions, sources, link options and the wrapped HIP archive to strata_core,
+# strata_kernels, strata_engine, strata_prefill, strata_qwen35 and strata_spec (GPU
+# runtime via strata_gpu_engine(), CPU kernels via strata_cpu_kernels()) and to the
+# strata/strata-device binaries.  Before 0.2.16 the chain included it beside
+# hip_backend.cmake - a setup-only file - which worked because those targets were defined
+# at top level earlier in the file.  Include it last: every guarded target lookup then
+# sees the finished graph, exactly like the 0.2.12-era include at the tail of the GPU
+# section.
+if(STRATA_HYBRID)
+  include(cmake/hybrid.cmake)
 endif()
