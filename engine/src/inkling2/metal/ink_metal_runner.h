@@ -123,6 +123,8 @@ struct InkMetalRunner {
     // Pipelines
     mtl::Pipeline p_lin_bf16_mv1, p_lin_bf16_mv, p_lin_bf16_mm8, p_lin_bf16_mm;
     mtl::Pipeline p_lin_q8_mv1, p_lin_q8_mv, p_lin_q8_mm8, p_lin_q8_mm;
+    mtl::Pipeline p_attnproj_fused;
+    mtl::Pipeline p_lin_q8_mv1_wide;
     mtl::Pipeline p_lin_f32, p_lin_f32_mm, p_lin_f32_exact_mm;
     mtl::Pipeline p_lin_sk[9], p_lin_sk5_mm8, p_lin_sk6_mm8;
     mtl::Pipeline p_unemb_argmax_q8, p_unemb_argmax_bf16, p_unemb_argmax_sk6, p_argmax_part;
@@ -258,6 +260,8 @@ struct InkMetalRunner {
         p_lin_bf16_mm8 = cx->pipeline(lib_codecs, "ink_linear_bf16_mm8");
         p_lin_bf16_mm  = cx->pipeline(lib_codecs, "ink_linear_bf16_mm");
         p_lin_q8_mv1   = cx->pipeline(lib_codecs, "ink_linear_q8row_mv1");
+        p_attnproj_fused = cx->pipeline(lib_codecs, "ink_attnproj_fused_mv1");
+        p_lin_q8_mv1_wide = cx->pipeline(lib_codecs, "ink_linear_q8row_mv1_wide");
         p_lin_q8_mv    = cx->pipeline(lib_codecs, "ink_linear_q8row_mv");
         p_lin_q8_mm8   = cx->pipeline(lib_codecs, "ink_linear_q8row_mm8");
         p_lin_q8_mm    = cx->pipeline(lib_codecs, "ink_linear_q8row_mm");
@@ -885,7 +889,8 @@ struct InkMetalRunner {
             }
         } else if (ti.fmt == FMT_Q8ROW) {
             if (M == 1 && (K & 15) == 0) {
-                d.p = &p_lin_q8_mv1;
+                static const bool q8wide = std::getenv("INK_Q8WIDE") != nullptr;
+                d.p = q8wide ? &p_lin_q8_mv1_wide : &p_lin_q8_mv1;
                 d.grid[0] = (uint32_t)((N + 31) / 32);
                 d.tg[0] = 256;
             } else if (M >= 2 && M <= 8 && N >= 32768) {
@@ -953,6 +958,19 @@ struct InkMetalRunner {
 
     struct InkMppMmArgs {
         int M, N, K, out_stride;
+    };
+    // Must mirror InkAttnProjFusedParams in ink_metal_codecs.metal exactly.
+    struct InkAttnProjFusedParams {
+        uint64_t w_off[8];
+        uint32_t n_rows[8];
+        uint32_t is_f32[8];
+        uint32_t x_off4[8];
+        uint32_t out_idx[8];
+        uint64_t out_off[8];
+        uint32_t rowbase[8];
+        uint32_t total_rows;
+        uint32_t nproj;
+        uint32_t pad[2];
     };
     struct InkMppAttnArgs {
         int M, M_pad, slot, pos0, is_swa, swa_win, rel_extent, kv_stride;
@@ -1322,16 +1340,76 @@ struct InkMetalRunner {
                 }
             } else {
                 // ALL 6-8 projections read from b_in3 and write disjoint outputs -> run 100% CONCURRENTLY on Apple Silicon!
-                push_trunk_linear(ds, p + ".attn.wq_du.weight", in_q, mtl::Arg::B(b_q), M, -1, true);
-                push_trunk_linear(ds, p + ".attn.wk_dv.weight", in_k, mtl::Arg::B(b_k_raw), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.wv_dv.weight", in_v, mtl::Arg::B(b_v_raw), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.wr_du.weight", in_q, mtl::Arg::B(b_r), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.attn_sink_proj.weight", in_q, mtl::Arg::B(b_sinks), M, -1, false);
-                push_trunk_linear(ds, p + ".attn.gate_attn.weight", in_q, mtl::Arg::B(b_gate_attn), M, -1, false);
+                static const bool fuse_attnproj = [] {
+                    const char* e = std::getenv("INK_FUSE_ATTN");
+                    return !(e && (std::string(e) == "0" || std::string(e) == "off"));
+                }();
+                // Fused single-dispatch path for M==1 decode: replaces 6-8 small back-to-back
+                // GEMV dispatches with one wide kernel so warps from different projections
+                // interleave (no drain/refill bubbles between them). Requires Q8_ROW trunk
+                // projections, F32 sinks/sconv, and all weights in the shared sec1 buffer.
+                const char* ap_names[8] = {".attn.wq_du.weight", ".attn.wk_dv.weight", ".attn.wv_dv.weight",
+                                           ".attn.wr_du.weight", ".attn.attn_sink_proj.weight", ".attn.gate_attn.weight",
+                                           ".attn.k_sconv.weight_proj", ".attn.v_sconv.weight_proj"};
+                const int nproj = is_swa ? 6 : 8;
+                bool can_fuse = fuse_attnproj && M == 1;
+                const mtl::Arg xins[8] = {in_q, in_k, in_v, in_q, in_q, in_q, in_k, in_v};
+                for (int i = 0; can_fuse && i < nproj; ++i) {
+                    const auto& ti = mod->man.get(p + ap_names[i]);
+                    const bool q8 = ti.fmt == FMT_Q8ROW;
+                    const bool f32 = ti.fmt == FMT_F32;
+                    if (!(q8 || f32) || (int)ti.cols() != D || (ti.rows() % 4) != 0) can_fuse = false;
+                    if (!q8 && !f32) can_fuse = false;
+                    // wq/wk/wv/wr/gate must be Q8; sinks/sconv F32-only in practice but accept either
+                }
+                if (can_fuse) {
+                    InkAttnProjFusedParams fp{};
+                    const mtl::Buffer* wbuf = mod->tw(p + ".attn.wq_du.weight").buf;
+                    const mtl::Buffer* out_bufs[8] = {&b_q, &b_k_raw, &b_v_raw, &b_r, &b_sinks, &b_gate_attn, &b_kd_taps, &b_vd_taps};
+                    uint32_t rb = 0;
+                    for (int i = 0; i < nproj; ++i) {
+                        const std::string nm = p + ap_names[i];
+                        const auto& ti = mod->man.get(nm);
+                        const mtl::Arg wa = mod->tw(nm);
+                        fp.w_off[i] = (uint64_t)wa.off;
+                        fp.n_rows[i] = (uint32_t)ti.rows();
+                        fp.is_f32[i] = (ti.fmt == FMT_F32) ? 1u : 0u;
+                        fp.x_off4[i] = (uint32_t)(xins[i].off / 4);
+                        fp.out_idx[i] = (uint32_t)i;
+                        fp.out_off[i] = 0;
+                        fp.rowbase[i] = rb;
+                        rb += (uint32_t)ti.rows();
+                        if (wa.buf != wbuf) can_fuse = false;
+                    }
+                    fp.nproj = (uint32_t)nproj;
+                    fp.total_rows = rb;
+                    if (can_fuse) {
+                        mtl::Dispatch d;
+                        d.barrier = true;
+                        d.p = &p_attnproj_fused;
+                        d.grid[0] = (rb + 31) / 32;
+                        d.tg[0] = 256;
+                        int xst = D;
+                        d.args = {mtl::Arg::B(*wbuf, 0), mtl::Arg::B(b_in3, 0),
+                                  mtl::Arg::B(*out_bufs[0]), mtl::Arg::B(*out_bufs[1]), mtl::Arg::B(*out_bufs[2]),
+                                  mtl::Arg::B(*out_bufs[3]), mtl::Arg::B(*out_bufs[4]), mtl::Arg::B(*out_bufs[5]),
+                                  mtl::Arg::B(*out_bufs[6]), mtl::Arg::B(*out_bufs[7]),
+                                  mtl::Arg::V(fp), mtl::Arg::V(xst)};
+                        ds.push_back(std::move(d));
+                    }
+                }
+                if (!can_fuse) {
+                    push_trunk_linear(ds, p + ".attn.wq_du.weight", in_q, mtl::Arg::B(b_q), M, -1, true);
+                    push_trunk_linear(ds, p + ".attn.wk_dv.weight", in_k, mtl::Arg::B(b_k_raw), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.wv_dv.weight", in_v, mtl::Arg::B(b_v_raw), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.wr_du.weight", in_q, mtl::Arg::B(b_r), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.attn_sink_proj.weight", in_q, mtl::Arg::B(b_sinks), M, -1, false);
+                    push_trunk_linear(ds, p + ".attn.gate_attn.weight", in_q, mtl::Arg::B(b_gate_attn), M, -1, false);
 
-                if (!is_swa) {
-                    push_trunk_linear(ds, p + ".attn.k_sconv.weight_proj", in_k, mtl::Arg::B(b_kd_taps), M, -1, false);
-                    push_trunk_linear(ds, p + ".attn.v_sconv.weight_proj", in_v, mtl::Arg::B(b_vd_taps), M, -1, false);
+                    if (!is_swa) {
+                        push_trunk_linear(ds, p + ".attn.k_sconv.weight_proj", in_k, mtl::Arg::B(b_kd_taps), M, -1, false);
+                        push_trunk_linear(ds, p + ".attn.v_sconv.weight_proj", in_v, mtl::Arg::B(b_vd_taps), M, -1, false);
+                    }
                 }
             }
 

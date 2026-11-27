@@ -505,6 +505,72 @@ kernel void ink_linear_q8row_mv1(
     if (h3) { const float v3 = simd_sum(a3) * sc3; if (lane == 0) Y[row0 + 3] = v3; }
 }
 
+// --- Q8_ROW M=1 GEMV with explicit load batching for higher memory-level parallelism.
+// Identical math to ink_linear_q8row_mv1 (same accumulation tree) but issues ALL weight
+// loads for two stride-rounds before any dots, doubling in-flight memory per lane.
+// INK_Q8WIDE experiment: if this is faster, DRAM latency exposure is real; if not,
+// the compiler was already batching loads and the bottleneck is elsewhere.
+kernel void ink_linear_q8row_mv1_wide(
+    device const uchar* W [[buffer(0)]],
+    device const float* X [[buffer(1)]],
+    device float* Y       [[buffer(2)]],
+    constant int& N       [[buffer(3)]],
+    constant int& K       [[buffer(4)]],
+    constant int& M       [[buffer(5)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    (void)M;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int row0 = int(tg) * 32 + int(sg) * 4;
+    if (row0 >= N) return;
+    const bool h1 = (row0 + 1) < N, h2 = (row0 + 2) < N, h3 = (row0 + 3) < N;
+    device const float* scales = (device const float*)W;
+    const float sc0 = scales[row0], sc1 = h1 ? scales[row0 + 1] : 0.0f;
+    const float sc2 = h2 ? scales[row0 + 2] : 0.0f, sc3 = h3 ? scales[row0 + 3] : 0.0f;
+    device const uchar* qbase = W + (size_t)N * 4;
+    device const char4* q0p = (device const char4*)(qbase + (size_t)row0 * K);
+    device const char4* q1p = (device const char4*)(qbase + (size_t)(row0 + (h1 ? 1 : 0)) * K);
+    device const char4* q2p = (device const char4*)(qbase + (size_t)(row0 + (h2 ? 2 : 0)) * K);
+    device const char4* q3p = (device const char4*)(qbase + (size_t)(row0 + (h3 ? 3 : 0)) * K);
+    device const float4* xp = (device const float4*)X;
+    const int K16 = K >> 4;
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+    // Two rounds in flight: load round r+1's weights and x before computing round r.
+    // K16/32 rounds per lane: 144/32 = 4.5 -> lanes 0..15 get 5 rounds, 16..31 get 4.
+    char4 w0a[4], w0b[4], w1a[4], w1b[4], w2a[4], w2b[4], w3a[4], w3b[4];
+    float4 xa[4], xb[4];
+    int k = int(lane);
+    if (k < K16) {
+        const int k4 = k * 4;
+        w0a[0] = q0p[k4]; w0a[1] = q0p[k4 + 1]; w0a[2] = q0p[k4 + 2]; w0a[3] = q0p[k4 + 3];
+        w1a[0] = q1p[k4]; w1a[1] = q1p[k4 + 1]; w1a[2] = q1p[k4 + 2]; w1a[3] = q1p[k4 + 3];
+        w2a[0] = q2p[k4]; w2a[1] = q2p[k4 + 1]; w2a[2] = q2p[k4 + 2]; w2a[3] = q2p[k4 + 3];
+        w3a[0] = q3p[k4]; w3a[1] = q3p[k4 + 1]; w3a[2] = q3p[k4 + 2]; w3a[3] = q3p[k4 + 3];
+        xa[0] = xp[k4]; xa[1] = xp[k4 + 1]; xa[2] = xp[k4 + 2]; xa[3] = xp[k4 + 3];
+    }
+    for (; k < K16; k += 32) {
+        const bool more = (k + 32) < K16;
+        if (more) {
+            const int k4 = (k + 32) * 4;
+            w0b[0] = q0p[k4]; w0b[1] = q0p[k4 + 1]; w0b[2] = q0p[k4 + 2]; w0b[3] = q0p[k4 + 3];
+            w1b[0] = q1p[k4]; w1b[1] = q1p[k4 + 1]; w1b[2] = q1p[k4 + 2]; w1b[3] = q1p[k4 + 3];
+            w2b[0] = q2p[k4]; w2b[1] = q2p[k4 + 1]; w2b[2] = q2p[k4 + 2]; w2b[3] = q2p[k4 + 3];
+            w3b[0] = q3p[k4]; w3b[1] = q3p[k4 + 1]; w3b[2] = q3p[k4 + 2]; w3b[3] = q3p[k4 + 3];
+            xb[0] = xp[k4]; xb[1] = xp[k4 + 1]; xb[2] = xp[k4 + 2]; xb[3] = xp[k4 + 3];
+        }
+        // consume round k (exact original accumulation order per row)
+        a0 += dot(float4(w0a[0]), xa[0]) + dot(float4(w0a[1]), xa[1]) + dot(float4(w0a[2]), xa[2]) + dot(float4(w0a[3]), xa[3]);
+        if (h1) a1 += dot(float4(w1a[0]), xa[0]) + dot(float4(w1a[1]), xa[1]) + dot(float4(w1a[2]), xa[2]) + dot(float4(w1a[3]), xa[3]);
+        if (h2) a2 += dot(float4(w2a[0]), xa[0]) + dot(float4(w2a[1]), xa[1]) + dot(float4(w2a[2]), xa[2]) + dot(float4(w2a[3]), xa[3]);
+        if (h3) a3 += dot(float4(w3a[0]), xa[0]) + dot(float4(w3a[1]), xa[1]) + dot(float4(w3a[2]), xa[2]) + dot(float4(w3a[3]), xa[3]);
+        for (int u = 0; u < 4; ++u) { w0a[u] = w0b[u]; w1a[u] = w1b[u]; w2a[u] = w2b[u]; w3a[u] = w3b[u]; xa[u] = xb[u]; }
+    }
+    const float v0 = simd_sum(a0) * sc0; if (lane == 0) Y[row0] = v0;
+    if (h1) { const float v1 = simd_sum(a1) * sc1; if (lane == 0) Y[row0 + 1] = v1; }
+    if (h2) { const float v2 = simd_sum(a2) * sc2; if (lane == 0) Y[row0 + 2] = v2; }
+    if (h3) { const float v3 = simd_sum(a3) * sc3; if (lane == 0) Y[row0 + 3] = v3; }
+}
+
 // --- Q8_ROW simdgroup_matrix 8x64 GEMM for M=2..8
 kernel void ink_linear_q8row_mm8(
     device const uchar* W [[buffer(0)]],
@@ -952,6 +1018,146 @@ kernel void ink_argmax_part_reduce_m(
 }
 
 // --- Q8_ROW GEMV for M=1..8 (single DRAM weight pass, ZERO barriers, exact FP32 activations!)
+// Fused attention projections (wq, wr, sinks, gate, wk, wv, [k/v sconv dyn]) in ONE dispatch.
+// All share K=2304 and read x from b_in3 (q/k/v rows stacked with M_stride). Weights are byte
+// offsets into the same sec1 buffer; outputs are independent buffers with per-projection byte
+// offsets (all 0 in practice). Parallelism: flattened row space across all projections,
+// 4 rows per simdgroup, 8 simdgroups per threadgroup.
+// M=1 only (decode). Benefit: one 279-TG kernel replaces 6-8 small back-to-back kernels per
+// layer-visit, so warps from different projections interleave on the GPU instead of each small
+// kernel draining the pipeline before the next starts.
+struct InkAttnProjFusedParams {
+    ulong w_off[8];      // byte offset of each projection's weight tensor in W (sec1 buffer)
+    uint n_rows[8];      // rows per projection (0 = projection absent)
+    uint is_f32[8];      // 1 = F32 layout (no scale table), 0 = Q8_ROW
+    uint x_off4[8];      // x input byte offset within X, in FLOAT units (off_bytes/4)
+    uint out_idx[8];     // output buffer index (see binding order below)
+    ulong out_off[8];    // byte offset within that output buffer
+    uint rowbase[8];     // prefix sum of n_rows (aligned to 4) - flattened row base
+    uint total_rows;     // total aligned rows; grid = ceil(total/32) threadgroups
+    uint nproj;
+    uint pad[2];
+};
+
+kernel void ink_attnproj_fused_mv1(
+    device const uchar* W   [[buffer(0)]],
+    device const float* X   [[buffer(1)]],   // b_in3: token rows, stride given in floats
+    device float* Yq        [[buffer(2)]],
+    device float* Yk        [[buffer(3)]],
+    device float* Yv        [[buffer(4)]],
+    device float* Yr        [[buffer(5)]],
+    device float* Ysinks    [[buffer(6)]],
+    device float* Ygate     [[buffer(7)]],
+    device float* Yksc      [[buffer(8)]],
+    device float* Yvsc      [[buffer(9)]],
+    constant InkAttnProjFusedParams& P [[buffer(10)]],
+    constant int& x_stride  [[buffer(11)]],  // floats per token row in X
+    uint tg   [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int flat = int(tg) * 32 + int(sg) * 4;
+    if (flat >= int(P.total_rows)) return;
+    // locate projection for this simdgroup's first row (rows within the group may cross
+    // a boundary only at aligned edges - all N are multiples of 4, so the whole group
+    // of 4 rows is inside ONE projection as long as every n_rows is a multiple of 4).
+    int pi = 0;
+    while (pi + 1 < int(P.nproj) && flat >= int(P.rowbase[pi + 1])) ++pi;
+    if (P.n_rows[pi] == 0) return;
+    const int row0 = flat - int(P.rowbase[pi]);
+    const uint Np = P.n_rows[pi];
+    if (row0 >= int(Np)) return;
+    const bool h1 = (row0 + 1) < int(Np), h2 = (row0 + 2) < int(Np), h3 = (row0 + 3) < int(Np);
+    constexpr int K = 2304;
+    device const uchar* wbase = W + P.w_off[pi];
+    device const float4* xp = (device const float4*)(X + P.x_off4[pi]);
+    const int K16 = K >> 4;
+    (void)x_stride;
+
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+    if (P.is_f32[pi]) {
+        // F32 layout: rows contiguous, row stride K floats.
+        // Bit-exact replication of ink_linear_f32's M==1 accumulation order:
+        // per-lane single chain acc += dot(w4[k], x4[k]) with k striding by 32.
+        device const float4* w0p = (device const float4*)(wbase + (size_t)row0 * K * 4);
+        device const float4* w1p = (device const float4*)(wbase + (size_t)(row0 + (h1 ? 1 : 0)) * K * 4);
+        device const float4* w2p = (device const float4*)(wbase + (size_t)(row0 + (h2 ? 2 : 0)) * K * 4);
+        device const float4* w3p = (device const float4*)(wbase + (size_t)(row0 + (h3 ? 3 : 0)) * K * 4);
+        const int K4 = K >> 2;
+        for (int k = int(lane); k < K4; k += 32) {
+            const float4 xv = ((device const float4*)((device const float*)X + P.x_off4[pi]))[k];
+            a0 += dot(w0p[k], xv);
+            if (h1) a1 += dot(w1p[k], xv);
+            if (h2) a2 += dot(w2p[k], xv);
+            if (h3) a3 += dot(w3p[k], xv);
+        }
+    } else {
+        // Q8_ROW layout: fp32 scale table [N] then int8 rows
+        device const float* scales = (device const float*)wbase;
+        device const uchar* qbase = wbase + (size_t)Np * 4;
+        device const char4* w0p = (device const char4*)(qbase + (size_t)row0 * K);
+        device const char4* w1p = (device const char4*)(qbase + (size_t)(row0 + (h1 ? 1 : 0)) * K);
+        device const char4* w2p = (device const char4*)(qbase + (size_t)(row0 + (h2 ? 2 : 0)) * K);
+        device const char4* w3p = (device const char4*)(qbase + (size_t)(row0 + (h3 ? 3 : 0)) * K);
+        for (int k = int(lane); k < K16; k += 32) {
+            const int k4 = k * 4;
+            const float4 x0 = xp[k4], x1 = xp[k4 + 1], x2 = xp[k4 + 2], x3 = xp[k4 + 3];
+            a0 += dot(float4(w0p[k4]), x0) + dot(float4(w0p[k4 + 1]), x1) + dot(float4(w0p[k4 + 2]), x2) + dot(float4(w0p[k4 + 3]), x3);
+            if (h1) a1 += dot(float4(w1p[k4]), x0) + dot(float4(w1p[k4 + 1]), x1) + dot(float4(w1p[k4 + 2]), x2) + dot(float4(w1p[k4 + 3]), x3);
+            if (h2) a2 += dot(float4(w2p[k4]), x0) + dot(float4(w2p[k4 + 1]), x1) + dot(float4(w2p[k4 + 2]), x2) + dot(float4(w2p[k4 + 3]), x3);
+            if (h3) a3 += dot(float4(w3p[k4]), x0) + dot(float4(w3p[k4 + 1]), x1) + dot(float4(w3p[k4 + 2]), x2) + dot(float4(w3p[k4 + 3]), x3);
+        }
+        const float sc0 = scales[row0];
+        const float sc1 = h1 ? scales[row0 + 1] : 0.0f;
+        const float sc2 = h2 ? scales[row0 + 2] : 0.0f;
+        const float sc3 = h3 ? scales[row0 + 3] : 0.0f;
+        float v0s = simd_sum(a0) * sc0;
+        float v1s = simd_sum(a1) * sc1;
+        float v2s = simd_sum(a2) * sc2;
+        float v3s = simd_sum(a3) * sc3;
+        device float* youtq = Yq;
+        switch (P.out_idx[pi]) {
+            case 0: youtq = Yq; break;
+            case 1: youtq = Yk; break;
+            case 2: youtq = Yv; break;
+            case 3: youtq = Yr; break;
+            case 4: youtq = Ysinks; break;
+            case 5: youtq = Ygate; break;
+            case 6: youtq = Yksc; break;
+            default: youtq = Yvsc; break;
+        }
+        youtq = (device float*)((device uchar*)youtq + P.out_off[pi]);
+        if (lane == 0) {
+            youtq[row0] = v0s;
+            if (h1) youtq[row0 + 1] = v1s;
+            if (h2) youtq[row0 + 2] = v2s;
+            if (h3) youtq[row0 + 3] = v3s;
+        }
+        return;
+    }
+    const float v0 = simd_sum(a0);
+    const float v1 = simd_sum(a1);
+    const float v2 = simd_sum(a2);
+    const float v3 = simd_sum(a3);
+    device float* yout = Yq;
+    switch (P.out_idx[pi]) {
+        case 0: yout = Yq; break;
+        case 1: yout = Yk; break;
+        case 2: yout = Yv; break;
+        case 3: yout = Yr; break;
+        case 4: yout = Ysinks; break;
+        case 5: yout = Ygate; break;
+        case 6: yout = Yksc; break;
+        default: yout = Yvsc; break;
+    }
+    yout = (device float*)((device uchar*)yout + P.out_off[pi]);
+    if (lane == 0) {
+        yout[row0] = v0;
+        if (h1) yout[row0 + 1] = v1;
+        if (h2) yout[row0 + 2] = v2;
+        if (h3) yout[row0 + 3] = v3;
+    }
+}
+
 kernel void ink_linear_q8row_mv(
     device const uchar* W [[buffer(0)]],
     device const float* X [[buffer(1)]],
