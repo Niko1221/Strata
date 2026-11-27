@@ -18245,6 +18245,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_GGUF_TYPED",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_runner.h",
+     "line": 425,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "03c00319b3",
+   "first_date": "2026-11-28",
+   "since": null,
+   "last_commit": "03c00319b3",
+   "last_date": "2026-11-28",
+   "status": "opt-in",
+   "owner": "inkling2/metal",
+   "note": "Metal: per-type kernels for GGUF routed experts (GSQ-RCO IQ/Q2_0 layers), bit-identical to the generic kernels (--selfcheck compares them); off by default.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_HASH",
    "backends": [
     "cuda-hip",
