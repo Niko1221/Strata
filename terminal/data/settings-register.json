@@ -4644,7 +4644,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 1282,
+     "line": 1283,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4677,7 +4677,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 1280,
+     "line": 1281,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -7472,8 +7472,8 @@
    "last_commit": "5bafbe3bcd",
    "last_date": "2026-11-26",
    "status": "rollback",
-   "owner": "kernels/cpu",
-   "note": "CPU native expert path (#6552, #7075): the 4-row dot kernels (dot_x4) for Q4_K / Q8_0 / IQ4_XS and similar. Since 0.2.23 the default follows the call: on from 2 tokens that share an expert (batched decode, prompt rows), off for 1 token (cold solo decode: slower than four 1-row calls where memory is the limit). =1 forces them on for every call, =0 off for every call (the 0.2.21 / 0.2.22 default); STRATA_NO_DOT_X4 (any value) still wins. Same bits in every mode.",
+   "owner": "inkling2/cuda",
+   "note": "The 4-row dot kernels are the CPU default from two tokens per expert call; =0 restores the 0.2.22 form (#7075).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -13509,6 +13509,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HALO_SF4_TRUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 199,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HANDOFF_PIPE",
    "backends": [
     "cuda-hip"
@@ -14455,7 +14488,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 760,
+     "line": 938,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14488,7 +14521,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 767,
+     "line": 945,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14785,13 +14818,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1950,
+     "line": 2955,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1950,
+     "line": 2955,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14962,6 +14995,45 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HIP_KV_FP8_SMALL",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 877,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 877,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HIP_MAPPED_COHERENT",
    "backends": [
     "cuda-hip",
@@ -15009,7 +15081,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 773,
+     "line": 951,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15042,13 +15114,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3594,
+     "line": 5667,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3594,
+     "line": 5667,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15172,6 +15244,84 @@
    "status": "rollback",
    "owner": "program",
    "note": "[reviewed] HIP queue priming became default on R9700 Linux in 0.2.1; variable forces or sets it. [docs/release-notes-0.2.1.md:46]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HIP_RDNA2_GEMM",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_codecs.hip.h",
+     "line": 7294,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_codecs.hip.h",
+     "line": 7294,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HIP_RDNA2_MOE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_codecs.hip.h",
+     "line": 7326,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_codecs.hip.h",
+     "line": 7326,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -15305,25 +15455,37 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2205,
+     "line": 3215,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2205,
+     "line": 3215,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5078,
+     "line": 7653,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5078,
+     "line": 7653,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 8590,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 8590,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -16772,7 +16934,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 283,
+     "line": 284,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16883,7 +17045,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 147,
+     "line": 154,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16911,13 +17073,20 @@
   {
    "name": "STRATA_INK_DFLASH2_CODEBOOK",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
      "line": 337,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1065,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
@@ -17047,15 +17216,61 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_DFLASH2_FIXED",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2888,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2888,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DFLASH2_FORCE",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
      "line": 56,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1274,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
@@ -17067,7 +17282,9 @@
    "launch_files": [],
    "launch_sets": [],
    "launch_reads": [],
-   "doc_mentions": [],
+   "doc_mentions": [
+    "docs/MODELS.md:358"
+   ],
    "first_commit": "402cd017e4",
    "first_date": "2026-11-26",
    "since": null,
@@ -17080,15 +17297,232 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_DFLASH2_GRAPH",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1387,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1387,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_HEAD_BLOCKS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1447,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "768",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_NOINGEST",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2850,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_NOSKIP",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 9968,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_NOTAP",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 5762,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_PLAIN",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2766,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DFLASH2_PROF",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
      "line": 102,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 922,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 1444,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
@@ -17109,6 +17543,39 @@
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "DFlash 2 drafter tuning / format switches (weights format, slots, codebook, confidence exponent, profile, dump).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_RATIO",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2763,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17179,15 +17646,55 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_DFLASH2_TRACE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 9969,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DFLASH2_W4",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 117,
+     "line": 124,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 996,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
@@ -17214,23 +17721,30 @@
   {
    "name": "STRATA_INK_DFLASH2_WQ",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 118,
+     "line": 125,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
-     "line": 123,
+     "line": 130,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_df2.hip.h",
+     "line": 996,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
-   "parse": "string",
+   "parse": "flag",
    "default_state": null,
    "code_default": null,
    "engine_sets": [],
@@ -17287,8 +17801,8 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "402cd017e4",
-   "last_date": "2026-11-26",
+   "last_commit": "15cae0067f",
+   "last_date": "2026-11-27",
    "status": "default",
    "owner": "inkling2/cuda",
    "note": "Inkling drafter: DFlash 2 is the only drafter on CUDA since 0.2.23 (sidecar beside the model); =dspark is the old one where a model file carries it.",
@@ -17404,7 +17918,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 751,
+     "line": 929,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17432,19 +17946,32 @@
   {
    "name": "STRATA_INK_GGUF_CHUNK256",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 505,
+     "line": 508,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 505,
+     "line": 508,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1236,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1236,
+     "backend": "hip",
      "fn": "getenv"
     }
    ],
@@ -17576,13 +18103,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2877,
+     "line": 2878,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 752,
+     "line": 930,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17615,7 +18142,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2880,
+     "line": 2881,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17648,7 +18175,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 36,
+     "line": 37,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17681,7 +18208,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1259,
+     "line": 1274,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17846,13 +18373,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 222,
+     "line": 223,
      "backend": "cuda-hip",
      "fn": "env_get"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 223,
+     "line": 224,
      "backend": "cuda-hip",
      "fn": "env_get"
     }
@@ -18122,7 +18649,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 657,
+     "line": 672,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18188,7 +18715,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 650,
+     "line": 665,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18551,13 +19078,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 1315,
+     "line": 1379,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 662,
+     "line": 677,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18656,7 +19183,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1184,
+     "line": 1191,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18678,6 +19205,657 @@
    "status": "rollback",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA, one GPU of compute capability 8.6 only (0221 INKSPEED; the int8 GEMM loses at one token on sm_89 and sm_120): a GGUF's Q8_0 dense matrices stay Q8_0 and run on the int8 tensor cores; =0 goes back to BF16 (A/B).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 60,
+     "backend": "hip",
+     "fn": "env_set"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 64,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_ASYNC_CKPT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 152,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_BSPEC_K",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 180,
+     "backend": "hip",
+     "fn": "parse_env_int"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_CAND",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 153,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_CHUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 165,
+     "backend": "hip",
+     "fn": "parse_env_int"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_EXACT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 69,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_EXACT_CHUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 172,
+     "backend": "hip",
+     "fn": "env_set"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 173,
+     "backend": "hip",
+     "fn": "parse_env_int"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FIXED_SWA",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 159,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 175,
+     "backend": "hip",
+     "fn": "env_set"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 176,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_BLASLT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_state.hpp",
+     "line": 60,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_DECODE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 163,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_MOE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 161,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_TAIL",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 2808,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "2304",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_TAPS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 9770,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FP8_TRUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 160,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_FUSED_ATTN",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 164,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_INT4_SCREEN",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1924,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_NT_MALL",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 147,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_SPEC",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 148,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_R9700_TREE_FP8_MOE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_r9700_cfg.hpp",
+     "line": 162,
+     "backend": "hip",
+     "fn": "parse_env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Radeon AI PRO R9700 (gfx1201), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -18722,7 +19900,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 412,
+     "line": 421,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18758,7 +19936,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 413,
+     "line": 422,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18793,7 +19971,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 412,
+     "line": 421,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18829,7 +20007,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 413,
+     "line": 422,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18864,7 +20042,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 412,
+     "line": 421,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -18936,7 +20114,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 2068,
+     "line": 2087,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19002,7 +20180,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 2195,
+     "line": 2214,
      "backend": "cuda-hip",
      "fn": "env2"
     }
@@ -19035,7 +20213,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1820,
+     "line": 1839,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19068,7 +20246,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1824,
+     "line": 1843,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19101,13 +20279,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 265,
+     "line": 266,
      "backend": "cuda-hip",
      "fn": "env2"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 271,
+     "line": 272,
      "backend": "cuda-hip",
      "fn": "env2"
     }
@@ -19140,7 +20318,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 413,
+     "line": 422,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19513,7 +20691,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1668,
+     "line": 1687,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19579,7 +20757,7 @@
    "reads": [
     {
      "file": "engine/include/strata/core/ink_sm120_table.hpp",
-     "line": 453,
+     "line": 462,
      "backend": "cuda",
      "fn": "env_get"
     }
@@ -19599,8 +20777,8 @@
    "first_commit": "22f73e018a",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "b60a5d2d0b",
-   "last_date": "2026-11-26",
+   "last_commit": "6f9b779ef9",
+   "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "Use the named table row (5090, 5060ti-16, ...) on a card without a measured row, at the user's own risk. docs/INKLING_SM120.md.",
@@ -19714,7 +20892,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 550,
+     "line": 551,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19747,19 +20925,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 415,
+     "line": 416,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 461,
+     "line": 462,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1858,
+     "line": 1877,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19792,19 +20970,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 416,
+     "line": 417,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 462,
+     "line": 463,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1860,
+     "line": 1879,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19837,7 +21015,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 422,
+     "line": 423,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19870,19 +21048,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 417,
+     "line": 418,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 463,
+     "line": 464,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1861,
+     "line": 1880,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19948,7 +21126,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 1120,
+     "line": 1135,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -19974,6 +21152,831 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_STRIXHALO",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 89,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_ASYNC_CKPT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 188,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_C64",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 185,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_C64_K",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 187,
+     "backend": "hip",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_C64_SPEC",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 186,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_CHUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 174,
+     "backend": "hip",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_EXACT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 94,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_FLUSH",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 172,
+     "backend": "hip",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_FP8_KV_C64",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 200,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_NT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 190,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_PASS0_PRUNE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 177,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_PASS0_SURVIVE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 178,
+     "backend": "hip",
+     "fn": "env_int"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_PF_I8",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 196,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_PF_IU4",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 195,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_PLD",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 184,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_SAMPLED_TREE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 180,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_SCREEN_U4",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 181,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_SF4_TAPS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 9763,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_SLAB",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 171,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_SWA_FUSED",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 176,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_TREE16",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 179,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_TRI_ENGINE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 197,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_TRUNK_Q8",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 198,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_TURBO",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 201,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STRIXHALO_ZEN5",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_strixhalo_cfg.hpp",
+     "line": 183,
+     "backend": "hip",
+     "fn": "env_truthy"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "owner-hip",
+   "note": "HIP opt-in for the Strix Halo (gfx1151), off by default; the master switch also checks the real card (arch, memory, name) and refuses cleanly on any other GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_SWA_RING",
    "backends": [
     "hip"
@@ -19981,12 +21984,12 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 739,
+     "line": 906,
      "backend": "hip",
      "fn": "getenv"
     }
    ],
-   "parse": "int",
+   "parse": "flag",
    "default_state": null,
    "code_default": null,
    "engine_sets": [],
@@ -20014,13 +22017,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1152,
+     "line": 1159,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1250,
+     "line": 1263,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -20037,11 +22040,11 @@
    "engine_sets": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1156
+     "line": 1163
     },
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1158
+     "line": 1165
     }
    ],
    "engine_defaults": [],
@@ -20074,7 +22077,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 580,
+     "line": 684,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -20210,7 +22213,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 641,
+     "line": 656,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -20507,7 +22510,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1173,
+     "line": 1180,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -20540,7 +22543,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 1170,
+     "line": 1177,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -47439,12 +49442,12 @@
    "reads": [
     {
      "file": "engine/include/strata/core/sm75_series.hpp",
-     "line": 27,
+     "line": 31,
      "backend": "cuda",
      "fn": "getenv"
     }
    ],
-   "parse": "int",
+   "parse": "string",
    "default_state": null,
    "code_default": null,
    "engine_sets": [],
@@ -47458,11 +49461,11 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "534802c8dc",
-   "last_date": "2026-11-22",
-   "status": "opt-in",
-   "owner": "core",
-   "note": "[reviewed] Umbrella for 22 ported sm_75 commits; users run =1. [notes-145-perfprs.md:12]",
+   "last_commit": "017b6b8651",
+   "last_date": "2026-11-27",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "The bitwise Turing (sm_75) kernel series is on by default for compute capability 7.5; =0 turns it off (0.2.22 default). No measured change on our 2080 Ti.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -47808,7 +49811,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 834,
+     "line": 841,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -47841,7 +49844,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 842,
+     "line": 849,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -47874,7 +49877,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 729,
+     "line": 736,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -47907,7 +49910,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 726,
+     "line": 733,
      "backend": "cuda-hip",
      "fn": "getenv"
     }

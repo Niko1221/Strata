@@ -129,6 +129,10 @@ public:
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }
 
+    // The serve loop tells the backend where a request's prompt ends (called once per request after reset_slot, before the first prefill batch). A drafter that keeps
+    // a sliding window of the context (DFlash 2) can skip the prompt rows older than its window; default: ignored.
+    virtual void hint_prompt_len(int slot, int prompt_len) { (void)slot; (void)prompt_len; }
+
     // Opt-in router tail skip (lane TAILSKIP, 2026-11-26; spec syntax in cuda/ink_tail_skip.cuh). Off by default; only the CUDA backend has it.
     // set_tail_skip("off") switches it off. tail_stats() returns [48 visits][10] counters (see kInkTailStatW) and can reset them.
     virtual bool set_tail_skip(const std::string& spec, std::string& err) { (void)spec; err = "this backend has no tail skip"; return false; }
@@ -235,6 +239,43 @@ public:
 
     // Verify Section 5 selfcheck / golden ops parity on this backend
     virtual bool selfcheck(std::string& err) = 0;
+
+    // Optional opt-in hooks (all default off/no-op unless a backend explicitly opts in):
+    // (Batched multi-slot speculative verify is the one hook above, supports_batched_dspark / dspark_spec_step_batched_greedy; the HIP R9700 and Strix backends implement that one.)
+    // 1. On-GPU lossless multi-branch stochastic speculative step (temperature > 0, zero full-vocab D2H).
+    virtual bool supports_sampled_spec() const noexcept { return false; }
+    virtual int dspark_spec_step_sampled(
+        int slot,
+        int32_t anchor_tok,
+        int anchor_pos,
+        int max_emit,
+        float temperature,
+        int top_k,
+        float top_p,
+        float min_p,
+        uint64_t rng_seed,
+        uint64_t rng_offset,
+        int32_t* out_emitted,
+        int* out_drafted,
+        std::string& err) {
+        (void)slot; (void)anchor_tok; (void)anchor_pos; (void)max_emit;
+        (void)temperature; (void)top_k; (void)top_p; (void)min_p;
+        (void)rng_seed; (void)rng_offset; (void)out_emitted; (void)out_drafted; (void)err;
+        return 0;
+    }
+
+    // 2. Single-pass prefill async prompt-checkpoint mode (avoids synchronous prompt_len-1 prefill split).
+    virtual bool prefers_async_prompt_ckpt() const noexcept { return false; }
+
+    // 3. Default prefill token cap while other concurrent slots are actively decoding (0 = uncapped).
+    virtual int preferred_prefill_cap_with_decoders() const noexcept { return 0; }
+
+    // 4. Optional BCO pre-warm hook for streaming prefix KV warming into an idle slot.
+    virtual bool supports_bco_prewarm() const noexcept { return false; }
+    virtual bool bco_prewarm(int slot, const int32_t* ids, int count, std::string& err) {
+        (void)slot; (void)ids; (void)count; (void)err;
+        return false;
+    }
 };
 
 // Factory functions (CPU always built; GPU backends plug in via CMake compile definitions!)
