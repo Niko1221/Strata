@@ -27,7 +27,7 @@ HP=${HP:?HP=<ROCm devel root>}
 CORE=${CORE:-$HP}
 LIBW=${LIBW:-$HP}
 OUT=${OUT:-$PWD/work-$V}
-PKGVER=${PKGVER:-0.1.69}
+PKGVER=${PKGVER:-0.1.70}
 COMMIT=${COMMIT:-unknown}
 JOBS=${JOBS:-16}
 case "$V" in

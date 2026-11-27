@@ -2,7 +2,7 @@
 # MIT License - Copyright (c) 2026 Strata contributors
 cmake_minimum_required(VERSION 3.24)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(strata_inkling VERSION 0.1.69 LANGUAGES C CXX)
+  project(strata_inkling VERSION 0.1.70 LANGUAGES C CXX)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)

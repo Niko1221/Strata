@@ -516,7 +516,7 @@ struct ServeConfig {
     // short turn of that role (the thinking-effort turn Control puts at the END of the prompt, effort_position "end") has its prompt checkpoint one
     // token in front of that turn instead of at the end of the prompt, so a request that changes only the level reads only the tail.
     int64_t tail_role_token = -1;
-    std::string version = "0.1.69";
+    std::string version = "0.1.70";
 };
 
 /// Where the prompt checkpoint of `ids` goes: prompt_len - 1 (the end of the prompt; the default), or with tail_role_token >= 0 and a system turn
