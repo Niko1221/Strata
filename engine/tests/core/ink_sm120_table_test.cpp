@@ -48,6 +48,8 @@ int main() {
     const Sm120Dev turing = dev("NVIDIA GeForce RTX 2080 Ti", 7, 5, 68, 11);
     const Sm120Dev spark = dev("NVIDIA GB10", 12, 1, 48, 120);
     const Sm120Dev unknown = dev("NVIDIA Something Blackwell", 12, 0, 99, 40);
+    const Sm120Dev lap5090 = dev("NVIDIA GeForce RTX 5090 Laptop GPU", 12, 0, 82, 23);      // the card as the engine sees it (23,975 MiB, 82 SMs)
+    const Sm120Dev lap5090_hami = dev("NVIDIA GeForce RTX 5090 Laptop GPU", 12, 0, 82, 22);  // an Olares app: the HAMi limit (nvidia.com/gpumem 22 GiB) is the total
 
     // ---- the table: matching by name, SMs and VRAM ----
     CHECK(ink_sm120_match(r5090) && std::string(ink_sm120_match(r5090)->id) == "5090" && ink_sm120_match(r5090)->measured);
@@ -65,6 +67,20 @@ int main() {
     CHECK(!ink_sm120_match(dev("NVIDIA GB10", 12, 0, 48, 120)) && !ink_sm120_match(dev("NVIDIA GB10", 12, 1, 170, 32)));   // the GB10 row needs cc 12.1 and its silicon
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 1, 170, 32)));                       // and an RTX name on cc 12.1 gets no row (the RTX rows are cc 12.0)
     CHECK(!ink_sm120_match(unknown));
+    // OLARES-0223: the laptop 5090 has its own row (name + 78-86 SMs + 20-25 GiB, so a HAMi-limited 22 GiB total still matches); the desktop 5090 row never takes it and it never takes a desktop 5090
+    CHECK(ink_sm120_match(lap5090) && std::string(ink_sm120_match(lap5090)->id) == "5090m" && ink_sm120_match(lap5090)->measured && !ink_sm120_match(lap5090)->default_on);
+    CHECK(ink_sm120_match(lap5090_hami) && std::string(ink_sm120_match(lap5090_hami)->id) == "5090m");
+    CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090 Laptop GPU", 12, 0, 82, 19)) && !ink_sm120_match(dev("NVIDIA GeForce RTX 5090 Laptop GPU", 12, 0, 82, 32)));
+    CHECK(std::string(ink_sm120_match(r5090)->id) == "5090");
+    {
+        const Sm120Decision l0 = decide(lap5090, {});                                           // measured, default off: the old path, nothing printed
+        CHECK(l0.mode == Sm120Decision::Off && l0.parts == 0 && l0.note.empty() && !l0.asked);
+        const Sm120Decision l1 = decide(lap5090_hami, {{"STRATA_INK_SM120", "1"}});           // one switch away: the big set without MOE_OPT and without TC_ATTN
+        CHECK(l1.mode == Sm120Decision::Fast && l1.row && std::string(l1.row->id) == "5090m" && l1.parts == kSm120Laptop5090Fast);
+        CHECK(!(l1.parts & P_MOE_OPT) && !(l1.parts & P_TC_ATTN) && (l1.parts & P_PF_ATTN) && (l1.parts & P_FP8_TRUNK) && (l1.parts & P_DSPARK_OPT) && (l1.parts & P_C64_SPEC));
+        const Sm120Decision l2 = decide(lap5090, {{"STRATA_INK_SM120_EXACT", "1"}});           // exact = the old path's tokens: the exact set is empty
+        CHECK(l2.mode == Sm120Decision::Exact && l2.parts == 0);
+    }
     // the right name with the wrong silicon does not match (a 5090 name on a 36-SM, 16 GB device)
     CHECK(!ink_sm120_match(dev("NVIDIA GeForce RTX 5090", 12, 0, 36, 16)));
     CHECK(ink_sm120_row_by_id("5090") && ink_sm120_row_by_id("5060ti-16") && !ink_sm120_row_by_id("nope"));
@@ -79,7 +95,7 @@ int main() {
         for (int i = 0; i < n; ++i) CHECK((rows[i].exact_parts & kNotInExact) == 0);
         // 11-27 (NV-ADA): no row of 15 GiB or more carries COMPACT_HYBRID (it lets COMPACT run at 2..15 slots; a 16 GB card then died at the start with 3 MiB free)
         for (int i = 0; i < n; ++i) if (rows[i].vram_gib_min >= 15) CHECK((rows[i].fast_parts & P_COMPACT_HYBRID) == 0);
-        CHECK(measured == 13);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26), DGX Spark GB10 (11-27), RTX 4060 Ti 16 GB and RTX 3060 12 GB (NV-ADA-AMPERE 11-27; both default_on = false)
+        CHECK(measured == 14);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26), DGX Spark GB10 (11-27), RTX 4060 Ti 16 GB and RTX 3060 12 GB (NV-ADA-AMPERE 11-27; both default_on = false)
         // the placeholders for the cards still to rent are in the table
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));
     }

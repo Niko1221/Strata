@@ -153,6 +153,11 @@ constexpr uint32_t kSm120BigExact = 0;
 // (PRO 5000 72 GB, DSpark: 150 off, 111 fast; DFlash 2: 152 off, 119 fast); fast + TC_ATTN gives 186 (DSpark) and 146 (DFlash 2), the 4K numbers do not move, and its teacher-forced KL
 // against off is the fast set's (0.006-0.011 for both, fast against fast + TC_ATTN 0.0007-0.0026, decode path, 1024 tokens x 4 sequences).
 constexpr uint32_t kSm120ProFast = kSm120BigFast | P_TC_ATTN;
+// The RTX 5090 Laptop GPU (GB203, 82 SMs, 24 GB; OLARES-0223, Olares One, 11-27): the big set WITHOUT MOE_OPT and without TC_ATTN. Measured on the card against the old path (SQ-20 v2, DFlash 2, C1, 128 new tokens,
+// 2 rounds interleaved): the PRO 4000 / 5090 sets lose on json, count and tool decode (the deep verify tree offers 394-440 nodes for 262-274 on the old path) and MOE_OPT costs short-prompt decode
+// (the M = 1 kernels) while giving the 4K prefill (10.4k against 6.8k tok/s): without TC_ATTN and MOE_OPT the decode mean of the six prompts is 241 tok/s against 201 (old path), no prompt more than 3% lower,
+// 4K document decode 187 against 118, 4K prefill 6.8k against 4.2k tok/s. rel0223/olares/RESULTS.md.
+constexpr uint32_t kSm120Laptop5090Fast = kSm120BigFast & ~P_MOE_OPT;
 // The 8 and 12 GB cards (experts do not all fit): COMPACT with the compact trunk and the hybrid expert placement (the adaptive tier gets the 2.3 GiB the trunk frees), FP16 KV (the rule in
 // ink_sm120_compact_subparts), the tensor-core small-M kernels. PACK, PREFILL, PLD and CORE_GRAPH are out: measured on the RTX 5060 8 GB they made it slower (wider verify trees cost CPU
 // reads: 10-30 tok/s against 28-37). The batched cold-expert split between the CPU lane and PCIe comes from the card's own launch probe.
@@ -241,6 +246,12 @@ inline const Sm120Row* ink_sm120_rows(int* n) {
          kSm120ProFast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
          4096, 4800, 0, 0, 512, 768, 1536, 0,
          4, 12, 24, 3, 8.0f, 1.02f, 0.28f, true},
+        // The laptop 5090 (name "NVIDIA GeForce RTX 5090 Laptop GPU", 82 SMs, 23,975 MiB). The VRAM window is wide on purpose: an Olares app sees the HAMi limit (nvidia.com/gpumem, 22-24 GiB) as the total.
+        // measured, default_on = false until the gate (FASTQ, KL, identity, --parallel 1..64) has passed on the card (OLARES-0223); STRATA_INK_SM120=1 turns it on.
+        {"5090m", "RTX 5090 Laptop", 78, 86, 20, 25, true, "measured on an RTX 5090 Laptop GPU 24 GB (Olares One, 11-27): C1 decode mean 241 against 201 tok/s on the old path, 4K prefill 6.8k against 4.2k",
+         kSm120Laptop5090Fast, kSm120BigExact, Sm120Fp8::Cache, Sm120C64::Bspec, STRATA_SM120_BIG_MOE,
+         4096, 4800, 0, 0, 512, 768, 1536, 0,
+         4, 12, 24, 3, 8.0f, 1.02f, 0.28f, false},
         {"pro2000", "RTX PRO 2000", 24, 32, 15, 17, false, "placeholder: RTX PRO 2000 Blackwell (16 GB)",
          kSm120SmallFast, kSm120SmallExact, Sm120Fp8::Cache, Sm120C64::K8v4, STRATA_SM120_SMALL_MOE,
          0, 0, 256, 20, 0, 0, 0, 1,
