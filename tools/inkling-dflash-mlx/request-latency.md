@@ -31,3 +31,18 @@ With the advice enabled, a decode buffer still waited 9.89 s before 86 ms of GPU
 Following the trace-guided caching idea in [MoE-Infinity](https://arxiv.org/abs/2401.14361), we counted expert selections across the three passes through the 12 recurrent physical layers on seven greedy tagging prompts. Each fold ranked experts per physical layer using the other six prompts. Across 55,296 selections, keeping the most frequent 16, 32 or 64 of 128 experts per layer covered 58.63%, 81.49% or 96.57% respectively. A simulated per-layer LRU starting empty on each request covered 62.28%, 76.71% or 88.47% at the same capacities. These counts measure selections, independent of expert size.
 
 For a separate directory extraction replay, we ranked experts on all seven tagging prompts, then locked the 32 highest-ranked expert bodies per recurrent layer on the target's file mapping before `READY`. The 384 lock calls requested 1,145,102,336 bytes in total. The draft used the same wired limit as the withdrawal control above. All 20 outputs matched the reference token sequences. Median request latency was 7.04 s, P95 was 40.15 s, and the slowest request took 48.06 s. Aggregate decode rate was 31.14 tokens/s. The combined sampled peak footprint was 3.978 GB. During a 30.75 s wait to start an 83 ms command buffer, the target read 5.20 GB and the system swapped in 17.96 GB. High selection coverage on the calibration workload still left long submission stalls on this replay. Retain the default target mapping.
+
+## Wire the complete native pack on a host with memory headroom
+
+Export `STRATA_INK_MLOCK_PACK=1` in the Metal engine environment. The native loader calls `mlock` on the mapped pack before creating the Metal buffers. Startup reports the byte count on success or fails with the OS error. Unsetting the variable restores demand paging. The lock lasts until the mapping is released. KV buffers, the draft process and other applications have separate memory requirements.
+
+| Target residency | Native P95 (s) | Max (s) | First-token P95 (s) | Decode tokens/s | Peak footprint (GB) | Peak RSS (GB) |
+|---|---:|---:|---:|---:|---:|---:|
+| First 4 GiB locked | 13.72 | 14.08 | 3.52 | 48.35 | 7.04 | 5.51 |
+| Pageable control | 10.72 | 11.29 | 1.93 | 62.96 | 2.88 | 1.23 |
+| Full pack locked | 6.78 | 7.00 | 1.82 | 65.98 | 13.26 | 11.83 |
+| Full pack locked, fresh launch | 6.57 | 6.67 | 1.76 | 68.54 | 13.25 | 12.02 |
+
+Each process launch replayed the same 20 single-slot requests with FP8 KV and the same wired-limit draft worker. All 80 sequences matched the reference. The target reported 4.36 s and 3.20 s to load the locked model before serving. The longest commit-to-GPU-start intervals were 318 ms and 160 ms with the full pack locked. Measurements include the first request after READY. Memory peaks sum the target, draft and embedding service at each sample. On the same 24 GiB host, a separate dual-slot HTTP run without drafting returned the expected JSON for seven of seven tagging cases, with a maximum complete response time of 1.77 s.
+
+For hosts with less available memory, trace-guided expert caching and flash-friendly weight access address different resource constraints. [MoE-Infinity](https://arxiv.org/abs/2401.14361) uses expert activation traces for replacement and prefetch. [LLM in a flash](https://arxiv.org/abs/2312.11514) reduces reads through activation reuse and groups weights to improve flash access. Full-pack residency uses enough host memory to remove demand paging of the mapped target weights throughout serving.
