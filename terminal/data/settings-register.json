@@ -17052,7 +17052,7 @@
     },
     {
      "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
-     "line": 81,
+     "line": 85,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17069,7 +17069,7 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -17155,7 +17155,7 @@
    "first_commit": "d9d285068f",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -17290,10 +17290,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/metal",
@@ -17522,7 +17522,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
-     "line": 85,
+     "line": 89,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17536,10 +17536,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/sycl",
@@ -17887,6 +17887,7 @@
    "name": "STRATA_INK_DRAFTER",
    "backends": [
     "cuda-hip",
+    "metal",
     "sycl"
    ],
    "reads": [
@@ -17909,8 +17910,26 @@
      "fn": "getenv"
     },
     {
+     "file": "engine/src/inkling2/metal/ink_metal_backend.mm",
+     "line": 236,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/sycl/ink_sycl_backend.cpp",
+     "line": 98,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/sycl/ink_sycl_backend.cpp",
+     "line": 101,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
      "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
-     "line": 63,
+     "line": 67,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17918,7 +17937,12 @@
    "parse": "flag",
    "default_state": null,
    "code_default": null,
-   "engine_sets": [],
+   "engine_sets": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sycl_backend.cpp",
+     "line": 98
+    }
+   ],
    "engine_defaults": [],
    "launch_files": [],
    "launch_sets": [],
@@ -17927,7 +17951,7 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "bd075a3a88",
    "last_date": "2026-11-27",
    "status": "default",
    "owner": "inkling2/cuda",
@@ -18381,10 +18405,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "owner-intelarc",
@@ -18414,10 +18438,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "owner-intelarc",
@@ -18447,10 +18471,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-intelarc",
@@ -18480,10 +18504,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-intelarc",
@@ -18513,10 +18537,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "2ad6c94d36",
+   "first_commit": "066537ef07",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-intelarc",
@@ -18882,10 +18906,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "owner-m5max",
@@ -18915,10 +18939,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -18948,10 +18972,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "owner-m5max",
@@ -18987,10 +19011,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -19006,7 +19030,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/metal/ink_metal_runner.h",
-     "line": 1609,
+     "line": 1655,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19020,10 +19044,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -19059,10 +19083,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -19078,7 +19102,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/metal/ink_metal_runner.h",
-     "line": 2109,
+     "line": 2155,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19092,10 +19116,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -19111,7 +19135,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/metal/ink_metal_runner.h",
-     "line": 2765,
+     "line": 2811,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19125,10 +19149,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": "90e258e2eb",
+   "first_commit": "9bdc12b26c",
    "first_date": "2026-11-27",
    "since": null,
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "owner-m5max",
@@ -29156,7 +29180,7 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "90e258e2eb",
+   "last_commit": "9bdc12b26c",
    "last_date": "2026-11-27",
    "status": "research",
    "owner": "metal/mtl_rt",
@@ -53879,7 +53903,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/sycl/ink_sy_common.h",
-     "line": 53,
+     "line": 54,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -53905,7 +53929,7 @@
    "first_commit": "9b61b6918f",
    "first_date": "2026-11-23",
    "since": "v0.2.21",
-   "last_commit": "2ad6c94d36",
+   "last_commit": "066537ef07",
    "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "sycl/inkling2",
