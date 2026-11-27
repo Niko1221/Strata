@@ -1171,6 +1171,20 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     return draft_launch(taps, n_new, pos0, anchor, err) && draft_finish(drafts, probs, err);
 }
 
+bool Dflash2Drafter::draft_rows(float* taps, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err) {
+    if (n_new <= kRows) return draft(taps, n_new, pos0, anchor, drafts, probs, err);
+    // the rows before the last go into the ring as context rows (chunks of kRows); the round then takes the last row alone, moved to row 0
+    // (its graph reads the buffer it was captured on).  The ring ends up as one round over all n_new rows would leave it.
+    if (!context(taps, n_new - 1, pos0, err)) return false;
+    const OnDevice on_device(device_);
+    const size_t row = taps_.size() * (size_t) N_;
+    if (cudaMemcpyAsync(taps, taps + (size_t) (n_new - 1) * row, row * sizeof(float), cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
+        err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    return draft(taps, 1, pos0 + n_new - 1, anchor, drafts, probs, err);
+}
+
 bool Dflash2Drafter::draft_launch(const float* taps, int n_new, int64_t pos0, int32_t anchor, std::string& err) {
     if (!bound_) { err = "dflash2: not bound"; return false; }
     if (!context_wait(err)) return false;
