@@ -32,7 +32,10 @@ declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STR
                     [STRATA_CACHE_DIR]=/work/.strata-cache)
 while IFS= read -r k; do
     case "$k" in
-        STRATA_SYCL_*) ;;                                 # this script's own settings
+        # this script's own settings. Only these five: the engine reads ~40 switches of its own named STRATA_SYCL_*
+        # (STRATA_SYCL_MIRROR_ADAPT, STRATA_SYCL_NO_XMX, STRATA_SYCL_GEMM_STAGE, ...), and a STRATA_SYCL_* pattern here
+        # kept every one of them out of the container, so setting them in the server's environment did nothing.
+        STRATA_SYCL_ROOT|STRATA_SYCL_IMAGE|STRATA_SYCL_BIN|STRATA_SYCL_NAME|STRATA_SYCL_SHM) ;;
         STRATA_*|ONEAPI_*|UR_*|IGC_*|SYCL_*|ZES_*|NEOReadDebugKeys|OverrideDefaultFP64Settings) setting[$k]=${!k} ;;
     esac
 done < <(compgen -e)
