@@ -241,8 +241,18 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         if (status == cudaSuccess)
             status = cudaMalloc(&scratch, strata::kernels::native_q8_1_bytes((int) n_in, 1));
         strata::platform::advise_willneed(gguf.tensor_data(*tensor), bytes);
-        if (status == cudaSuccess && host == nullptr)
-            status = cudaMemcpy(weights, gguf.tensor_data(*tensor), bytes, cudaMemcpyHostToDevice);
+        if (status == cudaSuccess && host == nullptr) {
+            const void* source = gguf.tensor_data(*tensor);
+            void* buffer = nullptr;
+#if defined(__linux__) && defined(__aarch64__) && defined(CUDART_VERSION) && !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+            // On GB10 a single H2D copy can stall on file-backed pages. Anonymous RAM avoids that path.
+            const char* stage = std::getenv("STRATA_HEAD_STAGE");
+            if (tensor->type == 13 && stage && std::strcmp(stage, "1") == 0) buffer = std::malloc(bytes);
+            if (buffer) source = std::memcpy(buffer, source, bytes);
+#endif
+            status = cudaMemcpy(weights, source, bytes, cudaMemcpyHostToDevice);
+            if (buffer) std::free(buffer);
+        }
         if (status != cudaSuccess) {
             if (host) cudaFreeHost(host);
             weights = host ? nullptr : weights;

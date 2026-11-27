@@ -14415,6 +14415,36 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HEAD_STAGE",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/native_head.cpp",
+     "line": 249,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DGX_SPARK_LINUX.md:52"
+   ],
+   "status": "opt-in",
+   "owner": "core",
+   "note": "Linux aarch64 CUDA only. Stage the single-device Q5_K output head from the GGUF mapping through anonymous RAM at load time.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HIPBLASLT",
    "backends": [
     "hip"
