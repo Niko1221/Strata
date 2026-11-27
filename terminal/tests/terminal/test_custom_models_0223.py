@@ -184,6 +184,12 @@ class AskTheEngine(Base):
         with mock.patch("subprocess.run", return_value=done) as called:
             self.assertEqual(strata_manifest._run_info(Path("/e/strata-hy4"), Path("/f.strata")), self.HY4)
         self.assertEqual(called.call_args[0][0][1], "--info")
+        import subprocess as sp
+        self.assertEqual(called.call_args[1]["creationflags"], getattr(sp, "CREATE_NO_WINDOW", 0))     # no console window on Windows
+        with mock.patch.object(sp, "CREATE_NO_WINDOW", 0x08000000, create=True), mock.patch("subprocess.run", return_value=done) as called:
+            strata_manifest._run_info(Path("/e/strata-hy4"), Path("/f.strata"))
+        self.assertEqual(called.call_args[1]["creationflags"], 0x08000000)
+        self.assertIs(called.call_args[1]["stdin"], sp.DEVNULL)
         self.assertEqual(called.call_args[1]["timeout"], strata_manifest.INFO_TIMEOUT)
 
 

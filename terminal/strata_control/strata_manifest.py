@@ -186,7 +186,8 @@ def _run_info(exe: Path, path: Path, timeout: float = INFO_TIMEOUT) -> str | Non
     from strata_control.childenv import quiet_crash_env
     try:
         done = subprocess.run([str(exe), "--info", str(path)], capture_output=True, text=True, errors="replace", timeout=timeout,
-                              env=quiet_crash_env(dict(os.environ)), cwd=str(Path(exe).parent), stdin=subprocess.DEVNULL)
+                              env=quiet_crash_env(dict(os.environ)), cwd=str(Path(exe).parent), stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))        # no console window flashes on Windows, as for every engine call
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
