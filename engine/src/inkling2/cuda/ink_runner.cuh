@@ -6535,11 +6535,13 @@ struct InkCudaRunner {
                     if (ge == cudaSuccess && gr) {
                         ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
+                        gr = nullptr;   // destroyed: the failure branch below must not destroy it a second time (cudaErrorInvalidValue left pending, read by the next cudaGetLastError as a fatal "invalid argument")
                     }
                 }
                 if (ge != cudaSuccess || !exec) {
                     cudaGetLastError();
                     if (gr) cudaGraphDestroy(gr);
+                    (void)cudaGetLastError();   // the eager fallback starts with a clean error state
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] CUDA Graph capture unavailable (err=%d): falling back to eager mode\n", (int)ge);
                     emit_48_visits(M, 0, slot0, p0, want_taps);
@@ -6680,11 +6682,13 @@ struct InkCudaRunner {
                     if (ge == cudaSuccess && gr) {
                         ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
+                        gr = nullptr;   // destroyed: the failure branch below must not destroy it a second time (cudaErrorInvalidValue left pending, read by the next cudaGetLastError as a fatal "invalid argument")
                     }
                 }
                 if (ge != cudaSuccess || !exec) {
                     cudaGetLastError();
                     if (gr) cudaGraphDestroy(gr);
+                    (void)cudaGetLastError();   // the eager fallback starts with a clean error state
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] Tree CUDA Graph capture unavailable (err=%d): falling back to eager mode\n", (int)ge);
                     emit_48_visits(M, 2, slot0, p0, want_taps);
@@ -6726,6 +6730,7 @@ struct InkCudaRunner {
                         if (ge == cudaSuccess && gr) {
                             ge = pdl::instantiate(&exec, gr, "decode");
                             cudaGraphDestroy(gr);
+                            gr = nullptr;   // destroyed: the failure branch below must not destroy it a second time (cudaErrorInvalidValue left pending, read by the next cudaGetLastError as a fatal "invalid argument")
                         }
                     }
                     if (ge == cudaSuccess && exec) {
@@ -6733,6 +6738,7 @@ struct InkCudaRunner {
                     } else {
                         (void)cudaGetLastError();
                         if (gr) cudaGraphDestroy(gr);
+                        (void)cudaGetLastError();   // the eager fallback starts with a clean error state
                         exec = nullptr;
                     }
                 }
@@ -6784,11 +6790,13 @@ struct InkCudaRunner {
                     if (ge == cudaSuccess && gr) {
                         ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
+                        gr = nullptr;   // destroyed: the failure branch below must not destroy it a second time (cudaErrorInvalidValue left pending, read by the next cudaGetLastError as a fatal "invalid argument")
                     }
                 }
                 if (ge != cudaSuccess || !exec) {
                     cudaGetLastError();
                     if (gr) cudaGraphDestroy(gr);
+                    (void)cudaGetLastError();   // the eager fallback starts with a clean error state
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] Batched CUDA Graph capture unavailable (err=%d): falling back to eager mode\n", (int)ge);
                     emit_48_visits(B, 1, 0, 0, want_taps);
@@ -6847,11 +6855,13 @@ struct InkCudaRunner {
                     if (ge == cudaSuccess && gr) {
                         ge = pdl::instantiate(&exec, gr, "decode");
                         cudaGraphDestroy(gr);
+                        gr = nullptr;   // destroyed: the failure branch below must not destroy it a second time (cudaErrorInvalidValue left pending, read by the next cudaGetLastError as a fatal "invalid argument")
                     }
                 }
                 if (ge != cudaSuccess || !exec) {
                     cudaGetLastError();
                     if (gr) cudaGraphDestroy(gr);
+                    (void)cudaGetLastError();   // the eager fallback starts with a clean error state
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] Mode-3 Batched Spec Graph unavailable (err=%d): falling back to eager\n", (int)ge);
                     emit_48_visits(M, 3, 0, 0, want_taps);
