@@ -567,6 +567,49 @@ void dot_q8_0_q8_0_x4_avx2(int n, float out[4], const void* STRATA_RESTRICT w_ba
     for (int r = 0; r < 4; ++r) out[r] = hsum_float_8(acc[r]);
 }
 
+// ---- Q2_0 x Q8_0: ggml-cpu has no x86 kernel for it (arch/x86/quants.c uses ggml_vec_dot_q2_0_q8_0_generic), so this one is Strata's own.
+// It is bit-identical to dot_q2_0_q8_0_generic, the entry it replaces: the integer sum of each 32-weight half is exact (computed 32 at a time),
+// and the float steps are the generic ones, in the generic order, unfused (STRATA_NOFUSE; dot_generic.cpp is -ffp-contract=off).
+// A 32-weight half is 8 bytes, byte b holding weights 4b..4b+3 in bits 0-1, 2-3, 4-5, 6-7 (00 = -1, 01 = 0, 10 = +1, 11 = +2).
+// Per 128-bit lane (4 bytes = 16 weights): the bytes are repeated in each dword, dword t is shifted right by 2t and masked to 2 bits, which
+// gives the weights in the order (t, b); the activations are shuffled into the same order.  sum((q - 1) * y) = sum(q * y) - sum(y).
+void dot_q2_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+    assert(n % QK2_0 == 0);
+    const int nb = n / QK2_0;
+    const block_q2_0* STRATA_RESTRICT x = (const block_q2_0*) vx;
+    const block_q8_0* STRATA_RESTRICT y = (const block_q8_0*) vy;
+
+    const __m256i rep   = _mm256_setr_epi8(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
+                                           4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7);
+    const __m256i shift = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
+    const __m256i m3    = _mm256_set1_epi8(3);
+    const __m256i yperm = _mm256_setr_epi8(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15,
+                                           0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
+    const __m256i ones8  = _mm256_set1_epi8(1);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+
+    float sumf = 0.0f;
+    for (int i = 0; i < nb; i++) {
+        const float d0 = h2f(x[i].d);
+        float sumi = 0.0f;
+        for (int k = 0; k < 2; k++) {
+            const block_q8_0* STRATA_RESTRICT yb = &y[i * 2 + k];
+            int64_t q8;
+            std::memcpy(&q8, &x[i].qs[k * 8], 8);
+            const __m128i q128 = _mm_cvtsi64_si128(q8);
+            __m256i q = _mm256_shuffle_epi8(_mm256_set_m128i(q128, q128), rep);
+            q = _mm256_and_si256(_mm256_srlv_epi32(q, shift), m3);                       // 0..3, order (t, b) per lane
+            const __m256i yv = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i*) yb->qs), yperm);
+            const __m256i qy = _mm256_madd_epi16(_mm256_maddubs_epi16(q, yv), ones16);    // sum(q * y)
+            const __m256i sy = _mm256_madd_epi16(_mm256_maddubs_epi16(ones8, yv), ones16); // sum(y)
+            const int sumi_block = hsum_i32_8(_mm256_sub_epi32(qy, sy));
+            { float t = h2f(yb->d) * (float) sumi_block; STRATA_NOFUSE(t); sumi += t; }
+        }
+        { float t = d0 * sumi; STRATA_NOFUSE(t); sumf += t; }
+    }
+    *s = sumf;
+}
+
 }  // namespace avx2
 
 namespace {
@@ -580,7 +623,7 @@ const DotKernel kTable[] = {
     ENTRY_OPT(Q6_K, Q8_K, q6_K_q8_K), ENTRY(IQ1_S, Q8_K, iq1_s_q8_K), ENTRY(IQ1_M, Q8_K, iq1_m_q8_K), ENTRY(IQ2_XXS, Q8_K, iq2_xxs_q8_K),
     ENTRY(IQ2_XS, Q8_K, iq2_xs_q8_K), ENTRY(IQ2_S, Q8_K, iq2_s_q8_K), ENTRY_OPT(IQ3_XXS, Q8_K, iq3_xxs_q8_K), ENTRY(IQ3_S, Q8_K, iq3_s_q8_K),
     ENTRY_OPT(IQ4_XS, Q8_K, iq4_xs_q8_K),
-    {generic::dot_q2_0_q8_0_generic, Type::Q2_0, Type::Q8_0, Arith::Avx2, Isa::Scalar, "avx2_q2_0_generic"},
+    ENTRY(Q2_0, Q8_0, q2_0_q8_0),
 };
 const DotX4Kernel kX4Table[] = {
     ENTRY_X4(Q8_0, Q8_0, q8_0_q8_0),
