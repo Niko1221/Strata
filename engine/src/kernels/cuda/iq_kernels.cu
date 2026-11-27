@@ -6952,7 +6952,7 @@ size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, i
 
 bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept {
     return i8_gu_type(L.gu_type) && i8_d_type(L.d_type) && !L.gu_nib && L.tail_off == 0 && L.had_block == 0 && L.n_embd % 256 == 0 &&
-           L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
+           L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14 && L.d_type != 23) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
            i8_smem_bytes(L.gu_type, L.d_type, 2) <= i8_smem_limit();                  // the smallest tile fits the device's shared memory per block
 }
 
@@ -7048,6 +7048,7 @@ void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp
     else if (L.d_type == 7) i8_launch<7, false>(tm, a, s);
     else if (L.d_type == 13) i8_launch<13, false>(tm, a, s);
     else if (L.d_type == 14) i8_launch<14, false>(tm, a, s);
+    else if (L.d_type == 23) i8_launch<23, false>(tm, a, s);
     else i8_launch<42, false>(tm, a, s);
     check("native_expert_i8/down");
 }
