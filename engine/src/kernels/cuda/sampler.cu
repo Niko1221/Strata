@@ -1,6 +1,6 @@
 // src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in llama.cpp's order.
 //
-//     penalties -> top_k -> top_p -> min_p -> temperature -> pick
+//     penalties -> top_k -> top_a -> tfs -> typical -> top_p -> min_p -> temperature -> xtc -> pick
 //
 // THE ORDER IS THE WHOLE CONTENT OF THIS FILE.  llama.cpp builds its chain by walking `params.samplers`, whose
 // default is { PENALTIES, DRY, TOP_N_SIGMA, TOP_K, TYPICAL_P, TOP_P, MIN_P, XTC, TEMPERATURE } (`common/common.h`
@@ -54,11 +54,11 @@ __device__ __forceinline__ uint32_t philox4x32_round(uint32_t& c0, uint32_t& c1,
     return 0;
 }
 
-__device__ __forceinline__ float philox_uniform(uint64_t seed, uint64_t counter) {
+__device__ __forceinline__ float philox_uniform(uint64_t seed, uint64_t counter, uint32_t purpose = 0u) {
     uint32_t c0 = (uint32_t) counter, c1 = (uint32_t) (counter >> 32);
     uint32_t c2 = (uint32_t) seed, c3 = (uint32_t) (seed >> 32);
     for (int i = 0; i < 10; ++i) {
-        philox4x32_round(c0, c1, c2, c3, (uint32_t) i, 0u);
+        philox4x32_round(c0, c1, c2, c3, (uint32_t) i, purpose);
     }
     // 24 bits of mantissa, so the value is uniform in [0,1) with no rounding to 1.0
     return (float) (c0 >> 8) * (1.0f / 16777216.0f);
@@ -445,12 +445,207 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
 
 constexpr int kSelMax = 64;               // the widest top_k list, `sampler_kernel`'s KMAX
 constexpr unsigned kFullMask = 0xFFFFFFFFu;
+constexpr uint32_t kPhiloxXtc = 3u;
+__host__ __device__ __forceinline__ bool sampler_extras_enabled(const SamplerParams& p) {
+#if defined(__HIPCC__)
+    (void)p;
+    return false;
+#else
+    return p.top_k >= 1 && p.top_k <= kSelMax &&
+           ((p.top_a > 0.0f) || (p.tfs_z > 0.0f && p.tfs_z < 1.0f) ||
+            (p.typical_p > 0.0f && p.typical_p < 1.0f) || p.xtc_prob > 0.0f ||
+            p.dyna_low != p.dyna_high || p.smooth_factor > 0.0f);
+#endif
+}
 
 // top_k 1..64 as given; 0 ("off") and anything wider keep 64; never more than the vocabulary
 __host__ __device__ __forceinline__ int sampled_k(int top_k, int n_vocab) {
     int k = (top_k > 0 && top_k < kSelMax) ? top_k : kSelMax;
     return k > n_vocab ? n_vocab : k;
 }
+
+// The horde/koboldcpp list filters, after top_k and before top_p (koboldcpp's default order: top_k, top_a,
+// tfs, typical, top_p).  `x` holds the list's logits in selection order (sorted descending) and the filters
+// only NARROW n_keep.  Each softmaxes the surviving list into `scr` (k doubles, the caller's top_p terms are
+// free until top_p runs).  One warp: lane 0 runs every ordered sum exactly like the tail's top_p, so both
+// tails and all narrow variants agree bitwise.  The semantics are koboldcpp's (gpttype_adapter.cpp):
+// top_a keeps p >= top_a * p_max^2 (sample_top_a); tfs cuts where the normalized second-derivative mass
+// exceeds z - koboldcpp compares against z, llama.cpp against 1 - z (sample_tail_free); typical re-orders by
+// |shifted score| and keeps the smallest set holding typical_p of the original mass (sampler_typical): that set
+// is not a prefix of the list, so its tokens are moved to the front of x / ids, in their list order.
+// xtc is not here: koboldcpp runs it after the temperature step, on that step's probabilities.
+__device__ __forceinline__ int tail_list_filters(float* x, int* ids, int k, int n_keep, const SamplerParams& p,
+                                                 double* scr) {
+    if (!sampler_extras_enabled(p)) return n_keep;
+    const int lane = (int) (threadIdx.x & 31);
+    auto softmax_into = [&](int n) {
+        float mx = x[0];
+        for (int i = 1; i < n; ++i) mx = fmaxf(mx, x[i]);
+        for (int i = lane; i < n; i += 32) scr[i] = exp((double) (x[i] - mx));
+        __syncwarp();
+        double sum = 0.0;
+        if (lane == 0) for (int i = 0; i < n; ++i) sum += scr[i];
+        sum = __shfl_sync(kFullMask, sum, 0);
+        __syncwarp();
+        for (int i = lane; i < n; i += 32) scr[i] = scr[i] / sum;
+        __syncwarp();
+    };
+    if (p.top_a > 0.0f && n_keep > 1) {
+        softmax_into(n_keep);
+        if (lane == 0) {
+            const float thresh = p.top_a * (float) scr[0] * (float) scr[0];
+            for (int i = p.min_keep; i < n_keep; ++i)
+                if ((float) scr[i] < thresh) { n_keep = i; break; }
+        }
+        n_keep = __shfl_sync(kFullMask, n_keep, 0);
+    }
+    if (p.tfs_z > 0.0f && p.tfs_z < 1.0f && n_keep > 2) {
+        softmax_into(n_keep);
+        if (lane == 0) {
+            double dsum = 0.0;
+            for (int i = 0; i + 2 < n_keep; ++i)
+                dsum += fabs((scr[i] - scr[i + 1]) - (scr[i + 1] - scr[i + 2]));
+            if (dsum > 1e-6) {
+                double cum = 0.0;
+                for (int i = 0; i + 2 < n_keep; ++i) {
+                    cum += fabs((scr[i] - scr[i + 1]) - (scr[i + 1] - scr[i + 2])) / dsum;
+                    if (cum > (double) p.tfs_z && i >= p.min_keep) { n_keep = i; break; }
+                }
+            }
+        }
+        n_keep = __shfl_sync(kFullMask, n_keep, 0);
+    }
+    if (p.typical_p > 0.0f && p.typical_p < 1.0f && n_keep > 1) {
+        softmax_into(n_keep);
+        if (lane == 0) {
+            double entropy = 0.0;
+            for (int i = 0; i < n_keep; ++i)
+                if (scr[i] > 0.0) entropy -= (double) scr[i] * ::log((double) scr[i]);
+            float score[64];
+            int idx[64];
+            for (int i = 0; i < n_keep; ++i) {
+                score[i] = scr[i] > 0.0 ? fabsf(-logf((float) scr[i]) - (float) entropy) : INFINITY;
+                idx[i] = i;
+            }
+            for (int i = 1; i < n_keep; ++i) {              // insertion sort by score, ascending
+                const float s = score[i];
+                const int d = idx[i];
+                int j = i - 1;
+                while (j >= 0 && score[j] > s) { score[j + 1] = score[j]; idx[j + 1] = idx[j]; --j; }
+                score[j + 1] = s;
+                idx[j + 1] = d;
+            }
+            float cum = 0.0f;
+            int last = n_keep;
+            for (int i = 0; i < n_keep; ++i) {
+                cum += (float) scr[idx[i]];
+                if (cum > p.typical_p && (p.min_keep == 0 || i >= p.min_keep - 1)) { last = i + 1; break; }
+            }
+            bool kept[64] = {};
+            for (int i = 0; i < last; ++i) kept[idx[i]] = true;
+            int j = 0;                                     // the kept tokens, in their list order, to the front
+            for (int i = 0; i < n_keep; ++i)
+                if (kept[i]) { x[j] = x[i]; ids[j] = ids[i]; ++j; }
+            n_keep = j;
+        }
+        n_keep = __shfl_sync(kFullMask, n_keep, 0);
+        __syncwarp();
+    }
+    return n_keep;
+}
+
+// XTC (llama_sample_xtc_apply): with chance xtc_prob, remove every token at or above xtc_thresh except the
+// least-probable qualifier.  The list may no longer be sorted after smoothing, so scan the whole distribution;
+// ties keep the last qualifier in list order, matching the original prefix scan, and survivors keep their order. XTC uses a tagged Philox
+// stream so toggling it does not shift the pick draws.
+__device__ __forceinline__ int tail_xtc(float* x, int* ids, int n_keep, const SamplerParams& p, int t, double* scr) {
+    const int lane = (int) (threadIdx.x & 31);
+    if (!sampler_extras_enabled(p) || p.xtc_prob <= 0.0f || p.xtc_thresh > 0.5f || n_keep < 2) return n_keep;
+    const float u = philox_uniform(p.seed, p.counter + (uint64_t) t, kPhiloxXtc);
+    if (u > p.xtc_prob) return n_keep;
+    float mx = x[0];
+    for (int i = 1; i < n_keep; ++i) mx = fmaxf(mx, x[i]);
+    for (int i = lane; i < n_keep; i += 32) scr[i] = exp((double) (x[i] - mx));
+    __syncwarp();
+    double sum = 0.0;
+    if (lane == 0) for (int i = 0; i < n_keep; ++i) sum += scr[i];
+    sum = __shfl_sync(kFullMask, sum, 0);
+    __syncwarp();
+    for (int i = lane; i < n_keep; i += 32) scr[i] = scr[i] / sum;
+    __syncwarp();
+    if (lane == 0) {
+        int least = -1, qualifying = 0;
+        double least_prob = INFINITY;
+        for (int i = 0; i < n_keep; ++i) {
+            if (scr[i] >= (double)p.xtc_thresh) {
+                ++qualifying;
+                if (scr[i] <= least_prob) { least_prob = scr[i]; least = i; }
+            }
+        }
+        const int survivors = n_keep - qualifying + (qualifying > 0 ? 1 : 0);
+        if (qualifying > 1 && survivors >= p.min_keep) {
+            int dst = 0;
+            for (int i = 0; i < n_keep; ++i) {
+                if (scr[i] < (double)p.xtc_thresh || i == least) {
+                    x[dst] = x[i];
+                    ids[dst] = ids[i];
+                    ++dst;
+                }
+            }
+            n_keep = dst;
+        }
+    }
+    n_keep = __shfl_sync(kFullMask, n_keep, 0);
+    __syncwarp();
+    return n_keep;
+}
+
+// The temperature stage: the survivors' logits divided by the temperature in place - the same float multiply
+// the pick's inv_t applied, so with dynatemp and smoothing off the pick sees the old arithmetic bitwise - then
+// koboldcpp's dynamic temperature replacing that scale when its range is set (temp' = low + (high - low) *
+// (the survivors' normalized softmax entropy)^exp, sample_entropy), then the smoothing transform
+// (sample_temperature's tail: l' = -(k*sf*(l-h)^2) + (s*sf*(l-h)^3) + h, h the divided maximum,
+// k = (3 - curve)/2, s = (curve - 1)/2).  The pick softmaxes the transformed logits.
+__device__ __forceinline__ void tail_temperature(float* x, int n_keep, const SamplerParams& p, double* scr) {
+    const int lane = (int) (threadIdx.x & 31);
+    if (n_keep <= 1) return;
+    float scale = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    const bool extras = sampler_extras_enabled(p);
+    if (extras && p.dyna_low != p.dyna_high) {
+        float mx = x[0];
+        for (int i = 1; i < n_keep; ++i) mx = fmaxf(mx, x[i]);
+        for (int i = lane; i < n_keep; i += 32) scr[i] = exp((double) (x[i] - mx));
+        __syncwarp();
+        double sum = 0.0;
+        if (lane == 0) for (int i = 0; i < n_keep; ++i) sum += scr[i];
+        sum = __shfl_sync(kFullMask, sum, 0);
+        __syncwarp();
+        double entropy = 0.0;
+        if (lane == 0)
+            for (int i = 0; i < n_keep; ++i) {
+                const double q = scr[i] / sum;
+                if (q > 0.0) entropy -= q * ::log(q);
+            }
+        entropy = __shfl_sync(kFullMask, entropy, 0);
+        const float normalized = (float) entropy / logf((float) n_keep);   // max_entropy = -log(1/n_keep)
+        const float dyn = p.dyna_low + (p.dyna_high - p.dyna_low) * powf(normalized, p.dyna_exp);
+        scale = 1.0f / fmaxf(dyn, 1e-6f);
+    }
+    if (scale != 1.0f)
+        for (int i = lane; i < n_keep; i += 32) x[i] *= scale;
+    __syncwarp();
+    if (extras && p.smooth_factor > 0.0f) {
+        const float h = x[0];
+        const float kq = (3.0f - p.smooth_curve) * 0.5f, sq = (p.smooth_curve - 1.0f) * 0.5f;
+        for (int i = lane; i < n_keep; i += 32) {
+            const float d = x[i] - h;
+            x[i] = -(kq * p.smooth_factor * d * d) + (sq * p.smooth_factor * d * d * d) + h;
+        }
+        __syncwarp();
+    }
+}
+
+
 
 // (bv, bi) <- the first of (bv, bi) and (ov, oi) in the selection order
 __device__ __forceinline__ void take_first(float& bv, int& bi, float ov, int oi) {
@@ -480,35 +675,36 @@ __device__ __forceinline__ void warp_first(float& bv, int& bi) {
 /// kProb (the coupled draft only): lane 0 also writes the pick's probability under the final distribution to
 /// `*prob_out`.  The sampler's own calls take kProb = false, whose code is the tail above, unchanged.
 template <bool kProb = false>
-__device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, int k, const SamplerParams& p, int t,
+__device__ void sampled_tail_warp(int* sel_ids, float* sel_logit, int k, const SamplerParams& p, int t,
                                   int* __restrict__ out, double* ex, float* prob_out = nullptr,
-                                  const int32_t* __restrict__ sub_to_id = nullptr) {
+                                  const int32_t* __restrict__ sub_to_id = nullptr,
+                                  int n_vocab = 0, float* qprob = nullptr) {
     const int lane = (int) (threadIdx.x & 31);
-    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
-    int n_keep = k;
+    const bool extras = sampler_extras_enabled(p);
+    int n_keep = extras ? tail_list_filters(sel_logit, sel_ids, k, k, p, ex) : k;
     float mx = sel_logit[0];
     for (int i = 1; i < k; ++i) mx = fmaxf(mx, sel_logit[i]);
     if (p.top_p < 1.0f) {
-        for (int i = lane; i < k; i += 32) ex[i] = exp((double) sel_logit[i] - (double) mx);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double) sel_logit[i] - (double) mx);
         __syncwarp();
         double sum = 0.0;
         if (lane == 0)
-            for (int i = 0; i < k; ++i) sum += ex[i];
+            for (int i = 0; i < n_keep; ++i) sum += ex[i];
         sum = __shfl_sync(kFullMask, sum, 0);
         __syncwarp();                            // lane 0 has read every `ex` before it is overwritten
-        for (int i = lane; i < k; i += 32) ex[i] = ex[i] / sum;
+        for (int i = lane; i < n_keep; i += 32) ex[i] = ex[i] / sum;
         __syncwarp();
-        int cut = k;
+        int cut = n_keep;
         if (lane == 0) {
             double cum = 0.0;
-            for (int i = 0; i < k; ++i) {
+            for (int i = 0; i < n_keep; ++i) {
                 cum += ex[i];
                 if (cum >= (double) p.top_p) { cut = i + 1; break; }
             }
         }
         cut = __shfl_sync(kFullMask, cut, 0);
-        if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
-        n_keep = cut;
+        if (cut < p.min_keep) cut = p.min_keep < n_keep ? p.min_keep : n_keep;
+        n_keep = cut < n_keep ? cut : n_keep;
         __syncwarp();                            // `ex` is written again below
     }
     // min_p on top_p's survivors, as in `sampler_kernel` (every lane, the same float arithmetic)
@@ -518,9 +714,21 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
             if (sel_logit[i] < thresh) { n_keep = i; break; }
     }
     // temperature, then one Philox draw
-    float smx = sel_logit[0] * inv_t;
-    for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i] * inv_t);
-    for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double) (sel_logit[i] * inv_t) - (double) smx);
+    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    if (extras) {
+        tail_temperature(sel_logit, n_keep, p, ex);
+        n_keep = tail_xtc(sel_logit, sel_ids, n_keep, p, t, ex);
+    }
+    float smx;
+    if (extras) {
+        smx = sel_logit[0];
+        for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i]);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double)sel_logit[i] - (double)smx);
+    } else {
+        smx = sel_logit[0] * inv_t;
+        for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i] * inv_t);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double)(sel_logit[i] * inv_t) - (double)smx);
+    }
     __syncwarp();
     double sum = 0.0;
     if (lane == 0)
@@ -549,6 +757,8 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
         }
         out[t] = pick;
         if constexpr (kProb) *prob_out = n_keep > 0 ? (float) ex[pi] : 1.0f;
+        if (qprob != nullptr)
+            for (int i = 0; i < n_keep; ++i) qprob[(size_t)t * n_vocab + sel_ids[i]] = (float)ex[i];
     }
 }
 
@@ -561,7 +771,7 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
 /// 0 runs the tail.  `STRATA_SAMPLER_ONE_BLOCK=1`, and the fallback when the split path cannot run.
 __global__ void __launch_bounds__(1024)
 sampler_one_block_kernel(const float* __restrict__ logits, int n_vocab, const int* __restrict__ history,
-                         int history_len, const SamplerParams p, int* __restrict__ out) {
+                         int history_len, const SamplerParams p, int* __restrict__ out, float* qprob) {
     const int t = blockIdx.x;
     const float* l = logits + (size_t) t * n_vocab;
 
@@ -629,7 +839,7 @@ sampler_one_block_kernel(const float* __restrict__ logits, int n_vocab, const in
         prev_i = sel_ids[i];
     }
     if (warp != 0) return;
-    sampled_tail_warp(sel_ids, sel_logit, k, p, t, out, ex);
+    sampled_tail_warp(sel_ids, sel_logit, k, p, t, out, ex, nullptr, nullptr, n_vocab, qprob);
 }
 
 // ---- THE SPLIT top_k.  `sampler_kernel` and the one-block kernel keep a row on ONE SM of 170 (5090) and walk its
@@ -779,7 +989,7 @@ sampler_split_part_kernel(const float* __restrict__ logits, int n_vocab, const i
 /// 64 entries, 32 KB) are copied to shared memory, merged into the row's top_k list, and `sampled_tail_warp` picks.
 __global__ void __launch_bounds__(32)
 sampler_split_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vocab, const SamplerParams p, int k,
-                           int* __restrict__ out) {
+                           int* __restrict__ out, float* qprob) {
     const int t = blockIdx.x;
     const int lane = (int) threadIdx.x;
     __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
@@ -793,7 +1003,7 @@ sampler_split_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vo
         if (lane == 0) { sel_ids[i] = id < n_vocab ? id : 0; sel_logit[i] = v; }
     });
     __syncwarp();
-    sampled_tail_warp(sel_ids, sel_logit, k, p, t, out, ex);
+    sampled_tail_warp(sel_ids, sel_logit, k, p, t, out, ex, nullptr, nullptr, n_vocab, qprob);
 }
 
 // ---- COUPLED DRAFT SAMPLING (include/strata/core/coupled_draft.hpp): the MTP draft layer samples its draft with the
@@ -887,33 +1097,33 @@ coupled_merge_kernel(const int2* __restrict__ cand, int n_blocks, int nv, int kp
 // instruction (top_p's cut in double over the top_k list, min_p's threshold in logit space, temperature, the two
 // ordered sums), leaving the row's probabilities in `ex[0 .. n_keep)` and returning n_keep in every lane.  It is a
 // copy, not a refactor, so the sampler's own kernels keep their SASS.
-__device__ int sampled_probs_warp(const float* sel_logit, int k, const SamplerParams& p, double* ex) {
+__device__ int sampled_probs_warp(int* sel_ids, float* sel_logit, int k, const SamplerParams& p, int t, double* ex) {
     const int lane = (int) (threadIdx.x & 31);
-    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
-    int n_keep = k;
+    const bool extras = sampler_extras_enabled(p);
+    int n_keep = extras ? tail_list_filters(sel_logit, sel_ids, k, k, p, ex) : k;
     float mx = sel_logit[0];
     for (int i = 1; i < k; ++i) mx = fmaxf(mx, sel_logit[i]);
     if (p.top_p < 1.0f) {
-        for (int i = lane; i < k; i += 32) ex[i] = exp((double) sel_logit[i] - (double) mx);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double) sel_logit[i] - (double) mx);
         __syncwarp();
         double sum = 0.0;
         if (lane == 0)
-            for (int i = 0; i < k; ++i) sum += ex[i];
+            for (int i = 0; i < n_keep; ++i) sum += ex[i];
         sum = __shfl_sync(kFullMask, sum, 0);
         __syncwarp();
-        for (int i = lane; i < k; i += 32) ex[i] = ex[i] / sum;
+        for (int i = lane; i < n_keep; i += 32) ex[i] = ex[i] / sum;
         __syncwarp();
-        int cut = k;
+        int cut = n_keep;
         if (lane == 0) {
             double cum = 0.0;
-            for (int i = 0; i < k; ++i) {
+            for (int i = 0; i < n_keep; ++i) {
                 cum += ex[i];
                 if (cum >= (double) p.top_p) { cut = i + 1; break; }
             }
         }
         cut = __shfl_sync(kFullMask, cut, 0);
-        if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
-        n_keep = cut;
+        if (cut < p.min_keep) cut = p.min_keep < n_keep ? p.min_keep : n_keep;
+        n_keep = cut < n_keep ? cut : n_keep;
         __syncwarp();
     }
     if (p.min_p > 0.0f) {
@@ -921,9 +1131,21 @@ __device__ int sampled_probs_warp(const float* sel_logit, int k, const SamplerPa
         for (int i = 0; i < n_keep; ++i)
             if (sel_logit[i] < thresh) { n_keep = i; break; }
     }
-    float smx = sel_logit[0] * inv_t;
-    for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i] * inv_t);
-    for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double) (sel_logit[i] * inv_t) - (double) smx);
+    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    if (extras) {
+        tail_temperature(sel_logit, n_keep, p, ex);
+        n_keep = tail_xtc(sel_logit, sel_ids, n_keep, p, t, ex);
+    }
+    float smx;
+    if (extras) {
+        smx = sel_logit[0];
+        for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i]);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double)sel_logit[i] - (double)smx);
+    } else {
+        smx = sel_logit[0] * inv_t;
+        for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, sel_logit[i] * inv_t);
+        for (int i = lane; i < n_keep; i += 32) ex[i] = exp((double)(sel_logit[i] * inv_t) - (double)smx);
+    }
     __syncwarp();
     double sum = 0.0;
     if (lane == 0)
@@ -966,7 +1188,7 @@ spec_draft_merge_kernel(const int2* __restrict__ cand, int n_blocks, int nv, int
         if (lane == 0) { pick[0] = 0; prob[0] = 1.0f; ex[0] = 1.0; }
         __syncwarp();
     } else {
-        n_keep = sampled_probs_warp(sel_logit, k, p, ex);
+        n_keep = sampled_probs_warp(sel_ids, sel_logit, k, p, 0, ex);
         if (lane == 0) {
             const float u = philox_uniform(p.seed, strata::core::coupled_draft_counter((int64_t) step_rec[0]) |
                                                        strata::core::kSpecCtrDraft);
@@ -1027,7 +1249,7 @@ spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_voca
         if (lane == 0) { sel_ids[i] = id < n_vocab ? id : 0; sel_logit[i] = v; }
     });
     __syncwarp();
-    const int n_keep = sampled_probs_warp(sel_logit, k, p, ex);
+    const int n_keep = sampled_probs_warp(sel_ids, sel_logit, k, p, t, ex);
     const uint64_t pos = p.counter + (uint64_t) t;
     const int d = t < T - 1 ? dtok[t] : -1;
     const bool has_q = t < n_q;
@@ -1257,8 +1479,8 @@ bool sample_greedy_cluster(const float* logits, int n_tokens, int n_vocab, int* 
 #endif
 }
 
-void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
-                   const SamplerParams& p_in, int* out, void* stream) {
+static void sample_tokens_impl(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                   const SamplerParams& p_in, int* out, float* qprob, void* stream) {
     SamplerParams p = p_in;
     p.gumbel = p_in.gumbel || gumbel_env();            // the target's pick; greedy rows never read it
     if (n_tokens <= 0 || n_vocab <= 0) return;
@@ -1282,7 +1504,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         if (!(multi && shmem == 0 && !p.logit_bias && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
                 logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
-    } else if (sampled_path() == SampledPath::Old) {
+    } else if (sampled_path() == SampledPath::Old && !sampler_extras_enabled(p) && qprob == nullptr) {
         // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
         // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
         sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
@@ -1304,10 +1526,10 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                                         (cudaStream_t) stream>>>(logits, n_vocab, history, history_len, p, k,
                                                                  n_blocks, scratch);
             sampler_split_merge_kernel<<<(unsigned) n_tokens, 32, 0, (cudaStream_t) stream>>>(
-                scratch, n_blocks, n_vocab, p, k, out);
+                scratch, n_blocks, n_vocab, p, k, out, qprob);
         } else {
             sampler_one_block_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
-                logits, n_vocab, history, history_len, p, out);
+                logits, n_vocab, history, history_len, p, out, qprob);
         }
     }
     const cudaError_t e = cudaGetLastError();
@@ -1316,6 +1538,16 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         std::exit(1);
     }
     if (stream == nullptr) cudaDeviceSynchronize();
+}
+
+void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                   const SamplerParams& p, int* out, void* stream) {
+    sample_tokens_impl(logits, n_tokens, n_vocab, history, history_len, p, out, nullptr, stream);
+}
+
+void sample_tokens_probe(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                         const SamplerParams& p, int* out, float* qprob, void* stream) {
+    sample_tokens_impl(logits, n_tokens, n_vocab, history, history_len, p, out, qprob, stream);
 }
 
 namespace {

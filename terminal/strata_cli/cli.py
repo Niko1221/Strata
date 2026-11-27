@@ -78,6 +78,9 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--batch-telemetry", action=argparse.BooleanOptionalAction, default=None,
                        help="sample actual engine decode-window rows for the monitor (opt-in)")
     serve.add_argument("--offline", action="store_true", help="disable remote image fetches and MCP/tool subprocesses")
+    serve.add_argument("--more-samplers", nargs="?", choices=("on", "off"), const="on", default=None,
+                       help="enable the CUDA-only Horde sampling fields in API requests (tfs, typical, top_a, xtc, "
+                            "dynamic temperature and smoothing)")
     serve.add_argument("--ready-file", help="absolute path for a new instance record (use a private directory)")
     serve.add_argument("--shutdown-timeout", type=float, default=30,
                        help="seconds to drain owned inference calls on stop (0..300)")
@@ -832,6 +835,8 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
+    if cli is not None and getattr(cli, "more_samplers", None) is not None:
+        server_args += ["--more-samplers", cli.more_samplers]
     if cli is not None:
         server_args += ["--shutdown-timeout", str(cli.shutdown_timeout)]
     for key, flag in (("parallel", "--parallel"), ("batch_groups", "--batch-groups"),

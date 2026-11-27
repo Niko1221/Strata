@@ -763,6 +763,7 @@ struct Options {
     int top_k = 20;
     float top_p = 0.95f;
     float temperature = 1.0f;
+    bool more_samplers = false;
     std::string dump_logits;          // one line of logits per generated position
     int64_t logits_stride = 1;        // storage selection; all prompt tokens remain conditioned
     /// **THE RESIDUAL, SO THE HEAD CAN BE CHECKED WITHOUT THE LAYERS.**
@@ -1280,6 +1281,7 @@ void usage() {
                  "  --greedy             argmax (the default)\n"
                  "  --seed S             enable sampling with this Philox seed\n"
                  "  --top-k N --top-p F --temperature F\n"
+                 "  --more-samplers on|off  --serve: accept the opt-in Horde sampling keys on CUDA\n"
                  "  --dump-logits PATH   write one line of raw logits per position\n"
                  "  --logits-stride N    store every Nth row plus final input (default 1); N>1 requires --max-new 1\n"
                  "  --dump-residual PATH write the final R (hc x n_embd, f32) for head bisection\n"
@@ -3814,7 +3816,15 @@ int main(int argc, char** argv) {
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }
-        if (qwen35) return strata::qwen35::run(argc, argv);
+        if (qwen35) {
+            for (int j = 1; j + 1 < argc; ++j) {
+                if (std::strcmp(argv[j], "--more-samplers") == 0 && std::strcmp(argv[j + 1], "on") == 0) {
+                    std::fprintf(stderr, "strata generate: --more-samplers is not supported by the Qwen35 engine\n");
+                    return 2;
+                }
+            }
+            return strata::qwen35::run(argc, argv);
+        }
         break;
     }
 #endif
@@ -3883,6 +3893,12 @@ int main(int argc, char** argv) {
         else if (a == "--top-k") o.top_k = std::atoi(next("--top-k"));
         else if (a == "--top-p") o.top_p = (float) std::atof(next("--top-p"));
         else if (a == "--temperature") o.temperature = (float) std::atof(next("--temperature"));
+        else if (a == "--more-samplers") {
+            const std::string value = next("--more-samplers");
+            if (value == "on") o.more_samplers = true;
+            else if (value == "off") o.more_samplers = false;
+            else { std::fprintf(stderr, "strata generate: --more-samplers must be on or off\n"); return 2; }
+        }
         else if (a == "--dump-logits") o.dump_logits = next("--dump-logits");
         else if (a == "--logits-stride") {
             if (have_logits_stride) { std::fprintf(stderr, "--logits-stride must be supplied only once\n"); return 2; }
@@ -5273,6 +5289,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: invalid sampling or resource parameter\n");
         return 2;
     }
+    if (o.more_samplers && !o.serve) {
+        std::fprintf(stderr, "strata generate: --more-samplers on requires --serve\n");
+        return 2;
+    }
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+    if (o.more_samplers) {
+        std::fprintf(stderr, "strata generate: --more-samplers is supported only by the CUDA sampler\n");
+        return 2;
+    }
+#endif
     if (o.expert_cache_remote_placement != "stripe" && o.expert_cache_remote_placement != "layer") {
         std::fprintf(stderr, "strata generate: --expert-cache-remote-placement must be stripe or layer\n");
         return 2;
@@ -18828,6 +18854,11 @@ int main(int argc, char** argv) {
             int req_top_k = 20;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
+            float req_tfs = 0.0f, req_typical = 0.0f, req_top_a = 0.0f, req_xtc_prob = 0.0f, req_xtc_thresh = 0.1f;
+            float req_dyna_low = 0.0f, req_dyna_high = 0.0f, req_dyna_exp = 1.0f;
+            float req_smooth_factor = 0.0f, req_smooth_curve = 1.0f;
+            bool req_dyna_low_set = false, req_dyna_high_set = false, req_more_sampler_bad = false;
+            std::string req_more_sampler_error;
             int req_penalty_last_n = 0;
             long long req_pen_from = -1;   // pen_from=N: this request continues one that began at token N (the last token of the original prompt): the penalty window starts there
             std::string req_bias_text;
@@ -18871,6 +18902,17 @@ int main(int argc, char** argv) {
             // slot_read=1 (BGEN): the server takes DONE and BADM without a token, so the turn may be read in its slot
             // (STRATA_SLOT_READ, below).  Absent = the admission's first token on the main sessions, as before.
             bool req_slot_read = false;
+            auto parse_more_float = [&](const std::string& token, float& out, const std::string& key) {
+                const char* value = token.c_str() + token.find('=') + 1;
+                char* parsed_end = nullptr;
+                out = std::strtof(value, &parsed_end);
+                if (parsed_end == value || parsed_end == nullptr || *parsed_end != '\0' || !std::isfinite(out)) {
+                    req_more_sampler_error = key + ": expected a finite number";
+                    req_more_sampler_bad = true;
+                    return false;
+                }
+                return true;
+            };
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -18900,7 +18942,16 @@ int main(int argc, char** argv) {
                     }
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
-                    else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "top_k") {
+                        const char* value = tok.c_str() + eq + 1;
+                        char* parsed_end = nullptr;
+                        const long parsed = std::strtol(value, &parsed_end, 10);
+                        if (parsed_end == value || parsed_end == nullptr || *parsed_end != '\0' ||
+                            parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) {
+                            req_more_sampler_bad = true;
+                            req_more_sampler_error = "top_k: expected an integer";
+                        } else req_top_k = (int) parsed;
+                    }
                     else if (key == "logprobs") req_logprobs = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "allowed") {
                         const std::string csv = tok.substr(eq + 1);
@@ -18914,6 +18965,16 @@ int main(int argc, char** argv) {
                         }
                     }
                     else if (key == "min_p") req_min_p = fv;
+                    else if (key == "tfs") parse_more_float(tok, req_tfs, key);
+                    else if (key == "typ") parse_more_float(tok, req_typical, key);
+                    else if (key == "top_a") parse_more_float(tok, req_top_a, key);
+                    else if (key == "xtc_p") parse_more_float(tok, req_xtc_prob, key);
+                    else if (key == "xtc_t") parse_more_float(tok, req_xtc_thresh, key);
+                    else if (key == "dyna_lo") { req_dyna_low_set = true; parse_more_float(tok, req_dyna_low, key); }
+                    else if (key == "dyna_hi") { req_dyna_high_set = true; parse_more_float(tok, req_dyna_high, key); }
+                    else if (key == "dyna_exp") parse_more_float(tok, req_dyna_exp, key);
+                    else if (key == "sm_f") parse_more_float(tok, req_smooth_factor, key);
+                    else if (key == "sm_c") parse_more_float(tok, req_smooth_curve, key);
                     else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "penalty_repeat") req_penalty_repeat = fv;
                     else if (key == "penalty_freq") req_penalty_freq = fv;
@@ -18940,6 +19001,32 @@ int main(int argc, char** argv) {
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
             }
+            if (req_more_sampler_bad) {
+                std::printf("ERR %s\n", req_more_sampler_error.c_str());
+                continue;
+            }
+            if (req_dyna_low_set != req_dyna_high_set) {
+                std::printf("ERR dynatemp requires both dyna_lo and dyna_hi\n");
+                continue;
+            }
+            if (req_tfs < 0.0f || req_tfs > 1.0f || req_typical < 0.0f || req_typical > 1.0f ||
+                req_top_a < 0.0f || req_top_a > 1.0f || req_xtc_prob < 0.0f || req_xtc_prob > 1.0f ||
+                req_xtc_thresh < 0.0f || req_xtc_thresh > 0.5f || req_dyna_low < 0.0f || req_dyna_high < 0.0f ||
+                req_dyna_exp < 0.0f || req_smooth_factor < 0.0f) {
+                std::printf("ERR more samplers: value out of range\n");
+                continue;
+            }
+            const bool req_more_samplers_active =
+                (req_tfs > 0.0f && req_tfs < 1.0f) || (req_typical > 0.0f && req_typical < 1.0f) ||
+                req_top_a > 0.0f || req_xtc_prob > 0.0f || req_dyna_low != req_dyna_high || req_smooth_factor > 0.0f;
+            if (req_more_samplers_active && !o.more_samplers) {
+                std::printf("ERR active extra samplers require --more-samplers on\n");
+                continue;
+            }
+            if (req_more_samplers_active && (req_top_k < 1 || req_top_k > 64)) {
+                std::printf("ERR active extra samplers require top_k in 1..64\n");
+                continue;
+            }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
             bool req_df2 = use_df2;   // --draft auto: this request's drafter, decided once the prompt is parsed (below)
             std::vector<float> req_bias;
@@ -18962,6 +19049,16 @@ int main(int argc, char** argv) {
                 s.penalty_repeat = req_penalty_repeat;
                 s.penalty_freq = req_penalty_freq;
                 s.penalty_present = req_penalty_present;
+                s.tfs_z = req_tfs;
+                s.typical_p = req_typical;
+                s.top_a = req_top_a;
+                s.xtc_prob = req_xtc_prob;
+                s.xtc_thresh = req_xtc_thresh;
+                s.dyna_low = req_dyna_low;
+                s.dyna_high = req_dyna_high;
+                s.dyna_exp = req_dyna_exp;
+                s.smooth_factor = req_smooth_factor;
+                s.smooth_curve = req_smooth_curve;
                 s.counter = 0;
                 return s;
             };

@@ -5024,7 +5024,22 @@ struct Serve {
         }
         const long long max_new = std::strtoll(p, &p, 10);
         Sampling smp;
+        float req_tfs = 0.0f, req_typical = 0.0f, req_top_a = 0.0f, req_xtc_prob = 0.0f, req_xtc_thresh = 0.1f;
+        float req_dyna_low = 0.0f, req_dyna_high = 0.0f, req_smooth_factor = 0.0f;
+        bool req_more_bad = false;
+        std::string req_more_error;
         std::vector<uint64_t> img_keys;
+        auto parse_more_float = [&](const std::string& token, float& out, const std::string& key) {
+            const char* value = token.c_str() + token.find('=') + 1;
+            char* parsed_end = nullptr;
+            out = std::strtof(value, &parsed_end);
+            if (parsed_end == value || parsed_end == nullptr || *parsed_end != '\0' || !std::isfinite(out)) {
+                req_more_error = key + ": expected a finite number";
+                req_more_bad = true;
+                return false;
+            }
+            return true;
+        };
         for (;;) {
             while (*p == ' ') ++p;
             const char* st0 = p;
@@ -5038,6 +5053,15 @@ struct Serve {
             else if (key == "top_p") smp.top_p = std::strtof(v, nullptr);
             else if (key == "top_k") smp.top_k = std::atoi(v);
             else if (key == "min_p") smp.min_p = std::strtof(v, nullptr);
+            else if (key == "tfs") parse_more_float(tk, req_tfs, key);
+            else if (key == "typ") parse_more_float(tk, req_typical, key);
+            else if (key == "top_a") parse_more_float(tk, req_top_a, key);
+            else if (key == "xtc_p") parse_more_float(tk, req_xtc_prob, key);
+            else if (key == "xtc_t") parse_more_float(tk, req_xtc_thresh, key);
+            else if (key == "dyna_lo") parse_more_float(tk, req_dyna_low, key);
+            else if (key == "dyna_hi") parse_more_float(tk, req_dyna_high, key);
+            else if (key == "sm_f") parse_more_float(tk, req_smooth_factor, key);
+            else if (key == "sm_c") { float ignored = 0.0f; parse_more_float(tk, ignored, key); }
             else if (key == "penalty_last_n") smp.last_n = std::atoi(v);
             else if (key == "penalty_repeat") smp.repeat = std::strtof(v, nullptr);
             else if (key == "penalty_freq") smp.freq = std::strtof(v, nullptr);
@@ -5055,6 +5079,27 @@ struct Serve {
                     if (*qe != ',' && *qe != '\0') { img_keys.clear(); break; }
                 }
             }
+        }
+        if (req_more_bad) {
+            std::printf("ERR %s\n", req_more_error.c_str());
+            std::fflush(stdout);
+            return;
+        }
+        if (req_tfs < 0.0f || req_tfs > 1.0f || req_typical < 0.0f || req_typical > 1.0f ||
+            req_top_a < 0.0f || req_top_a > 1.0f || req_xtc_prob < 0.0f || req_xtc_prob > 1.0f ||
+            req_xtc_thresh < 0.0f || req_xtc_thresh > 0.5f || req_dyna_low < 0.0f || req_dyna_high < 0.0f ||
+            req_smooth_factor < 0.0f) {
+            std::printf("ERR more samplers: value out of range\n");
+            std::fflush(stdout);
+            return;
+        }
+        const bool more_samplers_active = (req_tfs > 0.0f && req_tfs < 1.0f) ||
+            (req_typical > 0.0f && req_typical < 1.0f) || req_top_a > 0.0f || req_xtc_prob > 0.0f ||
+            req_dyna_low != req_dyna_high || req_smooth_factor > 0.0f;
+        if (more_samplers_active) {
+            std::printf("ERR extra samplers are unsupported by the Qwen35 engine\n");
+            std::fflush(stdout);
+            return;
         }
         std::string emb;
         if (geni) {

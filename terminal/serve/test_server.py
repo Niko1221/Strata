@@ -128,6 +128,19 @@ class MaxTokens(unittest.TestCase):
         self.assertNotIn("enable_thinking", kw(output_config={"effort": "high"}))
         self.assertNotIn("enable_thinking", kw(reasoning_budget_tokens=30))
 
+    def test_more_samplers_are_a_pre_stream_http_400_without_opt_in(self):
+        cases = (
+            ("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}], "tfs": 0.8}),
+            ("/v1/messages", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                              "max_tokens": 16, "xtc_probability": 0.2}),
+            ("/v1/responses", {"model": "m", "input": "hi", "top_a": 0.2}),
+        )
+        for path, body in cases:
+            with self.subTest(path=path):
+                status, error = self.post(path, body)
+                self.assertEqual(status, 400, error)
+                self.assertIn("--more-samplers", json.dumps(error))
+
     def test_count_tokens_is_the_prompt_messages_reads(self):
         # /v1/messages/count_tokens renders and tokenizes the same prompt /v1/messages would read, without running it
         msgs = [{"role": "user", "content": "how many tokens is this?"}]
@@ -1809,6 +1822,34 @@ class SamplingKeys(unittest.TestCase):
         self.assertIn("penalty_last_n=64", self.keys(presence_penalty=1.5))
         self.assertIn("penalty_last_n=4096", self.keys(repetition_penalty=1.1, penalty_last_n=4096))
         self.assertFalse([k for k in self.keys(temperature=0.7) if k.startswith("penalty")])
+
+    def test_more_sampler_protocol_keys(self):
+        keys = self.keys(tfs=0.8, typical=0.7, top_a=0.2, xtc_probability=0.1, xtc_threshold=0.25,
+                         dynatemp_min=0.7, dynatemp_max=1.3, dynatemp_exponent=1.2,
+                         smoothing_factor=0.3, smoothing_curve=1.5)
+        for key in ("tfs=0.8", "typ=0.7", "top_a=0.2", "xtc_p=0.1", "xtc_t=0.25",
+                    "dyna_lo=0.7", "dyna_hi=1.3", "dyna_exp=1.2", "sm_f=0.3", "sm_c=1.5"):
+            self.assertIn(key, keys)
+
+    def test_more_sampler_off_values_leave_gen_path_unchanged(self):
+        self.assertEqual(self.keys(tfs=1, typical=0, top_a=0, xtc_probability=0,
+                                  dynatemp_min=1, dynatemp_max=1, smoothing_factor=0,
+                                  smoothing_curve=1), [])
+
+    def test_more_sampler_request_validation(self):
+        from serve.server_parts.http_api import check_request_sampling
+        with self.assertRaisesRegex(ValueError, "--more-samplers"):
+            check_request_sampling({"tfs": 0.8}, more_samplers_enabled=False)
+        check_request_sampling({"tfs": 0.8}, more_samplers_enabled=True)  # the native default top_k is 20
+        for top_k in (0, 65):
+            with self.subTest(top_k=top_k), self.assertRaisesRegex(ValueError, "top_k in 1..64"):
+                check_request_sampling({"tfs": 0.8, "top_k": top_k}, more_samplers_enabled=True)
+        for top_k in (40.0, True):
+            with self.subTest(top_k=top_k), self.assertRaisesRegex(ValueError, "top_k: an integer"):
+                check_request_sampling({"tfs": 0.8, "top_k": top_k}, more_samplers_enabled=True)
+        for bad in ("not-a-number", float("inf"), 10 ** 400):
+            with self.subTest(value=bad), self.assertRaisesRegex(ValueError, "finite"):
+                check_request_sampling({"dynatemp_min": bad, "dynatemp_max": 2}, more_samplers_enabled=True)
 
 
 class SharedPrefix(unittest.TestCase):
