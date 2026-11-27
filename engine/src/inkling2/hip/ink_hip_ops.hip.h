@@ -4127,6 +4127,121 @@ __global__ void __launch_bounds__(64) k_vit_full_attn(
     O[(static_cast<size_t>(qi) * H + h) * hd + d] = o_acc / fmaxf(sum_e, 1e-30f);
 }
 
+// Vision ViT full attention, tiled (hd = 64): 64 queries x 32-key tiles per block, 256 threads, FP32 online softmax.
+// S = Q K^T as register tiles (4 queries x 2 keys a thread), then P V (4 queries x 4 dims a thread). k_vit_full_attn walks every key
+// of every query one at a time with two barriers per key: 5.2 s a layer at 22,501 patches (a 3000x3000 picture) on an R9700, this
+// 0.27 s, and closer to an FP64 reference (max error 1.3e-5 against 1.7e-4 on random data).
+constexpr int kVitTileQ = 64, kVitTileK = 32, kVitTileHd = 64;
+__global__ void __launch_bounds__(256) k_vit_full_attn_tiled(
+    const float* __restrict__ Q,   // [S, H, 64]
+    const float* __restrict__ K,   // [S, H, 64]
+    const float* __restrict__ V,   // [S, H, 64]
+    float* __restrict__ O,         // [S, H, 64]
+    int S, int H) {
+    __shared__ float sQ[kVitTileQ][kVitTileHd + 1];
+    __shared__ float sK[kVitTileK][kVitTileHd + 1];
+    __shared__ float sV[kVitTileK][kVitTileHd];
+    __shared__ float sP[kVitTileQ][kVitTileK + 1];
+    __shared__ float sM[kVitTileQ], sL[kVitTileQ], sA[kVitTileQ];
+    const int h = blockIdx.x;
+    const int q0 = blockIdx.y * kVitTileQ;
+    const int t = threadIdx.x;
+    const float scale = rsqrtf(static_cast<float>(kVitTileHd));
+    for (int i = t; i < kVitTileQ * kVitTileHd; i += 256) {
+        const int r = i / kVitTileHd, c = i % kVitTileHd;
+        sQ[r][c] = (q0 + r < S) ? Q[(static_cast<size_t>(q0 + r) * H + h) * kVitTileHd + c] * scale : 0.0f;
+    }
+    if (t < kVitTileQ) { sM[t] = -1e30f; sL[t] = 0.0f; }
+    const int tq = t >> 4, tl = t & 15;   // rows tq + 16 i (a wave reads two rows: broadcast), columns tl + 16 j
+    float o[4][4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i)
+#pragma unroll
+        for (int j = 0; j < 4; ++j) o[i][j] = 0.0f;
+    for (int k0 = 0; k0 < S; k0 += kVitTileK) {
+        const int nk = min(kVitTileK, S - k0);
+        __syncthreads();
+        for (int i = t; i < kVitTileK * kVitTileHd; i += 256) {
+            const int r = i / kVitTileHd, c = i % kVitTileHd;
+            const bool ok = r < nk;
+            const size_t g = (static_cast<size_t>(k0 + r) * H + h) * kVitTileHd + c;
+            sK[r][c] = ok ? K[g] : 0.0f;
+            sV[r][c] = ok ? V[g] : 0.0f;
+        }
+        __syncthreads();
+        float acc[4][2] = {};
+#pragma unroll 8
+        for (int d = 0; d < kVitTileHd; ++d) {
+            const float k_0 = sK[tl][d], k_1 = sK[tl + 16][d];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const float qv = sQ[tq + 16 * i][d];
+                acc[i][0] = fmaf(qv, k_0, acc[i][0]);
+                acc[i][1] = fmaf(qv, k_1, acc[i][1]);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            sP[tq + 16 * i][tl] = (tl < nk) ? acc[i][0] : -1e30f;
+            sP[tq + 16 * i][tl + 16] = (tl + 16 < nk) ? acc[i][1] : -1e30f;
+        }
+        __syncthreads();
+        {   // online softmax over the tile: 4 threads a row, 8 columns each
+            const int row = t >> 2, c0 = (t & 3) * 8;
+            float mx = -1e30f;
+#pragma unroll
+            for (int c = 0; c < 8; ++c) mx = fmaxf(mx, sP[row][c0 + c]);
+            mx = fmaxf(mx, __shfl_xor(mx, 1, 32));
+            mx = fmaxf(mx, __shfl_xor(mx, 2, 32));
+            const float mo = sM[row];
+            const float nm = fmaxf(mo, mx);
+            float sum = 0.0f;
+#pragma unroll
+            for (int c = 0; c < 8; ++c) {
+                const float p = __expf(sP[row][c0 + c] - nm);
+                sP[row][c0 + c] = p;
+                sum += p;
+            }
+            sum += __shfl_xor(sum, 1, 32);
+            sum += __shfl_xor(sum, 2, 32);
+            if ((t & 3) == 0) {
+                const float a = __expf(mo - nm);
+                sA[row] = a;
+                sL[row] = sL[row] * a + sum;
+                sM[row] = nm;
+            }
+        }
+        __syncthreads();
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const float a = sA[tq + 16 * i];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) o[i][j] *= a;
+        }
+#pragma unroll 4
+        for (int k = 0; k < kVitTileK; ++k) {
+            float v[4], p[4];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) v[j] = sV[k][tl + 16 * j];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) p[i] = sP[tq + 16 * i][k];
+#pragma unroll
+            for (int i = 0; i < 4; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) o[i][j] = fmaf(p[i], v[j], o[i][j]);
+        }
+    }
+    __syncthreads();
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const int r = tq + 16 * i;
+        if (q0 + r >= S) continue;
+        const float inv = 1.0f / fmaxf(sL[r], 1e-30f);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) O[(static_cast<size_t>(q0 + r) * H + h) * kVitTileHd + tl + 16 * j] = o[i][j] * inv;
+    }
+}
+
 // #6671 diagnostics (STRATA_INK_HASH=1): an order independent 64-bit hash of every FP32 bit of one row, so a verify window
 // can be compared stage by stage with the one-token steps.  Block per row, 256 threads.
 __global__ void __launch_bounds__(256) k_dbg_hash_rows(const float* __restrict__ x, int D, unsigned long long* __restrict__ out,

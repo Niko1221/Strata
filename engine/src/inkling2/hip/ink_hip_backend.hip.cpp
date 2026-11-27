@@ -4677,9 +4677,15 @@ public:
             k_vit_rope_2d<<<dim3(H, S), hd / 2, 0, stream_>>>(
                 reinterpret_cast<float*>(d_q.dev_ptr), reinterpret_cast<float*>(d_k.dev_ptr),
                 reinterpret_cast<const float*>(d_rc.dev_ptr), reinterpret_cast<const float*>(d_rs.dev_ptr), S, H, hd);
-            k_vit_full_attn<<<dim3(H, S), 64, 0, stream_>>>(
-                reinterpret_cast<const float*>(d_q.dev_ptr), reinterpret_cast<const float*>(d_k.dev_ptr),
-                reinterpret_cast<const float*>(d_v.dev_ptr), reinterpret_cast<float*>(d_ao.dev_ptr), S, H, hd);
+            if (hd == kVitTileHd) {
+                k_vit_full_attn_tiled<<<dim3(H, (S + kVitTileQ - 1) / kVitTileQ), 256, 0, stream_>>>(
+                    reinterpret_cast<const float*>(d_q.dev_ptr), reinterpret_cast<const float*>(d_k.dev_ptr),
+                    reinterpret_cast<const float*>(d_v.dev_ptr), reinterpret_cast<float*>(d_ao.dev_ptr), S, H);
+            } else {
+                k_vit_full_attn<<<dim3(H, S), 64, 0, stream_>>>(
+                    reinterpret_cast<const float*>(d_q.dev_ptr), reinterpret_cast<const float*>(d_k.dev_ptr),
+                    reinterpret_cast<const float*>(d_v.dev_ptr), reinterpret_cast<float*>(d_ao.dev_ptr), S, H, hd);
+            }
             launch_bf16_opt(vit_bf16(p + ".self_attn.out_proj.weight"), reinterpret_cast<const float*>(d_ao.dev_ptr),
                             vit_f32(p + ".self_attn.out_proj.bias"), reinterpret_cast<float*>(d_proj.dev_ptr), S, D, D);
             k_vit_layerscale_res<<<(S * D + 255) / 256, 256, 0, stream_>>>(cur, reinterpret_cast<const float*>(d_proj.dev_ptr),
