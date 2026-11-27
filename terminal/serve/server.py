@@ -356,6 +356,7 @@ from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
+from serve import constrain  # noqa: E402   (constrained decoding: token masks, optional llguidance)
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
@@ -539,6 +540,10 @@ class MockEngine:
             else:
                 self.script = self.scripts[min(self.turns, len(self.scripts) - 1)]
             self.turns += 1
+        c = (sampling or {}).get(constrain.KEY) if getattr(self, "supports_mask", False) else None
+        if c is not None:                                   # tests: MockEngine.supports_mask = True
+            yield from c.mock_replay(self.script, max_new, cancel, self.delay)
+            return
         for t in self.script[:max_new]:
             if cancel.is_set():
                 return
@@ -1411,13 +1416,31 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    @property
+    def supports_mask(self) -> bool:
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py). With batch slots a
+        masked request runs on the solo path only (generate_batched sends the mask on GEN, never on BGEN;
+        notes/pr3800-batch-spec.md). DeepSeek --parallel (multi) is out of that spec: its own request-id line
+        protocol answers no MQ there, so it stays off.
+        token_mask=2 also means it can mask a whole MTP window (MQ with drafts -> MKN); the server answers both."""
+        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) in ("1", "2") \
+            and not getattr(self, "multi", 0)
+    def _mask_reply(self, c, line="MQ"):
+        # "MQ d1 d2 ..." (token_mask=2): the drafts become the multi-row lookahead (serve/constrain.py 1-2);
+        # a bare "MQ" is answered as before, so an older engine never sees MKN.
+        drafts = [int(w) for w in line.split()[1:] if w.lstrip("-").isdigit()]
+        line = "MF" if c is None else c.reply(drafts=drafts or None)
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
         (sFNX) and Hy4-Flash (`strata-hy4`) refuse the key (GEN: unknown/unsupported key pen_from): it is not sent."""
         if getattr(self, "split_engine", False) or getattr(self, "hy4_engine", False) or getattr(self, "inkling_engine", False) or prompt_len <= orig_len:
             return ""
         return f" pen_from={orig_len - 1}"
-
     @staticmethod
     def sampling_keys(sampling: dict, *, hy4: bool = False, inkling: bool = False) -> str:
         keys = ""
@@ -1586,11 +1609,13 @@ class StrataEngine:
                     self.slot_cv.notify_all()
         threading.Thread(target=run, daemon=True).start()
 
-    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False, lines_q=None):
+    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False, lines_q=None, mask_answer=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE).  `on_quiet()` runs whenever the engine has been
         quiet for half a second: between two PP lines of a read whose chunks take longer than that.
+        `mask_answer(line)` answers an `MQ` line (the masked solo leg of generate_batched answers its masks here:
+        the engine waits on stdin for it, notes/pr3800-batch-spec.md 4-3); without it an MQ line is read past as before.
 
         `want_lp`: a batch admission's token is the only one this reader ever sees with an `LP` line after it (a
         slot's `BT` lines carry none), so a request asking for logprobs there is a `max_tokens` 1 one: read the
@@ -1626,6 +1651,9 @@ class StrataEngine:
                 raise self._engine_died()
             if not line.startswith(("PP ", "INFO")):
                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
+            if mask_answer is not None and isinstance(line, str) and line.startswith("MQ"):   # masked solo leg: the
+                mask_answer(line)                                     # mask for its next window (the engine waits on stdin)
+                continue
             if line.startswith("T "):
                 t = int(line[2:])
                 if want_lp:
@@ -1695,7 +1723,8 @@ class StrataEngine:
         f = (getattr(self, "_last_done", None) or "").split()
         return f[5] if len(f) > 5 else None
 
-    def _drain_control(self, until: str, timeout: float | None = None, born: int | None = None, lines_q=None):
+    def _drain_control(self, until: str, timeout: float | None = None, born: int | None = None, lines_q=None,
+                       mask_answer=None):
         """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
         request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered).
         `born`: the engine process (self.gen) the request started on; once that one is gone there is nothing to
@@ -1703,7 +1732,9 @@ class StrataEngine:
         a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it.
         `timeout` (DRAIN_TIMEOUT_S) is a NO-PROGRESS limit: it counts from the last line the engine wrote, so an engine that
         is still talking (PP / T lines of a read or a decode it was told to stop but has not yet) is never given up on;
-        only one that says nothing for that long is."""
+        only one that says nothing for that long is.
+        `mask_answer(line)` answers an `MQ` a stopped masked leg still waits on (MF: nothing more is wanted); without
+        it the engine waits on stdin and the drain runs to its timeout (notes/pr3800-batch-spec.md 3-3)."""
         wait_s = self.DRAIN_TIMEOUT_S if timeout is None else timeout
         end = time.monotonic() + wait_s
         lines_q = self.lines if lines_q is None else lines_q
@@ -1717,6 +1748,9 @@ class StrataEngine:
             if line is None:
                 return None
             end = time.monotonic() + wait_s                  # any line is progress
+            if mask_answer is not None and isinstance(line, str) and line.startswith("MQ"):
+                mask_answer(line)                            # the stopped leg still waits for its mask: answer MF
+                continue
             if line.startswith("DONE"):
                 self._parse_done(line)
             if line.startswith(until) or line.startswith("ERR"):
@@ -2143,6 +2177,10 @@ class StrataEngine:
         keys0 = self.sampling_keys({k: v for k, v in (sampling or {}).items() if k != HOLD_KEY},
                                    hy4=getattr(self, "hy4_engine", False),
                                    inkling=getattr(self, "inkling_engine", False))   # (the hold's key goes on per leg: leg_keys below)
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        # a masked request runs on the solo path only (notes/pr3800-batch-spec.md 4-2): a mask is never sent on a
+        # BGEN - the engine parses the mask key for BGEN too and would wait on stdin for the MQ answer the batch
+        # admission read never gives, so engine and server would wait on each other (spec 3-1).
         # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
         # server refuses these requests unless max_tokens is 1.  The lines go to the request itself, through its
         # cancel Event: several requests read control lines at once, and the engine's lp_lines is one attribute.
@@ -2181,7 +2219,9 @@ class StrataEngine:
         btrace("ctl acquired")
         slot, gen0, reserved = None, None, None
         pre = getattr(cancel, "_strata_preslot", None)
-        if pre is not None:                             # STRATA_COALESCE_PREFILL: a request before this one read the prompt into this slot
+        if pre is not None and c is not None:             # a masked request never decodes in a slot: hand the slot a
+            self._release_preslot(cancel)                 # coalesced read put it in back (STRATA_COALESCE_PREFILL)
+        elif pre is not None:                             # STRATA_COALESCE_PREFILL: a request before this one read the prompt into this slot
             slot, cancel._strata_preslot = pre, None
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
         stop_sent = False
@@ -2203,8 +2243,10 @@ class StrataEngine:
                     solo = alone and left > 1 and not embeddings and self._inkling_route(prompt) == 0
                 else:
                     solo = alone and left > 1 and not (not embeddings and self._turn_in_slot(prompt))
+                solo = solo or c is not None            # a masked request runs on the solo path only (notes/pr3800-batch-spec.md 4-2): a mask is never
+                                                        # sent on a BGEN - the engine would wait on stdin for the MQ answer a batch admission never reads (spec 3-1)
                 if solo:
-                    if getattr(self, "inkling_engine", False) and self.batch:
+                    if getattr(self, "inkling_engine", False) and self.batch and c is None:
                         if (self.batch == 1 and not self._side_note_said and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
                                 and len(prompt) < self.SIDE_REQUEST_MIN and self._slot_prefix(0, prompt, {}) < self.INKLING_ROUTE_MIN):
                             self._side_note_said = True     # once per server run
@@ -2217,6 +2259,8 @@ class StrataEngine:
                         solo_leg = (list(prompt), len(out), self.gen)
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
+                    if c is not None:
+                        head += " mask=1"                   # the engine asks MQ before every window (as generate() does)
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
@@ -2231,11 +2275,15 @@ class StrataEngine:
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
                     self._ctl_erred = False
                     def others():
+                        if c is not None:
+                            return False                # masked: no STOP mid-leg, the leg is never handed to a slot
                         with self.slot_cv:
                             return self.waiting > 0
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
+                        if c is not None:
+                            return                      # masked: no BYIELD, no reserved slot (spec 4-2)
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
                                 self._shorter_waiting(len(prompt))):
                             with self.slot_cv:          # the slot the part read will wait in
@@ -2245,8 +2293,13 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send_for(born, f"BYIELD {reserved}")
-                    for x in self._control(cancel, arrived, stop_when=others, on_quiet=give_way,
-                                           want_lp=want_lp, lines_q=lines_q):
+                    def on_tok(t):
+                        if c is not None:
+                            c.feed(t)                   # the grammar advances with every accepted token (as generate() does)
+                        arrived(t)                      # (main's first_at bookkeeping rides the masked path too)
+                    for x in self._control(cancel, arrived if c is None else on_tok, stop_when=others,
+                                           on_quiet=give_way, want_lp=want_lp, lines_q=lines_q,
+                                           mask_answer=(lambda ln: self._mask_reply(c, ln)) if c is not None else None):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
@@ -2275,11 +2328,30 @@ class StrataEngine:
                         left = int(max_new) - len(out)
                         if cancel.is_set() or left <= 0 or finish in ("stop", "length", "hold") or (out and out[-1] in EOS_IDS):
                             return                          # ("hold": the budget's cut: the caller wraps up or asks for more)
+                        if c is not None:
+                            return                    # masked: it never continues in a slot (spec 4-2); an unfinished
+                                                      # answer fails the caller's validation as before (502)
                         if reused0 is None:
                             reused0 = (self.last or {}).get("reused")
                         carry_leg(carry, self.last)         # #1869: the solo leg's figures; the slot's admission (a copy of
                                                             # the held prefix: prompt_read 1) and BDONE replace them
                         prompt = list(ids) + out            # promoted: it continues in a batch slot from here
+                if c is not None:
+                    # masked and not alone: the batch windows never answer an MQ (the engine waits on stdin, the
+                    # slot read answers nothing), so this request waits for the engine to be empty again and runs
+                    # on the solo path above (notes/pr3800-batch-spec.md 3-2).  The control lines go back to the
+                    # others while it waits (holding them here would stop the very requests it waits for).
+                    if holding:
+                        self.ctl.release()
+                        holding = False
+                    deadline = getattr(cancel, "_strata_queue_deadline", None)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                    if cancel.is_set():
+                        return
+                    with self.slot_cv:
+                        self.slot_cv.wait(timeout=1.0)
+                    continue
                 while True:
                     if slot is None:
                         # a free slot (they free themselves at BDONE, which needs no control lines): the one that holds
@@ -2352,6 +2424,9 @@ class StrataEngine:
                     while not sq[slot].empty():
                         sq[slot].get_nowait()
                     pf = self.pen_from_key(orig_len, len(prompt))
+                    # never a mask key on this line: a masked request never reaches the admission (it waits for the
+                    # solo path above); the engine's shared GEN/BGEN parser would read a mask here and wait on stdin
+                    # for an MQ answer this batch read does not give (notes/pr3800-batch-spec.md 3-1)
                     sr = " slot_read=1" if self.slot_read else ""    # (the engine may answer without a token: adm_from)
                     head = (f"BGENI {slot} {left}{leg_keys()}{pf} {embeddings}" if embeddings
                             else f"BGEN {slot} {left}{leg_keys()}{pf}{sr}")
@@ -2519,7 +2594,15 @@ class StrataEngine:
                     phase = "none"                      # #1059: it ended on the engine's ERR: no DONE to wait 300 s for
                 if phase == "solo":
                     self._send_for(born, "STOP")
-                    if self._drain_control("DONE", born=born, lines_q=lines_q) is None and self.gen == born and self.alive():
+                    # a masked leg stopped at a window boundary still waits for its mask: answer MF, or its DONE
+                    # never comes and the drain runs to its timeout (spec 3-3; same meaning as generate()'s 2943).
+                    # the keyword goes only with a masked leg: tests wrap _drain_control with the old signature
+                    if c is not None:
+                        drained = self._drain_control("DONE", born=born, lines_q=lines_q,
+                                                      mask_answer=lambda ln: self._mask_reply(None))
+                    else:
+                        drained = self._drain_control("DONE", born=born, lines_q=lines_q)
+                    if drained is None and self.gen == born and self.alive():
                         undrained = "DONE"
                 elif phase == "admit":
                     if len(out) == adm_from:            # still reading the prompt (no admission token yet): abort the read
@@ -2760,6 +2843,9 @@ class StrataEngine:
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {}, hy4=getattr(self, 'hy4_engine', False), inkling=getattr(self, 'inkling_engine', False))} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {}, hy4=getattr(self, 'hy4_engine', False), inkling=getattr(self, 'inkling_engine', False))}"
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        if c is not None:
+            head += " mask=1"                               # the engine asks MQ before every window
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if embeddings or int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
@@ -2818,13 +2904,21 @@ class StrataEngine:
                     raise self._engine_died(proc0)
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
+                
                 if stall_state:
                     stall_state.clear()
+                    
+                if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
+                    self._mask_reply(c, line)
+                    continue
+
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
                         return
                     t = int(line[2:])
+                    if c is not None:
+                        c.feed(t)
                     if want_lp:
                         # the engine writes the token and its `LP` line in one flush, so the line is
                         # here now; an engine without logprobs leaves the next line a normal one
@@ -2896,6 +2990,9 @@ class StrataEngine:
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
+                    if line is not None and line.startswith("MQ"):   # stopped: it still waits for an answer
+                        self._mask_reply(None)
+                        continue
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
@@ -4482,6 +4579,32 @@ class Service:
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
 
+    def _with_constraint(self, sampling, tools, thinking):
+        """A JSON response format on an engine that takes token masks: the request's sampling with a fresh
+        serve/constrain.Constraint for this pass (the schema, and with tools also a tool call).  Anything else -
+        no format, an older engine, llguidance missing, a schema llguidance cannot compile - leaves it as it was:
+        the prompt directive and the validation after the turn."""
+        fmt = constrain.format_of(sampling) if isinstance(sampling, dict) else None
+        if fmt is None:
+            return sampling
+        if not getattr(self.engine, "supports_mask", False):
+            constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
+                                "token_mask=1 or 2 in its INFO line is needed); JSON is validated after the turn")
+            return sampling
+        if not constrain.available():
+            constrain.note_once("constrained decoding off: python -m pip install llguidance to turn it on; JSON is "
+                                "validated after the turn")
+            return sampling
+        try:
+            vocab = self.__dict__.get("_llg_vocab")
+            if vocab is None:
+                vocab = self.__dict__.setdefault("_llg_vocab", constrain.Vocab(self.tok, self.stop_ids))
+            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab), armed=not thinking)
+        except Exception as e:                           # noqa: BLE001 - an unsupported schema keyword, a vocab problem
+            constrain.note_once(f"constrained decoding off for a request: {str(e).splitlines()[0][:200]}")
+            return sampling
+        constrain.note_once("constrained decoding on: JSON answers are masked token by token (llguidance)")
+        return {**sampling, constrain.KEY: c}
     def set_family(self, family: str | None) -> None:
         """The model family (None: the Qwen form this server was written for)."""
         self.family = family
@@ -5580,7 +5703,8 @@ class Service:
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+                                  "constrained_decoding": bool(getattr(self.engine, "supports_mask", False) and constrain.available()),
+                                  "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -6318,6 +6442,7 @@ class Service:
                         hold_end = te[0] if len(te) == 1 else None
                     for ev in opening:
                         yield "event", ev
+                    sampling = self._with_constraint(sampling, tools, thinking)   # serve/constrain.py (or unchanged)
                     pass_n = 0      # (the passes of this request sent so far)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
@@ -6544,6 +6669,8 @@ class Service:
                                     for ev in evs:
                                         yield "event", ev
                                 prompt = prompt + seg + extra
+                                if (sampling or {}).get(constrain.KEY) is not None:
+                                    sampling[constrain.KEY].observe(extra)
                                 finish = "length"
                                 continue
                         if (held and not (wrap or opens) and not cancel.is_set() and finish != "stop" and not repeated
@@ -6643,6 +6770,8 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                        if (sampling or {}).get(constrain.KEY) is not None:
+                            sampling[constrain.KEY].observe(extra)       # the wrap-up ends in </think>: the answer is constrained
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
@@ -7139,6 +7268,14 @@ def structured_chunks(chunks, validator):
             return
         result = openai_collect(buffered)
         choice = result["choices"][0]
+        if choice["finish_reason"] == "tool_calls":
+            # A turn that calls a tool is not an answer: with tools offered the schema is for the final answer
+            # (prepare_format's with_tools directive), so the call goes out as the model wrote it, tool_calls and all,
+            # instead of being failed for not being JSON. The same rule /v1/responses applies (#782).
+            for chunk in buffered:
+                if chunk is not None:
+                    yield chunk
+            return
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
         # logprobs: the entries spell what the model wrote, which this function replaces with the
         # canonical JSON.  `_structured_logprobs` gives back the form the tokens spell, or None.
@@ -7162,7 +7299,36 @@ def structured_chunks(chunks, validator):
 
 
 # ------------------------------------------------------------------------------------------------ Anthropic
-def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, force=None, deferred=False):
+def anthropic_output_format(req: dict):
+    """The schema'd output an Anthropic request asks for, in the shape prepare_format reads.
+
+    The native carrier is `output_config.format` (what tool-eval-bench --format anthropic sends): its json_schema
+    format, read as {"type": "json_schema", "schema": S}.  A text format, a missing type or no format at all -
+    an output_config carrying only the thinking effort - asks for nothing; a format that is not an object or names
+    another type is malformed, a 400 like the chat route answers for a broken response_format.  A gateway client
+    may instead send OpenAI's `response_format`, read when the request carries no output_config at all.
+    prepare_format wants the OpenAI wrapper (its name is required; the grammar reads only the schema), so the
+    bare Anthropic schema is synthesized into one; Anthropic's `strict` is ignored."""
+    oc = req.get("output_config")
+    if oc is None:
+        return req.get("response_format")
+    if not isinstance(oc, dict):
+        raise ValueError("output_config must be an object")
+    fmt = oc.get("format")
+    if fmt is None:
+        return None
+    if not isinstance(fmt, dict):
+        raise ValueError("output_config.format must be an object")
+    kind = fmt.get("type")
+    if kind == "json_schema":
+        return {"type": "json_schema", "json_schema": {"name": "output", "schema": fmt.get("schema")}}
+    if kind in ("text", None):
+        return None
+    raise ValueError("output_config.format.type must be text or json_schema")
+
+
+def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, force=None, deferred=False,
+                     validator=None):
     mid = "msg_" + uuid.uuid4().hex[:24]
     yield "message_start", {"type": "message_start", "message": {
         "id": mid, "type": "message", "role": "assistant", "model": svc.model_for(req), "content": [],
@@ -7173,6 +7339,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
+    held = []                                      # the answer's text while a schema is in force: it leaves validated
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True,
                            deferred=deferred):
         if kind == "ping":
@@ -7189,6 +7356,9 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 continue
             want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
             if ev.kind not in ("tool_call", "tool_start") and not ev.text:
+                continue
+            if want == "text" and validator is not None:
+                held.append(ev.text)               # the schema is in force: the text leaves at the turn's end, not here
                 continue
             if ev.kind == "tool_start":
                 streamed.add(ev.call.id)
@@ -7221,6 +7391,21 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
+            if validator is not None:
+                # a turn that ends in a call is not an answer (#782): its held text goes out as written.  An answer
+                # goes out validated: validated_json raises on a turn cut short (finish != stop) and on an answer
+                # that is not the JSON the schema describes, so the route answers 502 / the error event instead, and
+                # no text block went out before it.  A passing answer leaves as the canonical JSON, one delta.
+                text = "".join(held)
+                if stop != "tool_use":
+                    text = validated_json(text, validator, x["finish"])
+                if text:
+                    index += 1
+                    yield "content_block_start", {"type": "content_block_start", "index": index,
+                                                  "content_block": {"type": "text", "text": ""}}
+                    yield "content_block_delta", {"type": "content_block_delta", "index": index,
+                                                  "delta": {"type": "text_delta", "text": text}}
+                    yield close()
             # the final counts (message_start could only say the whole prompt): what was read now stays for the next
             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
             whole = max(len(ids), int(x.get("prompt_tokens") or 0))     # (pictures: their tokens count)
@@ -8762,13 +8947,20 @@ def make_handler(svc: Service):
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
 
         def _anthropic(self, req):
-            svc.load()
+            fmt = anthropic_output_format(req)             # the client's own carrier, before the shared settings fill in
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = callable_tools = None
+            # tools and a schema'd output together are allowed, as the chat and Responses routes allow them (#782):
+            # the schema is for the final answer and a turn that ends in a call is not an answer, so the call goes
+            # out as written and only the answer's text is held and validated.  prepare_format runs before svc.load(),
+            # as on the chat route: a malformed format is a 400 before the model is loaded.
+            has_tools = bool(callable_tools or req.get("strata_mcp"))
+            messages, validator = prepare_format(fmt, messages, with_tools=has_tools)
+            svc.load()
             force = svc.force_text(forced_call(req.get("tool_choice"), tools, callable_tools))   # "any" / {"type": "tool", "name": N}
             max_new = token_limit(req.get("max_tokens"), "max_tokens") or 0   # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
@@ -8798,7 +8990,7 @@ def make_handler(svc: Service):
                     raise ValueError(e.anthropic_text()) from None
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             events = anthropic_events(svc, req, ids, thinking, callable_tools, max_new, cancel, force=force,
-                                      deferred=deferred)
+                                      deferred=deferred, validator=validator)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
                 return self._json(200, anthropic_collect(events))
@@ -8818,6 +9010,10 @@ def make_handler(svc: Service):
                 events.close()
             except EngineDied as e:                          # mid-stream: Anthropic's error event
                 err = {"type": "error", "error": {"type": "api_error", "message": died_note(e)}}
+                self._note(error=err["error"])
+                self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
+            except StructuredOutputError as e:               # the held answer failed its schema: the error event
+                err = {"type": "error", "error": {"type": "structured_output_failed", "message": str(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except QueueWaitExpired as e:
