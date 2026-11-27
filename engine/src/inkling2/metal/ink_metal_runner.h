@@ -129,7 +129,7 @@ struct InkMetalRunner {
     mtl::Pipeline p_lin_sk[9], p_lin_sk5_mm8, p_lin_sk6_mm8;
     mtl::Pipeline p_unemb_argmax_q8, p_unemb_argmax_bf16, p_unemb_argmax_sk6, p_argmax_part;
     mtl::Pipeline p_unemb_argmax_m_q8, p_unemb_argmax_m_bf16, p_unemb_argmax_m_sk6, p_argmax_part_m;
-    mtl::Pipeline p_moe_plan, p_moe_gu, p_moe_dn, p_moe_gu_sk23, p_moe_gu_sk23_stg, p_moe_gu_sk23_lr, p_moe_gu_sk23_mm, p_moe_dn_sk23, p_moe_dn_sk23_mm, p_moe_red8;
+    mtl::Pipeline p_moe_plan, p_moe_gu, p_moe_dn, p_moe_gu_sk23, p_moe_gu_sk23_stg, p_moe_gu_sk23_lr, p_moe_gu_sk23_mm, p_moe_gu_sk23_mm_xstg, p_moe_dn_sk23, p_moe_dn_sk23_mm, p_moe_red8;
     mtl::Pipeline p_moe_gu_sf4, p_moe_dn_sf4, p_moe_gu_mx8, p_moe_dn_mx8;
     mtl::Pipeline p_moe_gu_sk2, p_moe_dn_sk2, p_moe_gu_sk3, p_moe_dn_sk3, p_moe_gu_sk4, p_moe_dn_sk4, p_moe_gu_sk5, p_moe_dn_sk5;
     mtl::Pipeline p_moe_gu_mm_sf4, p_moe_dn_mm_sf4, p_moe_gu_mm_mx8, p_moe_dn_mm_mx8, p_moe_gu_mm_gen, p_moe_dn_mm_gen;
@@ -288,6 +288,7 @@ struct InkMetalRunner {
         p_moe_gu_sk23_stg = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_stg");
         p_moe_gu_sk23_lr  = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_lr");
         p_moe_gu_sk23_mm  = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_mm");
+        p_moe_gu_sk23_mm_xstg = cx->pipeline(lib_codecs, "ink_moe_gu_sk23_mm_xstg");
         p_moe_dn_sk23   = cx->pipeline(lib_codecs, "ink_moe_dn_sk23");
         p_moe_dn_sk23_mm = cx->pipeline(lib_codecs, "ink_moe_dn_sk23_mm");
         p_moe_gu_sf4    = cx->pipeline(lib_codecs, "ink_moe_gu_sf4");
@@ -1935,7 +1936,11 @@ struct InkMetalRunner {
                         static const bool use_lr_gu = std::getenv("INK_MOE_LR") != nullptr;
                         static const bool use_mm_gu = [] { const char* e = std::getenv("INK_MOE_MM"); return !(e && std::string(e) == "0"); }();
                         if (use_lr_gu && (layer_homog_gu[ip] == 2 || layer_homog_gu[ip] == 3)) { d.p = &p_moe_gu_sk23_lr; d.ind_off = 2 * sizeof(uint32_t); }
-                        else if (use_mm_gu && (layer_homog_gu[ip] == 2 || layer_homog_gu[ip] == 3)) { d.p = &p_moe_gu_sk23_mm; d.ind_off = 2 * sizeof(uint32_t); }
+                        else if (use_mm_gu && (layer_homog_gu[ip] == 2 || layer_homog_gu[ip] == 3)) {
+                            static const bool use_xstg_gu = std::getenv("INK_MOE_XSTG") != nullptr;
+                            d.p = use_xstg_gu ? &p_moe_gu_sk23_mm_xstg : &p_moe_gu_sk23_mm;
+                            d.ind_off = 2 * sizeof(uint32_t);
+                        }
                         else if (layer_homog_gu[ip] == 15)      { d.p = &p_moe_gu_sf4;  d.ind_off = 5 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 16) { d.p = &p_moe_gu_mx8;  d.ind_off = 2 * sizeof(uint32_t); }
                         else if (layer_homog_gu[ip] == 2)  { d.p = &p_moe_gu_sk2;  d.ind_off = 2 * sizeof(uint32_t); }
@@ -1946,7 +1951,8 @@ struct InkMetalRunner {
                             static const bool use_stg = [] { const char* e = std::getenv("INK_MOE_STG"); return e && std::string(e) != "0"; }();
                             static const bool use_lr = std::getenv("INK_MOE_LR") != nullptr;
                             static const bool use_mm = [] { const char* e = std::getenv("INK_MOE_MM"); return !(e && std::string(e) == "0"); }();
-                            d.p = use_lr ? &p_moe_gu_sk23_lr : (use_mm ? &p_moe_gu_sk23_mm : (use_stg ? &p_moe_gu_sk23_stg : &p_moe_gu_sk23));
+                            static const bool use_xstg = std::getenv("INK_MOE_XSTG") != nullptr;
+                            d.p = use_lr ? &p_moe_gu_sk23_lr : (use_xstg ? &p_moe_gu_sk23_mm_xstg : (use_mm ? &p_moe_gu_sk23_mm : (use_stg ? &p_moe_gu_sk23_stg : &p_moe_gu_sk23)));
                             d.ind_off = 2 * sizeof(uint32_t);
                         }
                         else                               { d.p = &p_moe_gu;      d.ind_off = 2 * sizeof(uint32_t); }

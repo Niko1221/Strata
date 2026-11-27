@@ -874,11 +874,26 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
 
         // 2. Fast-path: Single-stream DSpark Adaptive Beam Tree (greedy) / Block-8 Rejection Sampling (temperature >= 0) (#6633)!
-        if ((use_dspark || (std::getenv("INK_DFLASH_FD") && reqs[sole_slot].s.greedy() && !reqs[sole_slot].s.penalties() && reqs[sole_slot].s.hold_budget==0)) && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
-            reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
-            reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
-            !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {
-            auto& rq = reqs[sole_slot];
+        static const bool spec_multi = std::getenv("INK_SPEC_MULTI") != nullptr;
+        auto spec_slot_ok = [&](int s) -> bool {
+            return reqs[s].active && reqs[s].prefill_pos >= reqs[s].prompt_len &&
+                   reqs[s].generated + 2 <= reqs[s].max_new &&
+                   reqs[s].cur_pos + 8 < eff_max_ctx;
+        };
+        int spec_target = sole_slot;
+        if (spec_multi && n_active > 1) {
+            // Round-robin across spec-eligible slots so concurrent streams each get
+            // speculative steps in turn; their verify passes batch naturally.
+            static int rr_cursor = 0;
+            spec_target = -1;
+            for (int k = 0; k < P; ++k) {
+                const int s = (rr_cursor + k) % P;
+                if (spec_slot_ok(s)) { spec_target = s; rr_cursor = (s + 1) % P; break; }
+            }
+        }
+        if ((use_dspark || (std::getenv("INK_DFLASH_FD") && reqs[sole_slot].s.greedy() && !reqs[sole_slot].s.penalties() && reqs[sole_slot].s.hold_budget==0)) && (n_active == 1 ? (spec_slot_ok(sole_slot)) : (spec_multi && spec_target >= 0)) &&
+            !(spec_adapt && (reqs[spec_target >= 0 ? spec_target : sole_slot].gov_plain_left > 0 || reqs[spec_target >= 0 ? spec_target : sole_slot].gov_calib_left > 0))) {
+            auto& rq = reqs[spec_target >= 0 ? spec_target : sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
             if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
                 int32_t emitted[16]{};
@@ -997,6 +1012,115 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     finish_req(rq, fin);
                 }
                 continue;
+            }
+        }
+
+        // 2c. Multi-stream chain speculation: every decoding slot drafts independently,
+        // then ONE merged forward_batch verifies all chains. Trunk weight streaming is
+        // shared across slots - the core continuous-batching advantage, now with speculation.
+        static const bool spec_batch = std::getenv("INK_SPEC_BATCH") != nullptr;
+        if (spec_batch && use_dspark && n_active > 1) {
+            int n_pf = 0, n_dec = 0;
+            for (int s = 0; s < P; ++s) {
+                if (!reqs[s].active) continue;
+                if (reqs[s].prefill_pos < reqs[s].prompt_len) ++n_pf; else ++n_dec;
+            }
+            if (n_pf == 0 && n_dec == n_active) {
+                // draft chains per slot
+                int32_t draft_ids_all[64][8]{};
+                int nd_all[64] = {};
+                int n_spec = 0;
+                for (int s = 0; s < P; ++s) {
+                    auto& rq = reqs[s];
+                    if (!rq.active) continue;
+                    if (rq.cur_pos + 8 >= eff_max_ctx) continue;
+                    if (!rq.s.greedy() || rq.s.penalties()) continue;
+                    static const int spec_nd_env = [] { const char* e = std::getenv("INK_SPEC_ND"); return e ? atoi(e) : 4; }();
+                    const int max_d = std::min(spec_nd_env, rq.max_new - rq.generated - 1);
+                    if (max_d < 1) continue;
+                    std::string derr;
+                    int nd = backend.dspark_draft(rq.slot, rq.next_tok, rq.cur_pos, max_d, draft_ids_all[s], derr);
+                    if (nd > 0) { nd_all[s] = nd; ++n_spec; backend.snapshot_slot(rq.slot); }
+                }
+                if (n_spec > 0) {
+                    batch.clear();
+                    batch.capture_taps = true;
+                    int row_count = 0;
+                    for (int s = 0; s < P; ++s) {
+                        if (nd_all[s] <= 0) continue;
+                        auto& rq = reqs[s];
+                        batch.push(s, rq.cur_pos, rq.next_tok, true);
+                        ++row_count;
+                        for (int i = 0; i < nd_all[s]; ++i) {
+                            batch.push(s, rq.cur_pos + 1 + i, draft_ids_all[s][i], true);
+                            ++row_count;
+                        }
+                    }
+                    logits_buf.resize(static_cast<size_t>(row_count) * V);
+                    std::string ferr;
+                    const double spec_t0 = now_s();
+                    if (!backend.forward_batch(batch, logits_buf.data(), nullptr, ferr)) {
+                        proto("ERR fatal GPU error: %s", ferr.c_str());
+                        return 1;
+                    }
+                    const double spec_ms = (now_s() - spec_t0) * 1000.0;
+                    // verify per slot
+                    int row_off = 0;
+                    bool any_emitted = false;
+                    for (int s = 0; s < P; ++s) {
+                        if (nd_all[s] <= 0) continue;
+                        auto& rq = reqs[s];
+                        const int nd = nd_all[s];
+                        rq.drafts_offered += nd;
+                        int accepted = 0;
+                        bool done = false;
+                        const char* fin = nullptr;
+                        for (int i = 0; i <= nd; ++i) {
+                            float* lg = logits_buf.data() + static_cast<size_t>(row_off + i) * V;
+                            if (!finite_logits(lg, V)) {
+                                rq.cached_prefix.clear();
+                                rq.prompt_ckpt_prefix.clear();
+                                rq.shared_prefix.clear();
+                                backend.reset_slot(rq.slot);
+                                finish_req(rq, "nonfinite");
+                                done = true;
+                                break;
+                            }
+                            bool draft_ok = false;
+                            int32_t tok = (i < nd)
+                                ? verify_draft_logits(lg, V, rq.s, rq.hist, rq.rng, draft_ids_all[s][i], draft_ok)
+                                : sample_logits(lg, V, rq.s, rq.hist, rq.rng);
+                            rq.hist.push_back(tok);
+                            rq.gen_ids.push_back(tok);
+                            rq.cached_prefix.push_back(i == 0 ? rq.next_tok : draft_ids_all[s][i - 1]);
+                            ++rq.generated;
+                            any_emitted = true;
+                            if (rq.is_solo) proto("T %d", tok);
+                            else if (rq.is_ext_gen) proto("T %s %d", rq.req_id.c_str(), tok);
+                            else proto("BT %d %d", rq.slot, tok);
+                            if (is_stop_tok(tok)) { fin = "stop"; done = true; ++accepted; break; }
+                            if (rq.generated >= rq.max_new) { fin = "length"; done = true; ++accepted; break; }
+                            if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; ++accepted; break; }
+                            if (i < nd && draft_ok) {
+                                ++accepted;
+                                ++rq.drafts_accepted;
+                            } else {
+                                rq.next_tok = tok;
+                                ++accepted;
+                                break;
+                            }
+                        }
+                        row_off += nd + 1;
+                        if (!done) {
+                            if (accepted <= nd) backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
+                            rq.cur_pos += accepted;
+                            if (spec_adapt) gov_step(rq, accepted, spec_ms);
+                        } else if (fin) {
+                            finish_req(rq, fin);
+                        }
+                    }
+                    if (any_emitted) continue;
+                }
             }
         }
 
