@@ -1439,6 +1439,35 @@ def function_end(text: str) -> int:
 _JSON_FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n\s*", re.I)
 
 
+_STRING_ENDS = re.compile(r'\s*(?:\Z|[:}\]]|,\s*(?:["{\[\-0-9]|true\b|false\b|null\b))')
+
+
+def requote_json(text: str) -> str:
+    """`text` with the double quotes a model left unescaped inside its JSON strings escaped (`{"message": "it says "aborted"
+    again"}`).  Inside a string a `"` closes it only where JSON can go on after a string: before `:`, `}`, `]`, the end of
+    the text, or a `,` that the next member or element follows (`"`, `{`, `[`, a digit, `-`, true/false/null); any other
+    `"` is text.  Only for text json.loads has refused; the caller parses the result again and drops it if that fails too."""
+    out, i, n, inside = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if not inside:
+            inside = c == '"'
+            out.append(c)
+        elif c == "\\":
+            out.append(text[i:i + 2])
+            i += 1
+        elif c == '"':
+            if _STRING_ENDS.match(text, i + 1):
+                inside = False
+                out.append(c)
+            else:
+                out.append('\\"')
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     """`{"name": N, "arguments": {...}}` (or "parameters", or the arguments as a JSON string) of a declared tool -> its
     call; anything else -> None.  #2037: the object may sit in a Markdown fence (```json ... ```)."""
@@ -1450,7 +1479,10 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     try:
         obj = json.loads(body)
     except ValueError:
-        return None
+        try:                                    # a `"` the model left unescaped inside a string argument
+            obj = json.loads(requote_json(body), strict=False)
+        except ValueError:
+            return None
     if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or obj["name"] not in schemas:
         return None
     args = obj.get("arguments", obj.get("parameters", {}))
@@ -3100,6 +3132,12 @@ class InklingOutputParser(JsonOutputParser):
         self._dialect = inkling_dialect.InklingDialect()
         self.wrap_up = inkling_dialect.REASONING_WRAP_UP       # what closes the thinking when its budget is spent (#6734)
         self.wrap_up_short = inkling_dialect.END_MSG          # ... and when the room left to answer is short: just the block's end
+        # a call is reported while the model writes it (tool_start, tool_args pieces, then the tool_call): only for a declared tool,
+        # so the final call - read by JsonOutputParser from the same frame as before - is one this parser accepts
+        self._dialect.stream = bool(stream_tools)
+        self._dialect.allowed = lambda name: name in self.schemas
+        self._ink_call: ToolCall | None = None       # the call being streamed
+        self._ink_ids: list[str] = []                # ids of streamed calls whose final tool_call has not come yet
 
     @property
     def reasoning_now(self) -> bool:
@@ -3114,13 +3152,31 @@ class InklingOutputParser(JsonOutputParser):
         block's end is not waiting to be confirmed (`think_end`: the next token decides whether `<|end_message|>` was quoted)."""
         return super().clean and not self._dialect.buf and self._dialect.state != "think_end"
 
+    def _own(self, events: list[Event]) -> list[Event]:
+        """The final tool_call of a streamed call carries the id its tool_start announced."""
+        for ev in events:
+            if ev.kind == "tool_call" and ev.call is not None and self._ink_ids:
+                ev.call.id = self._ink_ids.pop(0)
+        return events
+
     def _dispatch(self, chunks: list[tuple[str, str]]) -> list[Event]:
         out: list[Event] = []
         for kind, chunk in chunks:
             if kind == "reasoning":
                 out.append(Event("reasoning", chunk))
+            elif kind == "tool_start":
+                self._ink_call = ToolCall(name=chunk, arguments={})
+                out.append(Event("tool_start", call=self._ink_call))
+            elif kind == "tool_args":
+                if self._ink_call is not None and chunk:
+                    out.append(Event("tool_args", chunk, call=self._ink_call))
+            elif kind == "tool_end":
+                if self._ink_call is not None:
+                    self._ink_ids.append(self._ink_call.id)
+                    self._ink_call = None
+                out.extend(self._own(super().feed(chunk)))
             elif chunk:
-                out.extend(super().feed(chunk))
+                out.extend(self._own(super().feed(chunk)))
         return out
 
     def feed(self, delta: str) -> list[Event]:
@@ -3131,7 +3187,7 @@ class InklingOutputParser(JsonOutputParser):
 
     def finish(self, reason: str | None = None) -> list[Event]:
         out = self._dispatch(self._dialect.feed_channels("", final=True, reason=reason))
-        return out + super().finish(reason)
+        return out + self._own(super().finish(reason))
 
 
 def parser_for_template(source: str | None):

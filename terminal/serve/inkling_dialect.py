@@ -46,6 +46,41 @@ _AFTER_END_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_ERROR, C
 _MAX_TAG = max(len(t) for t in _HEADER_TAGS)
 _MAX_HEADER_CHARS = 128
 _MAX_THINK_ACC = 65536
+# the form the chat template writes a call in, up to where its args object opens: {"name":"NAME","args":
+_CANON_CALL = re.compile(r'\s*\{\s*"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"args"\s*:\s*(?=\{)')
+_CANON_GIVE_UP = 512                 # a body this long that still is not that form is held whole (the older path)
+
+
+_AFTER_COMMA = '"{[-0123456789'
+
+
+def _quote_ends_string(text: str, i: int):
+    """Does the `"` before text[i] end its JSON string?  frontend.requote_json's rule, for text that is still arriving:
+    True where JSON can go on after a string (`:`, `}`, `]`, or a `,` the next member or element follows), False where
+    it cannot (the quote is text the model left unescaped), None while what has arrived does not say yet."""
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i == n:
+        return None
+    if text[i] in ":}]":
+        return True
+    if text[i] != ",":
+        return False
+    i += 1
+    while i < n and text[i].isspace():
+        i += 1
+    if i == n:
+        return None
+    if text[i] in _AFTER_COMMA:
+        return True
+    for word in ("true", "false", "null"):
+        if text.startswith(word, i):
+            j = i + len(word)
+            return None if j == n else not (text[j].isalnum() or text[j] == "_")
+        if word.startswith(text[i:]):
+            return None
+    return False
 
 
 def _safe_json_call(name: str, arguments) -> str:
@@ -68,7 +103,11 @@ def _parse_tool_body(header_name: str, body: str, kind: str, *, truncated: bool 
                 try:
                     obj = json.loads(m.group(0))
                 except ValueError:
-                    obj = None
+                    try:                        # a `"` left unescaped inside a string argument
+                        from serve import frontend
+                        obj = json.loads(frontend.requote_json(m.group(0)), strict=False)
+                    except ValueError:
+                        obj = None
         if isinstance(obj, dict):
             name = str(obj.get("name") or fallback_name).strip()
             args = obj.get("args") if "args" in obj else obj.get("arguments")
@@ -132,6 +171,77 @@ class InklingDialect:
         self._emitted_visible = False
         self.calls = 0
         self._in_think = False
+        # Streamed calls (the parser turns these on): a call in the canonical `{"name":NAME,"args":{...}}` form is reported while it is being
+        # written - ("tool_start", NAME), then ("tool_args", piece) for the text of the args object - and closed by ("tool_end", frame).
+        # Off (the default), or for any other form, the whole call is held and given as one `<tool_call>` frame, as before.
+        self.stream = False
+        self.allowed = None          # callable(name) -> bool: the names a call may be streamed for (the request's declared tools)
+        self._reset_stream()
+
+    def _reset_stream(self) -> None:
+        self._s_mode = None          # None: not decided yet | "on": streaming | "off": held (not the canonical form)
+        self._s_pos = 0              # the next character of tool_acc the args scanner reads
+        self._s_depth = 0
+        self._s_str = False
+        self._s_esc = False
+        self._s_done = False         # the args object is closed
+
+    def _stream_tool(self, out: list[tuple[str, str]]) -> None:
+        """Report the call being written in tool_acc as far as it has arrived (see `stream`)."""
+        if not self.stream or self.state != "tool_json" or self._s_mode == "off" or self._s_done:
+            return
+        if self._s_mode is None:
+            m = _CANON_CALL.match(self.tool_acc)
+            if not m:
+                if len(self.tool_acc) > _CANON_GIVE_UP:
+                    self._s_mode = "off"
+                return
+            try:
+                name = json.loads('"' + m.group(1) + '"')
+            except ValueError:
+                self._s_mode = "off"
+                return
+            if not name or (self.allowed is not None and not self.allowed(name)):
+                self._s_mode = "off"
+                return
+            self._s_mode, self._s_pos = "on", m.end()
+            out.append(("tool_start", name))
+        acc, i, n = self.tool_acc, self._s_pos, len(self.tool_acc)
+        start, pieces = i, []
+        while i < n:
+            ch = acc[i]
+            if self._s_str:
+                if self._s_esc:
+                    self._s_esc = False
+                elif ch == "\\":
+                    self._s_esc = True
+                elif ch == '"':
+                    # a `"` the model left unescaped inside a string is sent escaped, as the whole call is read
+                    # (frontend.requote_json); what follows the quote decides, so it waits until that has arrived
+                    ends = _quote_ends_string(acc, i + 1)
+                    if ends is None:
+                        break
+                    if ends:
+                        self._s_str = False
+                    else:
+                        pieces.append(acc[start:i] + "\\")
+                        start = i
+            elif ch == '"':
+                self._s_str = True
+            elif ch == "{":
+                self._s_depth += 1
+            elif ch == "}":
+                self._s_depth -= 1
+                if self._s_depth == 0:
+                    self._s_done = True
+                    i += 1
+                    break
+            i += 1
+        pieces.append(acc[start:i])
+        piece = "".join(pieces)
+        if piece:
+            out.append(("tool_args", piece))
+        self._s_pos = i
 
     def _tags_for(self):
         if self.state == "idle":
@@ -212,6 +322,8 @@ class InklingDialect:
         """Stream raw Inkling-2-Mini output into `<think>...</think>` + text + `<tool_call>...</tool_call>` string."""
         parts: list[str] = []
         for kind, chunk in self.feed_channels(text, final=final, reason=reason):
+            if kind in ("tool_start", "tool_args"):
+                continue
             if kind == "reasoning":
                 if not self._in_think:
                     parts.append("<think>")
@@ -240,7 +352,7 @@ class InklingDialect:
             return
         elif self.state == "think_end":
             # Lookahead after <|end_message|> in thinking (#6675): only another structural tag confirms end-of-thinking;
-            # ordinary text means <|end_message|> was quoted inside thinking, so stay in think without leaking!
+            # ordinary text means <|end_message|> was quoted inside thinking, so it stays reasoning
             if not chunk.strip():
                 self._end_ws += chunk
                 return
@@ -279,15 +391,24 @@ class InklingDialect:
                 self.state = "text"
         elif self.state in ("tool_json", "tool_text"):
             self.tool_acc += chunk
+            self._stream_tool(out)
+
+    def _close_call(self, out: list[tuple[str, str]], truncated: bool = False) -> None:
+        streamed = self._s_mode == "on"
+        if streamed and not self._s_done:
+            self._reset_stream()     # the output ended inside the args: no closing frame, so the call is not reported as complete
+            return
+        rendered = _parse_tool_body(self.header_acc, self.tool_acc, self.state, truncated=truncated)
+        if rendered:
+            if "<tool_call>" in rendered:
+                self.calls += 1
+            out.append(("tool_end" if streamed else "content", rendered))
+            self._emitted_visible = True
+        self._reset_stream()
 
     def _close_channel_typed(self, out: list[tuple[str, str]]) -> None:
         if self.state in ("tool_json", "tool_text"):
-            rendered = _parse_tool_body(self.header_acc, self.tool_acc, self.state)
-            if rendered:
-                if "<tool_call>" in rendered:
-                    self.calls += 1
-                out.append(("content", rendered))
-                self._emitted_visible = True
+            self._close_call(out)
             self.tool_acc = ""
             self.header_acc = ""
         elif self.state == "header":
@@ -351,6 +472,7 @@ class InklingDialect:
                 self._close_channel_typed(out)
             self.state = "tool_json"
             self.tool_acc = ""
+            self._reset_stream()
             return
         if tag in (CONTENT_TOOL_TEXT, CONTENT_XML):
             if self.state in ("think", "think_end", "text_end"):
@@ -360,16 +482,12 @@ class InklingDialect:
             return
 
     def _finish_typed(self, out: list[tuple[str, str]], reason: str | None = None) -> None:
+        # (thinking is passed on as it is written, so a reply cut off inside it (#6682) has already given its reasoning)
         if self.state == "header" and self.header_acc:
             out.append(("content", self.header_acc))
             self._emitted_visible = True
         elif self.state in ("tool_json", "tool_text") and (self.tool_acc.strip() or self.header_acc.strip()):
-            rendered = _parse_tool_body(self.header_acc, self.tool_acc, self.state, truncated=True)
-            if rendered:
-                if "<tool_call>" in rendered:
-                    self.calls += 1
-                out.append(("content", rendered))
-                self._emitted_visible = True
+            self._close_call(out, truncated=True)
         self.header_acc = ""
         self.tool_acc = ""
         self._think_acc = ""
