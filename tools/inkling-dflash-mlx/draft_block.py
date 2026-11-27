@@ -1,4 +1,6 @@
 """Greedy eight-position Inkling DFlash2 draft block for MLX."""
+import os
+
 import mlx.core as mx
 
 from inkling_dflash_mxfp8 import linear
@@ -100,6 +102,8 @@ class DraftBlock:
         """Return seven candidate IDs using the target's packed MXFP8 output head."""
         hidden = hidden[1:]
         scores = mx.quantized_matmul(hidden.astype(mx.bfloat16), *head, mode='mxfp8').astype(mx.float32)
+        if os.environ.get('INK_DFLASH_GREEDY_HEAD') == '1':
+            return mx.argmax(scores, axis=-1).tolist()
         ids = mx.argpartition(-scores, 15, axis=-1)[:, :16]
         unary = mx.take_along_axis(scores, ids, axis=-1)
         projected = self.project(hidden, 'candidate_selector.hidden_projection')
