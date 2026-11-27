@@ -4358,6 +4358,12 @@ class Service:
         self.inkling_cfg = {}                         # the run config (its inkling_image_max_mp and --vision-reader), for the cap that follows the engine's reader
         self.inkling_image_max_px = 0                # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        # #5839 (opt-in both): the model writes an end token out as text (it quotes <|im_end|>, or starts its answer with
+        # it) and the turn ended there.  quoted_eos_recovery keeps such a token as text where the parser's context says
+        # it is a quote and goes on; think_eos_ban keeps the end tokens out of the passes that start inside the thinking.
+        self.quoted_eos_recovery = False
+        self.think_eos_ban = False
+        self._ban_ids = None                          # think_eos_ban's end-token ids on this engine (None: not worked out yet)
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4521,6 +4527,25 @@ class Service:
     @has_mtp.setter
     def has_mtp(self, val: bool | None) -> None:
         self._has_mtp = val
+
+    def _think_ban_ids(self) -> tuple:
+        """#5839: think_eos_ban's end-token ids on this engine: Qwen's <|im_end|> and <|endoftext|> while each is one stop
+        token, on an engine that takes token biases.  () when the ban cannot run here - no such end tokens, an engine
+        without biases, a batch engine (a slot keeps the bias of its request), a drafter (not measured with biases) - and
+        only the recovery of quoted_eos_recovery and reasoning_close_retry stand."""
+        if self._ban_ids is None:
+            info = getattr(self.engine, "info", None)
+            info = info if isinstance(info, dict) else {}
+            able = (info.get("logit_bias") == 1 and not getattr(self.engine, "batch", 0)
+                    and not getattr(self.engine, "split_engine", False)
+                    and not getattr(self, "hy4", False) and not getattr(self, "inkling", False)
+                    and not self.has_mtp)
+            try:
+                ids = tuple(sorted(i for i in self.stop_ids if self.tok.decode([i]) in (IM_END, "<|endoftext|>"))) if able else ()
+            except Exception:                          # noqa: BLE001 - a tokenizer that cannot decode one id: no ban
+                ids = ()
+            self._ban_ids = ids
+        return self._ban_ids
 
     def admission_limit(self) -> int | None:
         if self.max_queue is None:
@@ -6136,6 +6161,8 @@ class Service:
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+        if self.quoted_eos_recovery and hasattr(parser, "line_think_end"):
+            parser.line_think_end = True               # #5839 (opt-in): the thinking ends where a line break follows </think>
         inkling_special_ids = None
         if self.inkling and hasattr(parser, "feed_token"):
             types = getattr(self.tok, "token_types", None)
@@ -6193,6 +6220,7 @@ class Service:
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
+        quoted_eos_recoveries = 0                       # #5839 (opt-in): end tokens kept as text in this reply
         admission_rejected = False                      # #3040: the engine's batch slots refused it before it read anything
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
@@ -6318,6 +6346,17 @@ class Service:
                         hold_end = te[0] if len(te) == 1 else None
                     for ev in opening:
                         yield "event", ev
+                    # #5839 (opt-in, think_eos_ban): the thinking never ends on an end token, so the passes that start inside
+                    # it get the end tokens banned at the engine (this model writes <|im_end|> when it means to mention it,
+                    # and the turn ended there); the answer is written by passes that may end on one.  With a budget the
+                    # engine's own hold ends a pass at </think>; without one the pass is cut when the parser leaves the
+                    # thinking (think_split).
+                    ban_ids = self._think_ban_ids() if (self.think_eos_ban and thinking and not par) else ()
+                    think_bans, ban_said, lead_in_eos, empty_eos = 0, False, 0, 0
+                    # In the answer, a kept marker that the model ends on again at once (nothing written since) is the end of
+                    # the turn, and so is the fifth in a row that only whitespace separates: an unclosed quote must not keep
+                    # it writing markers.  The thinking is left to the budget's wrap-up.
+                    since_tokens, bare_run, written = 0, 0, False
                     pass_n = 0      # (the passes of this request sent so far)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
@@ -6335,12 +6374,29 @@ class Service:
                             # keeps the checkpoint the first pass saved at the end of the prompt the client sends back next
                             # (STRATA_INKLING_PROMPT_CKPT=0: no pass saves one: for an exactness A/B against an engine that has none)
                             pass_sampling = {**(pass_sampling or {}), KEEP_CKPT_KEY: True}
+                        # A pass that begins on a held </think> waits for the character after it: it is most likely the end
+                        # of the thinking, so it is not banned; should the tag turn out to be a quoted one, the pass is cut
+                        # below.
+                        resumed_at_think_end = (thinking and parser.state in ("reasoning", "rcall") and parser.buf == THINK_END)
+                        thinking_pass = bool(ban_ids) and parser.state in ("reasoning", "rcall") and not resumed_at_think_end
+                        think_split = False
+                        if thinking_pass:
+                            # (a copy: the client's own biases stay, ours win on the end tokens)
+                            own = bias_api.normalize((pass_sampling or {}).get("logit_bias"))
+                            own.update({i: -100.0 for i in ban_ids})
+                            pass_sampling = {**(pass_sampling or {}), "logit_bias": own}
+                            think_bans += 1
+                            if not ban_said:
+                                ban_said = True
+                                print("[strata] thinking: the end tokens are kept out of this pass (think_eos_ban: "
+                                      + ", ".join(str(i) for i in ban_ids) + ")", flush=True)
                         pass_n += 1
                         if emb and self.inkling:
                             self.engine.picture_allow_s = float(getattr(self.embeddings, "inkling_allow", 0.0) or 0.0)   # #7043 (read once by generate)
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None
+                        quoted_eos, quoted_eos_why = None, "quoted"
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -6368,6 +6424,35 @@ class Service:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
                                 if t in self.stop_ids:
+                                    mention, why = False, "quoted"
+                                    # (the thinking may not end on an end token: there the budget's wrap-up is what ends it)
+                                    insisting = (quoted_eos_recoveries > 0 and parser.state == "content"
+                                                 and (since_tokens == 0 or bare_run >= 3))
+                                    if self.quoted_eos_recovery and not insisting and not cancel.is_set():
+                                        mention = getattr(parser, "quoting_control_token", lambda: False)()
+                                        if not mention and parser.state in ("reasoning", "content") \
+                                                and getattr(parser, "only_whitespace_held", lambda: True)():
+                                            # #5839: where the text introduces the marker ("The end token is", "uses", a colon,
+                                            # 是, 例如 …), or before any answer at all, the end token is the marker being written
+                                            # out, not the end of the turn.
+                                            if lead_in_eos < 16 and getattr(parser, "mention_lead_in", lambda: False)():
+                                                mention, lead_in_eos, why = True, lead_in_eos + 1, "after a lead-in"
+                                            elif not empty_eos and not answered and parser.state == "content":
+                                                mention, empty_eos, why = True, empty_eos + 1, "before any answer"
+                                    if mention:
+                                        marker = self.tok.decode([t])
+                                        if marker in (IM_END, "<|endoftext|>"):
+                                            # kept as its ordinary spelling, and the same reply goes on from there
+                                            literal = self.tok.encode(marker, parse_special=False)
+                                            if (literal and not self.stop_ids.intersection(literal)
+                                                    and max_new - n - len(literal) >= 1):
+                                                quoted_eos, quoted_eos_why = literal, why
+                                            else:
+                                                finish = "length"
+                                                print("[strata] quoted end-token recovery reached its limit; "
+                                                      "the reply is incomplete (length)", flush=True)
+                                                raw_ids.append(t)
+                                                break
                                     if force and parser.state == "reasoning" and parser.buf == THINK_END:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
@@ -6396,6 +6481,9 @@ class Service:
                                     if ev.kind in ("content", "tool_start", "tool_call"):
                                         answered = True
                                     yield "event", ev
+                                since_tokens += 1
+                                if any((ev.text or "").strip() for ev in evs):
+                                    written = True
                                 if evs:
                                     last_out = time.perf_counter()
                                 elif time.perf_counter() - last_out >= KEEPALIVE_S:
@@ -6423,6 +6511,13 @@ class Service:
                                     if thought >= budget and parser.clean and not detok.pending():
                                         wrap = True
                                         break
+                                if parser.state not in ("reasoning", "rcall"):
+                                    if thinking_pass and force is None:
+                                        think_split = True    # the thinking ended inside a pass that keeps the end tokens out
+                                elif ban_ids and resumed_at_think_end and parser.buf != THINK_END:
+                                    think_split = True        # the held </think> was a quoted one: the thinking goes on, under the ban
+                                if think_split:
+                                    break
                                 if force:
                                     if any(ev.kind in ("tool_start", "tool_call") for ev in evs):
                                         force = None    # the model is writing a call of its own
@@ -6481,6 +6576,41 @@ class Service:
                                   "reads its prompt from the start", flush=True)
                             finish = "length"
                             break
+                        if think_split and not cancel.is_set():
+                            # The thinking ended inside a pass that keeps the end tokens out (think_eos_ban), or a quoted
+                            # </think> was met on a pass resumed at one: what follows is written by another pass - free to
+                            # end on an end token, or banned again while the thinking goes on.
+                            prompt = prompt + seg
+                            continue
+                        if quoted_eos is not None and not cancel.is_set():
+                            quoted_eos_recoveries += 1
+                            print(f"[strata] quoted end token preserved as ordinary text; continuing "
+                                  f"(quoted_eos_recovery {quoted_eos_recoveries}"
+                                  + ("" if quoted_eos_why == "quoted" else ", " + quoted_eos_why) + ")", flush=True)
+                            for token in quoted_eos:
+                                n += 1
+                                raw_ids.append(token)
+                                in_thinking = parser.state in ("reasoning", "rcall")
+                                thinking_n += in_thinking
+                                thought += in_thinking
+                                evs = cut(parser.feed(detok.push(token)))
+                                self._note(n, evs, st, rate)
+                                for ev in evs:
+                                    if ev.kind in ("content", "tool_start", "tool_call"):
+                                        answered = True
+                                    yield "event", ev
+                            bare_run = 0 if written else bare_run + 1     # the kept marker itself is not "written since"
+                            since_tokens, written = 0, False
+                            if stops is not None and stops.hit is not None:
+                                finish = "stop"
+                                break
+                            seg.extend(quoted_eos)
+                            finish = "length"
+                            if budget and parser.state == "reasoning" and thought >= budget and parser.clean:
+                                wrap = True
+                            else:
+                                prompt = prompt + seg
+                                continue
                         if recover_prompt is not None and not cancel.is_set() and n < max_new:
                             recovery_count += 1
                             # Only the two settings that keep the same words coming are raised (temperature to at
@@ -6525,16 +6655,22 @@ class Service:
                                 finish = "length"
                                 continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
-                                and not answered and not wrap and not opens and parser.state == "reasoning"
-                                and parser.buf != THINK_END         # #537: not after a held </think>, the end
+                                and not answered and not wrap and not opens
+                                # #5839 (opt-in): with quoted_eos_recovery the closure also runs where the thinking was
+                                # closed a moment ago and nothing was answered (a held </think>, or the answer's start)
+                                and (parser.state == "reasoning" or self.quoted_eos_recovery and parser.state == "content")
+                                and (parser.buf != THINK_END or self.quoted_eos_recovery)   # #537: not after a held </think>
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            closing = "\n\n" if parser.buf == THINK_END or parser.state == "content" else REASONING_CLOSE
+                            extra = self.tok.encode(closing, parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
+                                if self.quoted_eos_recovery:
+                                    parser._reset_track()  # this server-inserted delimiter closes even an unfinished quote
                                 for t in extra:
                                     n += 1
                                     raw_ids.append(t)
@@ -6631,6 +6767,8 @@ class Service:
                             print(f"[strata] thinking budget reached ({reached} tokens): wrapping up the thinking"
                                   + (" (a thinking turn the model opened again: the answer is opened too)" if opener else ""),
                                   flush=True)
+                            if self.quoted_eos_recovery:
+                                parser._reset_track()      # #5839 (opt-in): the wrap-up closes even an unfinished quote
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
@@ -6696,6 +6834,9 @@ class Service:
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "reasoning_recoveries": recovery_count,
+                                # #5839 (opt-in): only once a recovery ran, so a default request's record is as before
+                                **({"quoted_eos_recoveries": quoted_eos_recoveries} if quoted_eos_recoveries else {}),
+                                **({"think_eos_bans": think_bans} if think_bans else {}),
                                 "reasoning_repeat_coverage": round(repeat_coverage, 3),
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
@@ -6833,6 +6974,10 @@ class Service:
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
+        if quoted_eos_recoveries:                       # #5839 (opt-in): named only when it ran
+            done["quoted_eos_recoveries"] = quoted_eos_recoveries
+        if think_bans:
+            done["think_eos_bans"] = think_bans
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
             if finish == "length":
@@ -9796,6 +9941,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise SystemExit(f"[strata] config \"inkling_budget_cap\" must be true or false, not {cfg['inkling_budget_cap']!r}")
         svc.inkling_budget_cap = cfg["inkling_budget_cap"]
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.quoted_eos_recovery = cfg.get("quoted_eos_recovery") is True       # #5839: opt-in, off by default
+    svc.think_eos_ban = cfg.get("think_eos_ban") is True                   # #5839: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
