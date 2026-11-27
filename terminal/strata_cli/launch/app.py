@@ -19,7 +19,7 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
-from strata_cli.launch.catalog import Catalog
+from strata_cli.launch.catalog import Catalog, pick_row
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, auto_signals, read_config
 from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, DraftingScreen, FolderScreen,
                                        ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, StartScreen,
@@ -261,7 +261,7 @@ class Ctx:
         out = [n.line() for n in S.check_access(s)]
         out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None, ram_gb=self.computer.ram_gb, vendor=self.computer.engine_vendor)]
         out += [n.line() for n in S.check_context(s)]
-        r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
+        r = pick_row(self.rows, s)
         if r is not None and r.verdict == "disk":
             if s.model_path:                                             # N1: the files are the person's own, used where they are: no download to make room for
                 r = r.without_disk()
@@ -283,7 +283,7 @@ class Ctx:
         s = self.settings
         if not (s.family and s.model):
             return None
-        path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+        path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
         if path is None:
             return None
         try:
@@ -305,7 +305,7 @@ class Ctx:
         from strata_cli.launch import modelstate
         s = self.settings
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
-                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp, custom_id=s.custom_id,
                                  drafting=modelstate.resolved_drafting(s.drafting, s.family, **auto_signals(self.catalog, s, s.family)))
 
     def default_folder(self) -> Path:

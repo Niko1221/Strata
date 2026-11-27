@@ -32,7 +32,8 @@ from typing import Any, Callable
 from strata_cli.launch import access as acc
 from strata_cli.launch import modelstate
 from strata_cli.launch import settings as S
-from strata_cli.launch.catalog import Catalog, CatalogUnavailable
+from strata_cli.launch.catalog import Catalog, CatalogUnavailable, pick_row
+from strata_cli.launch.custom import custom_alias
 
 ROOT = Path(__file__).resolve().parents[2]
 WINDOWS = os.name == "nt"
@@ -393,10 +394,10 @@ def auto_signals(catalog, s: S.LaunchSettings, family: str | None) -> dict:
     real-use run); on a Mac the set decides (Metal IQ3_S is the MTP, the other sets DFlash2). Never raises."""
     try:
         from strata_control import drafting
-        path = catalog.installed_config(catalog.tag_of(s.family, s.model))
+        path = catalog.installed_config(catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
         cfg = apply_choices(read_config(path) if path is not None else {}, s)
         backend, archs = drafting.hardware_for(cfg.get("backend"))   # #5109: the config's card family on a mixed NVIDIA + AMD computer
-        return {"model_name": cfg.get("model_name") or catalog.model_name_of(family, s.model), "engine_backend": cfg.get("backend"),
+        return {"model_name": (catalog.model_name_of(family, s.model) if getattr(s, "custom_id", None) else None) or cfg.get("model_name") or catalog.model_name_of(family, s.model), "engine_backend": cfg.get("backend"),
                 **card_signals(cfg, s.gpus, {"backend": backend, "archs": archs})}
     except Exception:                                    # noqa: BLE001 - no signal: Auto as before
         return {}
@@ -857,7 +858,7 @@ def launch_dir() -> Path:
 
 def launch_name_of(s) -> str:
     """The name of the launch these settings make (Runner.name): its run config is launch/<name>.json."""
-    return S.slug(s.name or (s.model or "model") + "-" + S.context_label(s.context).lower())
+    return S.slug(s.name or (getattr(s, "custom_id", None) or s.model or "model") + "-" + S.context_label(s.context).lower())      # a custom build never shares the official build's launch profile
 
 
 def saved_launch_word(name: str) -> str | None:
@@ -1324,7 +1325,7 @@ class Runner:
         """The picture setting of this launch: the chosen one, or (nothing chosen) the default for this model and engine (catalog.picture_default)."""
         s = self.s
         if s.vision is None:
-            row = next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+            row = pick_row(self.catalog.rows(), s)
             images = bool(row.images) if row is not None else False
             s.vision = ("on" if images else "off") if self.is_native_strata_family() else self.catalog.picture_default(images)
         return s.vision
@@ -1416,10 +1417,12 @@ class Runner:
                 args.append("--set-default-data-dir")
         if s.model_path:
             p = Path(s.model_path)
-            if fam == "inkling-2-mini" and p.is_file():
-                args += ["--gguf-dir", str(p)]
+            if (fam == "inkling-2-mini" or s.custom_label) and p.is_file():
+                args += ["--gguf-dir", str(p)]                # a custom build names its one file (the folder may hold the official build too)
             else:
                 args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
+        if s.custom_label:                                # the person's own files, named: setup writes a run config of its own (strata-<family>custom-<name>.json), never the official one
+            args += ["--custom-label", s.custom_label]
         if self.feed:                                     # --feed / STRATA_UPDATE_FEED: setup reads the signed feed from there too
             args += ["--feed", str(self.feed)]
         if s.gpu_roles:
@@ -1431,7 +1434,7 @@ class Runner:
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
             keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
-                    "--set-default-data-dir", "--feed", "--drafter", "--mtp", "--draft-vocab"}     # --drafter / --mtp: setup.py's Mac step fetches the draft layer only where the
+                    "--set-default-data-dir", "--feed", "--drafter", "--mtp", "--draft-vocab", "--custom-label"}     # --drafter / --mtp: setup.py's Mac step fetches the draft layer only where the
                                                                                   # start runs the MTP, and not after a Drafting Off (`--mtp off`)
             flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
@@ -1470,7 +1473,7 @@ class Runner:
         return []
 
     def installed_state(self) -> tuple[Path | None, dict | None]:
-        tag = self.catalog.tag_of(self.s.family, self.s.model)
+        tag = self.catalog.tag_of(self.s.family, self.s.model, self.s.custom_id)
         path = self.catalog.installed_config(tag)
         if path is None:
             return None, None
@@ -1489,7 +1492,7 @@ class Runner:
             return False
         try:
             if path is None:
-                path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+                path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
             return path is not None and read_config(path).get("mtp") is False
         except Exception:                                    # noqa: BLE001 - an unreadable config is setup's to report; nothing changes here
             return False
@@ -1535,7 +1538,7 @@ class Runner:
                 found = discovery.writable_beside(self._first_own_gguf())
                 return Path(found) if found else None
             if s.family and s.model:
-                path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+                path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
                 if path is not None:
                     from strata_control import discovery
                     found = discovery.footprint(read_config(path), path).data_dir
@@ -1586,7 +1589,7 @@ class Runner:
                 # the plan counts what setup fetches there, not the other copy (lane NET 4a)
                 path, desc, installed = None, None, False
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path, data_dir=s.data_dir,
-                                 config=path, desc=desc, mtp=s.mtp, drafting=self.resolved_drafting(s.family), use_installed=installed)
+                                 config=path, desc=desc, mtp=s.mtp, drafting=self.resolved_drafting(s.family), use_installed=installed, custom_id=s.custom_id)
 
     def other_copy(self) -> Path | None:
         """The data folder of an installed copy of this model that this launch does not use, else None: another --data-dir was given, and the
@@ -1631,7 +1634,7 @@ class Runner:
         longer to read (about 8 more seconds per GB above 40 GB, at most 30 minutes). Automatic: nobody sets a variable for it."""
         gb = 0.0
         try:
-            row = next((r for r in self.catalog.rows() if r.family == self.s.family and r.model == self.s.model), None)
+            row = pick_row(self.catalog.rows(), self.s)
             gb = float(getattr(row, "download_gb", 0) or 0)
         except Exception:                                    # noqa: BLE001
             gb = 0.0
@@ -1675,7 +1678,7 @@ class Runner:
         data = Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or cat.data_dir())
         models_dir = data / "models"
         job = {"folder": str(cat.model_folder(data, s.family, s.model)),
-               "total_gb": float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)}
+               "total_gb": float(getattr(pick_row(cat.rows(), s), "download_gb", 0) or 0)}
         try:
             setup_module = cat.strata.setup_module()
             if setup_module is not None and not s.model_path:
@@ -1703,7 +1706,7 @@ class Runner:
                                "and points this launch at it.", 0)
         title = f"{s.family} {s.model}"
         try:                                                 # the name on screen
-            title = next((r.title for r in self.catalog.rows() if r.family == s.family and r.model == s.model), title)
+            title = getattr(pick_row(self.catalog.rows(), s), "title", title)
         except Exception:                                    # noqa: BLE001 - a label only
             pass
         if sys.platform == "darwin" and not (cat.src / "strata_control" / "mac_fit.py").is_file():
@@ -1912,7 +1915,7 @@ class Runner:
             return None
         _models, families, _ctx, _src = cat.tables()
         fam = families.get(s.family or "", {})
-        tag = cat.tag_of(s.family, s.model)
+        tag = cat.tag_of(s.family, s.model, getattr(s, "custom_id", None))
         data_dir = Path(s.data_dir) if s.data_dir else cat.data_dir()
         if s.model_path:
             model_dir = Path(s.model_path)
@@ -1945,7 +1948,7 @@ class Runner:
                     (pack_dir / "index.txt").exists() and (pack_dir / "tokenizer" / "vocab.json").exists()):
                 self.prepare_pack(model_dir, pack_dir, files)
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
-                                   context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
+                                   context=s.context or 32768, kv=s.kv, model_name=(custom_alias(s) if s.custom_id else f"{fam.get('name', s.family)}-{s.model.lower()}"), family_def=fam,
                                    log=cat.root / f"strata-{tag}.log", backend=backend,
                                    vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices, pack_name=tag.lower(),
                                    drafting=s.drafting)
@@ -1958,6 +1961,9 @@ class Runner:
                               + "; ".join(problems) + ".",
                               "Use model files that were prepared on this computer already (folder + pack): for an Intel Arc card the steps are in docs/INTEL_ARC.md (the Terminal carries tools/iq_pack.py for the pack). Or install on a computer with an NVIDIA or AMD card.", 5)
         path = cat.root / f"strata-{tag}.json"
+        if s.custom_id:
+            from strata_cli.launch import custom
+            cfg.update(custom.run_config_keys(s, model_dir))
         adopt.write(path, cfg)
         self.notices.append("The downloader built into this Terminal sets up NVIDIA and AMD cards only (Intel Arc cards have a separate installer), so Strata wrote the "
                             f"run settings itself from the prepared model files already on this computer ({path.name}). No model files were downloaded.")
@@ -2004,6 +2010,8 @@ class Runner:
                 s.model_path = hold[0]["folder"]
             elif not plan.get("issues"):
                 s.model_path = models.import_target(s.model_path, plan)
+            if s.custom_label and not plan.get("issues"):     # --custom-label names these files as a custom build of the model that was named
+                self.name_custom_build(s.custom_label)
             return
         sel = plan.get("candidate_selection") or {}
         fam, model = sel.get("family"), sel.get("model")
@@ -2014,7 +2022,20 @@ class Runner:
                               "Choose the matching model in the list, or check that every shard is in the folder.", 5)
         s.family, s.model = fam, model
         s.model_path = models.import_target(s.model_path, plan)
+        if sel.get("custom") or s.custom_label:             # not a build Strata has tested: the person's own build, with a run config and a name of its own
+            label = self.name_custom_build(s.custom_label or sel.get("suggested_label") or Path(s.model_path).stem)
+            self.emit("model", f"These files are a custom build of {sel.get('family_title') or fam} (settings of {model}); it is listed as '{label}'.", None)
+            return
         self.emit("model", f"These files are {fam} {model}.", None)
+
+    def name_custom_build(self, label: object) -> str:
+        """The files in s.model_path are the person's own build of the family s.family: it gets the display name `label` and a run config of its own
+        (strata_cli/launch/custom.py); the official build of the same model is never touched. Drafting is Auto: a fine-tune keeps the base model's vocabulary,
+        so the drafter is used while it helps and the run falls back to plain decoding by itself."""
+        from strata_cli.launch import custom
+        s = self.s
+        custom.use_import(s, self.catalog, label)
+        return s.custom_label or ""
 
     # ---- 3. config and profile
     def resolved_drafting(self, family: str | None) -> str:
@@ -2544,7 +2565,7 @@ class Runner:
         c = row.get("choices") or {}
         title = None
         try:
-            title = next((r.title for r in self.catalog.rows() if r.family == c.get("family") and r.model == c.get("model")), None)
+            title = next((r.title for r in self.catalog.rows() if (r.custom and r.id == c.get("custom_id")) or (not c.get("custom_id") and not r.custom and r.family == c.get("family") and r.model == c.get("model"))), None)
         except Exception:                                    # noqa: BLE001
             title = None
         title = title or ("Your model files" if c.get("model_path") else row["name"])
@@ -2918,7 +2939,7 @@ class Runner:
     def row(self):
         """The catalog row of the chosen model (None for a model the list does not carry)."""
         s = self.s
-        return next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+        return pick_row(self.catalog.rows(), s)
 
     def drafter_part(self) -> dict | None:
         """The DFlash2 drafter's row of the download plan, or None when nothing of it comes. ONE rule, the one the launch follows (ensure_drafter -> drafting_fetch.ensure_for), read from the
@@ -3252,7 +3273,7 @@ class Runner:
             prev = read_config(launch_dir() / f"{self.name}.json")
             if not isinstance(prev, dict) or drafting.normalize(prev.get("drafting")) != "off":
                 return
-            path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+            path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
             if path is not None and read_config(path).get("drafting") is not None:
                 return
             s.drafting = "off"
@@ -3274,7 +3295,7 @@ class Runner:
             word = saved_launch_word(self.name)
             if word is None or word == "off" or modelstate.drafting_for_family(word, s.family) is None:
                 return
-            path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+            path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model, getattr(s, "custom_id", None)))
             installed = read_config(path) if path is not None else {}
             if isinstance(installed, dict) and (installed.get("drafting") is not None or installed.get("mtp") is False):
                 return

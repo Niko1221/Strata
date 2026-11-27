@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from strata_cli.launch import settings as S
+from strata_cli.launch.catalog import pick_row
 
 EXAMPLES = """\
 examples:
@@ -83,7 +84,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--model", metavar="NAME", help="the model size, e.g. iq3_xxs, q2_0, ud-q4_k_xl (any case)")
     g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
     g.add_argument("--dsv41-package", metavar="FILE", help=argparse.SUPPRESS)        # DeepSeek (no longer run): accepted, answered in plain words
-    g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
+    g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards, or one .gguf or .strata file (your own fine-tune, merge or quantization of a model Strata runs)")
+    g.add_argument("--custom-label", metavar="NAME", help="with --model-path: the name your own build is listed under (default: the file's own name). It gets a run config of its own; the official build is never replaced and your files are never copied or deleted")
     g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
     g.add_argument("--move-data", action="store_true",
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
@@ -232,6 +234,7 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.model_path = str(Path(a.model_path).expanduser())
         if not a.model:
             s.family = s.model = None
+            s.custom_id = s.custom_label = None
     from strata_control import retired
     if any(getattr(a, k, None) for k in ("dsv41_package", "speed", "full_quality", "dspark")):
         raise ValueError(retired.NOT_OFFERED)                       # a DeepSeek-only flag (an old script, a saved shortcut): DeepSeek is no longer run
@@ -241,9 +244,22 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     if a.model:
         if catalog is None:
             raise ValueError("The model list is not available in this Terminal; run it from the full Terminal install.")
-        s.family, s.model = catalog.resolve(a.model, a.family)
-        if not a.model_path:
-            s.model_path = None
+        from strata_cli.launch import custom
+        found = custom.find(catalog, a.model)                       # one of the person's own builds, by its id or the name they gave it
+        if found is not None:
+            custom.use_installed(s, found)
+        else:
+            s.family, s.model = catalog.resolve(a.model, a.family)
+            s.custom_id = s.custom_label = None
+            if not a.model_path:
+                s.model_path = None
+    if getattr(a, "custom_label", None):
+        from strata_cli.launch import custom
+        if not s.model_path:
+            raise ValueError("--custom-label names your own model files: add --model-path with the .gguf or .strata file (or its folder).")
+        s.custom_label = custom.clean_label(a.custom_label) or None
+        if not s.custom_label:
+            raise ValueError("--custom-label needs a name to list your build under.")
     elif a.family and s.model:
         s.family = a.family
     if a.data_dir:
@@ -393,7 +409,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         _q4 = _gf.strix_q4_stall_note(s.model, comp.gpus)       # REMOVE with the Strix stall fix (gpu_fit.STRIX_Q4_NOTE)
         if _q4:
             notices.append(S.Notice("warn", _q4, ""))
-        rows = [r for r in catalog.rows(hw, own=(s.family, s.model) if s.model_path else None) if r.family == s.family and r.model == s.model]
+        rows = [r for r in [pick_row(catalog.rows(hw, own=(s.family, s.model) if s.model_path else None), s)] if r is not None]
         if rows:
             r = rows[0]
             if r.verdict == "disk":

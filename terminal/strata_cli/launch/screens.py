@@ -23,12 +23,15 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
+from strata_cli.launch import custom
+from strata_cli.launch.catalog import pick_row
 from strata_cli.launch.widgets import (ACCENT, BAD, DARK, FG, LIGHT, MUTE, WARN, Cell, Item, Menu, bar)
 
 STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context", "Context"), ("pictures", "Pictures"),
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
 
 
+CUSTOM_BADGE = custom.BADGE
 STEP_LABELS = {**dict(STEPS), "drafting": "Drafting"}
 
 
@@ -475,7 +478,8 @@ class ModelScreen(Base):
     def body(self) -> ComposeResult:
         yield Static("", id="question", markup=False)
         yield Menu(id="menu", wrap_last=False)               # S2: a verdict that does not fit ends with an ellipsis (the full sentence is under the list)
-        yield Input(placeholder="Folder with the model files, or one .gguf file", id="own", classes="field", disabled=True)
+        yield Input(placeholder="Folder with the model files, or one .gguf or .strata file", id="own", classes="field", disabled=True)
+        yield Input(placeholder="Display name for your build", id="label", classes="field", disabled=True)
 
     def on_mount(self) -> None:
         self.rows = self.ctx.rows
@@ -507,15 +511,18 @@ class ModelScreen(Base):
         for i, r in enumerate(self.rows):
             col = {"fits": "", "slower": WARN, "tight": WARN, "no": BAD, "disk": WARN}[r.verdict]
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "") + ("" if r.offered else " [no longer offered]") + (" [update available]" if r.update else "")
+            if r.custom:                                     # the person's own build: its name, a Custom marker and the size of its files (no download)
+                tag = f" [{CUSTOM_BADGE}]"
+                tag += " (installed)" if r.installed else ""
             need = f"{r.fit_gb:.0f} GB" if r.fit_gb else "-"
             verdict = r.words + tag
             if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
                 base = {"fits": "fits", "slower": "may run slower", "tight": "tight", "no": "too big", "disk": "no disk"}[r.verdict]
-                full, short = ((" (recommended)", " (rec.)") if r.recommended else (" (installed)", " (inst.)") if r.installed else
+                full, short = ((f" [{CUSTOM_BADGE}]", " [cust.]") if r.custom else (" (recommended)", " (rec.)") if r.recommended else (" (installed)", " (inst.)") if r.installed else
                                (" [experimental]", " [exp.]") if r.experimental else ("", ""))
                 verdict = base + (full if len(base + full) <= room else short)      # "no disk (rec.)": the mark stays visible when the long one does not fit
-            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(verdict, col)], key=(r.family, r.model)))
-            if (s.family, s.model) == (r.family, r.model):
+            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(verdict, col)], key=r.key))
+            if (r.custom and s.custom_id == r.id) or (not r.custom and not s.custom_id and (s.family, s.model) == (r.family, r.model)):
                 sel = i
         m.columns = cols
         m.show_header = True
@@ -544,9 +551,11 @@ class ModelScreen(Base):
         cur = m.current if m else None
         out = Text()
         if cur is not None and hasattr(self, "rows"):
-            r = next((x for x in self.rows if (x.family, x.model) == cur.key), None)
+            r = next((x for x in self.rows if x.key == cur.key), None)
             if r:
                 out.append(f"{r.title}: {r.about}.\n", style=FG)
+                if r.custom:
+                    out.append("Your own files are used where they are; nothing is copied. Remove it with `strata models remove " + r.id + "` (only the run settings go).\n", style=MUTE)
                 if r.credit:
                     out.append(f"{r.credit}.\n", style=MUTE)
                 if r.update:
@@ -555,7 +564,7 @@ class ModelScreen(Base):
                     out.append(f"{r.sentence}. ", style=BAD if r.verdict == "no" else WARN)
         # At 80 x 24 the box holds four lines: with a verdict sentence (three lines for a model that does not fit) this last, general sentence was cut
         # in the middle ("... stays on your SSD and is"). It stays in the help (?); a tall window shows it whole (GUI-TUI 0.2.17 QA).
-        verdict_shown = cur is not None and hasattr(self, "rows") and any((x.family, x.model) == cur.key and x.verdict != "fits" for x in self.rows)
+        verdict_shown = cur is not None and hasattr(self, "rows") and any(x.key == cur.key and x.verdict != "fits" for x in self.rows)
         if not verdict_shown or self.app.size.height >= 30:
             out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
         for title, why in self.unavailable_lines():
@@ -587,10 +596,16 @@ class ModelScreen(Base):
         cur = self.menu().current
         if cur is not None:
             s = self.ctx.settings
-            fam, model = cur.key
-            if (s.family, s.model) != (fam, model) or s.model_path:
-                s.model_path = None
-            s.family, s.model = fam, model
+            fam, model, *more = cur.key
+            if more:                                         # a custom build of this family: its base model's settings, its own files and run config
+                entry = next((e for e in custom.entries(self.ctx.catalog) if e["id"] == more[0]), None)
+                if entry is not None:
+                    custom.use_installed(s, entry)
+            else:
+                if (s.family, s.model) != (fam, model) or s.model_path or s.custom_id:
+                    s.model_path = None
+                custom.clear(s)
+                s.family, s.model = fam, model
             self.ctx.refresh_disk()
             from strata_cli.launch import modelstate
             s.drafting = modelstate.drafting_for_family(s.drafting, fam)         # the other families have no Drafting choice: back to Auto
@@ -600,7 +615,7 @@ class ModelScreen(Base):
                 s.tune = "skip"
                 s.kv = None
                 s.extra = {}
-            r = next(x for x in self.rows if (x.family, x.model) == (fam, model))
+            r = next(x for x in self.rows if x.key == cur.key)
             if r.verdict == "no":
                 self.ctx.notes.append(f"{r.title} does not fit this computer; it may be slow or run out of memory.")
 
@@ -620,10 +635,13 @@ class ModelScreen(Base):
 
     # ---- own files
     def action_own(self) -> None:
-        self.open_field("own", self.ctx.settings.model_path or "", "Folder with the model files, or one .gguf file")
-        self.say("Type or paste the folder (or the first .gguf file), then press Enter.")
+        self.open_field("own", self.ctx.settings.model_path or "", "Folder with the model files, or one .gguf or .strata file")
+        self.say("Type or paste the folder (or the .gguf or .strata file of your own build), then press Enter.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "label":
+            self.finish_custom(event.value)
+            return
         if event.input.id != "own":
             return
         path = event.value.strip().strip('"')
@@ -651,6 +669,7 @@ class ModelScreen(Base):
         if sel.get("family") and sel.get("model") and not plan.get("issues"):
             s = self.ctx.settings
             s.model_path, s.family, s.model = models.import_target(path, plan), sel["family"], sel["model"]
+            custom.clear(s)
             from strata_cli.launch import modelstate
             s.drafting = modelstate.drafting_for_family(s.drafting, s.family)
             if s.family in ("hy4-flash", "inkling-2-mini"):
@@ -660,6 +679,13 @@ class ModelScreen(Base):
                 s.kv = None
                 s.extra = {}
             self.ctx.picked_in_list = False
+            self._own_plan = (plan, sel)
+            if sel.get("custom"):                            # not a build Strata has tested: the person's own build asks for the name it is listed under
+                self.close_field("own")
+                self.open_field("label", str(sel.get("suggested_label") or Path(s.model_path).stem), "Display name for your build")
+                self.say(f"These files are your own build of {sel.get('family_title') or sel['family']} ({plan['file_count']} file(s), "
+                         f"{plan.get('total_bytes', 0) / 1e9:.0f} GB); they run with the settings of {sel['model']}. Type the name to list it under, then press Enter.")
+                return
             self.ctx.refresh_disk()                          # N1: these files need no download, so the list stops marking the row (and the Save screen its "!" line)
             self.build_menu()
             self.close_field("own")
@@ -671,11 +697,30 @@ class ModelScreen(Base):
             why = models.problem_words(plan.get("issues") or [], missing=plan.get("missing_shards")) or "they are not a model Strata knows"
             holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
             self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
-                     "Check that every shard is in the folder, or pick a model from the list.", True)
+                     "Check that every shard is in the folder, or pick a model from the list. " + custom.UNSUPPORTED_WORDS, True)
+
+    def finish_custom(self, text: str) -> None:
+        """The person named their own build: it is used with a run config of its own (never the official one's), listed under its family."""
+        s = self.ctx.settings
+        plan, sel = getattr(self, "_own_plan", (None, None))
+        if not plan or not s.model_path:
+            self.close_field("label")
+            return
+        label = custom.clean_label(text)
+        if not label:
+            self.say("Give the build a name (letters, digits, spaces and dashes), or press Esc to go back.", True)
+            return
+        custom.use_import(s, self.ctx.catalog, label)
+        self.ctx.refresh_disk()
+        self.build_menu()
+        self.close_field("label")
+        self.say(f"Your build is called '{s.custom_label}' (settings of {s.model}). Press Enter to use it; the official {s.model} is not touched and your files are not copied.")
+        self.paint()
 
     def action_back(self) -> None:
         if self.input_open():
             self.close_field("own")
+            self.close_field("label")
             self.say("")
             return
         super().action_back()
@@ -704,7 +749,7 @@ class CardsScreen(Base):
 
     def model_memory(self) -> float:
         s = self.ctx.settings
-        r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        r = pick_row(self.ctx.rows, s)
         return float(r.memory_gb) if r is not None and r.memory_gb else 44.0
 
     def installed(self) -> list[int] | None:
@@ -1151,7 +1196,7 @@ class PicturesScreen(Base):
 
     def row(self):
         s = self.ctx.settings
-        return next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        return pick_row(self.ctx.rows, s)
 
     def is_hy4(self) -> bool:
         return self.ctx.settings.family == "hy4-flash"
@@ -1319,7 +1364,7 @@ class ParallelScreen(Base):
         c, s = self.ctx.computer, self.ctx.settings
         if not c.ram_gb:
             return None
-        row = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        row = pick_row(self.ctx.rows, s)
         need = float(row.fit_gb or row.memory_gb or 0) if row is not None else 0.0
         if not need:
             return None
@@ -1972,7 +2017,7 @@ class SaveScreen(Base):
         is_hy4 = s.family == "hy4-flash"
         is_inkling = s.family == "inkling-2-mini"
         is_native_strata = is_hy4 or is_inkling
-        r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        r = pick_row(self.ctx.rows, s)
         cards = self.ctx.cards_line()
         ctx_kv = (f", memory {s.kv or 'fp16'}" if is_inkling else "" if is_hy4 else f", memory {s.kv or 'int8'}")
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),

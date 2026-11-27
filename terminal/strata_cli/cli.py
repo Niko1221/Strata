@@ -185,6 +185,11 @@ def parser() -> argparse.ArgumentParser:
     models_import.add_argument("--plan", action="store_true", required=True,
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
+    models_remove = models_sp.add_parser("remove", help="remove one of your own builds (a custom .gguf or .strata) from Strata's list: only its run settings go, your model files stay where they are")
+    models_remove.add_argument("model_id", help="the build's id, as `strata models list` shows it")
+    models_remove.add_argument("--install-dir", help="absolute path to a Strata installation")
+    models_remove.add_argument("--yes", action="store_true", help="do it; without it nothing is removed and the command only says what would be")
+    models_remove.add_argument("--output", choices=("human", "json"), default="human")
     models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
     models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
     models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
@@ -599,6 +604,8 @@ def _models(a: argparse.Namespace) -> int:
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
     if a.models_command == "move":
         return _models_move(a)
+    if a.models_command == "remove":
+        return _models_remove(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -625,7 +632,7 @@ def _models(a: argparse.Namespace) -> int:
             return _error("connection options require --served", 2, a.output == "json")
         result = models.list_installed(a.install_dir)
         lines = [f"{item['id']}  {item['component_status']}  "
-                 f"{item.get('name', item.get('error', ''))}" for item in result["models"]]
+                 f"{item.get('name', item.get('error', ''))}" + _custom_tail(item) for item in result["models"]]
         if not lines:
             where = ", ".join(result.get("install_dirs") or [result["install_dir"]])
             lines = [f"No installed models found. Looked in: {where}. "
@@ -743,11 +750,53 @@ def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
     return _models_move(a)
 
 
+def _custom_tail(item: dict) -> str:
+    """` [Custom] 12 GB, a build of inkling-2-mini SQ-20` after a custom build's name in `strata models list` (nothing for the official installs)."""
+    if item.get("custom") is not True:
+        return ""
+    from strata_cli.launch import custom
+    size = custom.size_words(item.get("custom_bytes"))
+    base = " ".join(x for x in (str(item.get("base_family") or ""), str(item.get("base_model") or "")) if x)
+    return f"  [{custom.BADGE}]" + (f" {size}" if size else "") + (f", a build of {base}" if base else "")
+
+
+def _models_remove(a: argparse.Namespace) -> int:
+    """`strata models remove ID`: a custom build leaves Strata's list; only its run config is deleted. The weights are never touched, and an
+    official install is refused here (it has its own removal in the app)."""
+    from strata_cli.launch import custom
+    from strata_control import models
+    from strata_control.profiles import ProfileError
+    machine = a.output == "json"
+    try:
+        found = models.inspect(a.model_id, a.install_dir)["model"]
+    except ProfileError as exc:
+        return _error(str(exc), 5, machine)
+    path = Path(found["source_config"])
+    entry = custom.read_custom(path)
+    if entry is None:
+        return _error(f"{a.model_id} is not one of your own builds, so `strata models remove` does not remove it.", 2, machine)
+    if not a.yes:
+        text = (f"This would remove '{entry['display_name']}' ({entry['id']}) from Strata's list by deleting {path.name}. {custom.KEPT_WORDS} "
+                "Run it again with --yes to do it.")
+        return _success({"removed": [], "would_remove": [path.name], "kept_files": True}, machine=machine, human=text)
+    try:
+        removed = custom.remove_reference(path)
+    except (OSError, ValueError) as exc:
+        return _error(f"Could not remove {path.name}: {exc}", 5, machine)
+    return _success({"removed": removed, "kept_files": True}, machine=machine,
+                    human=f"Removed '{entry['display_name']}' from Strata's list ({', '.join(removed)}). {custom.KEPT_WORDS}")
+
+
 def _import_words(plan: dict) -> str:
     """The plain-words result of `strata models import --plan`: what the files are, what is already set up, what changes (nothing)."""
     cand = plan.get("candidate_selection") or {}
-    lines = [f"{plan['file_count']} GGUF file(s): {plan['file_set_status']}"]
-    if cand.get("family"):
+    kind = ".strata" if plan.get("file_kind") == "strata" else "GGUF"
+    lines = [f"{plan['file_count']} {kind} file(s): {plan['file_set_status']}"]
+    if cand.get("custom"):
+        lines.append(f"These files are your own build of {cand.get('family_title') or cand['family']}: Strata runs them with the settings of {cand['model']} "
+                     f"and lists them as '{cand.get('suggested_label') or 'Custom build'}' (change it with --custom-label NAME in `strata launch --model-path`). "
+                     "They are used where they are, never copied; the official build is not replaced.")
+    elif cand.get("family"):
         lines.append(f"These files are Strata's {cand['family']} {cand['model']}.")
     done = plan.get("already_set_up")
     if done:
