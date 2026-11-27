@@ -7132,8 +7132,10 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
-                elif path == "/tokenize":
+                elif path in ("/tokenize", "/v1/tokenize"):
                     self._tokenize(req)
+                elif path in ("/detokenize", "/v1/detokenize"):
+                    self._detokenize(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
                 else:
@@ -7769,6 +7771,11 @@ def make_handler(svc: Service):
             web app's `strata_mcp` is refused: the MCP tools it adds are not counted here, so the figure would be low.
             The request's `model` is accepted like the other routes accept it: this server has one model, and every
             name reaches it (the client's own deployment id)."""
+            if "content" in req:                        # llama.cpp's name for the plain text
+                if "prompt" in req or "messages" in req:
+                    raise ValueError("send a 'prompt' (or llama.cpp's 'content') or a chat 'messages' conversation - "
+                                     "one of them")
+                req = {**req, "prompt": req["content"]}
             if bool("prompt" in req) == bool("messages" in req):
                 raise ValueError("send a 'prompt' (a plain text) or a chat 'messages' conversation - not both, not neither")
             if req.get("continue_final_message"):
@@ -7777,7 +7784,12 @@ def make_handler(svc: Service):
                 prompt = req["prompt"]
                 if not isinstance(prompt, str):
                     raise ValueError("prompt: a text")
-                ids = svc.tok.encode(prompt, parse_special=True)
+                # llama.cpp's parse_special (default true): false reads control-token spellings in the text as plain
+                # text, so a client that renders its own prompt can tokenize message text that cannot open a turn
+                parse_special = req.get("parse_special", True)
+                if not isinstance(parse_special, bool):
+                    raise ValueError("parse_special: true or false")
+                ids = svc.tok.encode(prompt, parse_special=parse_special)
             else:
                 # Match the OpenAI route's effective request settings. In particular, shared/config reasoning
                 # defaults change the rendered prompt, and a forced tool call with thinking disabled is written
@@ -7804,6 +7816,22 @@ def make_handler(svc: Service):
                     ids, _ = svc.expand_image_tokens(images, ids, count_only=True)
             self._json(200, {"count": len(ids), "tokens": ids,
                              "max_model_len": svc.reported_ctx(), "token_strs": None})
+
+        def _detokenize(self, req):
+            """POST /detokenize: token ids back to their text - the model does not run.  llama.cpp's and vLLM's shape:
+            'tokens' in; the text out as 'content' (llama.cpp) and 'prompt' (vLLM)."""
+            ids = req.get("tokens")
+            if not isinstance(ids, list) or not all(type(t) is int and t >= 0 for t in ids):
+                raise ValueError("tokens: a list of token ids")
+            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+            bad = [t for t in ids if n_vocab and t >= n_vocab]
+            if bad:
+                raise ValueError(f"tokens: {bad[0]} is outside the vocabulary (0..{n_vocab - 1})")
+            try:
+                text = svc.tok.decode(ids)
+            except (IndexError, ValueError) as e:
+                raise ValueError(f"tokens: an id this tokenizer does not have ({e})") from None
+            self._json(200, {"content": text, "prompt": text})
 
         def _count_tokens(self, req):
             """Anthropic's token count, which Claude Code asks for its context figures: the prompt this server would

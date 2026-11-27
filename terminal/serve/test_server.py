@@ -751,6 +751,39 @@ class TokenizeEndpoint(unittest.TestCase):
         self.assertEqual(b["max_model_len"], CTX)
         self.assertIsNone(b["token_strs"])
 
+    def test_llama_cpp_content_and_parse_special(self):
+        # llama.cpp's request names: 'content' for the text; parse_special false reads a control token's spelling
+        # as plain text, so text a client tokenizes for its own prompt cannot open a turn
+        text = "a<|im_start|>b"
+        s, parsed = self.post("/tokenize", {"content": text})
+        self.assertEqual(s, 200, parsed)
+        self.assertEqual(parsed["tokens"], self.tok.encode(text, parse_special=True))
+        self.assertEqual(parsed["count"], 3)
+        s, plain = self.post("/tokenize", {"content": text, "parse_special": False})
+        self.assertEqual(s, 200, plain)
+        self.assertEqual(plain["tokens"], list(text.encode()))
+        self.assertTrue(all(t < 256 for t in plain["tokens"]))
+        s, same = self.post("/v1/tokenize", {"prompt": text, "parse_special": False})
+        self.assertEqual((s, same["tokens"]), (200, plain["tokens"]))
+        for bad in ({"content": "x", "prompt": "x"}, {"content": "x", "messages": [{"role": "user", "content": "x"}]},
+                    {"content": "x", "parse_special": "no"}):
+            s, b = self.post("/tokenize", bad)
+            self.assertEqual(s, 400, (bad, b))
+
+    def test_detokenize_is_the_inverse(self):
+        text = "hello <|im_end|> world"
+        ids = self.tok.encode(text, parse_special=True)
+        for path in ("/detokenize", "/v1/detokenize"):
+            s, b = self.post(path, {"tokens": ids})
+            self.assertEqual(s, 200, b)
+            self.assertEqual((b["content"], b["prompt"]), (text, text))
+        s, b = self.post("/detokenize", {"tokens": []})
+        self.assertEqual((s, b["content"]), (200, ""))
+        for bad in ({}, {"tokens": "1 2"}, {"tokens": [1, -2]}, {"tokens": [1.5]}, {"tokens": [True]},
+                    {"tokens": [10 ** 6]}):
+            s, b = self.post("/detokenize", bad)
+            self.assertEqual(s, 400, (bad, b))
+
     def test_chat_form_counts_the_rendered_prompt(self):
         s, b = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
         self.assertEqual(s, 200, b)
