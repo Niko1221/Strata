@@ -1067,6 +1067,12 @@ def menu_colour(code: str) -> tuple[str, str]:
     return f"\033[{code}m", "\033[0m"
 
 
+def menu_model_label(name: str, width: int = 0) -> str:
+    """Model/build name coloured magenta for a size menu, padded to `width` characters (0 = no padding)."""
+    magenta, reset = menu_colour("35")
+    return f"{magenta}{name:{width}s}{reset}"
+
+
 _VT: list = []
 
 
@@ -10071,7 +10077,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         size = fam["sha256"][fam["file"].format(q=m)][0]
         from strata_control import fit_label
         fit = f"   <- {fit_label.label(size / 1e9, ram, low_ram_vram(gpu))}"        # the file against the RAM and the card's memory together
-        say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
+        say(f"  {i}) {menu_model_label(m, 10)} {d['about']}; download {size / 1e9:.1f} GB{fit}")
     rec = own_path_size(fam, ram)
     if not a.model:
         say(f"  Recommended for {ram:.0f} GB of RAM: {rec} (the largest that fits; any size can be chosen)")
@@ -10360,7 +10366,8 @@ def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAU
     words = {"ram_vram_zero_ssd": "fits in memory", "near_resident_ssd": "fits, a few experts are read from the SSD", "cross_tier_ssd": "streams experts from the SSD: much slower"}
     out = []
     for r in hy4_fit.rows(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib):
-        out.append((r["build"], f"{r['build']:7s} {hy4_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.0f} GB   <- {words[r['mode']]}"
+        label = menu_model_label(r["build"], 7)
+        out.append((r["build"], f"{label} {hy4_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.0f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
     return out
 
@@ -10892,7 +10899,8 @@ def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_fami
     }
     out = []
     for r in inkling_fit.rows(vram_gib, ram_gib, unified, ctx, vision, **extra):
-        out.append((r["build"], f"{r['build']:7s} {inkling_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.1f} GB   <- {words[r['mode']]}"
+        label = menu_model_label(r["build"], 7)
+        out.append((r["build"], f"{label} {inkling_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.1f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
     return out
 
@@ -11302,7 +11310,7 @@ def preview_family(a) -> int:
         d = fam["models"][m]
         size = fam["sha256"][fam["file"].format(q=m)][0]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
-        say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
+        say(f"  {i}) {menu_model_label(m, 10)} {d['about']}; download {size / 1e9:.1f} GB{fit}")
     if a.check:
         return 0
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], "1", a.yes)) - 1]
@@ -12400,18 +12408,17 @@ def main() -> int:
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = f"   <- {model_fit_label(m, ram, gpu)}"          # "fits" or "may run slower": the weight files against the RAM and the card's memory together
+        label = menu_model_label(m, 8)
         if d.get("mem_total"):             # Gyro: the download includes the n-gram table, the memory figure does not
-            say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
+            say(f"  {i}) {label}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
                 f"(the n-gram table is in the file), memory {d['ram_gb']} GB{fit}")
             continue
         if d.get("budget"):
             keeps = (f"~{resident_budget_gib(m, ram, uma=bool((gpu or {}).get('uma')))} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
                      else "all")
-            say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
+            say(f"  {i}) {label}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
                 f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
-        magenta, reset = menu_colour("35")
-        label = f"{magenta}{m:8s}{reset}"
         say(f"  {i}) {label}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index(installed or recommended_size(family, names, ram, low_ram_vram(gpu))) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
