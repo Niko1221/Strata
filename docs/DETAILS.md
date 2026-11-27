@@ -472,7 +472,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
-| OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
+| OpenAI Responses (stream and non-stream, tools; stateless by default, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list and health | `GET /v1/models`, `GET /v1/models/{id}`, `GET /models`, `GET /health` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing now | `GET /status`, `GET /slots` (busy or idle, with `n_prompt_tokens`; one entry per slot with `--batch`) |
@@ -526,8 +526,8 @@ trained with, not a hard token limit.
 
 All are optional. Setup rewrites the config when run again and keeps keys it does not manage. The About tab's Model settings
 card edits some of them (the sampling defaults, `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`,
-`effort_position`, `aliases`, `idle_unload_s`, `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and
-`--vram-reserve-mib`). An empty field removes the key, the earlier file is kept as `strata-<model>.json.bak`, and the change
+`effort_position`, `aliases`, `idle_unload_s`, `lazy_load`, `engine_silence_s`, `api_monitor`, `responses_store_mib`
+([stored Responses](#the-responses-api-and-codex-cli)), `open_browser` and `--vram-reserve-mib`). An empty field removes the key, the earlier file is kept as `strata-<model>.json.bak`, and the change
 applies at the next start. Network, key, MCP and program keys are not editable there.
 
 | Key | Default | Effect |
@@ -1020,9 +1020,39 @@ Headers are not recorded. Treat the history as sensitive when Strata is reachabl
 
 `POST /v1/responses` speaks OpenAI's newer Responses API, which Codex CLI uses. It shares the chat path, so thinking levels,
 budgets, the conversation cache and the API key, Host and Origin checks apply. It is **stateless**: the client sends the whole
-conversation in `input` every time. `previous_response_id`, `conversation`, `background` and the retrieve, delete and cancel
-endpoints are refused with an error that says so.
+conversation in `input` every time. `conversation`, `background` and the cancel endpoint are refused with an error that says so. So is `previous_response_id`,
+unless the optional storage below is on.
 
+**Stored Responses (opt-in).** A client written against OpenAI's Responses API can send only the new input of a turn, with
+`previous_response_id` naming the answer it follows. Strata keeps that history only when you turn it on: start the server
+with `--responses-store-mib 64`, or set `"responses_store_mib": 64` in the run config (also a field of the About tab's
+Model settings card). `0`, the default, keeps the stateless behaviour above and stores nothing.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
+first = client.responses.create(model="strata", input="Remember this name: Ada.", store=True)
+second = client.responses.create(model="strata", previous_response_id=first.id, input="What name did I give you?")
+saved = client.responses.retrieve(second.id)
+client.responses.delete(first.id)
+```
+
+- With storage on, a request is stored unless it sends `store: false`. `store: false` can still continue a stored response.
+- The earlier top-level `instructions`, `tools` and sampling settings are not carried over. Send them again on each turn.
+- `GET /v1/responses/{id}` returns the stored response and `DELETE /v1/responses/{id}` deletes it (`response.deleted`).
+- A finished response is stored before its last event, also when streaming. A failed, cancelled or unfinished one is not stored.
+- A continuation sends the model the same prompt as a client that sends the whole conversation, so the conversation cache is
+  reused as before.
+- Other routes under `/v1/responses/{id}` (`input_items`, cancel) are not supported.
+
+**Limits.** The store lives in the server's memory only and is lost when the server stops. It is not the engine's KV cache.
+It holds at most 256 responses. Each one expires after `responses_store_ttl_s` seconds (default 3600). `responses_store_mib`
+is the total size of the stored JSON, history included: when it is full the oldest response is dropped. A response that does
+not fit is refused with `response_store_limit_exceeded` (HTTP 413, or a `response.failed` event once a stream has started).
+Everyone who has the server's API key can read every stored response. `responses_store_mib` counts the stored JSON, not
+the whole server: the Python objects around it take a little more (measured with `tracemalloc` on one macOS machine:
+1.0 to 1.1 times the budgeted bytes for 60 to 8 records of 4 KB to 0.5 MiB), and a response is copied while it is saved.
 | Request | What Strata does |
 | --- | --- |
 | `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)`, Codex multi-agent v2's `agent_message` (a worker's task and its answer, as user messages; another server's encrypted payload is named as unreadable) and `multi_agent_call(_output)` |
