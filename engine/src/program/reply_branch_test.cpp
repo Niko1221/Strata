@@ -71,6 +71,23 @@ int main() {
     // no turn token configured, resume 0
     assert(!live_tail_is_replaced_reply(live, cat({history, head}), turn, -1)); ++cases;
     assert(!live_tail_is_replaced_reply(live, cat({history, head}), 0, S)); ++cases;
+    // --prompt-cache-min-gap: the turn checkpoint at `turn` was skipped, so the request restores from an older checkpoint
+    // (here the root, the end of the system prompt).  The park decision asks the rule about the skipped turn boundary -
+    // where the reply was generated - not about the restore point; the restore itself stays at the older checkpoint.
+    {
+        const int64_t root = static_cast<int64_t>(sys.size());
+        const auto regenerate = cat({history, head});
+        // the restore point: the live tail past it holds a user turn and the reply, so the rule says nothing there
+        assert(!live_tail_is_replaced_reply(live, regenerate, root, S)); ++cases;
+        // the skipped turn boundary: the tail past it is the one reply this prompt replaces
+        assert(live_tail_is_replaced_reply(live, regenerate, turn, S)); ++cases;
+        // a picture between the restore point and the skipped boundary is shared history: the rule still holds, and the
+        // caller compares the prompt's pictures below the boundary with the live branch's before it trusts this
+        assert(live_tail_is_replaced_reply(live, regenerate, turn, S, {root + 1})); ++cases;
+        // the live tail past the skipped boundary holds another turn: not one replaced reply, park as before
+        assert(!live_tail_is_replaced_reply(to32(cat({history, head, answer, {E}, user2, head, answer})), regenerate, turn,
+                                            S)); ++cases;
+    }
     std::cout << "SUMMARY reply_branch cases=" << cases << " passed\n";
     return 0;
 }
