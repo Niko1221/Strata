@@ -77,6 +77,15 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
         num("hyper_connection.low_rank", g.hc_lr);
         num("attention.indexer.head_count", g.idx_q_heads);
         num("attention.indexer.key_length", g.idx_key_dim);
+        // Recurrent-depth loop, QSA-only (issue #7295) - this function is the OTHER geometry reader (the
+        // --native fast path calls this, not gguf_reader.hpp's read_geometry; a loop-enabled model loaded
+        // with --native would otherwise silently see has_loop() == false, which M6's synthetic-weights
+        // mechanics check caught). `num()` above already rejects non-numeric/negative values via its own
+        // `is_num()` + unsigned-reinterpret convention, same as every other field here.
+        num("loop.num_passes", g.loop_num_passes);
+        num("loop.core_start", g.loop_core_start);
+        num("loop.core_end", g.loop_core_end);
+        num("loop.gate_rank", g.loop_gate_rank);
     }
     g.n_layers = block_count - g.n_mtp_layers;
     g.ssm_conv_channels = 2 * g.ssm_state_size * g.ssm_k_heads + g.ssm_value_dim;
@@ -98,6 +107,12 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     if (g.ssm_v_heads % g.ssm_k_heads) return bad("ssm.time_step_rank is not a multiple of ssm.group_count");
     if (g.n_head % g.n_head_kv) return bad("attention.head_count is not a multiple of attention.head_count_kv");
     if (g.n_layers % g.qsa_interval) return bad("the layer count is not a multiple of full_attention_interval");
+    if (g.has_loop()) {
+        if (g.loop_core_end <= g.loop_core_start || g.loop_core_end > g.n_layers)
+            return bad("loop.core_start/core_end is not a valid sub-range of the layers");
+        for (int64_t l = g.loop_core_start; l < g.loop_core_end; ++l)
+            if (!is_qsa_layer(g, l)) return bad("loop.core_start/core_end includes a GDN layer - the loop is QSA-only");
+    }
     return true;
 }
 
