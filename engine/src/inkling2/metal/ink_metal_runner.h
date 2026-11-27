@@ -30,7 +30,10 @@
 
 namespace ink_metal {
 // The native Metal DFlash 2 drafter stays in the tree but is switched off for 0.2.23 (see ink_metal_backend.mm).
-inline constexpr bool kMetalDflash2Available = false;
+inline constexpr bool kMetalDflash2Available = true;
+// From this many tokens of context a step is plain, and a request whose prompt is this long never feeds the drafter (measured on the M5 Max, SQv2-20: 4K and 8K documents lose 9 to 12 percent
+// decode and 25 percent prompt speed with the drafter, the drafter only pays on code / json / tool style text).
+inline constexpr int kMetalDflash2CtxCut = 3072;
 }  // namespace ink_metal
 
 namespace ink_metal {
@@ -118,9 +121,11 @@ struct InkMetalRunner {
     bool use_dflash2 = false;
     bool kv_is_fp8 = false;
     bool draft_user_on = false;   // --draft on / STRATA_INK_DRAFTER=dflash2: asked for by name (never vetoed, never cut to plain steps)
+    std::vector<uint8_t> df2_slot_off;   // per slot: the prompt is long, the drafter is not fed (hint_prompt_len)
+    bool df2_hw_ok = false;              // the real card is an Apple M5 Max (the only card DFlash 2 is measured on)
     bool draft_hybrid = false;    // the model does not fit in memory with room to spare (paged): a draft step costs extra page reads
     // What DFlash 2 takes: the widened weights and the Q8 unembed screen (about 1.1 GiB) plus the per-slot context rings (about 43 MiB each); the load prints what it really took.
-    static uint64_t df2_bytes_estimate(int slots) { return (1100ull << 20) + (uint64_t)std::max(1, slots) * (43ull << 20); }
+    static uint64_t df2_bytes_estimate(int slots) { return (1118ull << 20) + (uint64_t)std::max(1, slots) * (43ull << 20); }
     bool is_apple10 = false;
     bool use_mpp = false, use_mpp_trunk_f16 = false, use_mpp_trunk_i8 = false, use_dspark_f16 = false;
     int mpp_decomp_cap = 0;
@@ -285,6 +290,8 @@ struct InkMetalRunner {
         }
         is_apple10 = cx->has_family_apple(10);
         max_slots = std::max(1, std::min(64, slots));
+        df2_slot_off.assign((size_t)max_slots, 0);
+        df2_hw_ok = M5MaxCfg::hardware_matches(cx->device_name(), cx->has_family_apple(10), cx->supports_metal4(), cx->gpu_core_count(), cx->physical_memory_bytes());
         max_ctx = std::max(256, ctx_len);
         max_batch = std::max(64, batch_cap);
         kv_is_fp8 = (m5.active && m5.use_fp8_kv);
@@ -982,6 +989,18 @@ struct InkMetalRunner {
         // Native Metal DFlash 2 drafter (loads dflash2.safetensors beside model when --draft is active)
         if (want_df2 && lib_dflash2 >= 0) {
             std::string df2_path = strata::ink::df2_resolve_path(mod->path);
+            if (!df2_path.empty()) {
+                // Where DFlash 2 may load (0.2.23): the 16 KiB-aligned SQ-20 pack on an Apple M5 Max, and not in the exact mode (exact + drafter changed greedy tokens on 8K / 16K documents).
+                // On the older SQ-20 pack it accepted no draft at all (measured), on other Macs it is not measured. One line, no drafter, whatever --draft says.
+                const char* why = nullptr;
+                if (!mod->page16k) why = "is validated only on the 16 KiB-aligned SQ-20 pack (this file uses the older layout)";
+                else if (!df2_hw_ok) why = "is validated only on an Apple M5 Max with 64 GiB or more";
+                else if (m5.active && m5.exact) why = "is not loaded in the exact mode (it can change greedy tokens on long documents)";
+                if (why) {
+                    fprintf(stderr, "[ink_metal] DFlash 2 %s; decoding without a drafter.\n", why);
+                    df2_path.clear();
+                }
+            }
             if (!df2_path.empty()) {
                 // The one drafter rule, principle 1 (strata/core/ink_draft_rule.hpp). Unified memory: the model is "resident" while what the process holds, the drafter and 4 GiB for the system
                 // fit in the machine's memory; a Mac that pages the model already (a 16 GB Mac with a 19 GB pack) does not get the default drafter, its weights only cost cache.
@@ -2840,6 +2859,9 @@ struct InkMetalRunner {
 
         // Ingest captured target taps into DFlash 2 sliding-window context rings!
         if (step.capture_taps && use_dflash2 && !is_tree) {
+            bool all_off = !step.slot_ids.empty();
+            for (int s : step.slot_ids) if (s < 0 || s >= (int)df2_slot_off.size() || !df2_slot_off[(size_t)s]) { all_off = false; break; }
+            if (!all_off)
             df2.ingest_taps(b_taps4, b_h_norm, b_slot_ids, b_pos, step.slot_ids.data(), step.pos.data(), M);
         }
 

@@ -183,7 +183,13 @@ public:
     // The one drafter rule, principle 2 (strata/core/ink_draft_rule.hpp): on a Mac that pages its model a draft step reads more pages, so from 2048 tokens on the step is plain.
     bool draft_plain_now(int ctx_pos) const override {
         if (!runner_.use_dflash2) return false;
+        if (ctx_pos >= ink_metal::kMetalDflash2CtxCut) return true;
         return strata::core::ink_draft_plain_step(runner_.draft_hybrid, ctx_pos, runner_.draft_user_on);
+    }
+
+    // A long prompt never feeds the drafter (its steps are plain from kMetalDflash2CtxCut tokens on, and the prompt-speed cost of the ingest is skipped).
+    void hint_prompt_len(int slot, int prompt_len) override {
+        if (slot >= 0 && slot < (int)runner_.df2_slot_off.size()) runner_.df2_slot_off[(size_t)slot] = (prompt_len >= ink_metal::kMetalDflash2CtxCut) ? 1 : 0;
     }
 
     std::string device_info() const override {
@@ -229,9 +235,10 @@ public:
             if (cx_.recommended_working_set() < (48ull << 30)) want_chunk = std::min(want_chunk, 2048);
         }
         const int batch_cap = std::max(256, std::max(want_chunk, par));
-        // DFlash 2 is NOT available on Metal in this release (kMetalDflash2Available = false): the port reached no accepted draft token on SQ-20 with either the shipped file or the original
-        // bf16 file (0 of 64 offered) and changed greedy tokens on 8K / 16K documents. Plain decode is exactly the tip's; the DSpark gate is the tip's too.
-        const bool enable_draft = opts.enable_dspark && ink2::dormant_dspark_allowed();
+        // DFlash 2 on Metal (kMetalDflash2Available): loaded only where it is validated, see the gate in ink_metal_runner.h (16 KiB-aligned SQ-20 pack, Apple M5 Max, not in the exact mode).
+        // With the switch false the drafter is never loaded and plain decode is the tip's.
+        const bool enable_draft = opts.enable_dspark &&
+                                  ((ink_metal::kMetalDflash2Available && strata::ink::df2_requested()) || ink2::dormant_dspark_allowed());
         {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2
             const char* de = std::getenv("STRATA_INK_DRAFTER");
             const std::string dl = de ? std::string(de) : std::string();

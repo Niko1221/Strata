@@ -329,6 +329,7 @@ struct InkMetalModel {
     uint64_t sec1_off = 0, sec1_bytes = 0;
     uint64_t sec4_off = 0, sec4_bytes = 0;
     uint8_t format_minor = 0;
+    bool page16k = false;                  // the 16 KiB-aligned .strata layout (SQ-20 v2 and later): the only pack DFlash 2 is validated on (strata_layout.hpp)
     static constexpr size_t kMaxSec4Chunks = 4;
     mtl::Buffer sec1_buf;                  // zero-copy wrap over Section 1 (trunk + DSpark)
     uint64_t sec1_map_off = 0;
@@ -385,6 +386,7 @@ struct InkMetalModel {
             return false;
         }
         format_minor = (uint8_t)(shdr.flags & 0xFFu);
+        page16k = (shdr.layout == strata::artifact::StrataLayout::Page16K);
         const strata::artifact::StrataSectionEntry* secs = shdr.sections;
         sec1_off = secs[1].file_offset;
         sec1_bytes = secs[1].byte_length;
