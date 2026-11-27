@@ -40,7 +40,7 @@ class HeaderBrand(unittest.TestCase):
         self.assertEqual(key, "header.github")
         en = json.loads((WEB / "locales" / "en.json").read_text(encoding="utf-8"))
         self.assertEqual(en[key], self.attrs.get("title"))
-        for lang in ("de", "es", "fr", "ja", "ko", "pt", "ru", "zh"):
+        for lang in ("ar", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh"):
             text = json.loads((WEB / "locales" / f"{lang}.json").read_text(encoding="utf-8")).get(key)
             self.assertTrue(text and "GitHub" in text, f"{lang}: {text!r}")
 

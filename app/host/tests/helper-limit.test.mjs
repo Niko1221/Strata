@@ -19,7 +19,7 @@ const load = async name => {
   return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 };
 const ev = (type, data, time = 1000) => ({ type: 'event', event: { seq: 1, time, type, data } });
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 
 test('the choices are Off, 30, 60 and 120 minutes, on the host and on the page alike; anything else is Off', async () => {
   assert.deepEqual([...HELPER_LIMITS], [30, 60, 120]);

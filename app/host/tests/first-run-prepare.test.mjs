@@ -8,7 +8,7 @@ import { transform } from 'esbuild';
 const src = name => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const { code } = await transform(src('lib/onboarding-download.ts'), { loader: 'ts', format: 'esm' });
 const { downloadCounter, filesHere, prepareTitle } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const LANGS = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
+const LANGS = ['en', 'ar', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr', 'he'];
 
 const complete = filesHere({ files_complete: true, partly_downloaded: true, download_left_gb: 0 });
 const partly = filesHere({ files_complete: false, partly_downloaded: true, download_left_gb: 61.2 });
