@@ -852,11 +852,11 @@ public:
             halo_ = std::make_unique<StrixHaloState>();
             halo_->cfg = hcfg;
             (void)halo_->tdr_slicer.init();
-            halo_->npu_probe.init();
+            if (hcfg.tri_engine) halo_->npu_probe.init();
             if (hcfg.prefill_chunk > 0) guard_.max_prefill_chunk = hcfg.prefill_chunk;
-            guard_.visit_flush_stride = hcfg.wddm_flush_stride;
+            if (hcfg.wddm_flush_stride >= 0) guard_.visit_flush_stride = hcfg.wddm_flush_stride;
             if (hcfg.zen5_l3) pin_zen5_physical_core_high_qos(0);
-            std::fprintf(stderr,
+            if (!hcfg.default_set) std::fprintf(stderr,
                          "[ink-halo] Strix Halo gfx1151 %s mode ACTIVE (chunk=%d flush=%d slab=%d swa_fused=%d "
                          "pass0=%d(%d) tree16=%d sample=%d u4=%d pld=%d c64=%d | pf_i8=%d pf_iu4=%d q8_trunk=%d fp8_c64=%d turbo=%d | "
                          "DirectML=%d XRT=%d)\n",

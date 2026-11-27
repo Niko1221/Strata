@@ -23,6 +23,7 @@ namespace strata::inkling2::hip {
 struct StrixHaloCfg {
     bool enabled = false;        // Master switch (STRATA_INK_STRIXHALO=1) AND real-card gate passed
     bool exact_mode = false;     // STRATA_INK_STRIXHALO_EXACT=1 -> forces ALL lossy paths OFF (bit-exact to OFF)
+    bool default_set = false;    // STRATA_INK_STRIXHALO unset: the release default for a verified gfx1151 (fused SWA prefill attention only); =1 is the full FAST set, =0 turns everything off
 
     // Lossless / exact-safe workstreams (enabled in both Exact and Fast modes unless overridden)
     bool slab_arena = false;     // WS1: 256 MiB UmaSlabArena spanning carveout hipMalloc + WDDM mapped slabs
@@ -85,8 +86,17 @@ inline bool str_icontains(const char* hay, const char* needle) noexcept {
     return false;
 }
 
+// Release default (11-27): for a verified gfx1151 the fused SWA prefill attention is ON when STRATA_INK_STRIXHALO is unset (KLD at the measured floor, no effect on decode or verify rows, prefill +72% at 4K
+// and +96% at 32K on a Radeon 8060S); every other card refuses silently. STRATA_INK_STRIXHALO=0 turns it off, =1 asks for the full FAST set, STRATA_INK_STRIXHALO_EXACT=1 for the exact form.
+inline constexpr bool kDefaultOn = true;
+
+inline bool master_explicit() noexcept {
+    const char* v = std::getenv("STRATA_INK_STRIXHALO");
+    return v && *v;
+}
+
 inline bool master_env_requested() noexcept {
-    static const bool req = env_truthy("STRATA_INK_STRIXHALO", false);
+    static const bool req = env_truthy("STRATA_INK_STRIXHALO", kDefaultOn);
     return req;
 }
 
@@ -137,7 +147,7 @@ inline bool verify_strixhalo_device(int dev) noexcept {
     halo_gate_slot(dev).store(pass ? 1 : -1, std::memory_order_release);
     if (!pass) {
         int8_t expected = 0;
-        if (halo_warn_slot(dev).compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+        if (master_explicit() && halo_warn_slot(dev).compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
             std::fprintf(stderr,
                          "[ink-hip] STRATA_INK_STRIXHALO=1 ignored on GPU %d (%s, arch=%s, mp=%d, integrated=%d, mem=%.1f GiB): "
                          "requires AMD Strix Halo gfx1151 (Radeon 8060S/8050S, >=16 WGP, >=60 GiB UMA); running baseline\n",
@@ -167,13 +177,21 @@ inline StrixHaloCfg query_strixhalo_cfg(int dev, bool ep2_active = false, int pe
     cfg.enabled = true;
     cfg.exact_mode = detail::exact_env_requested();
 
+    if (!detail::master_explicit()) {
+        // Release default set: the fused SWA prefill attention only (the kernel runs for single-slot batches of 64 rows or more; decode and verify rows keep the shipped kernels).
+        cfg.default_set = true;
+        cfg.wddm_flush_stride = -1;   // leave the shipped flush stride alone
+        cfg.swa_fused = !cfg.exact_mode && detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", true);
+        return cfg;
+    }
+
     // Lossless / exact-safe workstreams (all ON when master is ON, individually overridable)
     cfg.slab_arena        = detail::env_truthy("STRATA_INK_STRIXHALO_SLAB", true);
     cfg.wddm_flush_stride = detail::env_int("STRATA_INK_STRIXHALO_FLUSH", 8, 0, 48);
     // In EXACT mode, match baseline's 2048 chunk (100% bit-exact!) unless overridden; Fast uses 8192 + fused SWA.
     cfg.prefill_chunk     = detail::env_int("STRATA_INK_STRIXHALO_CHUNK", cfg.exact_mode ? 2048 : 8192, 0, 16384);
     // SWA_FUSED: wrong logits at prefill width 2048 on gfx1151 (teacher-forced KLD 10.0, top-1 3.5%, PPL 114175 against 0.000000 without it; p620/strix 11-27): opt-in only until fixed.
-    cfg.swa_fused         = detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", false);
+    cfg.swa_fused         = detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", !cfg.exact_mode);   // fixed in a583885d5 (it had been skipped by a merge error)
     cfg.pass0_prune       = detail::env_truthy("STRATA_INK_STRIXHALO_PASS0_PRUNE", true);
     cfg.pass0_survive     = detail::env_int("STRATA_INK_STRIXHALO_PASS0_SURVIVE", 8, 4, 16);
     cfg.tree16            = detail::env_truthy("STRATA_INK_STRIXHALO_TREE16", true);
