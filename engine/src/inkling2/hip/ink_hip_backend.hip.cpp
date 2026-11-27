@@ -17,6 +17,7 @@
 #include "ink_vision.h"
 #include "ink_hip_ops.hip.h"
 #include "ink_hip_tree.hip.h"
+#include "ink_hip_moe_topup.hip.h"
 #include "ink_hip_blaslt.hpp"
 #include "ink_hip_hybrid.hpp"
 #include "ink_hip_r9700_state.hpp"
@@ -1021,6 +1022,14 @@ public:
         }
 
         // Pre-normalize static ShortConv weights to [C, 4] (lag 3..0) -> upload to GPU
+        // Prefill chunks of 64 <= B <= STRATA_INK_TOPUP_MAXB rows: int8 grouped-MoE kernels with 8 waves across the
+        // columns (bit-identical to the BM=128 int8 kernels). STRATA_INK_TOPUP_MOE=1 enables (default off).
+        topup_moe_ = false;
+        if (const char* ev = std::getenv("STRATA_INK_TOPUP_MOE")) topup_moe_ = (std::atoi(ev) != 0);
+        topup_maxb_ = 256;
+        if (const char* ev = std::getenv("STRATA_INK_TOPUP_MAXB")) topup_maxb_ = std::max(64, std::atoi(ev));
+        if (topup_moe_)
+            std::fprintf(stderr, "[ink-hip] STRATA_INK_TOPUP_MOE: prefill chunks of 64..%d rows use the 8-wave int8 grouped MoE kernels\n", topup_maxb_);
         for (int il = 0; il < c_.n_phys; ++il) {
             const std::string p = "model.llm.layers." + std::to_string(il);
             auto upload_sc = [&](const std::string& key, const std::vector<float>& vec) -> bool {
@@ -6880,8 +6889,14 @@ private:
                         } else if (use_i8_moe_wmma_ && layer_gu_class_[ip] == 1) {
                             const int nb16 = B * (D >> 4);
                             k_quant_f32_to_q8_16<<<(nb16 + 63) / 64, 256, 0, stream_>>>(mlpin, xq, xd, nb16);
+                            if (topup_moe_on(B)) {   // same arithmetic, 8 waves across the columns
+                                const dim3 g13t((2 * c_.inter + 127) / 128, c_.n_experts, moe_topup_ztiles(B));
+                                k_moe_grouped_w13_situ_wmma_sf4_i8_n8<<<g13t, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_btk, xq, xd, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            } else {
                             k_moe_grouped_w13_situ_wmma_sf4_i8_128<<<g13, 256, 0, stream_>>>(
                                 d_exps, d_off, d_btk, xq, xd, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            }
                         } else {
                             k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                             if (layer_gu_class_[ip] == 0) {
@@ -6907,8 +6922,14 @@ private:
                         } else if (use_i8_moe_wmma_ && layer_dn_class_[ip] == 1) {
                             const int nb16 = tot_pairs * (c_.inter >> 4);
                             k_quant_f16_to_q8_16<<<(nb16 + 63) / 64, 256, 0, stream_>>>(d_act, aq, ad, nb16);
+                            if (topup_moe_on(B)) {
+                                const dim3 g2t((D + 127) / 128, c_.n_experts, moe_topup_ztiles(B));
+                                k_moe_grouped_w2_wmma_sf4_i8_n8<<<g2t, 256, 0, stream_>>>(
+                                    d_exps, d_off, aq, ad, d_by, D, c_.inter);
+                            } else {
                             k_moe_grouped_w2_wmma_sf4_i8_128<<<g2, 256, 0, stream_>>>(
                                 d_exps, d_off, aq, ad, d_by, D, c_.inter);
+                            }
                         } else {
                             if (layer_dn_class_[ip] == 0) {
                                 k_moe_grouped_w2_wmma_128_spec<0><<<g2, 256, 0, stream_>>>(
@@ -9975,6 +9996,10 @@ private:
         ~ExactRowsScope() { f = old; }
     };
     int blaslt_moe_min_b_ = 999999;
+    // STRATA_INK_TOPUP_MOE / STRATA_INK_TOPUP_MAXB: 8-wave int8 grouped MoE for prefill chunks 64 <= B <= topup_maxb_
+    bool topup_moe_ = false;
+    int topup_maxb_ = 256;
+    bool topup_moe_on(int B) const { return topup_moe_ && B >= 64 && B <= topup_maxb_; }
     bool use_i8_moe_wmma_ = true;
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;

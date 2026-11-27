@@ -89,6 +89,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/../cuda/ink_iq_grids.cuh"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_ops.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_tree.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_moe_topup.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_blaslt.hpp"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_hybrid.hpp"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_r9700_cfg.hpp"
