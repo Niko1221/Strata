@@ -53,7 +53,8 @@ inline bool gguf_type_has_metal_kernel(uint32_t t) noexcept {
     switch (t) {
         case 0: case 1: case 2: case 8:
         case 10: case 11: case 12: case 13: case 14:
-        case 18: case 20: case 23: case 30: case 39:
+        case 16: case 17: case 18: case 19: case 20:
+        case 21: case 22: case 23: case 30: case 39: case 42:
             return true;
         default:
             return false;
@@ -669,7 +670,8 @@ struct InkMetalModel {
                 i < raw_dir.size() && raw_dir[i].gu_code_id == FMT_GGUF_RAW && raw_dir[i].dn_code_id == FMT_GGUF_RAW &&
                 layer < mf.gguf_adapter->layers.size()) {
                 const auto& lm = mf.gguf_adapter->layers[layer];
-                if (gguf_type_has_metal_kernel(lm.gu_type) && gguf_type_has_metal_kernel(lm.dn_type)) {
+                if (gguf_type_has_metal_kernel(lm.gu_type) &&
+                    gguf_type_has_metal_kernel(lm.dn_type)) {
                     native_ok = true;
                 }
             }

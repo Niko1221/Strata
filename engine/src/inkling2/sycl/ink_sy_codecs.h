@@ -82,11 +82,17 @@ inline size_t sy_gguf_row_bytes(uint32_t t, int K) {
         case 12: return (size_t)(K >> 8) * 144u;
         case 13: return (size_t)(K >> 8) * 176u;
         case 14: return (size_t)(K >> 8) * 210u;
-        case 18: return (size_t)(K >> 8) * 98u;
-        case 20: return (size_t)(K >> 5) * 18u;
-        case 23: return (size_t)(K >> 8) * 136u;
+        case 16: return (size_t)(K >> 8) * 66u;   // IQ2_XXS
+        case 17: return (size_t)(K >> 8) * 74u;   // IQ2_XS
+        case 18: return (size_t)(K >> 8) * 98u;   // IQ3_XXS
+        case 19: return (size_t)(K >> 8) * 50u;   // IQ1_S
+        case 20: return (size_t)(K >> 5) * 18u;   // IQ4_NL
+        case 21: return (size_t)(K >> 8) * 110u;  // IQ3_S
+        case 22: return (size_t)(K >> 8) * 82u;   // IQ2_S
+        case 23: return (size_t)(K >> 8) * 136u;  // IQ4_XS
         case 30: return (size_t)K * 2u;
         case 39: return (size_t)(K >> 5) * 17u;
+        case 42: return (size_t)(K >> 6) * 18u;   // Q2_0
         default: return 0u;
     }
 }
@@ -168,7 +174,8 @@ inline int sy_gguf_q3k_scale(const uint8_t* sc, int is) {
     return (int)((w >> ((is & 3) * 8)) & 0xFFu) - 32;
 }
 
-inline void sy_gguf_decode_8(uint32_t t, const uint8_t* row, int col, float ext_sc, float* out) {
+inline void sy_gguf_decode_8(uint32_t t, const uint8_t* row, int col, float ext_sc, float* out,
+                             const InkSyIqGridTable* iq_grids = nullptr) {
     if (t == 12u) {  // Q4_K (144 B / 256)
         const uint8_t* b = row + (size_t)(col >> 8) * 144u;
         const float d = h2f_bits(ld16(b)) * ext_sc;
@@ -231,20 +238,105 @@ inline void sy_gguf_decode_8(uint32_t t, const uint8_t* row, int col, float ext_
         for (int i = 0; i < 8; ++i) {
             out[i] = dl * sy_iq4_nl(is_hi ? (qs[i] >> 4) : (qs[i] & 0xFu));
         }
-    } else if (t == 18u) {  // IQ3_XXS (98 B / 256)
+    } else if (t == 18u) {  // IQ3_XXS (98 B / 256) — uses true strata-quant-common.h iq3xxs_grid!
         const uint8_t* b = row + (size_t)(col >> 8) * 98u;
         const float d = h2f_bits(ld16(b)) * ext_sc;
         const int j = col & 255, ib = j >> 5, l = (j & 31) >> 3;
         const uint32_t aux = sy_ld32(b + 66 + ib * 4);
         const float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-        const uint8_t signs = sy_iq3_xxs_sign((aux >> (7 * l)) & 127u);
-        const uint32_t g0 = sy_iq3_xxs_grid(b[2 + ib * 8 + l * 2 + 0]);
-        const uint32_t g1 = sy_iq3_xxs_grid(b[2 + ib * 8 + l * 2 + 1]);
+        const uint8_t signs = iq_grids ? iq_grids->ksigns_iq2[(aux >> (7 * l)) & 127u]
+                                       : sy_iq3_xxs_sign((aux >> (7 * l)) & 127u);
+        const uint32_t g0 = iq_grids ? iq_grids->iq3xxs_grid[b[2 + ib * 8 + l * 2 + 0]]
+                                     : sy_iq3_xxs_grid(b[2 + ib * 8 + l * 2 + 0]);
+        const uint32_t g1 = iq_grids ? iq_grids->iq3xxs_grid[b[2 + ib * 8 + l * 2 + 1]]
+                                     : sy_iq3_xxs_grid(b[2 + ib * 8 + l * 2 + 1]);
         for (int i = 0; i < 4; ++i) {
             const float v0 = (float)((g0 >> (i * 8)) & 0xFFu) * db;
             const float v1 = (float)((g1 >> (i * 8)) & 0xFFu) * db;
             out[i]     = (signs & (1u << i)) ? -v0 : v0;
             out[i + 4] = (signs & (1u << (i + 4))) ? -v1 : v1;
+        }
+    } else if (t == 16u) {  // IQ2_XXS (66 B / 256, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 8) * 66u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j = col & 255, sub = j >> 5, l4 = (j & 31) >> 3;
+        const uint8_t* q = b + 2 + sub * 8;
+        const uint32_t gi = sy_ld32(q);
+        const uint32_t sw = sy_ld32(q + 4);
+        const float dl = d * (0.5f + (float)(sw >> 28)) * 0.25f;
+        const uint8_t sg = iq_grids->ksigns_iq2[(sw >> (7 * l4)) & 127u];
+        const uint64_t g = iq_grids->iq2xxs_grid[(gi >> (8 * l4)) & 0xFFu];
+        for (int i = 0; i < 8; ++i) {
+            const float v = (float)((g >> (i * 8)) & 0xFFu) * dl;
+            out[i] = (sg & (1u << i)) ? -v : v;
+        }
+    } else if (t == 17u) {  // IQ2_XS (74 B / 256, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 8) * 74u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j = col & 255, sub = j >> 5, l4 = (j & 31) >> 3;
+        const uint16_t qv = ld16(b + 2 + sub * 8 + l4 * 2);
+        const uint8_t sc = b[66 + sub];
+        const float dl = d * (0.5f + (float)((sc >> (4 * (l4 >> 1))) & 0xFu)) * 0.25f;
+        const uint8_t sg = iq_grids->ksigns_iq2[qv >> 9];
+        const uint64_t g = iq_grids->iq2xs_grid[qv & 511u];
+        for (int i = 0; i < 8; ++i) {
+            const float v = (float)((g >> (i * 8)) & 0xFFu) * dl;
+            out[i] = (sg & (1u << i)) ? -v : v;
+        }
+    } else if (t == 22u) {  // IQ2_S (82 B / 256, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 8) * 82u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j = col & 255, sub = j >> 5, l4 = (j & 31) >> 3;
+        const uint8_t qh = b[66 + sub];
+        const uint8_t sc = b[74 + sub];
+        const uint32_t gi = (uint32_t)b[2 + sub * 4 + l4] | (((uint32_t)qh << (8 - 2 * l4)) & 0x300u);
+        const uint8_t sg = b[34 + sub * 4 + l4];  // raw 8-bit sign mask
+        const float dl = d * (0.5f + (float)((sc >> (4 * (l4 >> 1))) & 0xFu)) * 0.25f;
+        const uint64_t g = iq_grids->iq2s_grid[gi];
+        for (int i = 0; i < 8; ++i) {
+            const float v = (float)((g >> (i * 8)) & 0xFFu) * dl;
+            out[i] = (sg & (1u << i)) ? -v : v;
+        }
+    } else if (t == 21u) {  // IQ3_S (110 B / 256, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 8) * 110u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j = col & 255, sub = j >> 5, l4 = (j & 31) >> 3;
+        const uint8_t qh = b[66 + sub];
+        const uint8_t* qs = b + 2 + sub * 8;
+        const uint32_t i1 = (uint32_t)qs[2 * l4]     | (((uint32_t)qh << (8 - 2 * l4)) & 256u);
+        const uint32_t i2 = (uint32_t)qs[2 * l4 + 1] | (((uint32_t)qh << (7 - 2 * l4)) & 256u);
+        const uint8_t sg = b[74 + sub * 4 + l4];  // raw 8-bit sign mask
+        const uint8_t scb = b[106 + (sub >> 1)];
+        const float dl = d * (float)(1 + 2 * (int)((scb >> (4 * (sub & 1))) & 0xFu));
+        const uint32_t w0 = iq_grids->iq3s_grid[i1];
+        const uint32_t w1 = iq_grids->iq3s_grid[i2];
+        for (int i = 0; i < 4; ++i) {
+            const float v0 = (float)((w0 >> (i * 8)) & 0xFFu) * dl;
+            const float v1 = (float)((w1 >> (i * 8)) & 0xFFu) * dl;
+            out[i]     = (sg & (1u << i)) ? -v0 : v0;
+            out[i + 4] = (sg & (1u << (i + 4))) ? -v1 : v1;
+        }
+    } else if (t == 19u) {  // IQ1_S (50 B / 256, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 8) * 50u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j = col & 255, sub = j >> 5, l4 = (j & 31) >> 3;
+        const uint16_t qh = ld16(b + 34 + sub * 2);
+        const float dl = d * (float)(2 * (int)((qh >> 12) & 7u) + 1);
+        const float delta = (qh & 0x8000u) ? -0.125f : 0.125f;
+        const uint32_t gi = (uint32_t)b[2 + sub * 4 + l4] | (((uint32_t)(qh >> (3 * l4)) & 7u) << 8);
+        const uint64_t g = iq_grids->iq1s_grid[gi];
+        for (int i = 0; i < 8; ++i) {
+            const int8_t qv = (int8_t)((g >> (i * 8)) & 0xFFu);
+            out[i] = dl * ((float)qv + delta);
+        }
+    } else if (t == 42u) {  // Q2_0 (18 B / 64, GSQ-RCO)
+        const uint8_t* b = row + (size_t)(col >> 6) * 18u;
+        const float d = h2f_bits(ld16(b)) * ext_sc;
+        const int j0 = col & 63;
+        for (int i = 0; i < 8; ++i) {
+            const int jj = j0 + i;
+            const int q = (int)((b[2 + (jj >> 2)] >> ((jj & 3) * 2)) & 3u) - 1;
+            out[i] = d * (float)q;
         }
     } else if (t == 20u) {  // IQ4_NL (18 B / 32)
         const uint8_t* b = row + (size_t)(col >> 5) * 18u;
@@ -562,6 +654,48 @@ inline void k_linear_f32_sg16(const float* W, int N, int K, const float* X, floa
     });
 }
 
+// MX8 SG16 Linear (P0 fix for SQv2-20 model.llm.unembed.weight [201024, 2304], fmt == FMT_MX8!)
+// Layout: [N_total, K] FP8_E4M3 bytes followed by [N_total, K/32] UE8M0 shared exponents at W + N_total * K.
+// Uses 16-byte uchar16 coalesced LSC loads (2 lanes per 32-weight block -> 8 blocks = 256 cols per step!).
+inline void k_linear_mx8_sg16(const uint8_t* W, int N, int K, const float* X, float* Y, int M, int N_total = -1) {
+    const int n_tot = (N_total > 0) ? N_total : N;
+    const int n_blk = K >> 5;
+    const uint8_t* S = W + (size_t)n_tot * (size_t)K;
+    Q().parallel_for(NR((N + 15) / 16, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int sg = (int)it.get_local_id(0) >> 4, lane = (int)it.get_local_id(0) & 15;
+        const int row = (int)it.get_group(0) * 16 + sg;
+        if (row >= N) return;
+        const uint8_t* wr = W + (size_t)row * (size_t)K;
+        const uint8_t* sr = S + (size_t)row * (size_t)n_blk;
+        for (int m0 = 0; m0 < M; m0 += 4) {
+            const int mm = sycl::min(4, M - m0);
+            float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            for (int blk0 = 0; blk0 < n_blk; blk0 += 8) {
+                const int blk = blk0 + (lane >> 1);
+                if (blk < n_blk) {
+                    const int col0 = (blk << 5) + ((lane & 1) << 4);
+                    const float sc = ue8m0_to_f32(sr[blk]);
+                    const sycl::uchar16 w16 = *reinterpret_cast<const sycl::uchar16*>(wr + col0);
+                    float wf[16];
+#pragma unroll
+                    for (int j = 0; j < 16; ++j) wf[j] = e4m3_to_f32(w16[j]) * sc;
+                    for (int i = 0; i < mm; ++i) {
+                        const float* xp = X + (size_t)(m0 + i) * K + col0;
+                        float p = 0.0f;
+#pragma unroll
+                        for (int j = 0; j < 16; ++j) p = sycl::fma(wf[j], xp[j], p);
+                        acc[i] += p;
+                    }
+                }
+            }
+            for (int i = 0; i < mm; ++i) {
+                const float v = sg_sum(it, acc[i]);
+                if (lane == 0) Y[(size_t)(m0 + i) * N + row] = v;
+            }
+        }
+    });
+}
+
 // S_K SG16 Linear (S5_K DSpark, S6_K unembed)
 template <int F>
 inline void k_linear_sk_sg16(const uint8_t* W, int N, int K, const float* X, float* Y, int M) {
@@ -648,6 +782,7 @@ inline void k_moe_gu_situ_sg16_q(
     const InkSyExpertDev* ex_layer, const float* x_in,
     const int* uexp, const int* uoff, const int* ucnt, const int* pair_list, const int* n_uniq_dev,
     int max_uniq, float* h_act) {
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev_q(q);
     // 1152 / 16 = 72 WGs along X, max_uniq along Y
     q.parallel_for(NR2(72, (size_t)max_uniq, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
         const int y = (int)it.get_group(0);
@@ -723,8 +858,8 @@ inline void k_moe_gu_situ_sg16_q(
                 for (int unit = lane; unit < 288; unit += 16) {
                     const int col = unit << 3;
                     float wg[8], wu[8];
-                    sy_gguf_decode_8(gt, rg, col, hdr->gate_scale, wg);
-                    sy_gguf_decode_8(gt, ru, col, hdr->up_scale, wu);
+                    sy_gguf_decode_8(gt, rg, col, hdr->gate_scale, wg, iq_grids);
+                    sy_gguf_decode_8(gt, ru, col, hdr->up_scale, wu, iq_grids);
                     for (int i = 0; i < mm; ++i) {
                         const float* xp = x_in + (size_t)tk[i] * 2304 + col;
                         float dg = 0.0f, du = 0.0f;
@@ -777,6 +912,7 @@ inline void k_moe_dn_sg16_q(
     const InkSyExpertDev* ex_layer, const float* topk_w,
     const int* uexp, const int* uoff, const int* ucnt, const int* pair_list, const int* n_uniq_dev,
     int max_uniq, const float* h_act, float* y_pairs) {
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev_q(q);
     q.parallel_for(NR2(72, (size_t)max_uniq, 256), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
         const int yy = (int)it.get_group(0);
         if (yy >= n_uniq_dev[0]) return;
@@ -848,8 +984,8 @@ inline void k_moe_dn_sg16_q(
                 for (int unit = lane; unit < 144; unit += 16) {
                     const int col = unit << 3;
                     float w0[8], w1[8];
-                    sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, w0);
-                    sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, w1);
+                    sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, w0, iq_grids);
+                    sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, w1, iq_grids);
                     for (int i = 0; i < mm; ++i) {
                         const float* xp = h_act + (size_t)pid[i] * 1152 + col;
                         float d0 = 0.0f, d1 = 0.0f;

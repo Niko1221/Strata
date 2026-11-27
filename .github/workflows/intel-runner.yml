@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20) inkspeed (Inkling speed: branch against 96113f298) or inkmix (Inkling mix and router groups split per kernel, UD-Q4_K_XL, branch against 5ef71af9b)"
+        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini 0.2.23 gates: SQv2-20, GSQ-RCO-IQ3_S, UD-Q4_K_XL + DFlash 2 + STRATA_INK_INTELARC) inkspeed (Inkling speed: branch against 96113f298) or inkmix (Inkling mix and router groups split per kernel, UD-Q4_K_XL, branch against 5ef71af9b)"
         required: false
         default: "hy4"
         type: choice
@@ -300,7 +300,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/b70-hy4-0220" || true
 
   b70-inkling-sycl:
-    name: "Arc Pro B70 Inkling 2 Mini SYCL (UD-Q4_K_XL + SQ-20: chat, C1 / C32, 5-run fingerprint, needles)"
+    name: "Arc Pro B70 Inkling 2 Mini 0.2.23 SYCL (SQv2-20 + GSQ-RCO-IQ3_S + UD-Q4_K_XL + DFlash 2 + STRATA_INK_INTELARC)"
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkling' }}
     runs-on: [self-hosted, Linux, X64, Intel]
     timeout-minutes: 240
@@ -308,15 +308,17 @@ jobs:
       NODE_OPTIONS: --use-system-ca
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
       REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
-      HF_STRATA: https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main
-      HF_UNSLOTH: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main
+      HF_STRATA: https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/5623ceb47d7a01db827460ce1c23e7818a75661b
+      HF_GSQ: https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF/resolve/357051619a8805c032e58a9976cea9bddb0832cd
+      HF_UNSLOTH: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/8078d149286eec7193795413b9e0643da6d11fa1
+      HF_DFLASH2: https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/04ecd36faef74e696f0a7b6b3c119264442a6234
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: 1. Build strata-inkling (SYCL, bmg_g31 + spir64), Python venv, tokenizer
+      - name: 1. Build strata-inkling (SYCL, bmg_g31 + bmg_g21 + acm_g10 + spir64), Python venv, tokenizer, DFlash 2 sidecar
         run: |
           set -euo pipefail
           set +u
@@ -332,15 +334,19 @@ jobs:
           "$W/venv/bin/python" -c "import numpy, jinja2, regex, yaml; print('python deps ok')"
           export PATH="$W/venv/bin:$PATH"
           cmake -S engine/src/inkling2 -B "$W/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
-            -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_TARGETS=spir64,intel_gpu_bmg_g31 > "$W/logs/cmake.log" 2>&1 || { tail -30 "$W/logs/cmake.log"; exit 1; }
+            -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_NO_ONEMKL=ON -DSTRATA_SYCL_TARGETS=spir64,intel_gpu_bmg_g31,intel_gpu_bmg_g21,intel_gpu_acm_g10 > "$W/logs/cmake.log" 2>&1 || { tail -30 "$W/logs/cmake.log"; exit 1; }
           cmake --build "$W/build" --target strata-inkling -j "$(nproc)" > "$W/logs/build.log" 2>&1 || { tail -40 "$W/logs/build.log"; exit 1; }
           ls -l "$W/build/strata-inkling"; "$W/build/strata-inkling" --version
+          ! ldd "$W/build/strata-inkling" | grep -i mkl || { echo "ERROR: unexpected oneMKL linkage"; exit 1; }
           for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json chat_template.jinja; do
             curl -fsSL --retry 3 -o "$W/tok/$f" "$HF_STRATA/$f"
           done
-          ls -l "$W/tok"
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/dflash2.safetensors" "$HF_DFLASH2/Inkling-2-Mini-DFlash2-mix.safetensors"
+          test "$(stat -c%s "$W/models/dflash2.safetensors")" = 551600700
+          echo "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387  $W/models/dflash2.safetensors" | sha256sum -c -
+          ls -l "$W/tok" "$W/models/dflash2.safetensors"
 
-      - name: 2. UD-Q4_K_XL (GGUF) + dspark drafter gate
+      - name: 2. SQv2-20 (.strata) + DFlash 2 + STRATA_INK_INTELARC (off/exact/fast) gate
         run: |
           set -uo pipefail
           set +u
@@ -349,18 +355,17 @@ jobs:
           W="$RUNNER_TEMP/b70-ink"
           AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
           echo "free disk ${AVAIL_GB} GB"
-          [ "$AVAIL_GB" -ge 40 ] || { echo "not enough disk for the 17.6 GB UD-Q4_K_XL"; exit 1; }
-          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$HF_UNSLOTH/Inkling-2-Mini-UD-Q4_K_XL.gguf"
-          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/dspark-Inkling-2-Mini-Q8_0.gguf" "$HF_UNSLOTH/dspark-Inkling-2-Mini-Q8_0.gguf"
-          ls -l "$W/models"
-          bash .github/ci/inkling/b70_gate.sh q4kxl "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$W/build/strata-inkling" "$W/tok" \
-            "$W/venv/bin/python" "$PWD" "$W/logs/q4kxl" "$W/models/dspark-Inkling-2-Mini-Q8_0.gguf" 2>&1 | tee "$W/logs/q4kxl.summary"
+          [ "$AVAIL_GB" -ge 35 ] || { echo "not enough disk for the 19.4 GB SQv2-20"; exit 1; }
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-SQv2-20.strata" "$HF_STRATA/Inkling-2-Mini-SQv2-20.strata"
+          echo "429671f8eb5b50e593856e6eb82ebb7da9d1f07e99b553438b196f72cc86a6d6  $W/models/Inkling-2-Mini-SQv2-20.strata" | sha256sum -c -
+          bash .github/ci/inkling/b70_gate.sh sqv20 "$W/models/Inkling-2-Mini-SQv2-20.strata" "$W/build/strata-inkling" "$W/tok" \
+            "$W/venv/bin/python" "$PWD" "$W/logs/sqv20" 2>&1 | tee "$W/logs/sqv20.summary"
           rc=${PIPESTATUS[0]}
-          rm -f "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf"
-          echo "GATE_Q4KXL_RC=$rc"
+          rm -f "$W/models/Inkling-2-Mini-SQv2-20.strata"
+          echo "GATE_SQV20_RC=$rc"
           [ "$rc" -eq 0 ]
 
-      - name: 3. SQ-20 (.strata, embedded drafter) gate
+      - name: 3. GSQ-RCO-IQ3_S (GGUF, native IQ3_S/IQ2/IQ1/Q2_0) + DFlash 2 + STRATA_INK_INTELARC gate
         if: always()
         run: |
           set -uo pipefail
@@ -370,17 +375,37 @@ jobs:
           W="$RUNNER_TEMP/b70-ink"
           AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
           echo "free disk ${AVAIL_GB} GB"
-          [ "$AVAIL_GB" -ge 40 ] || { echo "not enough disk for the 19.3 GB SQ-20"; exit 1; }
-          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-SQ-20.strata" "$HF_STRATA/Inkling-2-Mini-SQ-20.strata"
-          echo "0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97  $W/models/Inkling-2-Mini-SQ-20.strata" | sha256sum -c -
-          bash .github/ci/inkling/b70_gate.sh sq20 "$W/models/Inkling-2-Mini-SQ-20.strata" "$W/build/strata-inkling" "$W/tok" \
-            "$W/venv/bin/python" "$PWD" "$W/logs/sq20" 2>&1 | tee "$W/logs/sq20.summary"
+          [ "$AVAIL_GB" -ge 25 ] || { echo "not enough disk for the 11.4 GB GSQ-RCO-IQ3_S"; exit 1; }
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf" "$HF_GSQ/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf"
+          echo "8a3515374c3cd9b65a1677b17e805bb1e32df8e98756e5f0d2fe1837d62aa4cb  $W/models/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf" | sha256sum -c -
+          bash .github/ci/inkling/b70_gate.sh gsq_iq3s "$W/models/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf" "$W/build/strata-inkling" "$W/tok" \
+            "$W/venv/bin/python" "$PWD" "$W/logs/gsq_iq3s" 2>&1 | tee "$W/logs/gsq_iq3s.summary"
           rc=${PIPESTATUS[0]}
-          rm -f "$W/models/Inkling-2-Mini-SQ-20.strata"
-          echo "GATE_SQ20_RC=$rc"
+          rm -f "$W/models/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf"
+          echo "GATE_GSQ_IQ3S_RC=$rc"
           [ "$rc" -eq 0 ]
 
-      - name: 4. Logs
+      - name: 4. UD-Q4_K_XL (GGUF) + DFlash 2 + STRATA_INK_INTELARC gate
+        if: always()
+        run: |
+          set -uo pipefail
+          set +u
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true
+          set -u
+          W="$RUNNER_TEMP/b70-ink"
+          AVAIL_GB=$(df -BG --output=avail "$RUNNER_TEMP" | tail -n1 | tr -dc '0-9')
+          echo "free disk ${AVAIL_GB} GB"
+          [ "$AVAIL_GB" -ge 35 ] || { echo "not enough disk for the 17.6 GB UD-Q4_K_XL"; exit 1; }
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$HF_UNSLOTH/Inkling-2-Mini-UD-Q4_K_XL.gguf"
+          echo "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3  $W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" | sha256sum -c -
+          bash .github/ci/inkling/b70_gate.sh q4kxl "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf" "$W/build/strata-inkling" "$W/tok" \
+            "$W/venv/bin/python" "$PWD" "$W/logs/q4kxl" 2>&1 | tee "$W/logs/q4kxl.summary"
+          rc=${PIPESTATUS[0]}
+          rm -f "$W/models/Inkling-2-Mini-UD-Q4_K_XL.gguf"
+          echo "GATE_Q4KXL_RC=$rc"
+          [ "$rc" -eq 0 ]
+
+      - name: 5. Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:

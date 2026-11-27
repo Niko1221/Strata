@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,7 +24,10 @@
 #include "ink_sy_xmx.h"
 #include "ink_sy_common.h"
 #include "ink_sy_dspark.h"
+#include "ink_sy_dflash2.h"
+#include "ink_sy_fit.h"
 #include "ink_sy_hybrid.h"
+#include "ink_sy_intelarc_xmx.h"
 #include "ink_sy_ops.h"
 #include "ink_sy_vision.h"
 
@@ -35,14 +39,27 @@ struct InkSyRunner {
     int max_ctx = 4096;
     int max_batch = 256;
     bool use_dspark = true;
+    bool use_dflash2 = false;
+    bool use_fp8_kv = false;
+    bool use_bf16_sc = false;
 
     std::vector<int> visit_kv_stride;
     std::vector<half*> kv_k;
     std::vector<half*> kv_v;
+    std::vector<uint8_t*> kv_k_fp8;
+    std::vector<uint8_t*> kv_v_fp8;
+    std::vector<half*> kv_k_sc;
+    std::vector<half*> kv_v_sc;
+    half* b_k_chunk = nullptr;
+    half* b_v_chunk = nullptr;
     std::vector<float*> sc_hist_k;
     std::vector<float*> sc_hist_v;
     std::vector<float*> sc_hist_attn;
     std::vector<float*> sc_hist_mlp;
+    std::vector<uint16_t*> sc_hist_k16;
+    std::vector<uint16_t*> sc_hist_v16;
+    std::vector<uint16_t*> sc_hist_attn16;
+    std::vector<uint16_t*> sc_hist_mlp16;
 
     // Pre-verify snapshot buffers + per-step verify ring [48] x [8, 3, C] for O(1) zero-replay rollback!
     std::vector<float*> sc_snap_k;
@@ -53,7 +70,24 @@ struct InkSyRunner {
     std::vector<float*> sc_ring_v;
     std::vector<float*> sc_ring_attn;
     std::vector<float*> sc_ring_mlp;
+    std::vector<uint16_t*> sc_snap_k16;
+    std::vector<uint16_t*> sc_snap_v16;
+    std::vector<uint16_t*> sc_snap_attn16;
+    std::vector<uint16_t*> sc_snap_mlp16;
+    std::vector<uint16_t*> sc_ring_k16;
+    std::vector<uint16_t*> sc_ring_v16;
+    std::vector<uint16_t*> sc_ring_attn16;
+    std::vector<uint16_t*> sc_ring_mlp16;
     int last_ver_slot = -1, last_ver_pos0 = -1, last_ver_m = 0;
+
+    // GPU-side active-expert bucket planner + Top-128 candidate extraction + DFlash 2
+#if INK_SY_HAS_JOINT_MATRIX
+    InkSyMoeBuckets* b_moe_bk = nullptr;
+#endif
+    float* b_cand_val = nullptr;
+    int32_t* b_cand_idx = nullptr;
+    uint8_t* b_cand_fin = nullptr;
+    InkSyDFlash2 df2;
 
     // DSpark persistent state
     half* dsp_ctx_k[3]{};
@@ -175,12 +209,22 @@ struct InkSyRunner {
         if (!graphs.empty()) { try { wait(); } catch (...) {} graphs.clear(); }
 #endif
         hybrid.release();
+        df2.release();
         for (auto* p : kv_k) dfree(p);
         for (auto* p : kv_v) dfree(p);
+        for (auto* p : kv_k_fp8) dfree(p);
+        for (auto* p : kv_v_fp8) dfree(p);
+        for (auto* p : kv_k_sc) dfree(p);
+        for (auto* p : kv_v_sc) dfree(p);
+        dfree(b_k_chunk); dfree(b_v_chunk); b_k_chunk = b_v_chunk = nullptr;
         for (auto* p : sc_hist_k) dfree(p);
         for (auto* p : sc_hist_v) dfree(p);
         for (auto* p : sc_hist_attn) dfree(p);
         for (auto* p : sc_hist_mlp) dfree(p);
+        for (auto* p : sc_hist_k16) dfree(p);
+        for (auto* p : sc_hist_v16) dfree(p);
+        for (auto* p : sc_hist_attn16) dfree(p);
+        for (auto* p : sc_hist_mlp16) dfree(p);
         for (auto* p : sc_snap_k) dfree(p);
         for (auto* p : sc_snap_v) dfree(p);
         for (auto* p : sc_snap_attn) dfree(p);
@@ -189,10 +233,27 @@ struct InkSyRunner {
         for (auto* p : sc_ring_v) dfree(p);
         for (auto* p : sc_ring_attn) dfree(p);
         for (auto* p : sc_ring_mlp) dfree(p);
-        kv_k.clear(); kv_v.clear();
+        for (auto* p : sc_snap_k16) dfree(p);
+        for (auto* p : sc_snap_v16) dfree(p);
+        for (auto* p : sc_snap_attn16) dfree(p);
+        for (auto* p : sc_snap_mlp16) dfree(p);
+        for (auto* p : sc_ring_k16) dfree(p);
+        for (auto* p : sc_ring_v16) dfree(p);
+        for (auto* p : sc_ring_attn16) dfree(p);
+        for (auto* p : sc_ring_mlp16) dfree(p);
+        kv_k.clear(); kv_v.clear(); kv_k_fp8.clear(); kv_v_fp8.clear(); kv_k_sc.clear(); kv_v_sc.clear();
         sc_hist_k.clear(); sc_hist_v.clear(); sc_hist_attn.clear(); sc_hist_mlp.clear();
+        sc_hist_k16.clear(); sc_hist_v16.clear(); sc_hist_attn16.clear(); sc_hist_mlp16.clear();
         sc_snap_k.clear(); sc_snap_v.clear(); sc_snap_attn.clear(); sc_snap_mlp.clear();
         sc_ring_k.clear(); sc_ring_v.clear(); sc_ring_attn.clear(); sc_ring_mlp.clear();
+        sc_snap_k16.clear(); sc_snap_v16.clear(); sc_snap_attn16.clear(); sc_snap_mlp16.clear();
+        sc_ring_k16.clear(); sc_ring_v16.clear(); sc_ring_attn16.clear(); sc_ring_mlp16.clear();
+#if INK_SY_HAS_JOINT_MATRIX
+        dfree(b_moe_bk); b_moe_bk = nullptr;
+#endif
+        dfree(b_cand_val); dfree(b_cand_idx); dfree(b_cand_fin);
+        b_cand_val = nullptr; b_cand_idx = nullptr; b_cand_fin = nullptr;
+        use_dflash2 = false; use_fp8_kv = false; use_bf16_sc = false;
 
         for (int i = 0; i < 3; ++i) { dfree(dsp_ctx_k[i]); dfree(dsp_ctx_v[i]); dsp_ctx_k[i] = dsp_ctx_v[i] = nullptr; }
         dfree(dsp_frnn_slot); dfree(dsp_frnn_tmp);
@@ -229,22 +290,37 @@ struct InkSyRunner {
         dsp_frnn_slot = nullptr; b_cur = nullptr;
     }
 
-    bool init(InkSyModel& m, int slots, int ctx_len, int batch_cap, bool enable_dspark, std::string& err) {
+    bool init(InkSyModel& m, int slots, int ctx_len, int batch_cap, bool enable_dspark, std::string& err,
+              bool want_fp8_kv = false, const std::string& df2_path = "") {
         release();
         mod = &m;
+        const auto& acfg = arc_cfg();
         max_slots = std::max(1, std::min(64, slots));
         max_ctx = std::max(256, ctx_len);
         max_batch = std::max(64, batch_cap);
+        use_fp8_kv = want_fp8_kv;
+        use_bf16_sc = acfg.fast && acfg.use_bf16_sconv;
+        use_dflash2 = false;
         use_dspark = enable_dspark && m.man.c.has_dspark;
 
         const auto& c = m.man.c;
-        kv_k.resize(c.n_visits); kv_v.resize(c.n_visits); visit_kv_stride.resize(c.n_visits);
-        sc_hist_k.resize(c.n_visits); sc_hist_v.resize(c.n_visits);
-        sc_hist_attn.resize(c.n_visits); sc_hist_mlp.resize(c.n_visits);
-        sc_snap_k.resize(c.n_visits); sc_snap_v.resize(c.n_visits);
-        sc_snap_attn.resize(c.n_visits); sc_snap_mlp.resize(c.n_visits);
-        sc_ring_k.resize(c.n_visits); sc_ring_v.resize(c.n_visits);
-        sc_ring_attn.resize(c.n_visits); sc_ring_mlp.resize(c.n_visits);
+        kv_k.resize(c.n_visits, nullptr); kv_v.resize(c.n_visits, nullptr); visit_kv_stride.resize(c.n_visits);
+        kv_k_fp8.resize(c.n_visits, nullptr); kv_v_fp8.resize(c.n_visits, nullptr);
+        kv_k_sc.resize(c.n_visits, nullptr); kv_v_sc.resize(c.n_visits, nullptr);
+        sc_hist_k.resize(c.n_visits, nullptr); sc_hist_v.resize(c.n_visits, nullptr);
+        sc_hist_attn.resize(c.n_visits, nullptr); sc_hist_mlp.resize(c.n_visits, nullptr);
+        sc_snap_k.resize(c.n_visits, nullptr); sc_snap_v.resize(c.n_visits, nullptr);
+        sc_snap_attn.resize(c.n_visits, nullptr); sc_snap_mlp.resize(c.n_visits, nullptr);
+        sc_ring_k.resize(c.n_visits, nullptr); sc_ring_v.resize(c.n_visits, nullptr);
+        sc_ring_attn.resize(c.n_visits, nullptr); sc_ring_mlp.resize(c.n_visits, nullptr);
+        if (use_bf16_sc) {
+            sc_hist_k16.resize(c.n_visits, nullptr); sc_hist_v16.resize(c.n_visits, nullptr);
+            sc_hist_attn16.resize(c.n_visits, nullptr); sc_hist_mlp16.resize(c.n_visits, nullptr);
+            sc_snap_k16.resize(c.n_visits, nullptr); sc_snap_v16.resize(c.n_visits, nullptr);
+            sc_snap_attn16.resize(c.n_visits, nullptr); sc_snap_mlp16.resize(c.n_visits, nullptr);
+            sc_ring_k16.resize(c.n_visits, nullptr); sc_ring_v16.resize(c.n_visits, nullptr);
+            sc_ring_attn16.resize(c.n_visits, nullptr); sc_ring_mlp16.resize(c.n_visits, nullptr);
+        }
 
         size_t kv_tot = 0, sc_tot = 0;
         for (int v = 0; v < c.n_visits; ++v) {
@@ -252,20 +328,43 @@ struct InkSyRunner {
             const int stride = c.is_swa[ip] ? c.swa_win : max_ctx;
             visit_kv_stride[v] = stride;
             const size_t kve = (size_t)max_slots * stride * c.n_kv * c.head_dim;
-            kv_k[v] = dalloc<half>(kve); kv_v[v] = dalloc<half>(kve);
-            kv_tot += 2 * kve * sizeof(half);
+            if (!use_fp8_kv) {
+                kv_k[v] = dalloc<half>(kve); kv_v[v] = dalloc<half>(kve);
+                kv_tot += 2 * kve * sizeof(half);
+            } else {
+                const size_t kvs = (size_t)max_slots * stride * c.n_kv;
+                kv_k_fp8[v] = dalloc<uint8_t>(kve); kv_v_fp8[v] = dalloc<uint8_t>(kve);
+                kv_k_sc[v]  = dalloc<half>(kvs);    kv_v_sc[v]  = dalloc<half>(kvs);
+                kv_tot += 2 * kve + 2 * kvs * sizeof(half);
+            }
 
             const size_t sc_kv = (size_t)max_slots * 3 * 1024;
             const size_t sc_d  = (size_t)max_slots * 3 * c.hidden;
-            sc_hist_k[v] = dalloc<float>(sc_kv); sc_hist_v[v] = dalloc<float>(sc_kv);
-            sc_hist_attn[v] = dalloc<float>(sc_d); sc_hist_mlp[v] = dalloc<float>(sc_d);
-            sc_snap_k[v] = dalloc<float>(sc_kv); sc_snap_v[v] = dalloc<float>(sc_kv);
-            sc_snap_attn[v] = dalloc<float>(sc_d); sc_snap_mlp[v] = dalloc<float>(sc_d);
-            sc_ring_k[v] = dalloc<float>(8ul * 3 * 1024); sc_ring_v[v] = dalloc<float>(8ul * 3 * 1024);
-            sc_ring_attn[v] = dalloc<float>(8ul * 3 * c.hidden); sc_ring_mlp[v] = dalloc<float>(8ul * 3 * c.hidden);
-            dzero(sc_hist_k[v], sc_kv * 4); dzero(sc_hist_v[v], sc_kv * 4);
-            dzero(sc_hist_attn[v], sc_d * 4); dzero(sc_hist_mlp[v], sc_d * 4);
-            sc_tot += (2 * sc_kv + 2 * sc_d) * 4;
+            if (!use_bf16_sc) {
+                sc_hist_k[v] = dalloc<float>(sc_kv); sc_hist_v[v] = dalloc<float>(sc_kv);
+                sc_hist_attn[v] = dalloc<float>(sc_d); sc_hist_mlp[v] = dalloc<float>(sc_d);
+                sc_snap_k[v] = dalloc<float>(sc_kv); sc_snap_v[v] = dalloc<float>(sc_kv);
+                sc_snap_attn[v] = dalloc<float>(sc_d); sc_snap_mlp[v] = dalloc<float>(sc_d);
+                sc_ring_k[v] = dalloc<float>(8ul * 3 * 1024); sc_ring_v[v] = dalloc<float>(8ul * 3 * 1024);
+                sc_ring_attn[v] = dalloc<float>(8ul * 3 * c.hidden); sc_ring_mlp[v] = dalloc<float>(8ul * 3 * c.hidden);
+                dzero(sc_hist_k[v], sc_kv * 4); dzero(sc_hist_v[v], sc_kv * 4);
+                dzero(sc_hist_attn[v], sc_d * 4); dzero(sc_hist_mlp[v], sc_d * 4);
+                sc_tot += (2 * sc_kv + 2 * sc_d) * 4;
+            } else {
+                sc_hist_k16[v] = dalloc<uint16_t>(sc_kv); sc_hist_v16[v] = dalloc<uint16_t>(sc_kv);
+                sc_hist_attn16[v] = dalloc<uint16_t>(sc_d); sc_hist_mlp16[v] = dalloc<uint16_t>(sc_d);
+                sc_snap_k16[v] = dalloc<uint16_t>(sc_kv); sc_snap_v16[v] = dalloc<uint16_t>(sc_kv);
+                sc_snap_attn16[v] = dalloc<uint16_t>(sc_d); sc_snap_mlp16[v] = dalloc<uint16_t>(sc_d);
+                sc_ring_k16[v] = dalloc<uint16_t>(8ul * 3 * 1024); sc_ring_v16[v] = dalloc<uint16_t>(8ul * 3 * 1024);
+                sc_ring_attn16[v] = dalloc<uint16_t>(8ul * 3 * c.hidden); sc_ring_mlp16[v] = dalloc<uint16_t>(8ul * 3 * c.hidden);
+                dzero(sc_hist_k16[v], sc_kv * 2); dzero(sc_hist_v16[v], sc_kv * 2);
+                dzero(sc_hist_attn16[v], sc_d * 2); dzero(sc_hist_mlp16[v], sc_d * 2);
+                sc_tot += (2 * sc_kv + 2 * sc_d) * 2;
+            }
+        }
+        if (max_batch > c.swa_win) {
+            b_k_chunk = dalloc<half>((size_t)max_batch * 1024);
+            b_v_chunk = dalloc<half>((size_t)max_batch * 1024);
         }
 
         const size_t D = (size_t)c.hidden, MB = (size_t)max_batch;
@@ -318,6 +417,27 @@ struct InkSyRunner {
         b_logits = dalloc<float>((size_t)std::min(max_batch, 64) * c.vocab_padded);
         b_argmax = dalloc<int>(MB); b_taps4 = dalloc<float>(4 * MB * D);
         xq_s8_dev = dalloc<int8_t>(MB * 9216); xsc_dev = dalloc<float>(MB);
+#if INK_SY_HAS_JOINT_MATRIX
+        b_moe_bk = dalloc<InkSyMoeBuckets>(1);
+#endif
+        b_cand_val = dalloc<float>(64ul * 128);
+        b_cand_idx = dalloc<int32_t>(64ul * 128);
+        b_cand_fin = dalloc<uint8_t>(64);
+
+        if (!df2_path.empty()) {
+            const int df2_cap_m = acfg.active ? acfg.dflash2_max_m : 8;
+            const size_t df2_before = dev_bytes_allocated();
+            const bool df2_ok = df2.load(df2_path, max_slots, df2_cap_m, err);
+            if (df2_ok) fprintf(stderr, "[ink_sycl] DFlash 2 loaded: %.0f MiB on the device (the memory plan counted %.0f MiB)\n",
+                                (double)(dev_bytes_allocated() - df2_before) / 1048576.0, (double)ink_sy_df2_bytes(max_slots) / 1048576.0);
+            if (!df2_ok) {
+                fprintf(stderr, "[ink_sycl] DFlash 2 disabled (%s)\n", err.c_str());
+                err.clear();
+            } else {
+                use_dflash2 = true;
+                use_dspark = false;  // DFlash 2 replaces retired DSpark
+            }
+        }
 
         if (use_dspark) {
             const size_t dkv = (size_t)max_slots * max_ctx * 1024;
@@ -336,8 +456,9 @@ struct InkSyRunner {
 
         wait();
         hybrid.init(m);
-        fprintf(stderr, "[ink_sycl] runner ready: slots=%d ctx=%d batch=%d dspark=%d hybrid=%d | KV=%.1f MiB SC=%.1f MiB DevAlloc=%.2f GiB\n",
-                max_slots, max_ctx, max_batch, (int)use_dspark, (int)hybrid.active,
+        fprintf(stderr, "[ink_sycl] runner ready: slots=%d ctx=%d batch=%d dflash2=%d dspark=%d kv=%s sc=%s hybrid=%d | KV=%.1f MiB SC=%.1f MiB DevAlloc=%.2f GiB\n",
+                max_slots, max_ctx, max_batch, (int)use_dflash2, (int)use_dspark,
+                use_fp8_kv ? "fp8" : "fp16", use_bf16_sc ? "bf16" : "f32", (int)hybrid.active,
                 kv_tot / (1024.0 * 1024.0), sc_tot / (1024.0 * 1024.0),
                 dev_bytes_allocated() / (1024.0 * 1024.0 * 1024.0));
         (void)err;
@@ -345,69 +466,134 @@ struct InkSyRunner {
     }
 
     void reset_slot(int s) {
-        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
-        const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
-        for (int v = 0; v < mod->man.c.n_visits; ++v) {
-            dzero(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
-            dzero(sc_hist_v[v] + (size_t)s * 3 * 1024, sc_kv);
-            dzero(sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_d);
-            dzero(sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_d);
+        if (s < 0 || s >= max_slots || !mod) return;
+        if (use_dflash2) df2.reset_slot(s);
+        if (!use_bf16_sc) {
+            if (sc_hist_k.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
+            for (int v = 0; v < mod->man.c.n_visits; ++v) {
+                dzero(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
+                dzero(sc_hist_v[v] + (size_t)s * 3 * 1024, sc_kv);
+                dzero(sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_d);
+                dzero(sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_d);
+            }
+        } else {
+            if (sc_hist_k16.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 2, sc_d = 3ul * INK_D * 2;
+            for (int v = 0; v < mod->man.c.n_visits; ++v) {
+                dzero(sc_hist_k16[v] + (size_t)s * 3 * 1024, sc_kv);
+                dzero(sc_hist_v16[v] + (size_t)s * 3 * 1024, sc_kv);
+                dzero(sc_hist_attn16[v] + (size_t)s * 3 * INK_D, sc_d);
+                dzero(sc_hist_mlp16[v] + (size_t)s * 3 * INK_D, sc_d);
+            }
         }
         wait();
     }
 
     void snapshot_slot(int s) {
-        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
-        const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
-        for (int v = 0; v < mod->man.c.n_visits; ++v) {
-            d2d(sc_snap_k[v] + (size_t)s * 3 * 1024, sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
-            d2d(sc_snap_v[v] + (size_t)s * 3 * 1024, sc_hist_v[v] + (size_t)s * 3 * 1024, sc_kv);
-            d2d(sc_snap_attn[v] + (size_t)s * 3 * INK_D, sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_d);
-            d2d(sc_snap_mlp[v] + (size_t)s * 3 * INK_D, sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_d);
+        if (s < 0 || s >= max_slots || !mod) return;
+        if (!use_bf16_sc) {
+            if (sc_hist_k.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
+            for (int v = 0; v < mod->man.c.n_visits; ++v) {
+                d2d(sc_snap_k[v] + (size_t)s * 3 * 1024, sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
+                d2d(sc_snap_v[v] + (size_t)s * 3 * 1024, sc_hist_v[v] + (size_t)s * 3 * 1024, sc_kv);
+                d2d(sc_snap_attn[v] + (size_t)s * 3 * INK_D, sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_d);
+                d2d(sc_snap_mlp[v] + (size_t)s * 3 * INK_D, sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_d);
+            }
+        } else {
+            if (sc_hist_k16.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 2, sc_d = 3ul * INK_D * 2;
+            for (int v = 0; v < mod->man.c.n_visits; ++v) {
+                d2d(sc_snap_k16[v] + (size_t)s * 3 * 1024, sc_hist_k16[v] + (size_t)s * 3 * 1024, sc_kv);
+                d2d(sc_snap_v16[v] + (size_t)s * 3 * 1024, sc_hist_v16[v] + (size_t)s * 3 * 1024, sc_kv);
+                d2d(sc_snap_attn16[v] + (size_t)s * 3 * INK_D, sc_hist_attn16[v] + (size_t)s * 3 * INK_D, sc_d);
+                d2d(sc_snap_mlp16[v] + (size_t)s * 3 * INK_D, sc_hist_mlp16[v] + (size_t)s * 3 * INK_D, sc_d);
+            }
         }
     }
 
     void rollback_slot(int s, int keep_len) {
-        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
-        const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
-        if (s == last_ver_slot && keep_len > last_ver_pos0 && keep_len <= last_ver_pos0 + last_ver_m) {
-            const int step_idx = keep_len - last_ver_pos0 - 1;
+        if (s < 0 || s >= max_slots || !mod) return;
+        if (use_dflash2) df2.rollback_slot(s, keep_len);
+        const bool hit_ring = (s == last_ver_slot && keep_len > last_ver_pos0 && keep_len <= last_ver_pos0 + last_ver_m);
+        const int step_idx = hit_ring ? (keep_len - last_ver_pos0 - 1) : 0;
+        if (!use_bf16_sc) {
+            if (sc_hist_k.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
             for (int v = 0; v < mod->man.c.n_visits; ++v) {
-                d2d(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_ring_k[v] + (size_t)step_idx * 3 * 1024, sc_kv);
-                d2d(sc_hist_v[v] + (size_t)s * 3 * 1024, sc_ring_v[v] + (size_t)step_idx * 3 * 1024, sc_kv);
-                d2d(sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_ring_attn[v] + (size_t)step_idx * 3 * INK_D, sc_d);
-                d2d(sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_ring_mlp[v] + (size_t)step_idx * 3 * INK_D, sc_d);
+                const float* sk = hit_ring ? (sc_ring_k[v] + (size_t)step_idx * 3 * 1024) : (sc_snap_k[v] + (size_t)s * 3 * 1024);
+                const float* sv = hit_ring ? (sc_ring_v[v] + (size_t)step_idx * 3 * 1024) : (sc_snap_v[v] + (size_t)s * 3 * 1024);
+                const float* sa = hit_ring ? (sc_ring_attn[v] + (size_t)step_idx * 3 * INK_D) : (sc_snap_attn[v] + (size_t)s * 3 * INK_D);
+                const float* sm = hit_ring ? (sc_ring_mlp[v] + (size_t)step_idx * 3 * INK_D) : (sc_snap_mlp[v] + (size_t)s * 3 * INK_D);
+                d2d(sc_hist_k[v] + (size_t)s * 3 * 1024, sk, sc_kv);
+                d2d(sc_hist_v[v] + (size_t)s * 3 * 1024, sv, sc_kv);
+                d2d(sc_hist_attn[v] + (size_t)s * 3 * INK_D, sa, sc_d);
+                d2d(sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sm, sc_d);
             }
-            if (use_dspark) {
-                d2d(dsp_frnn_slot + (size_t)s * INK_D, dsp_frnn_tmp + (size_t)step_idx * INK_D, (size_t)INK_D * 4);
+        } else {
+            if (sc_hist_k16.empty()) return;
+            const size_t sc_kv = 3ul * 1024 * 2, sc_d = 3ul * INK_D * 2;
+            for (int v = 0; v < mod->man.c.n_visits; ++v) {
+                const uint16_t* sk = hit_ring ? (sc_ring_k16[v] + (size_t)step_idx * 3 * 1024) : (sc_snap_k16[v] + (size_t)s * 3 * 1024);
+                const uint16_t* sv = hit_ring ? (sc_ring_v16[v] + (size_t)step_idx * 3 * 1024) : (sc_snap_v16[v] + (size_t)s * 3 * 1024);
+                const uint16_t* sa = hit_ring ? (sc_ring_attn16[v] + (size_t)step_idx * 3 * INK_D) : (sc_snap_attn16[v] + (size_t)s * 3 * INK_D);
+                const uint16_t* sm = hit_ring ? (sc_ring_mlp16[v] + (size_t)step_idx * 3 * INK_D) : (sc_snap_mlp16[v] + (size_t)s * 3 * INK_D);
+                d2d(sc_hist_k16[v] + (size_t)s * 3 * 1024, sk, sc_kv);
+                d2d(sc_hist_v16[v] + (size_t)s * 3 * 1024, sv, sc_kv);
+                d2d(sc_hist_attn16[v] + (size_t)s * 3 * INK_D, sa, sc_d);
+                d2d(sc_hist_mlp16[v] + (size_t)s * 3 * INK_D, sm, sc_d);
             }
-            return;
         }
-        for (int v = 0; v < mod->man.c.n_visits; ++v) {
-            d2d(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_snap_k[v] + (size_t)s * 3 * 1024, sc_kv);
-            d2d(sc_hist_v[v] + (size_t)s * 3 * 1024, sc_snap_v[v] + (size_t)s * 3 * 1024, sc_kv);
-            d2d(sc_hist_attn[v] + (size_t)s * 3 * INK_D, sc_snap_attn[v] + (size_t)s * 3 * INK_D, sc_d);
-            d2d(sc_hist_mlp[v] + (size_t)s * 3 * INK_D, sc_snap_mlp[v] + (size_t)s * 3 * INK_D, sc_d);
+        if (hit_ring && use_dspark) {
+            d2d(dsp_frnn_slot + (size_t)s * INK_D, dsp_frnn_tmp + (size_t)step_idx * INK_D, (size_t)INK_D * 4);
         }
     }
 
     void dispatch_linear(const InkTensorInfo& ti, const float* X, float* Y, int M, int N_override = -1) {
         const int N = (N_override > 0) ? N_override : (int)ti.rows();
         const int K = (int)ti.cols();
+        const auto& acfg = arc_cfg();
         switch (ti.fmt) {
             case FMT_BF16:
+#if INK_SY_HAS_JOINT_MATRIX
+                if (acfg.fast && acfg.use_joint_matrix_xmx && M >= 16) {
+                    k_jm_gemm_bf16_sg16(Q(), reinterpret_cast<const uint16_t*>(ti.dev_ptr), N, K, X, Y, M);
+                    break;
+                }
+#endif
                 if (ink_xmx_linear_bf16(reinterpret_cast<const uint16_t*>(ti.dev_ptr), N, K, X, Y, M)) break;
                 if (M >= 16) k_gemm_bf16_sg16(reinterpret_cast<const uint16_t*>(ti.dev_ptr), N, K, X, Y, M);
                 else k_linear_bf16_sg16(reinterpret_cast<const uint16_t*>(ti.dev_ptr), N, K, X, Y, M);
                 break;
             case FMT_Q8ROW:
+#if INK_SY_HAS_JOINT_MATRIX
+                if (acfg.fast && acfg.use_joint_matrix_xmx && M >= 16 && (K & 31) == 0) {
+                    k_quantize_x_q8_sg16(X, M, K, xq_s8_dev, xsc_dev);
+                    k_jm_gemm_q8row_s8_sg16(Q(), ti.dev_ptr, N, K, (int)ti.rows(), xq_s8_dev, xsc_dev, Y, M);
+                    break;
+                }
+#endif
                 if (ink_xmx_linear_q8row(ti.dev_ptr, N, K, X, Y, M, (int)ti.rows())) break;
                 if (M >= 16) {
                     k_gemm_q8row_sg16(ti.dev_ptr, N, K, X, Y, M, (int)ti.rows());
                 } else {
                     k_quantize_x_q8_sg16(X, M, K, xq_s8_dev, xsc_dev);
-                    k_linear_q8row_dp4a_sg16(ti.dev_ptr, N, K, xq_s8_dev, xsc_dev, Y, M, (int)ti.rows());
+                    if (acfg.active && acfg.use_vec_lsc_decode && (K & 15) == 0 && (((int)ti.rows()) & 3) == 0) {
+                        k_linear_q8row_vec_dp4a_sg16(ti.dev_ptr, N, K, xq_s8_dev, xsc_dev, Y, M, (int)ti.rows());
+                    } else {
+                        k_linear_q8row_dp4a_sg16(ti.dev_ptr, N, K, xq_s8_dev, xsc_dev, Y, M, (int)ti.rows());
+                    }
                 }
+                break;
+            case FMT_MX8:
+#if INK_SY_HAS_JOINT_MATRIX
+                if (acfg.fast && acfg.use_joint_matrix_xmx && M >= 16) {
+                    k_jm_gemm_mx8_sg16(Q(), ti.dev_ptr, N, K, (int)ti.rows(), X, Y, M);
+                    break;
+                }
+#endif
+                k_linear_mx8_sg16(ti.dev_ptr, N, K, X, Y, M, (int)ti.rows());
                 break;
             case FMT_F32:
                 k_linear_f32_sg16(reinterpret_cast<const float*>(ti.dev_ptr), N, K, X, Y, M);
@@ -469,8 +655,11 @@ struct InkSyRunner {
                        int logits_mode,  // 0=none, 1=last token only, 2=all M tokens (or want_idx_host[0..n_want-1])
                        float* out_logits_host, int* out_argmax_host,
                        bool record_dspark_ctx,
-                       const int* want_idx_host = nullptr, int n_want = 0) {
+                       const int* want_idx_host = nullptr, int n_want = 0,
+                       float* out_cand_val = nullptr, int32_t* out_cand_idx = nullptr, uint8_t* out_cand_fin = nullptr,
+                       float* out_taps4_host = nullptr) {
         if (M <= 0 || M > max_batch) return false;
+        const auto& acfg = arc_cfg();
         hybrid.decay_step();
         sy_prof_begin(M);
         const auto& man = mod->man;
@@ -497,6 +686,14 @@ struct InkSyRunner {
             last_ver_pos0 = positions[0];
             last_ver_m = M;
         }
+        // Check if this batch is a single-slot contiguous chunk (enables intra-chunk SWA >1024 safety!)
+        bool single_contig = (n_active_slots == 1 && M > c.swa_win && b_k_chunk != nullptr);
+        if (single_contig) {
+            for (int m = 1; m < M; ++m) {
+                if (positions[m] != positions[0] + m) { single_contig = false; break; }
+            }
+        }
+        const int swa_chunk_pos0 = single_contig ? positions[0] : -1;
 
         h2d(b_tok_ids, tok_ids, (size_t)M * 4);
         h2d(b_slot_ids, slot_ids, (size_t)M * 4);
@@ -513,13 +710,18 @@ struct InkSyRunner {
         }
 
         const bool dbg = (std::getenv("INK_SY_DEBUG") && std::getenv("INK_SY_DEBUG")[0] == '1' && M == 1);
-        // INK_SY_GRAPH=1: a single-token step (everything from the embedding to the logits) is recorded once into a SYCL command
-        // graph and replayed, so the ~2,000 kernel launches of a step cost one submission. Same kernels, same arguments, same bits.
-        const bool graph_ok = sy_graph_enabled() && !graph_failed && M == 1 && !dbg && !sy_prof().on && !hybrid.active &&
-                              !(mod->ep2_active && mod->q_peer) && logits_mode <= 1 && !(is_img_host && img_emb_host);
-        const uint64_t graph_key = (uint64_t)(record_dspark_ctx && use_dspark ? 1 : 0) | ((uint64_t)logits_mode << 1) |
-                                   ((uint64_t)(out_argmax_host ? 1 : 0) << 3) | ((uint64_t)(out_logits_host ? 1 : 0) << 4) |
-                                   ((uint64_t)((record_dspark_ctx && use_dspark) ? (slot_ids[0] + 1) : 0) << 8);
+        const bool want_graph = sy_graph_enabled() || (acfg.active && acfg.use_graph);
+        const bool graph_m_ok = (M == 1) || (acfg.active && n_active_slots == 1 &&
+                                (M == 4 || M == 5 || M == 6 || M == 8 || M == 12 || M == 16));
+        const bool graph_ok = want_graph && !graph_failed && graph_m_ok && !dbg && !sy_prof().on && !hybrid.active &&
+                              !(mod->ep2_active && mod->q_peer) && logits_mode <= 1 && !out_cand_val && !out_taps4_host &&
+                              !(is_img_host && img_emb_host);
+        const uint64_t graph_key = (uint64_t)(record_dspark_ctx && (use_dspark || use_dflash2) ? 1 : 0) |
+                                   ((uint64_t)logits_mode << 1) |
+                                   ((uint64_t)(out_argmax_host ? 1 : 0) << 3) |
+                                   ((uint64_t)(out_logits_host ? 1 : 0) << 4) |
+                                   ((uint64_t)(M & 0xFF) << 8) |
+                                   ((uint64_t)((record_dspark_ctx && use_dspark) ? (slot_ids[0] + 1) : 0) << 16);
         auto enqueue_all = [&](bool capturing) {
         // 1. Embedding + embed_norm (bypassed for image tokens)
         k_embed_sg16(man.get("model.llm.embed.weight"), tf32("model.llm.embed_norm.weight"),
@@ -544,9 +746,12 @@ struct InkSyRunner {
         int prelude_n_blocks = 0;
 
         auto run_visit = [&](int ip, int visit, int visit_pass, bool has_msgs) {
-            if (record_dspark_ctx && use_dspark) {
+            if ((record_dspark_ctx && (use_dspark || use_dflash2)) || out_taps4_host != nullptr) {
+                const int taps3[3] = { (use_dflash2 || out_taps4_host != nullptr) ? 5 : c.dspark_taps[0],
+                                       (use_dflash2 || out_taps4_host != nullptr) ? 23 : c.dspark_taps[1],
+                                       (use_dflash2 || out_taps4_host != nullptr) ? 41 : c.dspark_taps[2] };
                 for (int ti = 0; ti < 3; ++ti) {
-                    if (visit == c.dspark_taps[ti]) {
+                    if (visit == taps3[ti]) {
                         d2d(b_taps4 + (size_t)ti * M_stride, b_cur, (size_t)M_stride * 4);
                     }
                 }
@@ -643,26 +848,56 @@ struct InkSyRunner {
             // 4-tap ShortConv on K & V
             const float* sc_layer = mod->static_sconv_dev + (size_t)ip * InkSyModel::kSconvLayerFloats;
             const int has_dyn = is_swa ? 0 : 1;
-            k_sconv4_multi_sg16(b_k_raw, sc_layer + InkSyModel::kSconvKOff, b_kd_taps, sc_hist_k[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_k, n_active_slots, 1024, has_dyn, sc_ring_k[visit], save_ring);
-            k_sconv4_multi_sg16(b_v_raw, sc_layer + InkSyModel::kSconvVOff, b_vd_taps, sc_hist_v[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_v, n_active_slots, 1024, has_dyn, sc_ring_v[visit], save_ring);
+            if (!use_bf16_sc) {
+                k_sconv4_multi_sg16(b_k_raw, sc_layer + InkSyModel::kSconvKOff, b_kd_taps, sc_hist_k[visit],
+                                    b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                    b_k, n_active_slots, 1024, has_dyn, sc_ring_k[visit], save_ring);
+                k_sconv4_multi_sg16(b_v_raw, sc_layer + InkSyModel::kSconvVOff, b_vd_taps, sc_hist_v[visit],
+                                    b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                    b_v, n_active_slots, 1024, has_dyn, sc_ring_v[visit], save_ring);
+            } else {
+                k_sconv4_multi_bf16_sg16(b_k_raw, sc_layer + InkSyModel::kSconvKOff, b_kd_taps, sc_hist_k16[visit],
+                                         b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                         b_k, n_active_slots, 1024, has_dyn, sc_ring_k16[visit], save_ring, 8);
+                k_sconv4_multi_bf16_sg16(b_v_raw, sc_layer + InkSyModel::kSconvVOff, b_vd_taps, sc_hist_v16[visit],
+                                         b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                         b_v, n_active_slots, 1024, has_dyn, sc_ring_v16[visit], save_ring, 8);
+            }
 
             // Q/R L2 clip + tau, K L2 clip + V RMSNorm + KV store
             k_qr_clip_tau_sg16(b_q, tf32(p + ".attn.q_l2_clip.scale"),
                                b_r, tf32(p + ".attn.rel_l2_clip.scale"),
                                b_pos, M, is_swa ? 1 : 0);
-            k_kv_norm_store_f16_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
-                                     b_slot_ids, b_pos, M, is_swa ? 1 : 0, visit_kv_stride[visit]);
-            sy_prof_mark(PF_SCONV);
-
-            // Fused RelPos + Sink 24:8 GQA Flash Attention + sigmoid(gate_attn)
-            k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
-                                   b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
-                                   b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
-                                   c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            const bool swa_use_chunk = is_swa && swa_chunk_pos0 >= 0 && b_k_chunk != nullptr && (M > c.swa_win || acfg.fast);
+            const bool use_ex_attn = use_fp8_kv || swa_use_chunk;
+            if (!use_ex_attn) {
+                k_kv_norm_store_f16_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
+                                         b_slot_ids, b_pos, M, is_swa ? 1 : 0, visit_kv_stride[visit]);
+                sy_prof_mark(PF_SCONV);
+                k_relpos_sink_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
+                                       b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
+                                       b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
+                                       c.swa_win, c.rel_extent, visit_kv_stride[visit]);
+            } else {
+                half* kc = swa_use_chunk ? b_k_chunk : nullptr;
+                half* vc = swa_use_chunk ? b_v_chunk : nullptr;
+                k_kv_norm_store_ex_sg16(b_k, b_v, kv_k[visit], kv_v[visit],
+                                        kv_k_fp8[visit], kv_v_fp8[visit], kv_k_sc[visit], kv_v_sc[visit],
+                                        kc, vc, b_slot_ids, b_pos, M, is_swa ? 1 : 0, c.swa_win,
+                                        visit_kv_stride[visit], use_fp8_kv ? 1 : 0, swa_use_chunk ? 1 : 0);
+                sy_prof_mark(PF_SCONV);
+                k_flash_relpos_gqa_sg16(b_q, b_r, mod->rel_proj_pad_dev + (size_t)ip * 16 * 1025,
+                                        b_sinks, b_gate_attn, kv_k[visit], kv_v[visit],
+                                        kv_k_fp8[visit], kv_v_fp8[visit], kv_k_sc[visit], kv_v_sc[visit],
+                                        kc, vc, (swa_use_chunk ? swa_chunk_pos0 : -1),
+                                        b_slot_ids, b_pos, b_attn_out, M, is_swa ? 1 : 0,
+                                        c.swa_win, c.rel_extent, visit_kv_stride[visit], use_fp8_kv ? 1 : 0);
+                if (swa_use_chunk) {
+                    k_kv_commit_swa_ring_sg16(kc, vc, kv_k[visit], kv_v[visit],
+                                              kv_k_fp8[visit], kv_v_fp8[visit], kv_k_sc[visit], kv_v_sc[visit],
+                                              b_slot_ids, b_pos, M, c.swa_win, visit_kv_stride[visit], use_fp8_kv ? 1 : 0);
+                }
+            }
             sy_prof_mark(PF_ATTN);
             if (visit == 0) {
                 dbg_buf("v0_q", b_q, 3072); dbg_buf("v0_k", b_k, 1024); dbg_buf("v0_v", b_v, 1024);
@@ -671,9 +906,15 @@ struct InkSyRunner {
 
             // Output projection + attn_sconv
             dispatch_linear(man.get(p + ".attn.wo_ud.weight"), b_attn_out, b_wo_raw, M);
-            k_sconv4_multi_sg16(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_wo, n_active_slots, D, 0, sc_ring_attn[visit], save_ring);
+            if (!use_bf16_sc) {
+                k_sconv4_multi_sg16(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn[visit],
+                                    b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                    b_wo, n_active_slots, D, 0, sc_ring_attn[visit], save_ring);
+            } else {
+                k_sconv4_multi_bf16_sg16(b_wo_raw, sc_layer + InkSyModel::kSconvAttnOff, nullptr, sc_hist_attn16[visit],
+                                         b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                         b_wo, n_active_slots, D, 0, sc_ring_attn16[visit], save_ring, 8);
+            }
             if (visit == 0) { dbg_buf("v0_wo_raw", b_wo_raw, D); dbg_buf("v0_wo", b_wo, D); }
 
             // Attention-Residual block boundary rule (matches inkling2_loop.py:418!)
@@ -722,7 +963,12 @@ struct InkSyRunner {
 
                 // 1. Stage MoE inputs (b_mlp_in, b_topk_idx, b_topk_w) to GPU 1 (P2P direct or host-pinned bounce)
                 if (mod->ep2_p2p) {
-                    wait();
+                    if (acfg.active && acfg.use_l0_ep2_barrier) {
+                        sycl::event ev_g0 = Q().ext_oneapi_submit_barrier();
+                        q1.ext_oneapi_submit_barrier({ev_g0});
+                    } else {
+                        wait();
+                    }
                     q1.memcpy(g1_mlp_in, b_mlp_in, (size_t)M * D * sizeof(float));
                     q1.memcpy(g1_topk_idx, b_topk_idx, (size_t)P * sizeof(int));
                     q1.memcpy(g1_topk_w, b_topk_w, (size_t)P * sizeof(float));
@@ -758,10 +1004,14 @@ struct InkSyRunner {
                     k_moe_reduce8_sg16_q(Q(), b_moe_yp, b_moe_raw, M, ex_g0, b_topk_idx);
                 }
 
-                // 4. Synchronize GPU 1 partial sum & reduce on GPU 0
-                ev_g1.wait();
-                if (!mod->ep2_p2p) {
-                    h2d(g0_ep_y1, h_ep_y1, (size_t)M * D * sizeof(float));
+                // 4. Synchronize GPU 1 partial sum & reduce on GPU 0 (L0 device-event barrier when P2P + STRATA_INK_INTELARC=1!)
+                if (mod->ep2_p2p && acfg.active && acfg.use_l0_ep2_barrier) {
+                    Q().ext_oneapi_submit_barrier({ev_g1});
+                } else {
+                    ev_g1.wait();
+                    if (!mod->ep2_p2p) {
+                        h2d(g0_ep_y1, h_ep_y1, (size_t)M * D * sizeof(float));
+                    }
                 }
                 k_add_sg16(b_moe_raw, g0_ep_y1, b_moe_raw, M_stride);
             } else if (hybrid.active) {
@@ -769,6 +1019,21 @@ struct InkSyRunner {
                                       b_mlp_in, b_topk_idx, b_topk_w,
                                       b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq,
                                       b_moe_h, b_moe_yp, b_moe_raw);
+#if INK_SY_HAS_JOINT_MATRIX
+            } else if (acfg.fast && acfg.use_joint_matrix_xmx && M >= 16) {
+                // Zero-oneMKL GPU-side active-expert bucket planner + native SG16 joint_matrix XMX MoE (0 CPU d2h, 0 global w_f16!)
+                const int P = M * 8;
+                const int max_uniq = std::min(128, P);
+                const InkSyExpertDev* ex_layer = mod->expert_dev + (size_t)ip * c.n_experts;
+                k_moe_plan_active_sg16(Q(), b_topk_idx, P, xmx_moe_min_n(), b_moe_bk, b_moe_pairs);
+                k_jm_moe_gu_situ_sg16(Q(), ex_layer, b_mlp_in, b_moe_bk, b_moe_pairs, max_uniq, b_moe_h, iq_grid_table_dev());
+                k_jm_moe_dn_sg16(Q(), ex_layer, b_topk_w, b_moe_bk, b_moe_pairs, max_uniq, b_moe_h, b_moe_yp, iq_grid_table_dev());
+                k_moe_gu_situ_sg16(ex_layer, b_mlp_in, b_moe_bk->sm_uexp, b_moe_bk->sm_uoff, b_moe_bk->sm_ucnt,
+                                   b_moe_pairs, &b_moe_bk->n_sm, max_uniq, b_moe_h);
+                k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_bk->sm_uexp, b_moe_bk->sm_uoff, b_moe_bk->sm_ucnt,
+                              b_moe_pairs, &b_moe_bk->n_sm, max_uniq, b_moe_h, b_moe_yp);
+                k_moe_reduce8_sg16(b_moe_yp, b_moe_raw, M);
+#endif
             } else if (xmx_enabled() && M >= 32) {
                 const int P = M * 8;
                 std::vector<int32_t> h_topk((size_t)P);
@@ -814,9 +1079,15 @@ struct InkSyRunner {
             }
             sy_prof_mark(PF_MOE);
 
-            k_sconv4_multi_sg16(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr, sc_hist_mlp[visit],
-                                b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
-                                b_moe_out, n_active_slots, D, 0, sc_ring_mlp[visit], save_ring);
+            if (!use_bf16_sc) {
+                k_sconv4_multi_sg16(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr, sc_hist_mlp[visit],
+                                    b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                    b_moe_out, n_active_slots, D, 0, sc_ring_mlp[visit], save_ring);
+            } else {
+                k_sconv4_multi_bf16_sg16(b_moe_raw, sc_layer + InkSyModel::kSconvMlpOff, nullptr, sc_hist_mlp16[visit],
+                                         b_active_slots, b_slot_tok_off, b_slot_tok_cnt, b_slot_tok_idx,
+                                         b_moe_out, n_active_slots, D, 0, sc_ring_mlp16[visit], save_ring, 8);
+            }
             k_add_sg16(b_res, b_moe_out, b_cur, M_stride);
             sy_prof_mark(PF_TAILV);
             if (dbg) {
@@ -862,9 +1133,16 @@ struct InkSyRunner {
         k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.output_query"), b_h_out, n_blocks, block_stride, M, 1);
         k_rms_norm_sg16(b_h_out, tf32("model.llm.norm.weight"), b_h_norm, D, M);
 
-        // 6. Optional DSpark taps -> context KV + f_rnn
-        if (record_dspark_ctx && use_dspark) {
+        // 6. Optional DFlash 2 or dormant DSpark 4-tap ingest into context KV ring
+        if (out_taps4_host != nullptr) {
             d2d(b_taps4 + 3 * M_stride, b_h_norm, (size_t)M_stride * 4);
+            d2h(out_taps4_host, b_taps4, (size_t)4 * M_stride * 4);
+        }
+        if (record_dspark_ctx && use_dflash2) {
+            if (out_taps4_host == nullptr) d2d(b_taps4 + 3 * M_stride, b_h_norm, (size_t)M_stride * 4);
+            df2.ingest_gpu(b_taps4, b_slot_ids, b_pos, M);
+        } else if (record_dspark_ctx && use_dspark) {
+            if (out_taps4_host == nullptr) d2d(b_taps4 + 3 * M_stride, b_h_norm, (size_t)M_stride * 4);
             const float* fw = df32("dspark.fuse_weight");
             for (int dl = 0; dl < 3; ++dl) {
                 std::string dp = "dspark.layers." + std::to_string(dl);
@@ -882,10 +1160,10 @@ struct InkSyRunner {
             }
         }
 
-        // 7. Unembed + softcap(30.0) + argmax (supports arbitrary want_idx_host rows & >64 rows via chunking!)
+        // 7. Unembed + softcap(30.0) + argmax / top-128 candidates (supports arbitrary want_idx_host rows & >64 rows!)
         if (logits_mode > 0) {
             const int V_un = c.vocab_unpadded;
-            if (logits_mode == 1) {
+            if (logits_mode == 1 && !out_cand_val) {
                 const float* x_un = b_h_norm + (size_t)(M - 1) * D;
                 dispatch_linear(man.get("model.llm.unembed.weight"), x_un, b_logits, 1, V_un);
                 k_softcap_sg16(b_logits, V_un, c.logit_softcap);
@@ -897,11 +1175,13 @@ struct InkSyRunner {
                     d2h(out_logits_host, b_logits, (size_t)V_un * 4);
                 }
             } else {
-                const int total_out = (want_idx_host && n_want > 0) ? n_want : M;
+                const int total_out = (want_idx_host && n_want > 0) ? n_want : (logits_mode == 1 ? 1 : M);
                 const int logit_cap = std::min(max_batch, 64);
                 for (int r0 = 0; r0 < total_out; r0 += logit_cap) {
                     const int rc = std::min(logit_cap, total_out - r0);
-                    const float* x_src = b_h_norm + (size_t)r0 * D;
+                    const float* x_src = (logits_mode == 1 && !(want_idx_host && n_want > 0))
+                                       ? (b_h_norm + (size_t)(M - 1) * D)
+                                       : (b_h_norm + (size_t)r0 * D);
                     if (want_idx_host && n_want > 0) {
                         for (int j = 0; j < rc; ++j) {
                             d2d(b_h_out + (size_t)j * D, b_h_norm + (size_t)want_idx_host[r0 + j] * D, (size_t)D * 4);
@@ -910,6 +1190,12 @@ struct InkSyRunner {
                     }
                     dispatch_linear(man.get("model.llm.unembed.weight"), x_src, b_logits, rc, V_un);
                     k_softcap_sg16(b_logits, rc * V_un, c.logit_softcap);
+                    if (out_cand_val && out_cand_idx && out_cand_fin) {
+                        k_top128_rows_sg16(b_logits, V_un, rc, b_cand_val, b_cand_idx, b_cand_fin);
+                        d2h(out_cand_val + (size_t)r0 * 128, b_cand_val, (size_t)rc * 128 * sizeof(float));
+                        d2h(out_cand_idx + (size_t)r0 * 128, b_cand_idx, (size_t)rc * 128 * sizeof(int32_t));
+                        d2h(out_cand_fin + r0, b_cand_fin, (size_t)rc);
+                    }
                     if (out_argmax_host) {
                         k_argmax_rows_sg16(b_logits, b_argmax, V_un, rc);
                         d2h(out_argmax_host + r0, b_argmax, (size_t)rc * 4);
@@ -934,11 +1220,167 @@ struct InkSyRunner {
         }
         if (!graph_done) enqueue_all(false);
 
+        if (record_dspark_ctx && use_dflash2) {
+            df2.update_ctx_hi(slot_ids, positions, M);
+            if (acfg.active && n_active_slots == 1) {
+                df2.record_pld_tokens(slot_ids[0], tok_ids, M);
+            }
+        }
+
         sy_prof_mark(PF_HEAD);
         sy_prof_before_wait();
         wait();
         sy_prof_end();
         return true;
+    }
+
+    // Native SYCL SG16 DFlash 2 Block-8 Draft (returns 0..min(7, max_draft))
+    int dflash2_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_drafts) {
+        if (!use_dflash2 || anchor_pos <= 0 || anchor_pos + 8 >= max_ctx) return 0;
+        const auto& man = mod->man;
+        const auto& c = man.c;
+        const auto& unemb = man.get("model.llm.unembed.weight");
+        float confs[7]{};
+        return df2.draft_block8(
+            slot, anchor_tok, anchor_pos, max_draft,
+            man.get("model.llm.embed.weight"), tf32("model.llm.embed_norm.weight"), c.vocab_padded,
+            [&](const float* x7, float* raw_lg, int rows) {
+                dispatch_linear(unemb, x7, raw_lg, rows, c.vocab_unpadded);
+            },
+            out_drafts, confs, false);   // DFlash 2 is the only drafter: the n-gram suffix fallback (allow_pld) is not used
+    }
+
+    // On-GPU zero-full-vocab-D2H greedy speculative verify step for DFlash 2!
+    // 100% mathematically bit-identical to plain greedy decode!
+    int dflash2_spec_step_greedy(int slot, int32_t anchor_tok, int anchor_pos, int max_emit,
+                                 int32_t* out_emitted, int* out_drafted) {
+        if (!use_dflash2 || max_emit < 2 || anchor_pos <= 0 || anchor_pos + 10 >= max_ctx) return 0;
+        int32_t draft[7]{};
+        const int max_d = std::min(7, max_emit - 1);
+        const int nd = dflash2_draft(slot, anchor_tok, anchor_pos, max_d, draft);
+        if (nd <= 0) return 0;
+
+        snapshot_slot(slot);
+        int tok_b[8], slot_b[8], pos_b[8], argm[8];
+        const int M = nd + 1;
+        tok_b[0] = anchor_tok; slot_b[0] = slot; pos_b[0] = anchor_pos;
+        for (int i = 0; i < nd; ++i) {
+            tok_b[i + 1] = draft[i];
+            slot_b[i + 1] = slot;
+            pos_b[i + 1] = anchor_pos + 1 + i;
+        }
+        if (!forward_batch(tok_b, slot_b, pos_b, M, nullptr, nullptr, 2, nullptr, argm, true)) {
+            return -1;
+        }
+        if (out_drafted) *out_drafted = nd;
+        int n_emit = 0;
+        for (int i = 0; i < M; ++i) {
+            out_emitted[n_emit++] = argm[i];
+            if (i < nd && argm[i] != draft[i]) break;
+        }
+        if (n_emit < M) {
+            rollback_slot(slot, anchor_pos + n_emit);
+        }
+        return n_emit;
+    }
+
+    // On-GPU top-128 candidate lossless stochastic speculative verify step (temperature > 0, Leviathan et al. 2023)!
+    int dflash2_spec_step_sampled(int slot, int32_t anchor_tok, int anchor_pos, int max_emit,
+                                  float temperature, int top_k, float top_p, float min_p, uint64_t step_seed,
+                                  int32_t* out_emitted, int* out_drafted) {
+        if (!use_dflash2 || max_emit < 2 || anchor_pos <= 0 || anchor_pos + 10 >= max_ctx) return 0;
+        int32_t draft[7]{};
+        const int max_d = std::min(7, max_emit - 1);
+        const int nd = dflash2_draft(slot, anchor_tok, anchor_pos, max_d, draft);
+        if (nd <= 0) return 0;
+
+        snapshot_slot(slot);
+        int tok_b[8], slot_b[8], pos_b[8];
+        const int M = nd + 1;
+        tok_b[0] = anchor_tok; slot_b[0] = slot; pos_b[0] = anchor_pos;
+        for (int i = 0; i < nd; ++i) {
+            tok_b[i + 1] = draft[i];
+            slot_b[i + 1] = slot;
+            pos_b[i + 1] = anchor_pos + 1 + i;
+        }
+        float cval[8 * 128]{};
+        int32_t cidx[8 * 128]{};
+        uint8_t cfin[8]{};
+        if (!forward_batch(tok_b, slot_b, pos_b, M, nullptr, nullptr, 2, nullptr, nullptr, true,
+                           nullptr, 0, cval, cidx, cfin)) {
+            return -1;
+        }
+        for (int i = 0; i < M; ++i) {
+            if (!cfin[i]) { rollback_slot(slot, anchor_pos); return 0; }
+        }
+        if (out_drafted) *out_drafted = nd;
+        std::mt19937_64 rng(step_seed);
+        std::uniform_real_distribution<double> u01(0.0, 1.0);
+        const int K = std::max(1, std::min(top_k, std::min(mod->man.c.vocab_unpadded, 128)));
+        int n_emit = 0;
+        for (int i = 0; i < M; ++i) {
+            const float* tv = cval + i * 128;
+            const int32_t* ti = cidx + i * 128;
+            double p[128];
+            const double mx = tv[0];
+            double sum = 0.0;
+            for (int j = 0; j < K; ++j) {
+                p[j] = std::exp((tv[j] - mx) / (double)temperature);
+                sum += p[j];
+            }
+            for (int j = 0; j < K; ++j) p[j] /= sum;
+            int keep = K;
+            if (min_p > 0.0f) {
+                const double thr = (double)min_p * p[0];
+                keep = 1;
+                while (keep < K && p[keep] >= thr) ++keep;
+            }
+            if (top_p < 1.0f) {
+                double cs = 0.0;
+                int k2 = 0;
+                while (k2 < keep) { cs += p[k2++]; if (cs >= (double)top_p) break; }
+                keep = std::max(1, k2);
+            }
+            double z = 0.0;
+            int dpos = -1;
+            for (int j = 0; j < keep; ++j) {
+                z += p[j];
+                if (i < nd && ti[j] == draft[i]) dpos = j;
+            }
+            if (i < nd) {
+                const double p_d = (dpos >= 0 && z > 0.0) ? (p[dpos] / z) : 0.0;
+                if (dpos >= 0 && (keep == 1 || u01(rng) < p_d)) {
+                    out_emitted[n_emit++] = draft[i];
+                    continue;
+                }
+                const double z_rem = z - (dpos >= 0 ? p[dpos] : 0.0);
+                int32_t pick = ti[0];
+                if (z_rem > 0.0) {
+                    const double r = u01(rng) * z_rem;
+                    double cs = 0.0;
+                    for (int j = 0; j < keep; ++j) {
+                        if (j == dpos) continue;
+                        pick = ti[j];
+                        cs += p[j];
+                        if (r <= cs) break;
+                    }
+                } else if (dpos >= 0) {
+                    pick = draft[i];
+                }
+                out_emitted[n_emit++] = pick;
+                break;
+            } else {
+                const double r = u01(rng) * z;
+                double cs = 0.0;
+                int32_t pick = ti[keep - 1];
+                for (int j = 0; j < keep; ++j) { cs += p[j]; if (r <= cs) { pick = ti[j]; break; } }
+                out_emitted[n_emit++] = pick;
+            }
+        }
+        if (n_emit < M) {
+            rollback_slot(slot, anchor_pos + n_emit);
+        }
+        return n_emit;
     }
 
     // Persistent 100% on-GPU DSpark Block-8 Recurrent Markov drafter!

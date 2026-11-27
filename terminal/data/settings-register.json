@@ -17034,7 +17034,8 @@
   {
    "name": "STRATA_INK_DFLASH2",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
@@ -17047,6 +17048,12 @@
      "file": "engine/src/inkling2/cuda/ink_dflash2_path.cuh",
      "line": 154,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
+     "line": 81,
+     "backend": "sycl",
      "fn": "getenv"
     }
    ],
@@ -17062,8 +17069,8 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "60aedcda99",
-   "last_date": "2026-11-26",
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "DFlash 2 drafter tuning / format switches (weights format, slots, codebook, confidence exponent, profile, dump).",
@@ -17113,7 +17120,8 @@
   {
    "name": "STRATA_INK_DFLASH2_CONF_POW",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "metal"
    ],
    "reads": [
     {
@@ -17126,6 +17134,12 @@
      "file": "engine/src/inkling2/cuda/ink_dflash2.cuh",
      "line": 43,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_dflash2.h",
+     "line": 143,
+     "backend": "metal",
      "fn": "getenv"
     }
    ],
@@ -17141,8 +17155,8 @@
    "first_commit": "d9d285068f",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "d9d285068f",
-   "last_date": "2026-11-26",
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
    "status": "research",
    "owner": "inkling2/cuda",
    "note": "DFlash 2 drafter tuning / format switches (weights format, slots, codebook, confidence exponent, profile, dump).",
@@ -17251,6 +17265,39 @@
    "status": "research",
    "owner": "inkling2/hip",
    "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_FIXED_D",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_dflash2.h",
+     "line": 668,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/metal",
+   "note": "Metal DFlash 2 drafter: fixed draft width instead of the adaptive one (tuning).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17464,6 +17511,39 @@
    "status": "research",
    "owner": "inkling2/hip",
    "note": "AMD-RDNA32 (RDNA2 / RDNA3 DFlash 2 HIP port and IQ decode): tuning / A/B switch for the HIP backend.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DFLASH2_PATH",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
+     "line": 85,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/sycl",
+   "note": "SYCL DFlash 2 drafter: explicit sidecar path (STRATA_INK_DFLASH2 does the same).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17806,7 +17886,8 @@
   {
    "name": "STRATA_INK_DRAFTER",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
@@ -17826,6 +17907,12 @@
      "line": 31,
      "backend": "cuda-hip",
      "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_dflash2.h",
+     "line": 63,
+     "backend": "sycl",
+     "fn": "getenv"
     }
    ],
    "parse": "flag",
@@ -17840,7 +17927,7 @@
    "first_commit": "32da8cf667",
    "first_date": "2026-11-26",
    "since": null,
-   "last_commit": "15cae0067f",
+   "last_commit": "2ad6c94d36",
    "last_date": "2026-11-27",
    "status": "default",
    "owner": "inkling2/cuda",
@@ -18273,6 +18360,171 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_INTELARC",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 73,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "owner-intelarc",
+   "note": "SYCL opt-in for Intel Arc (Alchemist, Battlemage, Core Ultra), off by default; the master switch checks the device and refuses with one log line on any other GPU. Fast mode (lossy int8 trunk, FP8 KV, bf16 short-conv, bigger chunk).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_INTELARC_EXACT",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 77,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "owner-intelarc",
+   "note": "SYCL opt-in for Intel Arc (Alchemist, Battlemage, Core Ultra), off by default; the master switch checks the device and refuses with one log line on any other GPU. With STRATA_INK_INTELARC=1: lossless variant only.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_INTELARC_NO_BF16_SCONV",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 190,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-intelarc",
+   "note": "SYCL Intel Arc fast mode: switch the bf16 short-conv state off (A/B isolation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_INTELARC_NO_FP8_KV",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 189,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-intelarc",
+   "note": "SYCL Intel Arc fast mode: switch the FP8 KV cache off (A/B isolation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_INTELARC_NO_Q8_TRUNK",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 188,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2ad6c94d36",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-intelarc",
+   "note": "SYCL Intel Arc fast mode: switch the int8 attention trunk off (A/B isolation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_IQ4NL_TC",
    "backends": [
     "cuda-hip"
@@ -18605,6 +18857,282 @@
    "status": "opt-in",
    "owner": "inkling2/cuda",
    "note": "The M=1 gate+up expert kernel prefetches the expert's down matrix into L2 (PERF-STEP). Off until measured.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 76,
+     "backend": "metal",
+     "fn": "env_on"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "owner-m5max",
+   "note": "Metal opt-in for the Apple M5 Max (Apple10, Metal 4, 32+ GPU cores, 64+ GiB), off by default; the master switch checks the real device and refuses with one log line on any other Mac. Fast mode (lossy int8 trunk, FP8 KV, bigger chunk).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_CHUNK",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 105,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max fast mode: prefill chunk size override (diagnostics / ablation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_EXACT",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 88,
+     "backend": "metal",
+     "fn": "env_on"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "owner-m5max",
+   "note": "Metal opt-in for the Apple M5 Max (Apple10, Metal 4, 32+ GPU cores, 64+ GiB), off by default; the master switch checks the real device and refuses with one log line on any other Mac. With STRATA_INK_M5MAX=1: lossless variant only.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_FP8_KV",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 115,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 115,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max fast mode: FP8 KV cache on/off override (diagnostics / ablation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_I8_MM_MIN_M",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_runner.h",
+     "line": 1609,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "5",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max fast mode: smallest batch for the int8 NAX GEMM (diagnostics / ablation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_I8_TRUNK",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 114,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_m5max_cfg.h",
+     "line": 114,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max fast mode: int8 trunk on/off override (diagnostics / ablation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_MPP_MOE_MIN_M",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_runner.h",
+     "line": 2109,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "16",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max fast mode: smallest per-expert batch for the NAX MoE (diagnostics / ablation).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_M5MAX_PROF",
+   "backends": [
+    "metal"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/metal/ink_metal_runner.h",
+     "line": 2765,
+     "backend": "metal",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "90e258e2eb",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "owner-m5max",
+   "note": "Metal M5 Max: per-stage GPU profile dump (measurement only).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -27324,7 +27852,7 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 77,
+     "line": 102,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -27357,7 +27885,7 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 80,
+     "line": 105,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -27655,7 +28183,7 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 213,
+     "line": 320,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -27688,7 +28216,7 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 270,
+     "line": 377,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -27721,7 +28249,7 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 194,
+     "line": 301,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -28593,13 +29121,25 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 462,
+     "line": 595,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 462,
+     "line": 595,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/metal/src/mtl_rt.mm",
+     "line": 625,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/metal/src/mtl_rt.mm",
+     "line": 625,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -28616,8 +29156,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "90e258e2eb",
+   "last_date": "2026-11-27",
    "status": "research",
    "owner": "metal/mtl_rt",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -29052,13 +29592,13 @@
    "reads": [
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 323,
+     "line": 430,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "engine/metal/src/mtl_rt.mm",
-     "line": 323,
+     "line": 430,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -53339,9 +53879,15 @@
    "reads": [
     {
      "file": "engine/src/inkling2/sycl/ink_sy_common.h",
-     "line": 51,
+     "line": 53,
      "backend": "sycl",
      "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_intelarc_cfg.h",
+     "line": 187,
+     "backend": "sycl",
+     "fn": "env_truthy_arc"
     }
    ],
    "parse": "flag",
@@ -53359,8 +53905,8 @@
    "first_commit": "9b61b6918f",
    "first_date": "2026-11-23",
    "since": "v0.2.21",
-   "last_commit": "9b61b6918f",
-   "last_date": "2026-11-23",
+   "last_commit": "2ad6c94d36",
+   "last_date": "2026-11-27",
    "status": "opt-in",
    "owner": "sycl/inkling2",
    "note": "[reviewed] Inkling 2 Mini SYCL engine: 1 turns the oneMKL XMX GEMM path off (INK_SYCL_NO_XMX=1 is the older name). On Arc A-series (Alchemist, DG2) that GEMM gives last-bit differences between runs in prompt reading, so answers can vary slightly from run to run; with it off the logits repeat, at about 40% of the prompt speed (45 -> 17 tok/s on an A750, decode unchanged). Arc Pro B70 (Battlemage) is repeatable with XMX on. [docs/INTEL.md: Repeatable answers on an Alchemist card]",

@@ -5,6 +5,7 @@
 #include "mtl_rt.h"
 #include "resource_path.h"
 
+#include <dlfcn.h>
 #include <sys/sysctl.h>
 #include <time.h>
 
@@ -56,17 +57,41 @@ struct Context::Impl {
     std::thread ka;
     std::mutex all_mu;
     NSMutableArray<id<MTLBuffer>>* all = [NSMutableArray new];
+    id residency_set = nil;   // id<MTLResidencySet> when enable_residency_set() is opted in (macOS 15+)
+    bool residency_dirty = false;
     static double up_s() { return (double) clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9; }
     void touch() { last_commit.store(up_s(), std::memory_order_relaxed); }
     void track(id<MTLBuffer> b) {
         if (b == nil) return;
         std::lock_guard<std::mutex> lk(all_mu);
         [all addObject:b];
+        if (@available(macOS 15.0, *)) {
+            if (residency_set != nil) {
+                [(id<MTLResidencySet>)residency_set addAllocation:b];
+                residency_dirty = true;
+            }
+        }
     }
     void untrack(id<MTLBuffer> b) {
         if (b == nil) return;
         std::lock_guard<std::mutex> lk(all_mu);
         [all removeObjectIdenticalTo:b];
+        if (@available(macOS 15.0, *)) {
+            if (residency_set != nil) {
+                [(id<MTLResidencySet>)residency_set removeAllocation:b];
+                residency_dirty = true;
+            }
+        }
+    }
+    void commit_residency_if_dirty() {
+        if (@available(macOS 15.0, *)) {
+            if (residency_set == nil) return;
+            std::lock_guard<std::mutex> lk(all_mu);
+            if (residency_dirty) {
+                [(id<MTLResidencySet>)residency_set commit];
+                residency_dirty = false;
+            }
+        }
     }
     static bool under_pressure() {
         int lvl = 0;
@@ -153,6 +178,14 @@ Context::Context() : impl_(new Impl) {
 Context::~Context() {
     impl_->ka_stop.store(true);
     if (impl_->ka.joinable()) impl_->ka.join();
+    if (@available(macOS 15.0, *)) {
+        if (impl_->residency_set != nil) {
+            id<MTLResidencySet> rs = (id<MTLResidencySet>)impl_->residency_set;
+            [impl_->q removeResidencySet:rs];
+            [rs endResidency];
+            impl_->residency_set = nil;
+        }
+    }
     delete impl_;
 }
 
@@ -163,6 +196,80 @@ bool Context::has_family_apple(int n) const {
 bool Context::supports_metal4() const {
     if (@available(macOS 26.0, *)) return [impl_->dev supportsFamily:MTLGPUFamilyMetal4];
     return false;
+}
+int Context::gpu_core_count() const {
+    // Query AGXAccelerator "gpu-core-count" via dlopen(IOKit) to avoid adding an IOKit link dependency.
+    void* iok = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY | RTLD_LOCAL);
+    if (!iok) return 0;
+    using MatchFn = CFMutableDictionaryRef (*)(const char*);
+    using GetSvcFn = uint32_t (*)(uint32_t, CFDictionaryRef);
+    using PropFn = CFTypeRef (*)(uint32_t, CFStringRef, CFAllocatorRef, uint32_t);
+    using RelFn = int (*)(uint32_t);
+    auto fn_match = (MatchFn)dlsym(iok, "IOServiceMatching");
+    auto fn_get = (GetSvcFn)dlsym(iok, "IOServiceGetMatchingService");
+    auto fn_prop = (PropFn)dlsym(iok, "IORegistryEntryCreateCFProperty");
+    auto fn_rel = (RelFn)dlsym(iok, "IOObjectRelease");
+    int cores = 0;
+    if (fn_match && fn_get && fn_prop && fn_rel) {
+        CFMutableDictionaryRef dict = fn_match("AGXAccelerator");
+        if (dict) {
+            uint32_t svc = fn_get(0, dict);   // kIOMainPortDefault == 0
+            if (svc) {
+                CFTypeRef prop = fn_prop(svc, CFSTR("gpu-core-count"), kCFAllocatorDefault, 0);
+                if (prop) {
+                    if (CFGetTypeID(prop) == CFNumberGetTypeID()) {
+                        int32_t v = 0;
+                        if (CFNumberGetValue((CFNumberRef)prop, kCFNumberSInt32Type, &v) && v > 0) cores = (int)v;
+                    }
+                    CFRelease(prop);
+                }
+                fn_rel(svc);
+            }
+        }
+    }
+    dlclose(iok);
+    return cores;
+}
+uint64_t Context::physical_memory_bytes() const {
+    uint64_t mem = 0;
+    size_t len = sizeof(mem);
+    if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) == 0) return mem;
+    return [NSProcessInfo processInfo].physicalMemory;
+}
+void Context::enable_residency_set() {
+    if (@available(macOS 15.0, *)) {
+        std::lock_guard<std::mutex> lk(impl_->all_mu);
+        if (impl_->residency_set != nil) return;
+        MTLResidencySetDescriptor* desc = [MTLResidencySetDescriptor new];
+        desc.initialCapacity = std::max<NSUInteger>(256, impl_->all.count + 128);
+        NSError* err = nil;
+        id<MTLResidencySet> rs = [impl_->dev newResidencySetWithDescriptor:desc error:&err];
+        if (!rs) return;
+        for (id<MTLBuffer> b in impl_->all) [rs addAllocation:b];
+        [rs commit];
+        [rs requestResidency];
+        [impl_->q addResidencySet:rs];
+        impl_->residency_set = rs;
+        impl_->residency_dirty = false;
+    }
+}
+Buffer Context::alloc_untracked(size_t bytes) {
+    Buffer r;
+    @autoreleasepool {
+        const MTLResourceOptions opts = MTLResourceStorageModeShared | MTLResourceHazardTrackingModeUntracked;
+        id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:opts];
+        if (!b) {
+            std::fprintf(stderr, "mtl: alloc_untracked %zu failed\n", bytes);
+            std::exit(4);
+        }
+        std::memset([b contents], 0, bytes);
+        impl_->track(b);
+        r.handle = (__bridge_retained void*)b;
+        r.ptr = [b contents];
+    }
+    allocated_ += bytes;
+    r.bytes = bytes;
+    return r;
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
@@ -456,10 +563,67 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
     }
 }
 
+static void encode_flat(id<MTLComputeCommandEncoder> enc, const FlatDispatch& d, id<MTLComputePipelineState> __strong & cur_pso) {
+    require_fit(*d.p, d.tg[0] * d.tg[1] * d.tg[2], "flat-dispatch");
+    id<MTLComputePipelineState> next_pso = P(d.p);
+    if (next_pso != cur_pso) {
+        [enc setComputePipelineState:next_pso];
+        cur_pso = next_pso;
+    }
+    for (uint8_t i = 0; i < d.n_args; ++i) {
+        const FlatArg& a = d.args[i];
+        if (a.buf) {
+            size_t o;
+            id<MTLBuffer> mb = BO(*a.buf, a.off, o);
+            [enc setBuffer:mb offset:o atIndex:i];
+        } else {
+            [enc setBytes:a.val length:a.val_len atIndex:i];
+        }
+    }
+    if (d.tg_mem) [enc setThreadgroupMemoryLength:(d.tg_mem + 15) / 16 * 16 atIndex:0];
+    if (d.indirect)
+        [enc dispatchThreadgroupsWithIndirectBuffer:B(*d.indirect)
+                               indirectBufferOffset:d.ind_off
+                              threadsPerThreadgroup:MTLSizeMake(d.tg[0], d.tg[1], d.tg[2])];
+    else
+        [enc dispatchThreadgroups:MTLSizeMake(d.grid[0], d.grid[1], d.grid[2])
+            threadsPerThreadgroup:MTLSizeMake(d.tg[0], d.tg[1], d.tg[2])];
+}
+
+double Context::run_graph_flat(const FlatDispatch* ds, size_t count) {
+    if (!ds || count == 0) return 0.0;
+    static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
+    impl_->commit_residency_if_dirty();
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        id<MTLComputePipelineState> cur_pso = nil;
+        for (size_t i = 0; i < count; ++i) {
+            if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            encode_flat(enc, ds[i], cur_pso);
+        }
+        [enc endEncoding];
+        [cb commit];
+        impl_->touch();
+        if (spin) {
+            const auto t0 = std::chrono::steady_clock::now();
+            while (cb.status < MTLCommandBufferStatusCompleted &&
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20e-3) {}
+        }
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: flat command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
 double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
     // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
     // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
     static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
+    impl_->commit_residency_if_dirty();
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];

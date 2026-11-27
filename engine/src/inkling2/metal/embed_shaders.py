@@ -16,9 +16,11 @@ def main() -> int:
         "namespace ink_metal {",
     ]
     pairs = [
+        ("kInkMetalIqGridsSrc", "ink_metal_iq_grids.metal"),
         ("kInkMetalCodecsSrc", "ink_metal_codecs.metal"),
         ("kInkMetalOpsSrc", "ink_metal_ops.metal"),
         ("kInkMetalDsparkSrc", "ink_metal_dspark.metal"),
+        ("kInkMetalDflash2Src", "ink_metal_dflash2.metal"),
         ("kInkMetalVisionSrc", "ink_metal_vision.metal"),
         ("kInkMetalMppSrc", "ink_metal_mpp.metal"),
     ]
