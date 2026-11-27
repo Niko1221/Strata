@@ -457,6 +457,32 @@ def template_kwargs(kwargs: dict) -> dict:
     return out
 
 
+# ---- #7241 (opt-in, the config's "effort_position": "end"): the thinking level at the tail ----
+# The template writes `Thinking effort level: X` right after the tool declarations, so a request at another level starts differently and the engine reads
+# the whole conversation again.  With the option the HISTORY is rendered at the one constant level (the default) and a request at another level adds the
+# same system turn the template writes, at the END, right before the answer.  Needs an Inkling engine that checkpoints in front of that turn
+# (--tail-role-token, as the main engine's #458); without it the option is off.  A later line only BLENDS with the header level (the reporter's
+# numbers: header 0.9 + tail 0.2 gave 485 thinking tokens between 253 at 0.2 and 712 at 0.9), so this is not the default and not the same answers.
+TAIL_ROLE_TEXT = "<|message_system|>"                                # the token that opens the trailing turn: the engine's --tail-role-token
+EFFORT_TAIL_TURN = "<|message_system|><|content_text|>Thinking effort level: {}<|end_message|>"     # the template's own line
+
+
+def level_text(level: float) -> str:
+    """The level as the template prints it: "0" for none, else the number (0.2, 0.9, 0.99)."""
+    return "0" if level == 0.0 else str(float(level))
+
+
+def effort_tail(kwargs: dict | None) -> tuple[str, str]:
+    """(the level word the history is rendered at, the trailing turn) for the effort-at-the-end option.  The history is always rendered at the
+    default level (STRATA_INKLING_EFFORT, low unless set); a request at that level has no trailing turn and renders exactly as without the option."""
+    base = normalize_effort(None)
+    _, base_level = effort_of({"reasoning_effort": base})
+    _, level = effort_of(kwargs)
+    if level == base_level:
+        return base, ""
+    return base, EFFORT_TAIL_TURN.format(level_text(level))
+
+
 def prepare_messages(messages: list[dict], *, has_tools: bool = False, thinking: bool = False) -> list[dict]:
     """Canonicalize assistant tool_call arguments from JSON strings to dicts so Inkling-2-Mini's chat_template.jinja
     never raises `tool call arguments must be a parsed object, not a JSON string`.

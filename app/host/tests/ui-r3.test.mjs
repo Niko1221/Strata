@@ -133,7 +133,9 @@ test('10 (visual): the reply stays still while it streams, one live cue per step
   // Stop and Send are one height, so the message box no longer moves 5px when a reply starts and ends.
   assert.match(css, /\.st-composer__bar > \.st-btn:not\(\.st-btn--icon\) \{ height: 32px; min-height: 32px; box-sizing: border-box; \}/);
   // In a reply with activity lines the line is the one live cue for a tool; the running card above the text is gone.
-  assert.match(chat, /filter\(t => !grouped \|\| t\.state === 'proposed' \|\| t\.state === 'denied' \|\| t\.state === 'error'\)/);
+  // (#7184: the rule moved to lib/tool-cards.ts shownToolCard, which also leaves out a failed card the same call later made good, and every failed card when "Hide failed steps" is on)
+  assert.match(chat, /filter\(t => shownToolCard\(t, grouped, hideFailedTools\)\)/);
+  assert.match(read('src/lib/tool-cards.ts'), /return !grouped \|\| t\.state === 'proposed' \|\| t\.state === 'denied' \|\| t\.state === 'error';/);
   // The caret follows text, never an activity line.
   assert.match(chat, /m\.streaming && m\.content && !m\.drafts\?\.length && \(!grouped \|\| m\.blocks!\.at\(-1\)\?\.kind === 'text'\) \? <span className="caret"/);
   // A slot for what the host knows while a run is open (AGENT-LOST feeds it): read, shown, dropped at close.

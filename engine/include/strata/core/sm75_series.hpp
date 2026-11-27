@@ -1,10 +1,14 @@
-// strata/core/sm75_series.hpp - the Turing (RTX 20, compute capability 7.5) kernel series: one opt-in switch.
+// strata/core/sm75_series.hpp - the Turing (RTX 20, compute capability 7.5) kernel series: one switch, on by default since 0.2.23.
 //
 // The Turing kernels of PRs #2069-#2072, #2081, #2091-#2093, #2145-#2146, #2220-#2223, #1821 were measured on one RTX
-// 2080 Ti (and a CMP 50HX) and are bitwise equal to the kernels they replace.  We have no sm_75 card to confirm them, so
-// they are ON ONLY WHEN ASKED FOR:
+// 2080 Ti (and a CMP 50HX) and are bitwise equal to the kernels they replace.  Until 0.2.22 nobody on the team had an
+// sm_75 card to confirm them, so they were ON ONLY WHEN ASKED FOR (STRATA_SM75_PERF=1).  #7041 / #7076 measured them on
+// 2x RTX 2080 Ti (+4.7% to +21% cold prefill from 32K to 207K tokens, decode level).  Our own check on a rented RTX 2080 Ti
+// (Qwen3-30B-A3B UD-Q4_K_XL, 7 interleaved pairs): identical ids on 12 prompts including 16K and 32K, cold prefill level (B/A 0.999),
+// decode within the run-to-run spread; the reporter's prefill gain did not show on that model.  So for 0.2.23:
 //
-//   STRATA_SM75_PERF=1   turns on every bitwise Turing kernel of the series on a compute capability 7.5 card.
+//   STRATA_SM75_PERF unset or non-zero   every bitwise Turing kernel of the series is on for a compute capability 7.5 card.
+//   STRATA_SM75_PERF=0                   the series is off (the 0.2.22 default).
 //
 // Each kernel keeps the author's own switch, which wins over STRATA_SM75_PERF in both directions (=0 off, =1 on, on any
 // card where the PR said so for tests).  Nothing here changes a card that is not a 7.5: the check is the card's compute
@@ -21,12 +25,10 @@
 
 namespace strata {
 
-/// STRATA_SM75_PERF=1 (read once)
+/// the series is on: STRATA_SM75_PERF unset (the default since 0.2.23) or non-zero; =0 turns it off (read once)
+inline bool sm75_series_from(const char* e) { return e == nullptr || std::atoi(e) != 0; }
 inline bool sm75_series() {
-    static const bool on = [] {
-        const char* e = std::getenv("STRATA_SM75_PERF");
-        return e != nullptr && std::atoi(e) != 0;
-    }();
+    static const bool on = sm75_series_from(std::getenv("STRATA_SM75_PERF"));
     return on;
 }
 

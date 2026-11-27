@@ -64,6 +64,15 @@ public:
     InkColdStore(const InkColdStore&) = delete;
     InkColdStore& operator=(const InkColdStore&) = delete;
 
+    /// Opt-in 16 KiB sector alignment switch for 16 KiB-aligned .strata v1.1 files (OFF by default).
+    static bool cold_16k_enabled() noexcept {
+        auto on = [](const char* k) noexcept -> bool {
+            const char* e = std::getenv(k);
+            return e && (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        };
+        return on("STRATA_INK_COLD_16K") || on("STRATA_INK_ELASTIC_1M");
+    }
+
     /// Open `strata_path` for unbuffered NVMe streaming into a bounded LRU cache of `budget_bytes`.
     /// Pass custom `alloc_fn`/`free_fn` (e.g., `cudaHostAlloc` / `cudaFreeHost`) for pinned GPU DMA rings.
     bool open(const std::string& strata_path,
@@ -96,6 +105,9 @@ public:
                     : static_cast<size_t>(fsi.LogicalBytesPerSector);
                 sector_align_ = strata::platform::round_up_sector_alignment(phys);
             }
+            if (cold_16k_enabled() && sector_align_ < 16384u) {
+                sector_align_ = 16384u;
+            }
         } else {
             direct_ = false;
             flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS;
@@ -114,7 +126,8 @@ public:
 #endif
         if (fd_ >= 0) {
             direct_ = true;
-            sector_align_ = 4096;
+            // Opt-in 16 KiB alignment for 16 KiB-aligned .strata v1.1 files (zero NVMe 16K IU read-amp).
+            sector_align_ = cold_16k_enabled() ? 16384u : 4096u;
         } else {
             direct_ = false;
             fd_ = ::open(strata_path.c_str(), O_RDONLY);
@@ -124,7 +137,7 @@ public:
             }
 #if defined(__APPLE__) && defined(F_NOCACHE)
             (void)::fcntl(fd_, F_NOCACHE, 1);
-            sector_align_ = 4096;
+            sector_align_ = cold_16k_enabled() ? 16384u : 4096u;
 #endif
         }
 #endif
@@ -138,14 +151,31 @@ public:
         pool_bytes_ = static_cast<size_t>(n_slots_) * slot_stride_;
 
         if (alloc_fn_) {
-            pool_ = alloc_fn_(pool_bytes_);
+            if (cold_16k_enabled()) {
+                // Opt-in 16 KiB mode: ensure `align` (up to 16 KiB) buffer alignment even when the custom allocator (e.g. cudaHostAlloc) aligns to 4 KiB.
+                // Always over-allocate by `align` so the aligned-up pointer can never run past the block (review finding B20).
+                pool_raw_ = alloc_fn_(pool_bytes_ + align);
+                if (pool_raw_) {
+                    const uintptr_t addr = reinterpret_cast<uintptr_t>(pool_raw_);
+                    const uintptr_t aligned_addr = (addr + align - 1u) & ~(static_cast<uintptr_t>(align) - 1u);
+                    pool_ = reinterpret_cast<uint8_t*>(aligned_addr);
+                }
+            } else {
+                // the shipped allocation, byte for byte
+                pool_raw_ = alloc_fn_(pool_bytes_);
+                pool_ = pool_raw_;
+            }
             custom_alloc_ = true;
         } else {
 #ifdef _WIN32
-            pool_ = static_cast<uint8_t*>(VirtualAlloc(nullptr, pool_bytes_, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+            pool_raw_ = static_cast<uint8_t*>(VirtualAlloc(nullptr, pool_bytes_, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+            pool_ = pool_raw_;
 #else
             void* p = nullptr;
-            if (posix_memalign(&p, align, pool_bytes_) == 0) pool_ = static_cast<uint8_t*>(p);
+            if (posix_memalign(&p, align, pool_bytes_) == 0) {
+                pool_raw_ = static_cast<uint8_t*>(p);
+                pool_ = pool_raw_;
+            }
 #endif
             custom_alloc_ = false;
         }
@@ -154,6 +184,22 @@ public:
             err = "InkColdStore: failed to allocate " + std::to_string(pool_bytes_ >> 20) + " MiB cold ring";
             return false;
         }
+        // Probe O_DIRECT compatibility on Linux overlayfs/virtual filesystems; gracefully fall back to buffered fd on EINVAL.
+#if !defined(_WIN32) && defined(O_DIRECT)
+        if (cold_16k_enabled() && direct_ && !descs_.empty()) {   // opt-in only: the shipped open() does not read at open time
+            const ssize_t probe = ::pread(fd_, pool_, align, 0);
+            if (probe < 0 && errno == EINVAL) {
+                ::close(fd_);
+                direct_ = false;
+                fd_ = ::open(strata_path.c_str(), O_RDONLY);
+                if (fd_ < 0) {
+                    close();
+                    err = "InkColdStore: fallback open failed for " + strata_path;
+                    return false;
+                }
+            }
+        }
+#endif
         slots_.assign(static_cast<size_t>(n_slots_), Slot{});
 
         const int nr = std::max(1, std::min(8, n_readers > 0 ? n_readers : 4));
@@ -189,16 +235,17 @@ public:
             slots_.clear();
             n_slots_ = 0;
         }
-        if (pool_) {
+        if (pool_raw_) {
             if (custom_alloc_ && free_fn_) {
-                free_fn_(pool_);
+                free_fn_(pool_raw_);
             } else {
 #ifdef _WIN32
-                VirtualFree(pool_, 0, MEM_RELEASE);
+                VirtualFree(pool_raw_, 0, MEM_RELEASE);
 #else
-                std::free(pool_);
+                std::free(pool_raw_);
 #endif
             }
+            pool_raw_ = nullptr;
             pool_ = nullptr;
             pool_bytes_ = 0;
         }
@@ -396,8 +443,21 @@ public:
     void notify_active() noexcept { idle_.notify_active(); }
     void notify_idle()   noexcept { idle_.notify_idle(); }
 
+    /// Opt-in Visit-0 Coda lookahead: at Visit 0 (Prelude), enqueue low-priority 512 KiB chunked NVMe prefetches
+    /// for cold Coda experts (L18..23) so NVMe DMA overlaps the entire 36-visit looped core execution window!
+    void prefetch_coda_lookahead(const std::vector<int>& coda_keys, uint64_t gen, int max_keys = 16) {
+        if (!open_ || coda_keys.empty() || !cold_16k_enabled()) return;
+        const int take = std::min<int>(max_keys, static_cast<int>(coda_keys.size()));
+        for (int i = 0; i < take; ++i) {
+            const int key = coda_keys[static_cast<size_t>(i)];
+            if (key < 0 || static_cast<size_t>(key) >= descs_.size()) continue;
+            prefetch_hint(key, key / 128, gen);
+        }
+    }
+
     uint64_t hits()   const noexcept { return hits_.load(std::memory_order_relaxed); }
     uint64_t misses() const noexcept { return misses_.load(std::memory_order_relaxed); }
+    uint64_t bytes_read() const noexcept { return sched_.stats().bytes_read; }
     strata::core::SsdSchedulerStats scheduler_stats() const { return sched_.stats(); }
 
 private:
@@ -511,6 +571,7 @@ private:
     size_t slot_stride_ = 0;
     size_t pool_bytes_ = 0;
     int n_slots_ = 0;
+    uint8_t* pool_raw_ = nullptr;
     uint8_t* pool_ = nullptr;
     bool custom_alloc_ = false;
     AllocFn alloc_fn_;

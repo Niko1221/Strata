@@ -1113,6 +1113,113 @@ inline void expert_phase2(const InkHostExpertMeta& em, const uint8_t* body, cons
     }
 }
 
+// Opt-in multi-token row-sharded SF4/MX8 evaluators (STRATA_INK_RTX5060TI=1):
+// Computes Gate+Up+SITU rows [j0, j1) or Down rows [r0, r1) across all T tokens at once using
+// dot_sf4_row_multi / dot_mx8_row_multi (unpacks each weight block ONCE, pure AVX2 E4M3FN SIMD decode).
+inline void eval_verify_phase1_multi(
+    const InkHostExpertMeta& em, const uint8_t* body,
+    const float* const* xs, int T, int j0, int j1, float* act_base) noexcept {
+    constexpr int D = kInkHidden;
+    constexpr int I = kInkInter;
+    const bool use_avx2 = host_avx2::available();
+    const float* e4 = e4m3_lut_h();
+    const float* u8 = ue8m0_lut_h();
+    float g[16], u[16];
+    if (em.gu_code == FMT_SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w_outer = hdr[0] / hdr[1];
+        const uint8_t* bp = body + 16;
+        const uint8_t* bs = bp + (size_t)(2 * I) * (D / 2);
+        for (int j = j0; j < j1; ++j) {
+            const uint8_t* pg = bp + (size_t)(2 * j) * (D / 2);
+            const uint8_t* sg = bs + (size_t)(2 * j) * (D / 16);
+            const uint8_t* pu = bp + (size_t)(2 * j + 1) * (D / 2);
+            const uint8_t* su = bs + (size_t)(2 * j + 1) * (D / 16);
+            if (use_avx2) {
+                host_avx2::dot_sf4_row_multi(pg, sg, w_outer, xs, T, D, e4, g);
+                host_avx2::dot_sf4_row_multi(pu, su, w_outer, xs, T, D, e4, u);
+            } else {
+                for (int t = 0; t < T; ++t) {
+                    g[t] = dot_sf4_row_h(pg, sg, w_outer, xs[t], D);
+                    u[t] = dot_sf4_row_h(pu, su, w_outer, xs[t], D);
+                }
+            }
+            for (int t = 0; t < T; ++t) {
+                const float sig = 1.0f / (1.0f + std::exp(-g[t]));
+                act_base[(size_t)t * I + j] = (kInkSituBeta * std::tanh(g[t] / kInkSituBeta) * sig) *
+                                              (kInkSituLb * std::tanh(u[t] / kInkSituLb));
+            }
+        }
+    } else if (em.gu_code == FMT_MX8) {
+        const uint8_t* bp = body;
+        const uint8_t* bs = bp + (size_t)(2 * I) * D;
+        for (int j = j0; j < j1; ++j) {
+            const uint8_t* pg = bp + (size_t)(2 * j) * D;
+            const uint8_t* sg = bs + (size_t)(2 * j) * (D / 32);
+            const uint8_t* pu = bp + (size_t)(2 * j + 1) * D;
+            const uint8_t* su = bs + (size_t)(2 * j + 1) * (D / 32);
+            if (use_avx2) {
+                host_avx2::dot_mx8_row_multi(pg, sg, xs, T, D, u8, g);
+                host_avx2::dot_mx8_row_multi(pu, su, xs, T, D, u8, u);
+            } else {
+                for (int t = 0; t < T; ++t) {
+                    g[t] = dot_mx8_row_h(pg, sg, xs[t], D);
+                    u[t] = dot_mx8_row_h(pu, su, xs[t], D);
+                }
+            }
+            for (int t = 0; t < T; ++t) {
+                const float sig = 1.0f / (1.0f + std::exp(-g[t]));
+                act_base[(size_t)t * I + j] = (kInkSituBeta * std::tanh(g[t] / kInkSituBeta) * sig) *
+                                              (kInkSituLb * std::tanh(u[t] / kInkSituLb));
+            }
+        }
+    }
+}
+
+inline void eval_verify_phase2_multi(
+    const InkHostExpertMeta& em, const uint8_t* body,
+    const float* act_base, int T, int r0, int r1, float* const* ys) noexcept {
+    constexpr int D = kInkHidden;
+    constexpr int I = kInkInter;
+    const bool use_avx2 = host_avx2::available();
+    const float* e4 = e4m3_lut_h();
+    const float* u8 = ue8m0_lut_h();
+    const float* act_ptrs[16];
+    for (int t = 0; t < T; ++t) act_ptrs[t] = act_base + (size_t)t * I;
+    float yv[16];
+    if (em.dn_code == FMT_SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w_outer = hdr[2] / hdr[3];
+        const uint8_t* bp = body + em.dn_off;
+        const uint8_t* bs = bp + (size_t)D * (I / 2);
+        for (int r = r0; r < r1; ++r) {
+            const uint8_t* pr = bp + (size_t)r * (I / 2);
+            const uint8_t* sr = bs + (size_t)r * (I / 16);
+            if (use_avx2) {
+                host_avx2::dot_sf4_row_multi(pr, sr, w_outer, act_ptrs, T, I, e4, yv);
+                for (int t = 0; t < T; ++t) ys[t][r] = yv[t];
+            } else {
+                for (int t = 0; t < T; ++t) ys[t][r] = dot_sf4_row_h(pr, sr, w_outer, act_ptrs[t], I);
+            }
+        }
+    } else if (em.dn_code == FMT_MX8) {
+        const uint8_t* bp = body + em.dn_off;
+        const uint8_t* bs = bp + (size_t)D * I;
+        for (int r = r0; r < r1; ++r) {
+            const uint8_t* pr = bp + (size_t)r * I;
+            const uint8_t* sr = bs + (size_t)r * (I / 32);
+            if (use_avx2) {
+                host_avx2::dot_mx8_row_multi(pr, sr, act_ptrs, T, I, u8, yv);
+                for (int t = 0; t < T; ++t) ys[t][r] = yv[t];
+            } else {
+                for (int t = 0; t < T; ++t) ys[t][r] = dot_mx8_row_h(pr, sr, act_ptrs[t], I);
+            }
+        }
+    }
+}
+
 }  // namespace host_eval
 
 // ============================================================================
@@ -1175,6 +1282,7 @@ __global__ void __launch_bounds__(256) k_ink_doorbell_ring(
         }
         for (int k = 0; k < kInkTopK; ++k) {
             const int e = topk_idx[k];
+            if (e < 0) continue;   // a slot dropped by the opt-in tail skip: nothing to fetch or compute
             const int key = layer * kInkExperts + e;
             if (use_cnt) use_cnt[key] += 1.0f;
             if (experts[e].tier == 2) {
@@ -1265,7 +1373,11 @@ __global__ void __launch_bounds__(32) k_ink_stage_plan(
     unsigned long long* __restrict__ stat) {
     const int k = threadIdx.x;
     int miss = 0;
-    if (k < kInkTopK) {
+    if (k < kInkTopK && topk_idx[k] < 0) {   // a slot dropped by the opt-in tail skip: not a miss, nothing to restore
+        ss->eid[k] = -1;
+        ss->miss[k] = 0;
+        ss->bytes[k] = 0;
+    } else if (k < kInkTopK) {
         const int e = topk_idx[k];
         const int key = layer * kInkExperts + e;
         if (use_cnt) atomicAdd(&use_cnt[key], 1.0f);
@@ -1357,6 +1469,10 @@ struct InkHybridEngine {
     float* d_v_y    = nullptr;   // device mirror for fast scatter
     int32_t* d_v_p  = nullptr;   // device pair indices
     double dec_pcie_share = -1.0; // -1 = auto, 0 = 100% CPU, 1 = 100% PCIe DMA (STRATA_INK_DEC_PCIE_SHARE)
+    // Share of the batched (verify) cold experts that go over PCIe, taken from the launch probe of THIS box: the CPU lane and the card's copy lane work in parallel, so
+    // the share that finishes both together is t_cpu / (t_cpu + t_copy) (a lane's rate is 1 / its time per token). Set only when the card's row asks for it
+    // (COMPACT_HYBRID: 8 / 12 GB cards); -1 everywhere else, and then the fixed 0.55 / 0.65 of the shipped path applies. Never read when no cold expert exists.
+    double auto_pcie_share = -1.0;
     // Cold-expert lane at decode. STRATA_INK_EXACT unset = auto: a short launch probe times both lanes on this machine and keeps the faster one
     // (fast, the CPU lane, unless the card's copy is clearly faster); =0 forces the CPU lane (fast, not bit-identical to the card), =1 forces
     // exact (the card copies every cold expert in and computes it itself: the same bits wherever an expert lives, PCIe bound).
@@ -1479,6 +1595,8 @@ struct InkHybridEngine {
             const_cast<InkHybridEngine*>(this)->trace_flush(true);   // the file is complete up to this request even if the engine is killed
         }
     }
+    bool rtx5060ti_opt = false;        // opt-in STRATA_INK_RTX5060TI=1: 24-core pool + single-sync balanced verify + row-sharded P/E balancing
+    float rtx5060ti_pcie_share = 0.28f;
     bool l3_pf_enabled = true;    // STRATA_L3_PF: idle-worker next-layer L3 prefetch
     std::atomic<uint32_t> pf_gen{0};
     int pf_layer = -1, pf_n = 0;
@@ -1630,6 +1748,108 @@ struct InkHybridEngine {
     bool split_experts = true;   // STRATA_INK_SPLIT=0 goes back to one expert per thread
     int cur_layer = 0, cur_nj = 0, cur_ng = 0;
 
+    // Opt-in row-sharded multi-token verify state (work_mode == 3, STRATA_INK_RTX5060TI=1 only)
+    std::vector<RowTask> v_tasks;
+    int n_v_tasks = 0;
+    std::atomic<int> v_task_next{0};
+    std::atomic<int> vp1_left[kInkExperts];
+    const float* v_xs[kInkExperts][16] = {};
+    float* v_ys[kInkExperts][16] = {};
+    float* v_act_ptr[kInkExperts] = {};
+    std::vector<float> verify_act_sh;  // [128 * kInkInter] = 576 KiB
+
+    void run_verify_row_tasks() noexcept {
+        while (true) {
+            const int ti = v_task_next.fetch_add(1, std::memory_order_relaxed);
+            if (ti >= n_v_tasks) break;
+            const RowTask& tk = v_tasks[(size_t)ti];
+            const int gi = tk.job;
+            const auto& grp = verify_groups[gi];
+            const int key = cur_layer * n_experts + grp.eid;
+            const auto& hm = host_meta[(size_t)key];
+            if (tk.phase == 1) {
+                host_eval::eval_verify_phase1_multi(hm, hm.body, v_xs[gi], grp.count, tk.begin, tk.end, v_act_ptr[gi]);
+                vp1_left[gi].fetch_sub(1, std::memory_order_release);
+            } else {
+                while (vp1_left[gi].load(std::memory_order_acquire) > 0) {
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+                    __builtin_ia32_pause();
+#else
+                    std::this_thread::yield();
+#endif
+                }
+                host_eval::eval_verify_phase2_multi(hm, hm.body, v_act_ptr[gi], grp.count, tk.begin, tk.end, v_ys[gi]);
+            }
+        }
+    }
+
+    bool plan_verify_row_tasks(int ng) noexcept {
+        if (!rtx5060ti_opt || !split_experts || n_threads < 2 || ng < 1 || ng > kInkExperts) return false;
+        if (verify_act_sh.size() < (size_t)(16 * kInkTopK) * kInkInter) return false;
+        int total_cnt = 0;
+        for (int gi = 0; gi < ng; ++gi) {
+            const auto& grp = verify_groups[gi];
+            if (grp.count <= 0 || grp.count > 16) return false;
+            const auto& hm = host_meta[(size_t)(cur_layer * n_experts + grp.eid)];
+            if (!hm.body) return false;
+            if ((hm.gu_code != FMT_SF4 && hm.gu_code != FMT_MX8) ||
+                (hm.dn_code != FMT_SF4 && hm.dn_code != FMT_MX8)) return false;
+            total_cnt += grp.count;
+        }
+        if (total_cnt <= 0 || total_cnt > 16 * kInkTopK) return false;
+        int act_off = 0;
+        int order[kInkExperts];
+        for (int gi = 0; gi < ng; ++gi) {
+            order[gi] = gi;
+            const auto& grp = verify_groups[gi];
+            v_act_ptr[gi] = verify_act_sh.data() + (size_t)act_off * kInkInter;
+            act_off += grp.count;
+            for (int k = 0; k < grp.count; ++k) {
+                const int pid = grp.pids[k];
+                const int m   = pid / kInkTopK;
+                const int os  = grp.out_slots[k];
+                h_v_p[os] = pid;
+                v_xs[gi][k] = h_v_x + (size_t)m * kInkHidden;
+                v_ys[gi][k] = h_v_y + (size_t)os * kInkHidden;
+            }
+            vp1_left[gi].store(0, std::memory_order_relaxed);
+        }
+        // Heaviest multi-token experts first so fast P-cores start them immediately and minimize tail latency!
+        std::sort(order, order + ng, [&](int a, int b) { return verify_groups[a].count > verify_groups[b].count; });
+        const int target_tasks = std::max(n_threads * 4, ng * 2);
+        auto chunk16 = [](int rows, int n, int min_c) {
+            int c = (rows + n - 1) / std::max(1, n);
+            c = (c + 15) & ~15;
+            return std::max(min_c, c);
+        };
+        if (v_tasks.size() < 4096) v_tasks.resize(4096);
+        n_v_tasks = 0;
+        int c2_arr[kInkExperts];
+        for (int idx = 0; idx < ng; ++idx) {
+            const int gi = order[idx];
+            const int cnt = verify_groups[gi].count;
+            const int nc = std::max(1, std::min(16, (cnt * target_tasks + total_cnt - 1) / total_cnt));
+            const int c1 = chunk16(kInkInter, nc, 64);
+            const int c2 = chunk16(kInkHidden, nc, 128);
+            c2_arr[gi] = c2;
+            for (int b = 0; b < kInkInter; b += c1) {
+                if (n_v_tasks >= (int)v_tasks.size()) return false;
+                v_tasks[(size_t)n_v_tasks++] = {gi, 1, b, std::min(kInkInter, b + c1)};
+                vp1_left[gi].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        for (int idx = 0; idx < ng; ++idx) {
+            const int gi = order[idx];
+            const int c2 = c2_arr[gi];
+            for (int b = 0; b < kInkHidden; b += c2) {
+                if (n_v_tasks >= (int)v_tasks.size()) return false;
+                v_tasks[(size_t)n_v_tasks++] = {gi, 2, b, std::min(kInkHidden, b + c2)};
+            }
+        }
+        v_task_next.store(0, std::memory_order_relaxed);
+        return (n_v_tasks > 0);
+    }
+
     void run_row_tasks() noexcept {
         while (true) {
             const int ti = row_next.fetch_add(1, std::memory_order_relaxed);
@@ -1639,7 +1859,12 @@ struct InkHybridEngine {
             const auto& hm = host_meta[(size_t)key];
             float* ydst = const_cast<float*>(h_bell->y[cur_slot_k[tk.job]]);
             if (tk.phase == 1) {
-                host_eval::expert_phase1(hm, hm.body, cur_x, tk.begin, tk.end, act_sh[tk.job]);
+                if (rtx5060ti_opt && (hm.gu_code == FMT_SF4 || hm.gu_code == FMT_MX8)) {
+                    const float* x1[1] = {cur_x};
+                    host_eval::eval_verify_phase1_multi(hm, hm.body, x1, 1, tk.begin, tk.end, act_sh[tk.job]);
+                } else {
+                    host_eval::expert_phase1(hm, hm.body, cur_x, tk.begin, tk.end, act_sh[tk.job]);
+                }
                 p1_left[tk.job].fetch_sub(1, std::memory_order_release);
             } else {
                 while (p1_left[tk.job].load(std::memory_order_acquire) > 0) {
@@ -1649,7 +1874,12 @@ struct InkHybridEngine {
                     std::this_thread::yield();
 #endif
                 }
-                host_eval::expert_phase2(hm, hm.body, act_sh[tk.job], tk.begin, tk.end, ydst);
+                if (rtx5060ti_opt && (hm.dn_code == FMT_SF4 || hm.dn_code == FMT_MX8)) {
+                    float* y1[1] = {ydst};
+                    host_eval::eval_verify_phase2_multi(hm, hm.body, act_sh[tk.job], 1, tk.begin, tk.end, y1);
+                } else {
+                    host_eval::expert_phase2(hm, hm.body, act_sh[tk.job], tk.begin, tk.end, ydst);
+                }
             }
         }
     }
@@ -1732,6 +1962,23 @@ struct InkHybridEngine {
         if (ng <= 0) return;
         cur_layer = layer;
         cur_ng = ng;
+        if (rtx5060ti_opt && plan_verify_row_tasks(ng)) {
+            work_mode = 3;
+            work_done.store(0, std::memory_order_relaxed);
+            if (n_threads > 1 && n_v_tasks > 1) {
+                work_gen.fetch_add(1, std::memory_order_release);
+                if (workers_sleeping.load(std::memory_order_acquire) > 0) {
+                    std::lock_guard<std::mutex> lk(wake_mu);
+                    wake_cv.notify_all();
+                }
+            }
+            run_verify_row_tasks();
+            if (n_threads > 1 && n_v_tasks > 1) {
+                while (work_done.load(std::memory_order_acquire) < n_threads - 1) std::this_thread::yield();
+            }
+            work_mode = 0;
+            return;
+        }
         work_mode = 1;
         verify_next.store(0, std::memory_order_relaxed);
         work_done.store(0, std::memory_order_relaxed);
@@ -1779,7 +2026,33 @@ struct InkHybridEngine {
     void start_workers(int num_threads = 0) {
         if (active) return;
         const int hw = ink_logical_cpus();
-        n_threads = (num_threads > 0) ? num_threads : std::min(16, std::max(2, hw / 2));
+        int eff_hw = hw;
+#ifndef _WIN32
+        if (rtx5060ti_opt) {
+            // Respect container cgroup v1/v2 CPU quota so spin-wait workers NEVER trigger CFS throttling stalls!
+            long long q_us = -1, p_us = 100000;
+            if (FILE* f = std::fopen("/sys/fs/cgroup/cpu.max", "r")) {
+                char buf[64] = {};
+                if (std::fgets(buf, sizeof(buf), f) && buf[0] >= '0' && buf[0] <= '9') {
+                    (void)std::sscanf(buf, "%lld %lld", &q_us, &p_us);
+                }
+                std::fclose(f);
+            } else if (FILE* fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r")) {
+                if (std::fscanf(fq, "%lld", &q_us) == 1 && q_us > 0) {
+                    if (FILE* fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r")) {
+                        if (std::fscanf(fp, "%lld", &p_us) != 1) p_us = 100000;
+                        std::fclose(fp);
+                    }
+                }
+                std::fclose(fq);
+            }
+            if (q_us > 0 && p_us > 0) {
+                const int quota_cpus = std::max(2, (int)(q_us / p_us));
+                eff_hw = std::min(eff_hw, std::max(2, quota_cpus - 1));
+            }
+        }
+#endif
+        n_threads = (num_threads > 0) ? num_threads : (rtx5060ti_opt ? std::min(24, std::max(2, eff_hw)) : std::min(16, std::max(2, hw / 2)));
         if (const char* e = std::getenv("STRATA_INK_THREADS")) n_threads = std::max(1, std::min(128, std::atoi(e)));   // the pool size, for sweeps
         if (const char* e = std::getenv("STRATA_INK_SPLIT")) split_experts = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_L3_PF")) l3_pf_enabled = (e[0] != '0');
@@ -1823,6 +2096,10 @@ struct InkHybridEngine {
             pf_buf_busy[b]  = false;
         }
 
+        if (rtx5060ti_opt) {
+            verify_act_sh.resize((size_t)(16 * kInkTopK) * kInkInter);
+            v_tasks.resize(4096);
+        }
         stop_flag.store(false, std::memory_order_relaxed);
         for (int t = 1; t < n_threads; ++t) {
             workers.emplace_back([this, t]() {
@@ -1869,7 +2146,9 @@ struct InkHybridEngine {
                         continue;
                     }
                     seen = g;
-                    if (work_mode == 2) {
+                    if (work_mode == 3) {
+                        run_verify_row_tasks();
+                    } else if (work_mode == 2) {
                         if (prof_on) {
                             const auto tb0 = std::chrono::steady_clock::now();
                             run_row_tasks();
@@ -2500,7 +2779,7 @@ inline void launch_ink_moe_hybrid(
             ink_has_int8_tc() ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
-    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M, ink_tail_args_now(ws.y_pair, experts));   // opt-in tail skip: a dropped slot has id < 0
 
     if (M == 1 && hyb.exact_mode && hyb.exact_graph) {
         // exact mode: the card copies the cold experts in and computes them itself (see k_ink_stage_plan)
@@ -2535,8 +2814,12 @@ inline void launch_ink_moe_hybrid(
             int32_t h_idx_fallback[16 * kInkTopK] = {};
             if (!h_idx) h_idx = h_idx_fallback;
             int ecnt[kInkExperts] = {};
-            // Copy ONLY tiny topk_idx (<= 512 B) first so 0-miss visits and tiny-spill PCIe-only visits NEVER stall on x_f32 D2H!
+            // Opt-in RTX 5060 Ti single-sync path: copy topk_idx AND x_f32 together before 1 cudaStreamSynchronize!
+            const bool opt_one_sync = hyb.rtx5060ti_opt && hyb.active && hyb.h_v_x && hyb.h_v_y && (hyb.dec_pcie_share < 0.0 || hyb.dec_pcie_share < 0.999);
             INK_CK(cudaMemcpyAsync(h_idx, ws.topk_idx, (size_t)M * kInkTopK * 4, cudaMemcpyDeviceToHost, st));
+            if (opt_one_sync) {
+                INK_CK(cudaMemcpyAsync(hyb.h_v_x, x_f32, (size_t)M * kInkHidden * 4, cudaMemcpyDeviceToHost, st));
+            }
             INK_CK(cudaStreamSynchronize(st));
             if (hyb.trace_fp) {
                 uint32_t dn = 0;
@@ -2565,10 +2848,13 @@ inline void launch_ink_moe_hybrid(
             }
             // Zero-cliff small-spill fast path: when <= 6 cold experts miss (~2-6 MB) and PCIe staging is ready,
             // stream ALL of them asynchronously over PCIe H2D to GPU Tensor Cores (< 0.15 ms, zero x_f32 D2H, zero CPU wait!)
-            const bool stream_all_pcie = (hyb.dec_pcie_share < 0.0) && (host_list.size() <= 6) &&
+            const bool stream_all_pcie = !hyb.rtx5060ti_opt && (hyb.dec_pcie_share < 0.0) && (host_list.size() <= 6) &&
                                          (hyb.d_pf_stage[0] != nullptr) && (hyb.pf_stage_bytes > 0);
             const double share = (hyb.dec_pcie_share >= 0.0) ? hyb.dec_pcie_share
-                               : (stream_all_pcie ? 1.0 : (hyb.sec4_is_pinned ? 0.65 : 0.55));
+                               : (stream_all_pcie ? 1.0
+                                  : (hyb.auto_pcie_share >= 0.0 ? hyb.auto_pcie_share
+                                     : (hyb.rtx5060ti_opt ? (double)hyb.rtx5060ti_pcie_share
+                                                          : (hyb.sec4_is_pinned ? 0.65 : 0.55))));
             if (hyb.active && hyb.h_v_x && hyb.h_v_y && host_list.size() >= 2 && share < 0.999) {
                 std::sort(host_list.begin(), host_list.end(), [&](int a, int b) { return ecnt[a] > ecnt[b]; });
                 int w_tot = 0;
@@ -2590,8 +2876,8 @@ inline void launch_ink_moe_hybrid(
                     const int e = h_idx[p];
                     if (e >= 0 && e < kInkExperts && is_cpu[e]) cpu_pairs.push_back({p, e});
                 }
-                // Copy x_f32 D2H ONLY when CPU pool actually has cold misses to evaluate!
-                if (!cpu_pairs.empty()) {
+                // Copy x_f32 D2H ONLY when CPU pool actually has cold misses to evaluate (skipped when already copied in opt_one_sync)!
+                if (!cpu_pairs.empty() && !opt_one_sync) {
                     INK_CK(cudaMemcpyAsync(hyb.h_v_x, x_f32, (size_t)M * kInkHidden * 4, cudaMemcpyDeviceToHost, st));
                     INK_CK(cudaStreamSynchronize(st));
                 }

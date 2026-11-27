@@ -3,7 +3,7 @@ import { api } from '../lib/client';
 import { useImeKeys } from '../lib/ime-keys';
 import { tr } from '../lib/i18n';
 import { askNotificationPermission, playDoneSound } from '../lib/attention';
-import { setApprovalNotify, setDoneSound, setNumberQuotes, useStore } from '../lib/store';
+import { setApprovalNotify, setDoneSound, setHideFailedTools, setNumberQuotes, useStore } from '../lib/store';
 import { Btn } from './ui';
 
 /** What the host says about the desktop shell (GET /api/shell): null in a browser or while it loads. */
@@ -14,7 +14,7 @@ export interface ShellState {
     defaultPort: number;
     pinnedPort: number | null;
     minimizeToTray: boolean;
-    portNotice: { wanted: number; used: number; terminal?: boolean } | null;
+    portNotice: { wanted: number; used: number; terminal?: boolean; reserved?: boolean } | null;
 }
 
 export function useShellState(): [ShellState | null, (patch: { port?: number | null; tray?: boolean }) => Promise<string | null>] {
@@ -51,6 +51,12 @@ export function ApprovalNotifySetting() {
 export function NumberQuotesSetting() {
     const on = useStore(s => s.numberQuotes);
     return <button className="st-toggle" role="switch" aria-checked={on} aria-label={tr("Number quotes")} onClick={() => setNumberQuotes(!on)}/>;
+}
+
+/** Settings > General > Hide failed steps (#7184): a failed tool call is not drawn in the conversation. Starts at features.ts HIDE_FAILED_TOOLS_BY_DEFAULT. */
+export function HideFailedToolsSetting() {
+    const on = useStore(s => s.hideFailedTools);
+    return <button className="st-toggle" role="switch" aria-checked={on} aria-label={tr("Hide failed steps")} onClick={() => setHideFailedTools(!on)}/>;
 }
 
 /** Keep the app running in the tray when its window is closed (#3477). Desktop app on Windows and macOS only. */

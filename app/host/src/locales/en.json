@@ -3629,5 +3629,11 @@
   "modelPortActive": "Active model port: {0}.",
   "modelPortHint": "The starting port local model servers use (default 18500). Leave empty for automatic; Strata avoids probing port 8080 so it does not conflict with other local apps such as Spring Boot. Applies the next time a model loads.",
   "promptCacheSpreadLabel": "Spread prompt cache checkpoints",
-  "promptCacheSpreadHint": "Passes --prompt-cache-spread to local models so saved checkpoints thin out back through long conversations instead of clustering at the end. Uses the same RAM and cuts compaction re-read time on hybrid models. Applies the next time a model loads."
+  "promptCacheSpreadHint": "Passes --prompt-cache-spread to local models so saved checkpoints thin out back through long conversations instead of clustering at the end. Uses the same RAM and cuts compaction re-read time on hybrid models. Applies the next time a model loads.",
+  "hideFailedToolsLabel": "Hide failed steps",
+  "hideFailedToolsHint": "A step the assistant tried that did not work, such as a page that would not open, is left out of the conversation. The assistant still sees the error and can try again. A step that was refused, or that needs your answer, is always shown.",
+  "portReservedTitle": "Port {0} is reserved by the system",
+  "portReservedBody": "Nothing is using port {0}, but the system keeps it back; on Windows this is often WSL (mirrored networking), Hyper-V or Docker. Strata started on port {1} and will use it again next time, so your chats and settings stay in one place. To choose a port yourself, open Settings and set App port. Chats and settings saved on port {0} are not shown here.",
+  "s9160": "No longer offered",
+  "s9161": "Update available"
 }

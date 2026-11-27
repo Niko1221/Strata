@@ -11,10 +11,16 @@ import { sizeGb } from '../lib/format';
 import { NativeProgress } from './NativeModels';
 import { ownFilesVision } from '../lib/own-files-vision';
 
-interface Preview { path: string; preview: { model_dir?: string; plain_issues?: string[]; already_set_up?: { data_dir?: string | null; pack?: string | null } | null; file_count: number; total_bytes: number; file_set_status: string; issues: string[]; messages?: string[]; projectors?: { name: string; status: string; pinned: boolean; plain: string }[]; reads_pictures?: boolean; candidate_selection: { family: string; model: string } | null } }
+import { cleanDisplayName, customTarget, suggestedDisplayName } from '../lib/custom-models';
 
-/** The words for why a folder of GGUF files cannot be used: a sentence and what to do, the checker's own codes under Details. */
-function problem(issues: string[]): { message: string; next: string } {
+/** `custom`: the files are not a build Strata publishes (a fine-tune, a merge, another maker's quantization) but have the layout of a model its engines run: they are used in place under a name the person chooses. */
+interface Preview { path: string; preview: { model_dir?: string; file_kind?: 'gguf' | 'strata'; plain_issues?: string[]; already_set_up?: { data_dir?: string | null; pack?: string | null } | null; file_count: number; total_bytes: number; file_set_status: string; issues: string[]; messages?: string[]; projectors?: { name: string; status: string; pinned: boolean; plain: string }[]; reads_pictures?: boolean; candidate_selection: { family: string; model: string; custom?: boolean; suggested_label?: string; family_title?: string; base_family?: string; base_model?: string } | null } }
+
+/** The model families Strata's own engines run, in the words of the unsupported-variant message. */
+export const SUPPORTED_FAMILIES_TEXT = 'Strata runs Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, HY-4 Flash and Inkling-2-Mini, and compatible fine-tunes and quantizations of them. Download one from Models, or choose its .strata or .gguf files.';
+
+/** The words for why a folder of model files cannot be used: a sentence and what to do, the checker's own codes under Details. */
+export function problem(issues: string[]): { message: string; next: string } {
     const has = (re: RegExp) => issues.some(i => re.test(i));
     if (has(/multiple_model_groups/))
         return { message: 'This folder holds more than one model.', next: 'Type the full path of the .gguf file of the one you want, or choose the folder of that model.' };
@@ -23,18 +29,20 @@ function problem(issues: string[]): { message: string; next: string } {
     if (has(/unsupported_architecture|unsupported_or_missing_architecture/))
         return { message: 'This model type isn’t supported by the Strata engine.', next: 'Add it as a Custom model API instead: start it with llama-server, then open Settings > Models > Add model provider > Custom model API.' };
     if (has(/unrecognized_or_unsupported_model_variant|expert_quantization|tokenizer/))
-        return { message: 'Strata can’t run these files yet.', next: 'Strata runs the Qwen3.8-Flash-Next models. Download one from Models, or choose a folder with its files.' };
-    return { message: 'These files could not be checked.', next: 'Check that the folder holds complete GGUF files, then try again. The file named under Details says what is wrong with it.' };
+        return { message: 'Strata can’t run these files yet.', next: SUPPORTED_FAMILIES_TEXT };
+    return { message: 'These files could not be checked.', next: 'Check that the folder holds complete .strata or .gguf files, then try again. The file named under Details says what is wrong with it.' };
 }
 
-/** "Use a local GGUF": choose the folder of a model you already have, Strata checks it, and prepares and loads it without copying
+/** "Use local model files": choose the folder of a model you already have, or one .strata or .gguf file, Strata checks it, and prepares and loads it without copying
  *  or downloading the model files. The same page layout and cards as the optimized models page. */
 export function NativeLocalModel({ onBack }: { onBack: () => void }) {
     const native = useNative(), ime = useImeKeys();
     const [typed, setTyped] = useState(''), [checked, setChecked] = useState<Preview | null>(null), [pending, setPending] = useState(false), [error, setError] = useState(''), [jobId, setJobId] = useState('');
     const job = native?.jobs.find(j => j.id === jobId);
     const active = native?.jobs.find(j => j.state === 'running');
+    const [label, setLabel] = useState('');
     const selection = checked?.preview.candidate_selection;
+    const isCustom = selection?.custom === true;
     const usable = !!checked && checked.preview.file_set_status === 'plausible' && !!selection;
     const version = selection ? nativeCatalogModels(native?.catalog?.families ?? []).flatMap(f => f.sizes).find(s => s.sourceFamily === selection.family && s.model === selection.model) : undefined;
     const family = selection ? nativeCatalogModels(native?.catalog?.families ?? []).find(f => f.sizes.some(s => s.sourceFamily === selection.family && s.model === selection.model)) : undefined;
@@ -47,6 +55,7 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
             if (!result.cancelled) {
                 setChecked(result);
                 setTyped(result.path);
+                setLabel(suggestedDisplayName(result.preview.candidate_selection?.suggested_label, result.path));
             }
         }
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -64,8 +73,12 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
         setError('');
         try {
             const isInkling = selection.family === 'inkling-2-mini';
-            const localTarget = isInkling && /\.(gguf|strata)$/i.test(checked.path) ? checked.path : (checked.preview.model_dir ?? checked.path);
-            const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: localTarget, ...(ownDataFolder ? { data_dir: ownDataFolder } : {}), context: isInkling ? 32768 : (native?.catalog?.recommendation?.context ?? 32768), vision: ownFilesVision(checked.preview.projectors, native?.visionReader, native?.installed?.models, selection.family), kv: 'int8', loadAfter: true } });
+            // A custom build is used from the very file that was picked (the folder can hold the official files too); it is saved under the name the person chose, never over the official build of the same size.
+            const localTarget = isCustom ? customTarget(checked.path, checked.preview.model_dir, true) : isInkling && /\.(gguf|strata)$/i.test(checked.path) ? checked.path : (checked.preview.model_dir ?? checked.path);
+            const customName = isCustom ? cleanDisplayName(label) : '';
+            if (isCustom && !customName)
+                throw new Error('Give this model a name.');
+            const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: localTarget, ...(isCustom ? { custom_label: customName, drafting: 'auto' } : {}), ...(ownDataFolder && !isCustom ? { data_dir: ownDataFolder } : {}), context: isInkling ? 32768 : (native?.catalog?.recommendation?.context ?? 32768), vision: ownFilesVision(checked.preview.projectors, native?.visionReader, native?.installed?.models, selection.family), kv: 'int8', loadAfter: true } });
             setJobId(result.id);
         }
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -75,17 +88,18 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
     return <Screen plainHeader title={tr("Model")} actions={<Btn onClick={onBack}>{tr("Back")}</Btn>}>
   <div className="native-model-layout">
    <div className="stack stack--lg">
-    <section className="st-card native-choice"><h2 className="h3">{tr("Use a local GGUF…")}</h2>
-     <p className="small muted">{tr("Already have a supported model on this computer? Choose the folder that holds its files, or one of its .gguf files. Strata checks them, prepares the model and loads it. Nothing is copied or downloaded.")}</p>
-     <label className="input-field"><span>{tr("Folder with the GGUF files, or one .gguf file")}</span><input className="st-input" value={typed} placeholder={tr("Full path to the folder or the file")} spellCheck={false} onChange={e => setTyped(e.target.value)} {...ime.events} onKeyDown={e => { if (ime.owns(e)) return; if (e.key === 'Enter' && typed.trim()) void check(typed); }}/></label>
+    <section className="st-card native-choice"><h2 className="h3">{tr("Use local model files (.strata or .gguf)…")}</h2>
+     <p className="small muted">{tr("Already have a supported model on this computer, such as a compatible fine-tune or quantization? Choose the folder that holds its files, or one of its .strata or .gguf files. Strata checks them, prepares the model and loads it. Nothing is copied or downloaded, and your files are never changed.")}</p>
+     <label className="input-field"><span>{tr("Folder with the model files, or one .strata or .gguf file")}</span><input className="st-input" value={typed} placeholder={tr("Full path to the folder or the file")} spellCheck={false} onChange={e => setTyped(e.target.value)} {...ime.events} onKeyDown={e => { if (ime.owns(e)) return; if (e.key === 'Enter' && typed.trim()) void check(typed); }}/></label>
      <div className="native-settings-actions"><Btn icon="folder" disabled={pending || !!active} onClick={() => void check('')}>{tr("Choose folder")}</Btn><Btn disabled={pending || !typed.trim() || !!active} onClick={() => void check(typed)}>{tr(pending && !jobId ? 'Checking…' : 'Check files')}</Btn></div>
     </section>
     {tr(checked ? <section className="st-card native-choice">{tr(usable ? <>
-      <h2 className="h3">{tr(family ? family.title : 'Model found')}</h2>
-      <p><strong>{tr(version ? catalogVersionLabel(version) : selection?.model ?? '')}</strong> · {tr(selection?.model ?? '')}</p>
+      <h2 className="h3">{tr(selection?.family_title ?? family?.title ?? 'Model found')}{tr(isCustom ? <> <span className="version-tag">{tr("Custom")}</span></> : null)}</h2>
+      <p><strong>{tr(isCustom ? 'Custom build' : version ? catalogVersionLabel(version) : selection?.model ?? '')}</strong> · {tr(isCustom ? (version ? `${tr('Closest build:')} ${catalogVersionLabel(version)}` : selection?.model ?? '') : selection?.model ?? '')}</p>
+      {tr(isCustom ? <label className="input-field local-model-name"><span>{tr("Display name")}</span><input className="st-input" aria-label={tr("Display name")} value={label} maxLength={80} spellCheck={false} disabled={pending || !!active} onChange={e => setLabel(e.target.value)}/><small className="muted">{tr("This is how the model is listed in Strata. Your files stay where they are.")}</small></label> : null)}
       <p className="small muted">{tr("{0} files · {1}", [checked.preview.file_count, sizeGb(checked.preview.total_bytes / 1024 ** 3)])}</p>
       {tr(checked.preview.messages?.map(m => <p className="small muted" key={m}>{tr(m)}</p>))}
-      <div className="native-model-actions"><Btn variant="primary" icon="models" disabled={pending || !!active} onClick={() => void prepare()}>{tr(pending ? 'Checking…' : 'Prepare and load')}</Btn></div>
+      <div className="native-model-actions"><Btn variant="primary" icon="models" disabled={pending || !!active || (isCustom && !cleanDisplayName(label))} onClick={() => void prepare()}>{tr(pending ? 'Checking…' : 'Prepare and load')}</Btn></div>
      </> : <>
       <h2 className="h3">{tr(found!.message)}</h2>
       <p className="small muted">{tr(found!.next)}</p>

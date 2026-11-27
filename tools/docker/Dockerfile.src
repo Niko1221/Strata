@@ -77,7 +77,7 @@ RUN set -e; \
     last=$(echo "$CUDA_ARCHITECTURES" | tr ';,' '  ' | awk '{print $NF}'); \
     python3 tools/packaging/package_engine.py --src /stage --backend cuda --version "$ver" --out /engine $archs --arch "compute_$last" \
         --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt --include 'libstrata_kq*' \
-        --include strata-vision; \
+        --include strata-vision --include 'licenses/*'; \
     if [ "$BUILD_HY4" = "1" ]; then \
       hy4_bin=""; \
       if [ -f build/strata-hy4 ]; then hy4_bin=build/strata-hy4; elif [ -f build/src/hy4flash/strata-hy4 ]; then hy4_bin=build/src/hy4flash/strata-hy4; fi; \
@@ -87,7 +87,7 @@ RUN set -e; \
       cp /stage/BUILD.json /stage-hy4/BUILD.json; \
       python3 tools/packaging/collect_libs.py --binary "$hy4_bin" --search /usr/local/cuda/lib64 --out /stage-hy4 --also 'libcublasLt.so*'; \
       python3 tools/packaging/package_engine.py --src /stage-hy4 --backend cuda --shape hy4 --version "$ver" --out /shapes/hy4/engine $archs --arch "compute_$last" \
-          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt; \
+          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt --include 'licenses/*'; \
     fi; \
     if [ "$BUILD_INKLING" = "1" ]; then \
       ink_bin=""; \
@@ -98,7 +98,7 @@ RUN set -e; \
       cp /stage/BUILD.json /stage-inkling/BUILD.json; \
       python3 tools/packaging/collect_libs.py --binary "$ink_bin" --search /usr/local/cuda/lib64 --out /stage-inkling --also 'libcublasLt.so*'; \
       python3 tools/packaging/package_engine.py --src /stage-inkling --backend cuda --shape inkling2 --version "$ver" --out /shapes/inkling2/engine $archs --arch "compute_$last" \
-          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt; \
+          --min-driver nvidia=$mindriver --variant cuda$cudamajor --platform linux-x86_64 --build-id "docker-source-${ver}-cuda${cudafull}" --include SYSTEM-LIBS.txt --include 'licenses/*'; \
     fi; \
     for d in /engine/*/ /shapes/*/engine/*/; do \
       [ -d "$d" ] || continue; \

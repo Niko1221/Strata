@@ -50,6 +50,12 @@ struct alignas(64) InkSyDoorbell {
     float   x_in[kSyHybridMaxBatch * kSyHybridD];
     int32_t cpu_pair_ids[kSyHybridMaxPairs];
     float   y_cpu[kSyHybridMaxPairs * kSyHybridD];
+    // Iso-Time Hybrid (STRATA_INK_INTELARC=1): pinned USM VRAM plan read directly by GPU (0 h2d_sync stalls!)
+    int32_t vram_uexp[128];
+    int32_t vram_uoff[128];
+    int32_t vram_ucnt[128];
+    int32_t vram_pairs[kSyHybridMaxPairs];
+    int32_t vram_n_uniq[1];
 };
 
 // SG16 kernel: scatter ONLY CPU-computed weighted expert outputs (9 KB/pair) from pinned USM into b_moe_yp!
@@ -69,6 +75,7 @@ inline void k_moe_gu_situ_single_sg16(
     InkSyExpertDev ed, const float* x_in,
     const int* pair_list, int off, int n, float* h_act) {
     if (n <= 0) return;
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev();
     Q().parallel_for(NR(72, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4, lane = (int)it.get_local_id(0) & 15;
         const int r = (int)it.get_group(0) * 16 + sg;
@@ -139,8 +146,8 @@ inline void k_moe_gu_situ_single_sg16(
                 for (int unit = lane; unit < 288; unit += 16) {
                     const int col = unit << 3;
                     float wg[8], wu[8];
-                    sy_gguf_decode_8(gt, rg, col, hdr->gate_scale, wg);
-                    sy_gguf_decode_8(gt, ru, col, hdr->up_scale, wu);
+                    sy_gguf_decode_8(gt, rg, col, hdr->gate_scale, wg, iq_grids);
+                    sy_gguf_decode_8(gt, ru, col, hdr->up_scale, wu, iq_grids);
                     for (int i = 0; i < mm; ++i) {
                         const float* xp = x_in + (size_t)tk[i] * 2304 + col;
                         float dg = 0.0f, du = 0.0f;
@@ -190,6 +197,7 @@ inline sycl::event k_moe_dn_single_sg16(
     InkSyExpertDev ed, const float* topk_w,
     const int* pair_list, int off, int n, const float* h_act, float* y_pairs) {
     if (n <= 0) return sycl::event{};
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev();
     return Q().parallel_for(NR(72, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4, lane = (int)it.get_local_id(0) & 15;
         const int rp = (int)it.get_group(0) * 16 + sg;
@@ -257,8 +265,8 @@ inline sycl::event k_moe_dn_single_sg16(
                 for (int unit = lane; unit < 144; unit += 16) {
                     const int col = unit << 3;
                     float w0[8], w1[8];
-                    sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, w0);
-                    sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, w1);
+                    sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, w0, iq_grids);
+                    sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, w1, iq_grids);
                     for (int i = 0; i < mm; ++i) {
                         const float* xp = h_act + (size_t)pid[i] * 1152 + col;
                         float d0 = 0.0f, d1 = 0.0f;
@@ -634,9 +642,12 @@ struct InkSyHybridEngine {
         const bool is_loop_pass0 = is_core && (visit_pass == 0);
         const float freq_inc = is_core ? 3.0f : 1.0f;
 
-        // M <= 2 (single/dual-stream decode): bandwidth-bound -> CPU DDR5 worker pool (+43% vs PCIe!)
-        // M >= 3 (batched c=4..64 decode, DSpark M=8 verify, prefill): amortized DMA -> Ping-Pong GPU VRAM Streaming!
-        if (M <= 2 && M <= kSyHybridMaxBatch) {
+        // OFF: M <= 2 CPU worker pool.
+        // STRATA_INK_INTELARC=1 (Phase 8 Iso-Time Hybrid): M <= 16 concurrent CPU+GPU decode/DFlash2 verify with
+        // pinned USM vram_plan (0 h2d_sync stalls!).
+        const auto& acfg = arc_cfg();
+        const int max_cpu_m = acfg.active ? acfg.hybrid_max_m : 2;
+        if (M <= max_cpu_m && M <= kSyHybridMaxBatch) {
             // 1. Copy tiny router output + MoE input (M * 9 KB) to pinned USM doorbell
             d2h(bell->topk_idx, b_topk_idx, (size_t)P * sizeof(int32_t));
             d2h(bell->topk_w, b_topk_w, (size_t)P * sizeof(float));
@@ -644,13 +655,18 @@ struct InkSyHybridEngine {
             wait();
 
             // 2. Partition P pairs into VRAM-resident vs CPU-RAM groups
-            int h_uexp[128], h_uoff[128], h_ucnt[128], h_pairs[kSyHybridMaxPairs];
+            int* h_uexp = acfg.active ? bell->vram_uexp : nullptr;
+            int* h_uoff = acfg.active ? bell->vram_uoff : nullptr;
+            int* h_ucnt = acfg.active ? bell->vram_ucnt : nullptr;
+            int* h_pairs = acfg.active ? bell->vram_pairs : nullptr;
+            int s_uexp[128], s_uoff[128], s_ucnt[128], s_pairs[kSyHybridMaxPairs];
+            if (!acfg.active) { h_uexp = s_uexp; h_uoff = s_uoff; h_ucnt = s_ucnt; h_pairs = s_pairs; }
             int n_vram_u = 0, vram_p = 0;
             int n_cpu_g = 0, cpu_p = 0;
             int exp_to_vg[128], exp_to_cg[128];
             std::memset(exp_to_vg, -1, sizeof(exp_to_vg));
             std::memset(exp_to_cg, -1, sizeof(exp_to_cg));
-            int v_pair_tmp[128][16];
+            int v_pair_tmp[128][32];
 
             for (int pid = 0; pid < P; ++pid) {
                 const int e = bell->topk_idx[pid]; if (e < 0 || e >= E) continue;
@@ -667,7 +683,7 @@ struct InkSyHybridEngine {
                         h_uexp[vg] = e;
                         h_ucnt[vg] = 0;
                     }
-                    if (h_ucnt[vg] < 16) v_pair_tmp[vg][h_ucnt[vg]++] = pid;
+                    if (h_ucnt[vg] < 32) v_pair_tmp[vg][h_ucnt[vg]++] = pid;
                 } else {
                     ++stat_cpu_hits;
                     int cg = exp_to_cg[e];
@@ -714,14 +730,23 @@ struct InkSyHybridEngine {
 
             // 4. Launch GPU VRAM-resident experts simultaneously on Q()!
             if (n_vram_u > 0) {
-                h2d_sync(b_moe_uexp, h_uexp, (size_t)n_vram_u * sizeof(int));
-                h2d_sync(b_moe_uoff, h_uoff, (size_t)n_vram_u * sizeof(int));
-                h2d_sync(b_moe_ucnt, h_ucnt, (size_t)n_vram_u * sizeof(int));
-                h2d_sync(b_moe_pairs, h_pairs, (size_t)vram_p * sizeof(int));
-                h2d_sync(b_moe_n_uniq, &n_vram_u, sizeof(int));
                 const InkSyExpertDev* ex_layer = mod->expert_dev + (size_t)ip * E;
-                k_moe_gu_situ_sg16(ex_layer, b_mlp_in, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, n_vram_u, b_moe_h);
-                k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, n_vram_u, b_moe_h, b_moe_yp);
+                if (acfg.active) {
+                    // Iso-Time Hybrid: zero h2d_sync stalls! GPU reads pinned USM vram_plan directly!
+                    bell->vram_n_uniq[0] = n_vram_u;
+                    k_moe_gu_situ_sg16(ex_layer, b_mlp_in, bell->vram_uexp, bell->vram_uoff, bell->vram_ucnt,
+                                       bell->vram_pairs, bell->vram_n_uniq, n_vram_u, b_moe_h);
+                    k_moe_dn_sg16(ex_layer, b_topk_w, bell->vram_uexp, bell->vram_uoff, bell->vram_ucnt,
+                                  bell->vram_pairs, bell->vram_n_uniq, n_vram_u, b_moe_h, b_moe_yp);
+                } else {
+                    h2d_sync(b_moe_uexp, h_uexp, (size_t)n_vram_u * sizeof(int));
+                    h2d_sync(b_moe_uoff, h_uoff, (size_t)n_vram_u * sizeof(int));
+                    h2d_sync(b_moe_ucnt, h_ucnt, (size_t)n_vram_u * sizeof(int));
+                    h2d_sync(b_moe_pairs, h_pairs, (size_t)vram_p * sizeof(int));
+                    h2d_sync(b_moe_n_uniq, &n_vram_u, sizeof(int));
+                    k_moe_gu_situ_sg16(ex_layer, b_mlp_in, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, n_vram_u, b_moe_h);
+                    k_moe_dn_sg16(ex_layer, b_topk_w, b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_n_uniq, n_vram_u, b_moe_h, b_moe_yp);
+                }
             }
 
             // 5. Wait for CPU pool completion & scatter ONLY 9 KB/pair outputs back into b_moe_yp!

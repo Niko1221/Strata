@@ -3629,5 +3629,11 @@
   "modelPortActive": "当前模型端口：{0}。",
   "modelPortHint": "本地模型服务器使用的起始端口（默认 18500）。留空为自动；Strata 会避免探测 8080 端口，以免与 Spring Boot 等本地应用冲突。下次加载模型时生效。",
   "promptCacheSpreadLabel": "分散提示缓存检查点",
-  "promptCacheSpreadHint": "向本地模型传递 --prompt-cache-spread，使保存的检查点在长对话中向后稀疏分布而不是集中在末尾。内存占用不变，并可大幅减少混合模型压缩重读时间。下次加载模型时生效。"
+  "promptCacheSpreadHint": "向本地模型传递 --prompt-cache-spread，使保存的检查点在长对话中向后稀疏分布而不是集中在末尾。内存占用不变，并可大幅减少混合模型压缩重读时间。下次加载模型时生效。",
+  "hideFailedToolsLabel": "隐藏失败的步骤",
+  "hideFailedToolsHint": "助手尝试过但没有成功的步骤（例如打不开的网页）不会显示在对话中。助手仍会看到错误并可以重试。被拒绝的步骤，或需要你回答的步骤，始终会显示。",
+  "portReservedTitle": "端口 {0} 被系统保留",
+  "portReservedBody": "没有程序在使用端口 {0}，但系统将其保留；在 Windows 上这通常来自 WSL（镜像网络）、Hyper-V 或 Docker。Strata 已在端口 {1} 上启动，下次会继续使用该端口，这样你的聊天和设置会保留在同一处。如需自己选择端口，请打开“设置”并设置应用端口。保存在端口 {0} 上的聊天和设置不会在此显示。",
+  "s9160": "不再提供",
+  "s9161": "有可用更新"
 }

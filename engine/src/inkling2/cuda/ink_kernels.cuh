@@ -24,6 +24,7 @@ __global__ void __launch_bounds__(256) k_ink_embed_norm(
     float* __restrict__ out,               // [M, 2304] F32
     int M,
     int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     if (m >= M) return;
     const int tid = threadIdx.x;
@@ -130,6 +131,7 @@ __global__ void __launch_bounds__(256) k_ink_attn_res_mix(
     const float* __restrict__ nw0 = nullptr,
     const float* __restrict__ nw1 = nullptr,
     const float* __restrict__ nw2 = nullptr) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     if (m >= M) return;
     const int tid  = threadIdx.x;
@@ -277,6 +279,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_down_smallM(
     const float* __restrict__ w_down, // [64, 4608]
     float* __restrict__ gate,         // [M, 64]
     int M, int D2) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int r = blockIdx.x;  // 0..63
     if (r >= kInkGateRank) return;
     const int tid = threadIdx.x;
@@ -316,6 +319,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_apply_smallM(
     const float* __restrict__ w_forget, // [2304, 64]
     float* __restrict__ out,            // [M, 2304] (may alias cur)
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     __shared__ float s_gate[MAX_M][kInkGateRank];
     const int tid = threadIdx.x;
     for (int i = tid; i < M * kInkGateRank; i += 256) {
@@ -433,6 +437,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_3x_down_smallM(
     const float* __restrict__ wd0, const float* __restrict__ wd1, const float* __restrict__ wd2,
     float* __restrict__ gate3,       // [3, M, 64]
     int M, int D2) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int r = blockIdx.x;  // 0..63
     const int c = blockIdx.y;  // 0..2
     if (r >= kInkGateRank || c >= 3) return;
@@ -472,6 +477,7 @@ __global__ void __launch_bounds__(256) k_ink_ctrl_3x_apply_smallM(
     const float* __restrict__ wf0, const float* __restrict__ wf1, const float* __restrict__ wf2,
     float* __restrict__ out0, float* __restrict__ out1, float* __restrict__ out2,
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int c = blockIdx.y;  // 0..2
     if (c >= 3) return;
     __shared__ float s_gate[MAX_M][kInkGateRank];
@@ -516,6 +522,7 @@ __global__ void __launch_bounds__(256) k_ink_rms_norm_3x(
     float* __restrict__ x0, float* __restrict__ x1, float* __restrict__ x2,
     const float* __restrict__ w0, const float* __restrict__ w1, const float* __restrict__ w2,
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     const int c = blockIdx.y;
     if (m >= M || c >= 3) return;
@@ -554,6 +561,7 @@ __global__ void __launch_bounds__(256) k_ink_attn_res_3x_cat_rms(
     float* __restrict__ msgs_out,    // [4, M, D]
     float* __restrict__ cat3_out,    // [3, M, 2*D] (only used when cat3_out != nullptr)
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     const int c = blockIdx.y;  // 0..3
     if (m >= M || c >= 4) return;
@@ -670,6 +678,7 @@ __global__ void __launch_bounds__(256) k_ink_mlp_res_cat_rms(
     float* __restrict__ moe_in_out,   // [M, D]
     float* __restrict__ cat_out,      // [M, 2*D]
     int M, int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     if (m >= M) return;
     const int tid = threadIdx.x;
@@ -765,7 +774,8 @@ __global__ void __launch_bounds__(256) k_ink_moe_reduce8_sconv_m1(
     const float* __restrict__ y_pair,     // [8, 2304]
     const float* __restrict__ static_w,   // [2304, 4]
     float* __restrict__ history,          // [3, 2304]
-    float* __restrict__ cur_io) {         // [2304] in/out
+    float* __restrict__ cur_io) { // [2304] in/out
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int c = blockIdx.x * 256 + threadIdx.x;
     if (c >= kInkHidden) return;
     float cur = 0.0f;
@@ -901,6 +911,7 @@ __global__ void __launch_bounds__(256) k_ink_rms_norm(
     __nv_bfloat16* __restrict__ out_bf16,
     int M,
     int D) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.x;
     if (m >= M) return;
     const int tid = threadIdx.x;
@@ -1020,6 +1031,7 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_seq(
     int n_heads,
     bool update_hist,
     bool add_to_out = false) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int c = blockIdx.x * 256 + threadIdx.x;
     if (c >= C) return;
     const float4 sw = reinterpret_cast<const float4*>(static_w)[c];
@@ -1331,6 +1343,7 @@ __global__ void __launch_bounds__(256) k_ink_gemv_f32(
     const float* __restrict__ X,
     float* __restrict__ Y,
     int M, int N, int K) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int warp = threadIdx.x >> 5;
     const int lane = threadIdx.x & 31;
     const int row = blockIdx.x * 8 + warp;
@@ -1393,6 +1406,7 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
     InkMultiProj mp,
     const float* __restrict__ X,     // [M, K] F32
     int M, int K) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int tid  = threadIdx.x;
     const int sub  = tid >> 4;       // 0..7 output rows per CTA
     const int lg   = tid & 15;       // 0..15 lanes per row (16 x 16B = 256B coalesced!)
@@ -1877,14 +1891,22 @@ struct UnembedScreenIndex {
     float*   sc = nullptr;    // [V] per-row scale = amax / 127.0
     float*   eps = nullptr;   // [V] exact L2 residual norm ||w_v - w_hat_v||_2
     int      V = 0;
+    int      V_pad = 0;       // padded rows (multiple of 4) for INT8 TC GEMM when borrowed from Q8_ROW unembed
     bool     ready = false;
+    bool     borrowed = false; // true when q8/sc point directly into compact d_trunk (do not cudaFree!)
 
     void free_all() {
-        if (q8)  { INK_CK(cudaFree(q8));  q8 = nullptr; }
-        if (sc)  { INK_CK(cudaFree(sc));  sc = nullptr; }
+        if (!borrowed) {
+            if (q8)  { INK_CK(cudaFree(q8));  }
+            if (sc)  { INK_CK(cudaFree(sc));  }
+        }
+        q8 = nullptr;
+        sc = nullptr;
         if (eps) { INK_CK(cudaFree(eps)); eps = nullptr; }
         V = 0;
+        V_pad = 0;
         ready = false;
+        borrowed = false;
     }
 };
 
@@ -2232,6 +2254,7 @@ __global__ void __launch_bounds__(256) k_ink_screen_eval_bf16(
 
 // Logit softcap in-place: z = 30.0 * tanh(z / 30.0)
 __global__ void __launch_bounds__(256) k_ink_softcap(float* __restrict__ logits, size_t n, float cap) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const size_t i = (size_t)blockIdx.x * 256 + threadIdx.x;
     if (i < n) logits[i] = cap * tanhf(logits[i] * (1.0f / cap));
 }

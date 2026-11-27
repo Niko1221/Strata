@@ -167,6 +167,7 @@ inline void k_sk_to_f16_rows_sg16(const uint8_t* W, int n0, int nc, int K, half*
 
 // Dequant expert w13 [2304, 2304] -> half (row 2r = gate, 2r+1 = up), 128-bit coalesced vector stores!
 inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev();
     Q().parallel_for(NR(144, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4;
         const int lane = (int)it.get_local_id(0) & 15;
@@ -223,7 +224,7 @@ inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
             for (int unit = lane; unit < 288; unit += 16) {
                 const int col = unit << 3;
                 float wf[8];
-                sy_gguf_decode_8(gt, wr, col, ext_sc, wf);
+                sy_gguf_decode_8(gt, wr, col, ext_sc, wf, iq_grids);
                 sycl::vec<half, 8> v;
 #pragma unroll
                 for (int t = 0; t < 8; ++t) v[t] = (half)wf[t];
@@ -263,6 +264,7 @@ inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
 
 // Dequant expert w2 [2304, 1152] -> half (handles SF4, MX8, and paired 2-row S_K SB_0..SB_8!), 128-bit stores!
 inline void k_dequant_moe_dn_f16_sg16(InkSyExpertDev ed, half* w_f16) {
+    const InkSyIqGridTable* iq_grids = iq_grid_table_dev();
     Q().parallel_for(NR(72, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4;
         const int lane = (int)it.get_local_id(0) & 15;
@@ -335,8 +337,8 @@ inline void k_dequant_moe_dn_f16_sg16(InkSyExpertDev ed, half* w_f16) {
             for (int unit = lane; unit < 144; unit += 16) {
                 const int col = unit << 3;
                 float wf0[8], wf1[8];
-                sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, wf0);
-                sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, wf1);
+                sy_gguf_decode_8(dt, r0, col, hdr->dn_scale, wf0, iq_grids);
+                sy_gguf_decode_8(dt, r1, col, hdr->dn_scale, wf1, iq_grids);
                 sycl::vec<half, 8> u, v;
 #pragma unroll
                 for (int t = 0; t < 8; ++t) { u[t] = (half)wf0[t]; v[t] = (half)wf1[t]; }

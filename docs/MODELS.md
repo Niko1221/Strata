@@ -1,11 +1,11 @@
 ﻿# Which model? Sizes, versions and what fits
 
 This page helps you choose a model and check that your computer can run it. It covers
-Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
+Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Ornith-1.5-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
 
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
 > [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
-> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Ornith-1.5-35B-A3B](#ornith-15-35b-a3b) ·
 > [Tencent Hy4-Flash](#tencent-hy4-flash) ·
 > [Inkling-2-Mini](#inkling-2-mini) · [Adding or switching models](#adding-or-switching-models) ·
 > [History](#history--older-measurements)
@@ -249,6 +249,35 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 strata launch --family qwen36 --model UD-Q4_K_XL
 ```
 
+## Ornith-1.5-35B-A3B
+
+[Ornith-1.5-35B-A3B](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B) by Ornith AI (MIT) has the same architecture
+as Qwen3.6-35B-A3B (`qwen35moe`: 35 billion parameters, 3 billion active, 256 experts, the same tokenizer and MTP
+block), so it runs on the same engine path, with the same flags, pictures and parallel requests. Strata lists the
+plain quantizations of [the publisher's GGUFs](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF), pinned to
+one revision and SHA-256 checked. It is in the app's model list and in setup (`--family ornith`).
+
+| Size | File | RAM setup plans for |
+| --- | ---: | ---: |
+| **Q4_K_M** | 21.7 GB | 21.7 GB |
+| **Q5_K_M** | 25.3 GB | 25.3 GB |
+| **Q6_K** | 29.2 GB | 29.2 GB |
+| **Q8_0** | 37.8 GB | 37.8 GB |
+
+The picture reader (`mmproj-Ornith-1.5-35B-BF16.gguf`, 0.9 GB) is downloaded with the model. The 122B Ornith models
+are a different size and are not part of this entry. Strata loaded and answered with all four sizes on an RTX 3090
+(24 GB, engine 0.1.69, 2026-11-27); the weights that stay on the card were 1.65 GiB (Q4_K_M), 1.85 GiB (Q5_K_M),
+2.06 GiB (Q6_K) and 4.40 GiB (Q8_0), and the context advice uses those. The other graphics-memory figures are the
+Qwen3.6 ones and were not measured on a small card: there the engine says what it really fits when it starts.
+The catalog entry, its tests and the file sizes and hashes are from eSPiYa's patch (PR #7140).
+
+```sh
+strata launch --family ornith --model Q4_K_M
+```
+
+If you already have one of these files, `strata models import PATH --plan` reads an Ornith file as `--family ornith`
+(a file under another name is read as the Qwen3.6 family, which is the same architecture).
+
 ## Tencent Hy4-Flash
 
 [Tencent Hy4-Flash](https://huggingface.co/tencent/Hy4-flash) runs on its dedicated Strata shape engine (`strata-hy4`) using
@@ -269,25 +298,48 @@ strata launch --family hy4-flash --model SQ-64
 ## Inkling-2-Mini
 
 [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) from Thinking Machines runs on its dedicated Strata shape
-engine (`strata-inkling`). Both [Strata's native `.strata` v1.1 builds](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata)
-and [Unsloth's Dynamic GGUFs](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) are supported, with built-in DSpark speculative
-drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
+engine (`strata-inkling`). Strata offers five builds, in this order everywhere (Terminal, `strata launch` and the app): the three
+[Strata native `.strata` v1.1 packs](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) (SQ-20, SQ-15, SQ-10), then one
+[GSQ-RCO](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF) GGUF (IQ3_S), then one
+[Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) GGUF (UD-Q4_K_XL). The biggest focus is SQ-20: its quality and its speed. The GGUFs are
+supported on the same engine. Every build reads pictures with the Vision shard (`Inkling-2-Mini-Vision-v2.strata`, 0.64 GB) and drafts with DFlash 2
+(below) on every device.
+
+Pictures follow the same rule as Qwen3.8-Flash-Next ([Images (vision)](DETAILS.md#images-vision)): on a card under 24 GB the
+engine reads them on the CPU (a few seconds each) so the experts keep the card; from 24 GB it reads them on the card (about
+0.1-0.5 s each, about 1.1 GB of VRAM that the engine sets aside at start; on NVIDIA with one card the reader is put on the card
+by the first picture and taken off after 120 s without one); a Mac always uses its GPU; an Intel Arc uses the CPU unless you ask.
+`--vision gpu` or `--vision cpu` (Terminal, `strata launch`, the app) picks the reader and is kept, `--vision no` leaves pictures off.
 
 **Strata native `.strata` builds**
 
 | Build | File size | Typical hardware | In plain words |
 | --- | ---: | --- | --- |
-| **SQ-10** | 10.5 GB | 12 GB GPU, 16 GB Mac, or 4–8 GB hybrid | compact high-speed build |
+| **SQ-20** | 19.4 GB | 24 GB GPU or 32+ GB unified | bit-exact lossless native SF4+MX8 build (the re-adjusted 16 KiB-layout file, `Inkling-2-Mini-SQv2-20.strata`) |
 | **SQ-15** | 14.3 GB | 16 GB GPU, 24 GB Mac, or 12 GB hybrid | flagship quality |
-| **SQ-20** | 19.3 GB | 24 GB GPU or 32+ GB unified | near-lossless native SF4+MX8 build |
+| **SQ-10** | 10.5 GB | 12 GB GPU, 16 GB Mac, or 4–8 GB hybrid | compact high-speed build |
 
-**Unsloth Dynamic GGUF builds** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), plus a 0.40 to 0.64 GB companion DSpark drafter)
+**GSQ-RCO GGUF** ([ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF), Apache-2.0)
 
-| Range | File sizes | Typical hardware |
+| Build | File size | Typical hardware | In plain words |
+| --- | ---: | --- | --- |
+| **GSQ-RCO-IQ3\_S** | 11.4 GB | 12–16 GB GPU or hybrid RAM | 3.50 bits per weight; the model card measures 99.2% of the base model's task average |
+
+GSQ and RCO are the quantization methods of the Institute of Science and Technology Austria's DASLab: GSQ rounds each tensor to a given
+low-bit type, RCO chooses the type of every tensor under a size budget. The file keeps the 0.93 GB BF16 token embedding, which the engine holds in
+system memory. Strata downloads exactly the file of one pinned repository commit, checked by size and SHA-256. We tune this build for speed; the
+card's numbers are the authors' own and have not been re-measured by Strata. Licence: Apache-2.0, inherited from the base model, whose Model Acceptable Use Policy applies as well (the model card, checked 2026-11-26). Credit: *GSQ + RCO by IST Austria DASLab, Apache-2.0.*
+
+**Unsloth Dynamic GGUF** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), Apache-2.0)
+
+| Build | File size | Typical hardware |
 | --- | ---: | --- |
-| **UD-IQ1\_S / UD-IQ1\_M / UD-IQ2\_XXS / UD-Q2\_K\_XL** | 7.8 – 9.1 GB | 4–12 GB GPUs and 16 GB RAM |
-| **UD-IQ3\_XXS / UD-Q3\_K\_XL / UD-IQ4\_XS / UD-Q4\_K\_M / UD-Q4\_K\_XL** | 11.7 – 17.6 GB | 8–24 GB GPUs or hybrid RAM |
-| **UD-Q8\_K\_XL** | 22.9 GB | 24+ GB GPUs or 32+ GB RAM |
+| **UD-Q4\_K\_XL** | 17.6 GB | 16–24 GB GPUs or hybrid RAM |
+
+Basic support: Strata offers this one quant, from the refreshed upload of 2026-11-23 (the file named in the pin of
+`strata_control/inkling_family.py`). The other nine Unsloth quants that Strata 0.2.22 offered (UD-Q8\_K\_XL, UD-Q4\_K\_M, UD-IQ4\_XS, UD-Q3\_K\_XL, UD-IQ3\_XXS,
+UD-Q2\_K\_XL, UD-IQ2\_XXS, UD-IQ1\_M, UD-IQ1\_S) are no longer offered for download. A file you already have keeps working: the model stays in the list, marked
+as installed and *no longer offered*, and Strata never deletes it. Download size for any build: the model file, the Vision shard (0.64 GB) and the DFlash 2 file (0.55 GB).
 
 ```sh
 strata launch --family inkling-2-mini --model SQ-15
@@ -295,11 +347,26 @@ strata launch --family inkling-2-mini --model SQ-15
 
 Inkling-2-Mini has its own engine package (`strata-inkling`), which Strata downloads the first time you choose the model. If you unpack a package by hand instead (for example after downloading it with a download manager), the right folder is `components\shapes\inkling2\engine\<package>\` (Windows: `%LOCALAPPDATA%\Strata\components\...`; Linux and Mac: `~/.local/share/strata/components/shapes/inkling2/engine/<package>/`), with `engine-component.json` directly inside the package folder; not in the Qwen engine's `engine` folder and not one folder deeper. When the install fails, the message now says why and names a wrongly placed package.
 
-**The DSpark drafter (speculative drafting)** is decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dspark` always turns it on, `--drafting off` always off).
-It is one small model: the original `mtp.safetensors` of Thinking Machines (636 MB, BF16; downloaded for the GGUF builds, pinned by commit and checksum), with Unsloth's 402 MB Q8_0 copy of the same weights (`dspark-...-Q8_0.gguf`, the version before 2026-11-23) as the fallback; the copy inside the SQ builds is the same checkpoint too. It guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
-code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
-are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs
-a few hundred MB of video memory on a card that is already full (it takes a little expert space; up to 1 GB when the card has room), and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+**The drafter: DFlash 2, on every device.** Every Inkling-2-Mini build drafts with DFlash 2 and nothing else; DSpark is not offered and nothing for it is downloaded.
+DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.55 GB, pinned by commit and checksum) that setup and `setup --update` download beside the model
+(for the packs and for the GGUFs; a folder you pointed Strata at is never written to: put the file beside your model). Without the file the model runs with no
+drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
+without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,
+`--drafting off` always off). Credit for DFlash 2 goes to tjm8874 (the DFlash 2 port, MIT).
+The file is Strata's converted copy of the original DFlash 2 weights (Apache-2.0): the large matrices are stored pre-quantized (Q8 and SF4), 551,600,700 bytes, hosted at `strata-engine/Inkling-2-Mini-DFlash2` and pinned by commit and SHA-256; the original file is still accepted and is the last-resort source. The notice with the original publisher's credit and the statement of changes is `notices/INKLING-2-MINI-DFLASH2-APACHE-2.0.txt`; it does not change the licence of Strata (MIT).
+The engine also leaves DFlash 2 out by itself where loading it would move part of the model off the card (a model that fits whole would run in the slower hybrid mode, or lose a
+noticeable part of the experts' room). It then prints one line, `DFlash 2 not loaded: it would move part of the model off the card (...)`, which the Terminal start and the app's
+start log show as it is, and the Monitor's drafting note repeats. `strata launch --draft on` (or `--set draft=on`; for a start by hand `STRATA_INK_DFLASH2_FORCE=1`) asks for it by name and loads it anyway.
+The first measurements (RTX 5090 and RTX 5060 Ti, the DFlash 2 lane's results of 11-26): faster in 24 of 36 cells, level in 5, slower in 7.
+Its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+
+### Inkling-2-Mini: the 0.2.23 pins
+
+Every `.strata` download is pinned to commit `5623ceb47d7a01db827460ce1c23e7818a75661b` of `strata-engine/Inkling-2-Mini-Strata` (`STRATA_PACK_COMMIT` in `terminal/strata_control/inkling_family.py`), which holds
+`Inkling-2-Mini-SQv2-20.strata` (19,374,768,128 bytes, SHA-256 `429671f8eb5b50e593856e6eb82ebb7da9d1f07e99b553438b196f72cc86a6d6`), `Inkling-2-Mini-Vision-v2.strata` (636,551,168 bytes,
+`34a176505276729b58744fc9ee40a5005bbff9a590d8e1f7dbe82baf33ef07d5`; every pack uses it) and still the 0.2.22 files. SQ-20 is shown under the same name and model id as before; only the file changed.
+An install that has the old `Inkling-2-Mini-SQ-20.strata` or the old `Inkling-2-Mini-Vision.strata` keeps running them, is told that a newer file is available, and gets it only when the person
+installs the model again; the old files are never deleted.
 
 **Sampling.** A request that names no sampling runs with temperature 1.0, the value in the model card's `generation_config.json`
 (no top_p, top_k or penalty is given there; the engine's own top_k 64 stays). Send `temperature` (or `"temperature": 0` for greedy)

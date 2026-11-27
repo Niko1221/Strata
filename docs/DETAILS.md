@@ -1229,6 +1229,9 @@ Windows by default, which is a little faster). Use it when sharing the machine m
 
 ### Route tail skip (`STRATA_ROUTE_TAIL_SKIP`): off by default since 0.2.17
 
+(Inkling-2-Mini has its own, separate opt-in tail skip, `strata launch --turbo` and `--turbo-max`, also off by default: see
+[INKLING_TURBO.md](INKLING_TURBO.md).)
+
 A missed expert (one that is not on the card) that every token of a verify window routes at rank 7 or lower is neither copied nor
 computed: its weight is dropped. It applies on CUDA and on HIP gfx1200/gfx1201, with one GPU or a layer split. It does not apply
 when every expert is in VRAM, with `--batch` slots, with a peer tier or helper GPU, on other HIP and SYCL, or when 90% or more of
@@ -1342,11 +1345,12 @@ streamed for a 2K prompt and 4% fewer at 32K (8,192-token chunks); a 1,790-token
 conversation took 18% less time and fresh 2K, 4K and 32K reads ran 20%, 8% and 5% faster (4 pairs), with byte-identical
 replies in a deterministic lane at 1K to 32K.
 
-### RTX 20 (Turing, sm_75) kernels (opt-in)
+### RTX 20 (Turing, sm_75) kernels (on by default since 0.2.23)
 
 Kernels by rafatxf (#2069-#2072, #2093, #2220-#2222), imanu86 (#2081) and xrip (#1821) for compute capability 7.5 are bitwise
-equal to the ones they replace. Nobody on the team has an sm_75 card to confirm them, so they are off until asked for.
-`STRATA_SM75_PERF=1` turns on every bitwise Turing kernel on a 7.5 card (no other card is affected). Each has its own variable
+equal to the ones they replace. Until 0.2.22 nobody on the team had an sm_75 card to confirm them, so they were off until asked for;
+0.2.23 turns them on after a check on a real RTX 2080 Ti (identical ids, no speed change measured on that pack; #7041 reports +5% to +21%
+cold prefill from 32K to 207K tokens). `STRATA_SM75_PERF=0` turns the whole series off again; unset or `=1` it is on for a 7.5 card (no other card is affected). Each has its own variable
 that wins in both directions: `STRATA_SM75_IL`, `STRATA_SM75_EXP`, `STRATA_GR_UP75` / `STRATA_GR_DOWN_TG`, `STRATA_SCORES_HALVE`,
 `STRATA_TOPK_SPLIT`, `STRATA_TOPK_SAMPLE`, `STRATA_ATTN_V3`, `STRATA_Q2_WARP`, `STRATA_FUSE_WAIT=2`, `STRATA_QIL`,
 `STRATA_TC_SM75`, `STRATA_PA_V1_PREFETCH`, `STRATA_SCORES_THREAD` (a thread-per-head block scorer; `=1` works on any CUDA card).

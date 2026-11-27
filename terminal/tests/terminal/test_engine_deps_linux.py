@@ -157,6 +157,8 @@ class Collect(unittest.TestCase):
 
     def test_the_bundle_list(self):
         self.assertTrue(collect_libs.bundled_anyway("libatomic.so.1"))
+        self.assertTrue(collect_libs.bundled_anyway("libgomp.so.1"))          # strata-inkling is linked against OpenMP (#7189)
+        self.assertTrue((ROOT.parent / "tools" / "packaging" / "notices" / "libgomp.txt").is_file())
         self.assertFalse(collect_libs.bundled_anyway("libc.so.6"))
         self.assertTrue(collect_libs.bundled_anyway("libfoo.so.2", ["libfoo.so*"]))
         self.assertTrue((ROOT.parent / "tools" / "packaging" / "notices" / "libatomic.txt").is_file())

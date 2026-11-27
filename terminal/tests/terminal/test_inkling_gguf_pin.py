@@ -15,7 +15,8 @@ if str(ROOT) not in sys.path:
 
 from strata_control import inkling_family as F  # noqa: E402
 
-PINNED = "800c946d7b9c830c86290df49afbbe91db8455f5"
+PINNED = "8078d149286eec7193795413b9e0643da6d11fa1"            # 0.2.23: the refreshed head (UD-Q4_K_XL is the one Unsloth file offered)
+OLD_PINNED = "800c946d7b9c830c86290df49afbbe91db8455f5"        # what 0.2.22 pinned: the other quants and the old files are still recognised at it
 
 
 class GgufPin(unittest.TestCase):
@@ -27,10 +28,14 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(base.rsplit("/", 1)[1], PINNED)
 
     def test_every_gguf_url_goes_through_the_pin(self):
-        src = F.sources_for(F.DSPARK_GGUF_FILE, env={})[0]
+        # the offered file at the refreshed commit; every other file of the 0.2.22 table (no longer offered, still checked) at 0.2.22's commit
+        src = F.sources_for(F.UNSLOTH_OFFERED_FILE, env={})[0]
+        self.assertEqual(F.urls_for(F.UNSLOTH_OFFERED_FILE, src), [f"https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/{PINNED}/{F.UNSLOTH_OFFERED_FILE}"])
         for name in list(F.UNSLOTH_GGUF_FILES):
-            urls = F.urls_for(name, src)
-            self.assertEqual(urls, [f"https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/{PINNED}/{name}"])
+            if name == F.UNSLOTH_OFFERED_FILE:
+                continue
+            urls = F.urls_for(name, F.sources_for(name, env={})[0])
+            self.assertEqual(urls, [f"https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/{OLD_PINNED}/{name}"])
 
     def test_the_table_still_describes_the_pinned_bytes(self):
         # the pin is only right while the table is the one measured against it (check_pin.py compared all 13 files to the repo at that commit)
@@ -44,11 +49,15 @@ class GgufPin(unittest.TestCase):
         # the re-uploaded main files (KL 0.000000, top-1 100 percent against the pinned ones on the same engine, UD-Q4_K_XL, 2000 tokens, 2026-11-23)
         for name, (size, sha) in F.ALT_GGUF_FILES.items():
             self.assertIn(name, F.UNSLOTH_GGUF_FILES)
-            self.assertEqual(F.pins_for(name), [F.UNSLOTH_GGUF_FILES[name], (size, sha)])
+            if name == F.UNSLOTH_OFFERED_FILE:                  # the offered file's current pin is the re-uploaded layout: new first, the 0.2.22 file still accepted
+                self.assertEqual(F.pins_for(name), [(size, sha), F.UNSLOTH_GGUF_FILES[name]])
+            else:
+                self.assertEqual(F.pins_for(name), [F.UNSLOTH_GGUF_FILES[name], (size, sha)])
             self.assertEqual(size - F.UNSLOTH_GGUF_FILES[name][0], 1280, name)
             self.assertNotEqual(sha, F.UNSLOTH_GGUF_FILES[name][1])
         self.assertEqual(F.pins_for(F.DSPARK_GGUF_FILE), [F.UNSLOTH_GGUF_FILES[F.DSPARK_GGUF_FILE]])   # the new drafter layout is not readable
         self.assertEqual(F.pins_for("Inkling-2-Mini-SQ-10.strata"), [F.FILES["Inkling-2-Mini-SQ-10.strata"]])
+        self.assertEqual(F.pins_for(F.DSPARK_GGUF_FILE), [F.LEGACY_FILES[F.DSPARK_GGUF_FILE]])          # still recognised, never fetched
         self.assertEqual(F.pins_for("nothing.gguf"), [])
 
     def test_setup_accepts_a_file_in_either_layout(self):
@@ -86,60 +95,23 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[0]["base"], "https://example.org/d")
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[-1]["base"], F.MTP_BASE)
 
-    def _drafter(self, have=(), failing=(), reads_mtp=True):
-        import tempfile
-        from unittest import mock
-        import setup
-        calls = []
-
-        def fetch(a, name, folder, own):
-            calls.append(name)
-            if name in failing:
-                raise SystemExit(1)
-            return folder / name
-
-        with tempfile.TemporaryDirectory() as td, \
-                mock.patch.object(setup, "inkling_fetch", side_effect=fetch), \
-                mock.patch.object(setup, "inkling_have", side_effect=lambda a, p: p.name in have), \
-                mock.patch.object(setup, "inkling_verify"):
-            got = setup.inkling_fetch_drafter(mock.Mock(), Path(td), False, reads_mtp)
-        return got.name, calls
-
-    def test_setup_fetches_the_original_drafter_first(self):
-        self.assertEqual(self._drafter(), (F.MTP_FILE, [F.MTP_FILE]))
-
-    def test_setup_falls_back_to_unsloths_copy_when_the_original_cannot_be_fetched(self):
-        self.assertEqual(self._drafter(failing=(F.MTP_FILE,)), (F.DSPARK_GGUF_FILE, [F.MTP_FILE, F.DSPARK_GGUF_FILE]))
-        with self.assertRaises(SystemExit):
-            self._drafter(failing=(F.MTP_FILE, F.DSPARK_GGUF_FILE))
-
-    def test_setup_keeps_a_drafter_the_install_already_has(self):
-        self.assertEqual(self._drafter(have=(F.DSPARK_GGUF_FILE,)), (F.DSPARK_GGUF_FILE, []))     # no second download
-        self.assertEqual(self._drafter(have=(F.MTP_FILE,)), (F.MTP_FILE, []))
-
-    def test_an_engine_without_the_flag_gets_unsloths_q8_file_only(self):
-        # measured on Metal: an engine without the widen drafts nothing from mtp.safetensors (1.0 tokens per step), so setup does not fetch or pass it
-        self.assertEqual(self._drafter(reads_mtp=False), (F.DSPARK_GGUF_FILE, [F.DSPARK_GGUF_FILE]))
-        self.assertEqual(self._drafter(reads_mtp=False, have=(F.MTP_FILE,)), (F.DSPARK_GGUF_FILE, [F.DSPARK_GGUF_FILE]))     # on disk, not used
-        self.assertEqual(self._drafter(reads_mtp=False, have=(F.MTP_FILE, F.DSPARK_GGUF_FILE)), (F.DSPARK_GGUF_FILE, []))
-        with self.assertRaises(SystemExit):
-            self._drafter(reads_mtp=False, failing=(F.DSPARK_GGUF_FILE,))                                                   # no fallback to the unreadable file
+    def test_the_dflash2_drafter_is_pinned_by_commit(self):
+        # incoai/Inkling-2-Mini-DFlash2 (Apache-2.0, not gated), stored beside the model as dflash2.safetensors; the repository calls it model.safetensors
+        self.assertEqual(F.DRAFTER_FILES[F.DFLASH2_FILE], (989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"))
+        self.assertEqual(F.pins_for(F.DFLASH2_FILE), [F.DRAFTER_FILES[F.DFLASH2_FILE], F.DFLASH2_Q_PIN])     # the original, then Strata's pre-quantized copy
+        src = F.sources_for(F.DFLASH2_FILE, env={})
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0]),      # ours first (the mix, pinned by commit), the original repository last
+                         ["https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/04ecd36faef74e696f0a7b6b3c119264442a6234/Inkling-2-Mini-DFlash2-mix.safetensors"])
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[-1]),
+                         ["https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/4f9088ea66c21f2b99ed657d1941c306b03e84d2/model.safetensors"])
+        env = {F.DFLASH2_SOURCE_ENV: "https://example.org/d"}
+        self.assertEqual(F.sources_for(F.DFLASH2_FILE, env=env)[0]["base"], "https://example.org/d")
 
     def test_the_flag_decides_not_the_version(self):
-        from unittest import mock
-        import setup
-        from serve import inkling_kind
+        # an old run config that still names mtp.safetensors with --dspark keeps starting: the flag of the engine says whether it can read the file
         self.assertTrue(F.engine_reads_mtp({"arch": "inkling2_loop", "dspark_f32_widen": "1"}))
         for info in (None, {}, {"arch": "inkling2_loop", "spec_opts": "1"}, {"dspark_f32_widen": "0"}):
             self.assertFalse(F.engine_reads_mtp(info), info)
-        with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "dspark_f32_widen": "1"}) as pr:
-            self.assertTrue(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf", ["/lib"]))
-            self.assertEqual(pr.call_args[0][1], ["--native", "/m/x.gguf"])
-        with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x"}):
-            self.assertFalse(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf"))
-        with mock.patch.object(inkling_kind, "probe", return_value=None):
-            self.assertFalse(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf"))
-        self.assertFalse(setup.inkling_engine_reads_mtp(None, "/m/x.gguf"))                    # no engine: the file every engine reads
 
     def test_a_start_with_an_engine_that_cannot_read_mtp_uses_the_q8_file_beside_it(self):
         import tempfile
@@ -173,20 +145,8 @@ class GgufPin(unittest.TestCase):
             for flag, want in (({}, F.DSPARK_GGUF_FILE), ({"dspark_f32_widen": "1"}, "mtp.safetensors")):
                 with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark", **flag}):
                     args = inkling_kind.engine_args(dict(cfg), "/e/strata-inkling", announce=False)
-                self.assertEqual(Path(args[args.index("--dspark") + 1]).name, want, flag)
-                self.assertIn("dspark", args[args.index("--draft") + 1])
-
-    def test_a_local_folder_prefers_the_original_drafter_only_for_an_engine_that_reads_it(self):
-        import tempfile
-        import setup
-        with tempfile.TemporaryDirectory() as td:
-            td = Path(td)
-            (td / "mtp.safetensors").write_bytes(b"x")
-            self.assertEqual(setup.inkling_find_local_dspark(td).name, "mtp.safetensors")
-            self.assertIsNone(setup.inkling_find_local_dspark(td, False))                        # only the original there, and this engine cannot read it
-            (td / "dspark-Inkling-2-Mini-Q8_0.gguf").write_bytes(b"x")
-            self.assertEqual(setup.inkling_find_local_dspark(td, False).name, "dspark-Inkling-2-Mini-Q8_0.gguf")
-            self.assertEqual(setup.inkling_find_local_dspark(td).name, "mtp.safetensors")
+                self.assertEqual(Path(args[args.index("--dspark") + 1]).name, want, flag)       # an old config's file is still fitted to the engine
+                self.assertEqual(args[args.index("--draft") + 1], "off", "no DFlash 2 file beside the model: no drafter (0.2.23)")
 
     def test_an_override_still_wins(self):
         src = F.gguf_sources(env={F.GGUF_SOURCE_ENV: "https://example.org/gguf"})

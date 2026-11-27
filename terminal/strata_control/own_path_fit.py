@@ -20,6 +20,8 @@ The parts:
   HYBRID_MIN_GIB: what the hybrid mode allocates after the session even with no expert slot (the staging pair for the prompt layers and the CPU
       part's outputs, q36_engine.cu place_experts): UD-Q4_K_XL 1256 MiB (#5715 log), UD-Q6_K_XL 1760 MiB (#3687 log, RTX 3060 12 GB); Q8_0 taken as
       UD-Q6_K_XL (#2747 log: the same 1.59 GiB staging pair).
+  Ornith-1.5-35B-A3B (setup.py OWN_PATH_FAMILIES['ornith']): the same engine path, so BYTES_PER_TOKEN and STATE_GIB are its numbers as they
+      are for q36; its base is q36's with the dense weights swapped, per size (DENSE_GPU_GIB_ORNITH, measured on a 3090 on 2026-11-27), its staging figures are q36's (HYBRID_MIN_ORNITH).
 
 Nothing here changes a context: the result is a recommendation and a warning (recommend, never force).  A family or size without these figures (a
 model of the update feed) gets None everywhere, and the callers keep what they did before.
@@ -33,29 +35,51 @@ STATE_GIB = 0.07e9 / GIB
 BASE_GIB = 8.55                                                # the one figure a measured start replaces ("5070 calibration owed")
 HYBRID_MIN_GIB = {"UD-Q4_K_XL": 1256 / 1024, "UD-Q6_K_XL": 1760 / 1024, "Q8_0": 1760 / 1024}
 FAMILY_NAME = "qwen3.6-35b-a3b"                                # setup.py OWN_PATH_FAMILIES['qwen36']['name'], the config's model_name prefix
+
+# Ornith-1.5-35B-A3B (setup.py OWN_PATH_FAMILIES['ornith']['name']): the same engine path, so BYTES_PER_TOKEN and STATE_GIB are
+# its own numbers as they are for q36.  Its sizes are the plain quant names, not Unsloth's Dynamic ones.
+FAMILY_NAME_ORNITH = "ornith-1.5-35b-a3b"
+HYBRID_MIN_ORNITH = {"Q4_K_M": 1256 / 1024, "Q5_K_M": 1256 / 1024, "Q6_K": 1760 / 1024, "Q8_0": 1760 / 1024}
+# The staging figures are q36's for the same bit widths (kept: they are not below what the start printed, see below).
+# The base is q36's with the dense part swapped, per size: the engine's "GiB on the GPU" line is the figure BASE_GIB counts as the dense
+# weights (q36 UD-Q4_K_XL 4.40 GiB), and for Ornith it depends on the size.  MEASURED 2026-11-27, RTX 3090 24 GB, Linux, engine 0.1.69
+# (cuda13 package), `strata launch --family ornith` of the 0.2.23 tree, every file at the pinned revision, --max-context 32768:
+#   Q4_K_M 1.65 GiB, Q5_K_M 1.85 GiB (the RX 9070 log of the reporter, eSPiYa, says the same), Q6_K 2.06 GiB, Q8_0 4.40 GiB.
+# Staging printed by the same starts: Q4_K_M 0.00 (native grouped kernels), Q5_K_M 1.10, Q6_K 1.23, Q8_0 1.59 GiB, all at or below
+# HYBRID_MIN_ORNITH.  The buffers, the CUDA context and what the OS keeps are q36's (not measured on a small card here).
+DENSE_GPU_GIB_ORNITH = {"Q4_K_M": 1.65, "Q5_K_M": 1.85, "Q6_K": 2.06, "Q8_0": 4.40}
+BASE_GIB_ORNITH = {q: BASE_GIB - 4.40 + d for q, d in DENSE_GPU_GIB_ORNITH.items()}
+FAMILY_FIT = {FAMILY_NAME: (BASE_GIB, HYBRID_MIN_GIB), FAMILY_NAME_ORNITH: (BASE_GIB_ORNITH, HYBRID_MIN_ORNITH)}
 DEFAULT_CONTEXT = 131072                                       # 128K (owner, 2026-11-01): the mark never goes above it
 MENU = [8192, 32768, 65536, 131072, 204800, 262144]           # setup's own-path context menu (setup.own_path_contexts(); a test keeps them equal)
 
 
-def fixed_gib(model: str | None) -> float | None:
-    """What the card holds before the context for this size (GiB), None for a size without figures."""
-    h = HYBRID_MIN_GIB.get(str(model or ""))
-    return None if h is None else BASE_GIB + h + STATE_GIB
+def fixed_gib(model: str | None, name: str | None = FAMILY_NAME) -> float | None:
+    """What the card holds before the context for this size of this family (GiB), None for a size without figures."""
+    fig = FAMILY_FIT.get(str(name or "").lower())
+    if not fig:
+        return None
+    h = fig[1].get(str(model or ""))
+    base = fig[0].get(str(model or "")) if isinstance(fig[0], dict) else fig[0]       # Ornith: one base per size
+    return None if h is None or base is None else base + h + STATE_GIB
 
 
 def inputs(name: str | None, model: str | None) -> dict | None:
-    """The formula's inputs for a family name ("qwen3.6-35b-a3b") and size, as the catalog row carries them to the app; None: not known."""
-    f = fixed_gib(model) if str(name or "").lower() == FAMILY_NAME else None
+    """The formula's inputs for a family name ("qwen3.6-35b-a3b" or "ornith-1.5-35b-a3b") and size, as the catalog row carries
+    them to the app; None: not known."""
+    f = fixed_gib(model, name)
     return None if f is None else {"bytes_per_token": BYTES_PER_TOKEN, "fixed_gb": round(f, 4)}
 
 
 def from_model_name(model_name: str | None) -> dict | None:
     """The inputs from a config's model_name ("qwen3.6-35b-a3b-ud-q4_k_xl"), None for any other model."""
     low = str(model_name or "").lower()
-    if not low.startswith(FAMILY_NAME + "-"):
-        return None
-    size = low[len(FAMILY_NAME) + 1:]
-    return next((inputs(FAMILY_NAME, m) for m in HYBRID_MIN_GIB if m.lower() == size), None)
+    for fam in FAMILY_FIT:
+        if not low.startswith(fam + "-"):
+            continue
+        size = low[len(fam) + 1:]
+        return next((inputs(fam, m) for m in FAMILY_FIT[fam][1] if m.lower() == size), None)
+    return None
 
 
 def cache_gib(ctx: int) -> float:

@@ -149,12 +149,13 @@ class InklingPictureReader(unittest.TestCase):
 
     def test_launch_says_the_real_reason_when_the_installed_model_has_no_reader(self):
         from strata_cli.launch.runner import Runner
+        from strata_control import inkling_family
         from tests.terminal.launch_support import HW_12, Home, catalog
         with Home():
             r = Runner(S.LaunchSettings(family="inkling-2-mini", model="SQ-10", vision="on", context=32768), catalog=catalog(HW_12))
             r.catalog.strata.describe_config = lambda path: {"images": "off"}
             r.check_pictures(Path("x.json"))
-        self.assertTrue(any("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB)" in n for n in r.notices), r.notices)
+        self.assertTrue(any(f"Images will not work: no picture reader file ({inkling_family.VISION_FILE}, 0.64 GB)" in n for n in r.notices), r.notices)
 
 
 class UpdateWords(unittest.TestCase):

@@ -235,5 +235,88 @@ class SlotRouting(unittest.TestCase):
                 self.assertReused((p, k), "turn 2 with a reply that is not the generated one")
 
 
+class KeepChats(unittest.TestCase):
+    """#7226: Claude Code's auto mode alternates the main conversation with a large safety-check request (a different prompt of about the same size),
+    and a client may also send short title requests.  With `--parallel 2` each long conversation keeps its slot (STRATA_INKLING_KEEP_CHATS, on unless 0),
+    with the DSpark drafter on or off; with the switch at 0 the 0.2.22 routing is back: every large request wipes slot 0."""
+
+    def alternate(self, keep, draft, rounds=3):
+        import os
+        from unittest import mock
+        env = {"STRATA_INKLING_KEEP_CHATS": keep} if keep is not None else {}
+        rows = []
+        with mock.patch.dict(os.environ, env):
+            if keep is None:
+                os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+            with tempfile.TemporaryDirectory() as td:
+                with Harness(Path(td), parallel=2, extra=("--draft", draft)) as h:
+                    c = Client(f"http://127.0.0.1:{h.port}")
+                    main, check = conversation("MAIN"), conversation("CHECK")
+                    for i in range(rounds):
+                        rm, p, k = c.chat(main)
+                        rows.append(("main", i, p, k))
+                        main = next_turn(main, rm, f"step {i}")
+                        rc, p, k = c.chat(check)
+                        rows.append(("check", i, p, k))
+                        check = next_turn(check, rc, f"verify {i}")
+        return rows
+
+    def test_two_large_conversations_keep_their_slots_by_default(self):
+        for draft in ("off", "dspark"):
+            with self.subTest(draft=draft):
+                rows = self.alternate(None, draft)
+                for who, i, p, k in rows:
+                    if i == 0:
+                        self.assertEqual(k, 0, f"{who} {i}")
+                    else:
+                        self.assertGreaterEqual(k, p - 90, f"{who} {i}: {k} of {p} reused, drafter {draft}")
+
+    def test_the_switch_at_zero_brings_back_the_old_routing(self):
+        for draft in ("off", "dspark"):
+            for off in ("0", "off"):
+                with self.subTest(draft=draft, switch=off):
+                    rows = self.alternate(off, draft)
+                    self.assertTrue(all(k == 0 for _, _, _, k in rows), rows)
+
+    def test_one_slot_is_unchanged_by_the_switch(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+            with tempfile.TemporaryDirectory() as td:
+                with Harness(Path(td), parallel=1) as h:
+                    c = Client(f"http://127.0.0.1:{h.port}")
+                    main, check = conversation("MAIN"), conversation("CHECK")
+                    rm, _, _ = c.chat(main)
+                    c.chat(check)
+                    _, p, k = c.chat(next_turn(main, rm, "again"))
+                    self.assertEqual(k, 0, "one slot: the other conversation took it")
+
+    def run_title(self, draft, keep=None):
+        import os
+        from unittest import mock
+        env = {"STRATA_INKLING_KEEP_CHATS": keep} if keep is not None else {}
+        with mock.patch.dict(os.environ, env):
+            if keep is None:
+                os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+            return SlotRouting().run_session(2, between=[{"role": "user", "content": "Name this conversation in three words."}],
+                                             extra=("--draft", draft))
+
+    def test_a_title_request_does_not_wipe_the_chat_with_the_drafter_on(self):
+        t1, t2, t3 = self.run_title("dspark")
+        self.assertGreaterEqual(t2[1], t2[0] - 90, "turn 2 after a title request, drafter on")
+        self.assertGreaterEqual(t3[1], t3[0] - 90, "turn 3")
+
+    def test_the_switch_at_zero_keeps_the_old_rule_for_the_title_with_the_drafter_on(self):
+        t1, t2, t3 = self.run_title("dspark", keep="0")
+        self.assertEqual(t2[1], 0, "0.2.22: the drafter's slot-0 preference wipes the chat")
+
+    def test_a_wrap_up_pass_keeps_the_checkpoint_with_the_drafter_on_and_off(self):
+        for draft in ("off", "dspark"):
+            with self.subTest(draft=draft):
+                p1, p2, k2, lines = SlotRouting().wrapped_up_chat(2, extra=("--draft", draft))
+                self.assertGreaterEqual(k2, p1 - 90, f"turn 2: {k2} of {p2} reused after a wrap-up pass, drafter {draft}")
+
+
 if __name__ == "__main__":
     unittest.main()

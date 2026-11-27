@@ -3,25 +3,26 @@ import { tr } from '../lib/i18n';
 import { Icon } from './ui';
 import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
-import { versionNote, type CatalogVersion } from '../lib/native-catalog';
+import { versionNote, orderInklingSizes, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
 import { fitOn, recommendedVersions, versionFit, versionGroups, type CacheChoice, type FitHardware, type PcPick } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker only where the quantization alone would be ambiguous. */
 export function versionName(v: CatalogVersion): string {
+  if (v.custom && v.displayName) return v.displayName;      // the person's own build: the name they chose
   switch (v.sourceFamily) {
     case 'swift': return `Swift ${v.model}`;
     case 'unsloth': return `Unsloth ${v.model}`;
     case 'nvfp4': return tr(nvfp4Version(v.model)?.name ?? v.model);
     case 'coder': return `Coder ${v.model}`;
-    case 'inkling-2-mini': return /^UD-/i.test(v.model) ? `Unsloth ${v.model}` : v.model;
+    case 'inkling-2-mini': return /^UD-/i.test(v.model) ? `Unsloth ${v.model}` : /^GSQ-RCO-/i.test(v.model) ? `GSQ-RCO ${v.model.replace(/^GSQ-RCO-/i, '')}` : v.model;
     default: return v.model;
   }
 }
 
 /** Who made a version (Details only): the family name of the quantization, a proper name in every language. */
 const MAKERS: Record<string, string> = { qwen: 'GSQ-RCO', coder: 'GSQ-RCO', swift: 'Swift', unsloth: 'Unsloth', gyro: 'Gyro', nvfp4: 'NVFP4' };
-const makerOf = (v: CatalogVersion): string | undefined => (v.sourceFamily === 'inkling-2-mini' ? (/^UD-/i.test(v.model) ? 'Unsloth GGUF' : 'Strata') : MAKERS[v.sourceFamily]);
+const makerOf = (v: CatalogVersion): string | undefined => v.custom ? 'Local files' : (v.sourceFamily === 'inkling-2-mini' ? (/^UD-/i.test(v.model) ? 'Unsloth GGUF' : /^GSQ-RCO-/i.test(v.model) ? 'GSQ-RCO GGUF' : 'Strata') : MAKERS[v.sourceFamily]);
 
 const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
 const whole = (n: number) => `${Math.round(n)} GB`;
@@ -69,7 +70,12 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
     : [];
   const apart = new Set(showRecommended ? [] : rows.map(x => x.v.id));
   const recommendedIds = rows.length ? rows.map(x => x.v.id) : inklingNative.map(v => v.id);
-  const { top, more } = versionGroups(versions, apart, downloaded, recommendedIds);
+  // Inkling-2-Mini: one list in the owner's order (Strata packs, GSQ-RCO IQ3_S, Unsloth UD-Q4_K_XL; a quant that is no longer offered only while installed), the pick for this PC first inside the Strata packs.
+  const inklingList = versions.length > 0 && versions.every(v => v.sourceFamily === 'inkling-2-mini')
+    ? orderInklingSizes(versions.filter(v => !apart.has(v.id)).map(v => ({ ...v, installed: v.installed || !!downloaded?.has(v.id) })))
+        .sort((a, b) => Number(/^SQ-/i.test(b.model) && !!b.inkling?.recommended) - Number(/^SQ-/i.test(a.model) && !!a.inkling?.recommended))
+    : null;
+  const { top, more } = inklingList ? { top: inklingList as CatalogVersion[], more: [] as CatalogVersion[] } : versionGroups(versions, apart, downloaded, recommendedIds);
   const shown = selected && !apart.has(selected.id) ? selected : undefined;
   // The folded part opens by itself when it holds the chosen version or when there is nothing above it.
   const [moreOpen, setMoreOpen] = useState(false);
@@ -81,18 +87,18 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
     return tr("Needs {0} of memory", [whole(size)]);
   };
   const row = (v: CatalogVersion) => {
-    const on = v.id === selectedId, have = !!downloaded?.has(v.id);
+    const on = v.id === selectedId, have = !!downloaded?.has(v.id) && !v.custom;       // a custom build has its own "Custom" tag instead of "Downloaded": its files are the person's own
     const state = versionFit(v, hardware, cache);
-    const technical = [makerOf(v), need(v, true)].filter(Boolean).join(' · ');
+    const technical = [makerOf(v), need(v, true), v.credit ? tr(v.credit) : ''].filter(Boolean).join(' · ');
     const note = versionNote(v.model);
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
-        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(have ? <span className="version-row__tags"><span className="version-tag version-tag--have">{tr("Downloaded")}</span></span> : null)}</span>
+        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(have || v.offered === false || v.custom ? <span className="version-row__tags">{tr(v.custom ? <span className="version-tag version-tag--custom">{tr("Custom")}</span> : null)}{tr(have ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}{tr(v.offered === false ? <span className="version-tag">{tr("No longer offered")}</span> : null)}{tr(have && v.update_available ? <span className="version-tag">{tr("Update available")}</span> : null)}</span> : null)}</span>
         {tr(state === 'ssd' ? <span className="version-row__fit" data-fit={state}>{tr('may run slower')}</span> : null)}
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>
-      <span className="version-row__size">{have ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
+      <span className="version-row__size">{have || v.custom ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
     </button>;
   };
   // The open menu opens on the chosen version, not at the top of a long list.
@@ -100,7 +106,7 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   useEffect(() => { if (open) menu.current?.querySelector('.is-on')?.scrollIntoView({ block: 'nearest' }); }, [open]);
   return <>
     <button ref={trigger} type="button" className="version-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={tr("Model version")} onClick={() => setOpen(v => !v)}>
-      <strong>{shown ? versionName(shown) : tr(moreLabel ?? "Choose a version")}</strong>{tr(shown && downloaded?.has(shown.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}
+      <strong>{shown ? versionName(shown) : tr(moreLabel ?? "Choose a version")}</strong>{tr(shown?.custom ? <span className="version-tag version-tag--custom">{tr("Custom")}</span> : shown && downloaded?.has(shown.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}
       <span className="version-trigger__need muted">{tr(shown ? need(shown, details) : '')}</span>
       <Icon name="chevron" size={14} className="version-trigger__chev"/>
     </button>
@@ -112,7 +118,7 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
           {tr(foldedOpen ? <div className="version-more__rows">{tr(more.map(row))}</div> : null)}
         </div> : null)}
         <div className="version-foot">
-          <button role="menuitem" className="version-foot__btn" onClick={() => { setOpen(false); onOwnGguf(); }}><Icon name="folder" size={14}/>{tr("Use your own GGUF…")}</button>
+          <button role="menuitem" className="version-foot__btn" onClick={() => { setOpen(false); onOwnGguf(); }}><Icon name="folder" size={14}/>{tr("Use local model files (.strata or .gguf)…")}</button>
           <button role="menuitem" className="version-foot__btn" aria-pressed={details} onClick={() => setDetails(d => !d)}>{tr(details ? "Hide details" : "Show details")}</button>
         </div>
       </div>

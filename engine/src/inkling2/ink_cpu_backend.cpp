@@ -214,6 +214,7 @@ public:
         }
 
         // 2. Decode embedded DSpark tensors if present and enabled
+        // 0.2.23 (owner decision 11-27): the CPU-only engine keeps its built-in DSpark drafter as in 0.2.22 (it has no DFlash 2 port); every GPU backend stays DFlash 2 only. Control's first-start measurement keeps it only where it is faster.
         has_dspark_ = opts.enable_dspark && dspark_cfg_.present;
         if (has_dspark_) {
             for (const auto& kv : model.m.dspark_tensors) {

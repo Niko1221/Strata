@@ -3629,5 +3629,11 @@
   "modelPortActive": "Aktiver Modellport: {0}.",
   "modelPortHint": "Der Startport für lokale Modellserver (Standard 18500). Leer lassen für automatisch; Strata vermeidet Anfragen an Port 8080, um Konflikte mit lokalen Anwendungen wie Spring Boot zu verhindern. Gilt beim nächsten Laden eines Modells.",
   "promptCacheSpreadLabel": "Prompt-Cache-Prüfpunkte verteilen",
-  "promptCacheSpreadHint": "Übergibt --prompt-cache-spread an lokale Modelle, sodass Prüfpunkte über lange Gespräche verteilt bleiben statt sich am Ende zu häufen. Benötigt gleich viel RAM und verkürzt das erneute Einlesen bei der Verdichtung auf Hybridmodellen. Gilt beim nächsten Laden eines Modells."
+  "promptCacheSpreadHint": "Übergibt --prompt-cache-spread an lokale Modelle, sodass Prüfpunkte über lange Gespräche verteilt bleiben statt sich am Ende zu häufen. Benötigt gleich viel RAM und verkürzt das erneute Einlesen bei der Verdichtung auf Hybridmodellen. Gilt beim nächsten Laden eines Modells.",
+  "hideFailedToolsLabel": "Fehlgeschlagene Schritte ausblenden",
+  "hideFailedToolsHint": "Ein Schritt, den der Assistent versucht hat und der nicht funktioniert hat, etwa eine Seite, die sich nicht öffnen ließ, erscheint nicht im Gespräch. Der Assistent sieht den Fehler weiterhin und kann es erneut versuchen. Ein abgelehnter Schritt oder einer, der Ihre Antwort braucht, wird immer angezeigt.",
+  "portReservedTitle": "Port {0} ist vom System reserviert",
+  "portReservedBody": "Kein Programm nutzt Port {0}, aber das System hält ihn zurück; unter Windows sind das oft WSL (Mirrored Networking), Hyper-V oder Docker. Strata wurde auf Port {1} gestartet und verwendet ihn beim nächsten Mal wieder, damit Ihre Chats und Einstellungen an einem Ort bleiben. Um selbst einen Port zu wählen, öffnen Sie die Einstellungen und legen Sie den App-Port fest. Auf Port {0} gespeicherte Chats und Einstellungen werden hier nicht angezeigt.",
+  "s9160": "Nicht mehr im Angebot",
+  "s9161": "Update verfügbar"
 }

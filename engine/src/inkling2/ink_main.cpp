@@ -17,6 +17,7 @@
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_serve.h"
+#include "ink_tail_kl.h"
 #include "ink_vision.h"
 #include "strata/core/device_error_exit.hpp"
 #include "strata/core/volta_forever.hpp"
@@ -27,7 +28,7 @@
 using namespace ink2;
 
 #ifndef INKLING_VERSION
-#define INKLING_VERSION "0.1.69"
+#define INKLING_VERSION "0.1.70"
 #endif
 
 static int cmd_export_tokenizer(const std::string& file, const std::string& dir) {
@@ -66,7 +67,7 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
             fprintf(stderr, "open: %s\n", err.c_str());
             return 1;
         }
-        if (rd.header().profile == strata::artifact::StrataProfile::VisionShard) {
+        if (rd.is_vision_shard()) {
             rd.close();
             VisionShardInfo vi;
             if (!vision_probe(file, vi, err)) {
@@ -200,7 +201,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
         while (total_gen < gen_len && cur_pos < eff_ctx) {
             const int rem = std::min(gen_len - total_gen, eff_ctx - cur_pos);
             if (rem >= 2 && cur_pos + 12 < eff_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 const int n_emit = backend->dspark_spec_step_greedy(
                     0, next_tok[0], cur_pos, rem, emitted, &drafted, err);
@@ -224,11 +225,99 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
             next_tok[0] = best;
             ++total_gen;
         }
+    } else if (use_dspark && P >= 2 && backend->supports_batched_dspark()) {
+        // One multi-user drafting hook for every RTX 50 card (ink_backend.h): C2..C64 batched speculative decode, then the tail one token at a time.
+        std::vector<int32_t> slot_pos(P, prompt_len), slot_gen(P, 0);
+        while (true) {
+            std::vector<int32_t> b_slots, b_toks, b_pos, b_maxe;
+            for (int s = 0; s < P; ++s) {
+                const int rem = std::min(gen_len - slot_gen[s], eff_ctx - slot_pos[s] - 12);
+                if (rem >= 2) {
+                    b_slots.push_back(s);
+                    b_toks.push_back(next_tok[s]);
+                    b_pos.push_back(slot_pos[s]);
+                    b_maxe.push_back(rem);
+                }
+            }
+            if (b_slots.empty()) break;
+            const int B = static_cast<int>(b_slots.size());
+            std::vector<int32_t> emitted((size_t)B * 8, 0), n_emit(B, 0), drafted(B, 0);
+            int tot = 0;
+            if (B >= 2) {
+                tot = backend->dspark_spec_step_batched_greedy(
+                    B, b_slots.data(), b_toks.data(), b_pos.data(), b_maxe.data(),
+                    8, emitted.data(), n_emit.data(), drafted.data(), err);
+                if (tot < 0) { fprintf(stderr, "bench batched spec err: %s\n", err.c_str()); return 1; }
+            }
+            if (tot > 0) {
+                for (int bi = 0; bi < B; ++bi) {
+                    const int s = b_slots[bi];
+                    const int ne = n_emit[bi];
+                    next_tok[s] = emitted[(size_t)bi * 8 + ne - 1];
+                    slot_pos[s] += ne;
+                    slot_gen[s] += ne;
+                    total_gen += ne;
+                }
+                continue;
+            }
+            batch.clear();
+            batch.capture_taps = use_dspark;
+            for (int bi = 0; bi < B; ++bi) batch.push(b_slots[bi], slot_pos[b_slots[bi]], next_tok[b_slots[bi]], true);
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "bench decode err: %s\n", err.c_str()); return 1; }
+            for (int bi = 0; bi < B; ++bi) {
+                const int s = b_slots[bi];
+                const float* lg = logits.data() + static_cast<size_t>(bi) * V;
+                int32_t best = 0;
+                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                next_tok[s] = best;
+                ++slot_pos[s];
+                ++slot_gen[s];
+                ++total_gen;
+            }
+        }
+        for (;;) {
+            batch.clear();
+            batch.capture_taps = false;
+            std::vector<int> tail_s;
+            for (int s = 0; s < P; ++s) {
+                if (slot_gen[s] < gen_len && slot_pos[s] < eff_ctx) {
+                    batch.push(s, slot_pos[s], next_tok[s], true);
+                    tail_s.push_back(s);
+                }
+            }
+            if (tail_s.empty()) break;
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "bench decode err: %s\n", err.c_str()); return 1; }
+            for (size_t bi = 0; bi < tail_s.size(); ++bi) {
+                const int s = tail_s[bi];
+                const float* lg = logits.data() + bi * V;
+                int32_t best = 0;
+                for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+                next_tok[s] = best;
+                ++slot_pos[s];
+                ++slot_gen[s];
+                ++total_gen;
+            }
+        }
     } else {
+        // The shipped decode loop. On a card whose table row asks for it (fast mode), the 128 best candidates per row come back instead of the full
+        // vocab-wide logits (what --serve does; 64 rows are 51 MB a step otherwise). The backend decides, there is no environment read here.
+        const bool bench_cand = backend->prefers_candidate_rows() && backend->supports_candidates();
+        CandRows cand;
         for (int step = 0; step < gen_len; ++step) {
             batch.clear();
             batch.capture_taps = use_dspark;
             for (int s = 0; s < P; ++s) batch.push(s, prompt_len + step, next_tok[s], true);
+            if (bench_cand) {
+                if (!backend->forward_batch_cand(batch, cand, err)) {
+                    fprintf(stderr, "bench decode err: %s\n", err.c_str());
+                    return 1;
+                }
+                for (int s = 0; s < P; ++s) {
+                    next_tok[s] = cand.idx[static_cast<size_t>(s) * InkBackend::kInkCandidates];
+                    ++total_gen;
+                }
+                continue;
+            }
             if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
                 fprintf(stderr, "bench decode err: %s\n", err.c_str());
                 return 1;
@@ -285,10 +374,17 @@ static int cmd_kld_eval(const std::string& model_path, const std::string& ref_pa
 
     std::vector<float> got_lg(static_cast<size_t>(n_tok) * V);
     StepBatch batch;
-    for (int i = 0; i < n_tok; ++i) batch.push(0, i, ids[i], true);
-    if (!backend->forward_batch(batch, got_lg.data(), nullptr, err)) {
-        fprintf(stderr, "forward: %s\n", err.c_str());
-        return 1;
+    // INK_KLD_CHUNK=n feeds the tokens n at a time (as INK_DUMP_CHUNK does for --dump-ref; 16 = the verify-width kernels, 1 = the one-token decode kernels), default: all in one batch
+    int kld_chunk = n_tok;
+    if (const char* kc = std::getenv("INK_KLD_CHUNK"); kc && std::atoi(kc) > 0) kld_chunk = std::min<int>(std::atoi(kc), n_tok);
+    for (int i0 = 0; i0 < n_tok; i0 += kld_chunk) {
+        const int i1 = std::min<int>(n_tok, i0 + kld_chunk);
+        batch.clear();
+        for (int i = i0; i < i1; ++i) batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, got_lg.data() + static_cast<size_t>(i0) * V, nullptr, err)) {
+            fprintf(stderr, "forward: %s\n", err.c_str());
+            return 1;
+        }
     }
 
     double kld_sum = 0.0, nll_sum = 0.0;
@@ -681,7 +777,7 @@ static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopt
             ++steps;
             const int rem = n_gen - static_cast<int>(b.size());
             if (rem >= 2 && pos + 12 < eff_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 const int n_emit = backend->dspark_spec_step_greedy(0, next, pos, rem, emitted, &drafted, err);
                 if (n_emit < 0) { fprintf(stderr, "spec: %s\n", err.c_str()); return 1; }
@@ -838,7 +934,10 @@ int main(int argc, char** argv) {
     cfg.version = INKLING_VERSION;
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
+    bool vision_reader_given = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
+    std::string tkl_corpus, tkl_cfgs, tkl_out, tkl_only, tgen_in, tgen_out, tgen_stop, tkl_calib, turbo_preset;
+    int tkl_chunk = 2048;
     int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0, batch_check_n = 0;
     float cli_temp = 0.0f;
 
@@ -867,15 +966,50 @@ int main(int argc, char** argv) {
             kld_ref = next();
         } else if (a == "--dump-ref") {
             dump_ref = next();
+        } else if (a == "--tail-kl") {
+            tkl_corpus = next();
+        } else if (a == "--tail-gen") {
+            tgen_in = next();
+        } else if (a == "--tail-gen-out") {
+            tgen_out = next();
+        } else if (a == "--tail-stop") {
+            tgen_stop = next();
+        } else if (a == "--tail-cfgs") {
+            tkl_cfgs = next();
+        } else if (a == "--tail-out") {
+            tkl_out = next();
+        } else if (a == "--tail-chunk") {
+            tkl_chunk = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--turbo") {
+            turbo_preset = "turbo";
+        } else if (a == "--turbo-max") {
+            turbo_preset = "turbo-max";
+        } else if (a == "--tail-calib") {
+            tkl_calib = next();
+        } else if (a == "--tail-only") {
+            tkl_only = next();
         } else if (a == "--native" || a == "--model") {
             cfg.model_path = next();
         } else if (a == "--vision") {
             cfg.vision_path = next();
             cfg.bopts.vision_path = cfg.vision_path;
+        } else if (a == "--vision-reader") {
+            const std::string v = next();
+            if (v != "auto" && v != "gpu" && v != "cpu") {
+                fprintf(stderr, "--vision-reader takes auto, gpu or cpu\n");
+                return 2;
+            }
+            cfg.bopts.vision_reader = v;
+            vision_reader_given = true;
+        } else if (a == "--vision-idle-s") {
+            cfg.bopts.vision_idle_s = std::max(0, std::atoi(next().c_str()));
         } else if (a == "--max-context" || a == "--ctx") {
             cfg.bopts.max_ctx = std::atoi(next().c_str());
         } else if (a == "--parallel" || a == "--batch" || a == "--slots") {
             cfg.bopts.parallel = std::max(1, std::min(kMaxParallelSlots, std::atoi(next().c_str())));
+        } else if (a == "--tail-role-token") {
+            // #7241 (opt-in): the id of <|message_system|>; with --serve, the prompt checkpoint goes in front of a trailing level turn (ink_serve.h)
+            cfg.tail_role_token = std::atoll(next().c_str());
         } else if (a == "--chunk") {
             cfg.bopts.chunk = std::max(1, std::atoi(next().c_str()));
             cfg.bopts.chunk_auto = false;
@@ -895,6 +1029,7 @@ int main(int argc, char** argv) {
         } else if (a == "--draft") {
             cfg.draft_mode = next();
             cfg.bopts.enable_dspark = (cfg.draft_mode != "off");
+            cfg.bopts.draft_forced = (cfg.draft_mode == "on");
         } else if (a == "--draft-beam") {
             cfg.bopts.spec_beam = std::atoi(next().c_str());
         } else if (a == "--draft-cost") {
@@ -978,8 +1113,9 @@ int main(int argc, char** argv) {
                    "  --export-tokenizer PATH OUT_DIR\n"
                    "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv auto|fp16|fp8|k8v8|k8v4]\n"
                    "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
+                   "  --turbo | --turbo-max   opt-in router tail skip presets (answers differ slightly; CUDA and HIP; see docs/INKLING_TURBO.md)\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--vision-reader auto|gpu|cpu] [--vision-idle-s N] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
             return 0;
         } else {
@@ -1018,9 +1154,30 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --turbo / --turbo-max: the preset goes through the same environment switch as STRATA_INK_TAIL_SKIP=turbo (a value the person set wins)
+    if (!turbo_preset.empty()) {
+        if (const char* have = std::getenv("STRATA_INK_TAIL_SKIP"); have && have[0]) {
+            fprintf(stderr, "[inkling] --%s ignored: STRATA_INK_TAIL_SKIP=%s is set and wins\n", turbo_preset.c_str(), have);
+        } else {
+#ifdef _WIN32
+            _putenv_s("STRATA_INK_TAIL_SKIP", turbo_preset.c_str());
+#else
+            setenv("STRATA_INK_TAIL_SKIP", turbo_preset.c_str(), 1);
+#endif
+        }
+    }
+
     // Auto-select FP8_E4M3 KV when parallel >= 16 unless user explicitly forced a format
     if (cfg.bopts.kv_dtype_auto && cfg.bopts.parallel >= 16) {
         cfg.bopts.kv_dtype = KvDtype::FP8_E4M3;
+    }
+
+    // The picture reader (ink_vision_policy.h): --vision-reader wins over STRATA_INK_VISION_READER; both default to "auto" (the 24 GB rule).
+    if (!vision_reader_given) {
+        if (const char* e = std::getenv("STRATA_INK_VISION_READER"); e && (std::string(e) == "gpu" || std::string(e) == "cpu")) cfg.bopts.vision_reader = e;
+    }
+    if (cfg.bopts.vision_idle_s < 0) {
+        if (const char* e = std::getenv("STRATA_INK_VISION_IDLE_S"); e && *e) cfg.bopts.vision_idle_s = std::max(0, std::atoi(e));
     }
 
     if (mode_serve) {
@@ -1034,11 +1191,24 @@ int main(int argc, char** argv) {
         const char* q8e = std::getenv("STRATA_INK_Q8_0_DENSE");
         ink2::gguf_detail::keep_q8_0_dense() = !(q8e && q8e[0] == '0');
     }
+    // One CUDA GPU (sm_61 or newer: the Q8_ROW kernels): a GSQ-RCO file may compact its trunk (the loader decides per file; STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty() && ink2::ink_cuda_compact_trunk_supported(cfg.bopts.gpu_index)) {
+        ink2::gguf_detail::compact_trunk_allowed() = true;
+    }
+#endif
+#if defined(INKLING_ENABLE_HIP) && !defined(INKLING_ENABLE_CUDA)
+    // One HIP GPU: a GSQ-RCO file may compact its trunk (Q8_ROW unembed, embedding in pinned host RAM; the loader decides per file, STRATA_INK_GGUF_COMPACT=0 / 1 overrides)
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty()) {
+        ink2::gguf_detail::compact_trunk_allowed() = true;
+    }
 #endif
 
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
+    if (!tkl_calib.empty()) return cmd_tail_calib(cfg.model_path, tkl_calib, tkl_cfgs, tkl_out, tkl_chunk, cfg.bopts, cfg.force_cpu);
+    if (!tgen_in.empty()) return cmd_tail_gen(cfg.model_path, tgen_in, tgen_out, tgen_stop, cfg.bopts, cfg.force_cpu);
+    if (!tkl_corpus.empty()) return cmd_tail_kl(cfg.model_path, tkl_corpus, tkl_cfgs, tkl_out, tkl_chunk, tkl_only, cfg.bopts, cfg.force_cpu);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);
     if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu);
     if (ring_check_stride > 0) {
@@ -1090,8 +1260,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (const char* ts = std::getenv("STRATA_INK_TAIL_SKIP"); ts && ts[0] && std::string(ts) != "off" && std::string(ts) != "0") {
+        // the opt-in tail skip (--turbo, STRATA_INK_TAIL_SKIP): only the CUDA and HIP backends have it; say so where it has no effect
+        std::string terr;
+        if (backend->set_tail_skip(ts, terr)) fprintf(stderr, "[inkling] tail skip on (%s): answers differ slightly from exact\n", ts);
+        else fprintf(stderr, "[inkling] STRATA_INK_TAIL_SKIP=%s has no effect on the %s backend (%s): answers are exact\n", ts, backend->backend_name(), terr.c_str());
+    }
+
     if (mode_serve) {
-        return run_serve_loop(cfg, mf, *backend);
+        const int rc = run_serve_loop(cfg, mf, *backend);
+        // QUIT: free the backend here, as the old end of main did, then leave without exit()'s own teardown (leave_after_quit, ink_serve.h)
+        backend.reset();
+        leave_after_quit(rc);
     }
 
     // Direct CLI generation mode

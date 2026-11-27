@@ -3629,5 +3629,11 @@
   "modelPortActive": "Port de modèle actif : {0}.",
   "modelPortHint": "Le port de départ utilisé par les serveurs de modèles locaux (18500 par défaut). Laissez vide pour le choix automatique ; Strata évite de sonder le port 8080 afin d’éviter tout conflit avec des applications locales comme Spring Boot. S’applique au prochain chargement d’un modèle.",
   "promptCacheSpreadLabel": "Répartir les points de reprise du cache de prompt",
-  "promptCacheSpreadHint": "Transmet --prompt-cache-spread aux modèles locaux afin de répartir les points de reprise le long des conversations au lieu de les regrouper à la fin. Utilise la même RAM et réduit la relecture lors de la compaction sur les modèles hybrides. S’applique au prochain chargement d’un modèle."
+  "promptCacheSpreadHint": "Transmet --prompt-cache-spread aux modèles locaux afin de répartir les points de reprise le long des conversations au lieu de les regrouper à la fin. Utilise la même RAM et réduit la relecture lors de la compaction sur les modèles hybrides. S’applique au prochain chargement d’un modèle.",
+  "hideFailedToolsLabel": "Masquer les étapes échouées",
+  "hideFailedToolsHint": "Une étape que l’assistant a tentée sans succès, par exemple une page qui ne s’est pas ouverte, n’apparaît pas dans la conversation. L’assistant voit toujours l’erreur et peut réessayer. Une étape refusée, ou qui attend votre réponse, reste toujours affichée.",
+  "portReservedTitle": "Le port {0} est réservé par le système",
+  "portReservedBody": "Aucun programme n’utilise le port {0}, mais le système le garde en réserve ; sous Windows, c’est souvent WSL (réseau en miroir), Hyper-V ou Docker. Strata a démarré sur le port {1} et le réutilisera la prochaine fois, afin que vos conversations et réglages restent au même endroit. Pour choisir vous-même un port, ouvrez les Réglages et définissez le port de l’application. Les conversations et réglages enregistrés sur le port {0} ne sont pas affichés ici.",
+  "s9160": "N’est plus proposé",
+  "s9161": "Mise à jour disponible"
 }

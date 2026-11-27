@@ -150,7 +150,8 @@ def _signals(a, want: dict) -> dict:
 
 
 HY4_DRAFTING_LINE = "Tencent Hy4-Flash has its DFly2 drafter built into the model file; no separate drafter download is needed."
-INKLING_DRAFTING_LINE = "Inkling-2-Mini has its DSpark Block-8 drafter built into the model file; no separate drafter download is needed."
+INKLING_DRAFTING_LINE = ("Inkling-2-Mini's drafter is DFlash 2: dflash2.safetensors (0.55 GB) beside the model file. Setup and update download it; without it the model runs "
+                             "with no drafter. This command downloads nothing for Inkling-2-Mini.")
 
 
 def _is_inkling_drafting(a) -> bool:
@@ -214,7 +215,7 @@ def run(a) -> int:
     if _is_hy4_drafting(a) or _is_inkling_drafting(a):
         is_ink = _is_inkling_drafting(a)
         line = INKLING_DRAFTING_LINE if is_ink else HY4_DRAFTING_LINE
-        drafter_id = "dspark" if is_ink else "dfly2"
+        drafter_id = "dflash2" if is_ink else "dfly2"
         if a.drafting_command == "plan":
             if machine:
                 print(json.dumps({"schema_version": 1, "ok": True, "needed": False, "tuned_needed": False, "mtp_here": False,

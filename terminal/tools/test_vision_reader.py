@@ -23,6 +23,112 @@ def folder(*names: str) -> Path:
     return d
 
 
+REPO = Path(__file__).resolve().parents[2]
+
+
+class InklingRule(unittest.TestCase):
+    """Inkling-2-Mini follows the Qwen rule for pictures (owner 2026-11-26): vision_reader.inkling_reader / inkling_lines / set_reader_arg, and the numbers
+    the engine keeps in engine/src/inkling2/ink_vision_policy.h."""
+
+    def test_nvidia_and_amd_by_card_memory(self):
+        for gb, want in ((8, "cpu"), (12, "cpu"), (16, "cpu"), (20, "cpu"), (23, "cpu"), (24, "gpu"), (32, "gpu"), (48, "gpu")):
+            for make in ("nvidia", "amd", ""):
+                self.assertEqual(VR.inkling_reader(None, gb, make), want, (gb, make))
+                self.assertEqual(VR.inkling_reader("yes", gb, make), want, (gb, make))
+        self.assertEqual(VR.inkling_reader(None, 23.5), "gpu")                 # a "24 GB" card reports 23.5 to 24 GiB
+        self.assertEqual(VR.inkling_reader(None, 23.49), "cpu")
+
+    def test_the_card_is_unknown(self):
+        """Nothing is written then (None): the engine's own rule decides at start."""
+        for v in (None, 0, 0.0):
+            self.assertIsNone(VR.inkling_reader(None, v))
+            self.assertIsNone(VR.inkling_reader("yes", v, "amd"))
+        self.assertEqual(VR.inkling_reader("gpu", None), "gpu")               # asked: kept without a reading
+        self.assertEqual(VR.inkling_reader("no", None), "none")
+
+    def test_forced_modes_win_on_every_card(self):
+        for gb in (8, 12, 16, 24, 32):
+            self.assertEqual(VR.inkling_reader("gpu", gb), "gpu")
+            self.assertEqual(VR.inkling_reader("cpu", gb), "cpu")
+            self.assertEqual(VR.inkling_reader("no", gb), "none")
+            self.assertEqual(VR.inkling_reader("off", gb, "amd"), "none")
+        self.assertEqual(VR.inkling_reader("gpu", 8, mac=True), "gpu")
+        self.assertEqual(VR.inkling_reader("cpu", 64, mac=True), "cpu")
+
+    def test_a_mac_reads_on_the_gpu_whatever_its_memory(self):
+        for gb in (None, 0, 8, 16, 32, 128):
+            self.assertEqual(VR.inkling_reader(None, gb, mac=True), "gpu", gb)
+            self.assertEqual(VR.inkling_reader("yes", gb, "apple", mac=True), "gpu", gb)
+
+    def test_an_intel_arc_defaults_to_the_cpu_and_gpu_is_asked_for(self):
+        for gb in (None, 0, 8, 16, 24, 32):
+            self.assertEqual(VR.inkling_reader(None, gb, "intel"), "cpu", gb)
+            self.assertEqual(VR.inkling_reader("gpu", gb, "intel"), "gpu", gb)
+        with mock.patch.object(VR, "INTEL_GPU_READER_BY_DEFAULT", True):
+            self.assertEqual(VR.inkling_reader(None, 32, "intel"), "gpu")
+            self.assertEqual(VR.inkling_reader(None, 8, "intel"), "cpu")
+
+    def test_machines_whose_gpu_shares_the_ram_use_the_pool_they_report(self):
+        """Strix Halo and DGX Spark: setup passes the shared pool as the card's memory, as it does for the Qwen path: far above 24 GB, so the GPU."""
+        self.assertEqual(VR.inkling_reader(None, 96, "amd"), "gpu")
+        self.assertEqual(VR.inkling_reader(None, 121, "nvidia"), "gpu")
+        self.assertEqual(VR.inkling_reader(None, 16, "amd"), "cpu")           # a small BIOS carve-out is read like any small card
+
+    def test_the_screen_lines(self):
+        def lines(asked, mode, gb, make="", mac=False, backend="cuda"):
+            return VR.inkling_lines(asked, mode, gb, make, mac=mac, backend=backend)
+        self.assertEqual(lines(None, "none", 12), [(False, "images: off (no picture reader is installed)")])
+        (warn, text), = lines(None, "cpu", 12)
+        self.assertFalse(warn)
+        self.assertIn("on the CPU", text)
+        self.assertIn("12 GB card", text)
+        self.assertIn("--vision gpu", text)
+        (warn, text), = lines(None, "gpu", 32)
+        self.assertFalse(warn)
+        self.assertIn("on the GPU", text)
+        self.assertIn("2 minutes without one", text)                          # NVIDIA: the on-demand reader
+        (warn, text), = lines(None, "gpu", 32, backend="hip")
+        self.assertNotIn("without one", text)
+        (warn, text), = lines("gpu", "gpu", 12)                               # asked for on a small card: kept, with a warning
+        self.assertTrue(warn)
+        self.assertIn("kept as you chose", text)
+        self.assertIn("--vision cpu", text)
+        (warn, text), = lines("gpu", "gpu", 32)
+        self.assertFalse(warn)
+        (warn, text), = lines("cpu", "cpu", 32)
+        self.assertIn("as you asked", text)
+        (warn, text), = lines(None, "cpu", None, "intel", backend="sycl")
+        self.assertIn("Intel Arc", text)
+        (warn, text), = lines(None, "gpu", None, mac=True, backend="metal")
+        self.assertIn("Mac's GPU", text)
+        (warn, text), = lines("cpu", "cpu", None, mac=True, backend="metal")
+        self.assertEqual(text, VR.MAC_CPU_NOTE)
+        (warn, text), = lines(None, None, None)
+        self.assertIn("by the card's memory", text)
+
+    def test_the_flag_in_an_argument_list(self):
+        a = ["--native", "m", "--vision", "v"]
+        self.assertIsNone(VR.reader_arg(a))
+        self.assertEqual(VR.set_reader_arg(a, "cpu"), a + ["--vision-reader", "cpu"])
+        self.assertEqual(VR.reader_arg(VR.set_reader_arg(a, "cpu")), "cpu")
+        self.assertEqual(VR.set_reader_arg(a + ["--vision-reader", "cpu", "--kv", "fp8"], "gpu"), a + ["--kv", "fp8", "--vision-reader", "gpu"])
+        self.assertEqual(VR.set_reader_arg(a + ["--vision-reader", "cpu"], None), a)
+        self.assertEqual(VR.set_reader_arg(a + ["--vision-reader", "cpu"], "none"), a)
+        self.assertEqual(VR.reader_arg(a + ["--vision-reader", "AUTO"]), "auto")
+
+    @unittest.skipUnless((REPO / "engine" / "src" / "inkling2" / "ink_vision_policy.h").is_file(), "ink_vision_policy.h is in the engine branch (f-ink-vision)")
+    def test_the_numbers_are_the_engines(self):
+        """engine/src/inkling2/ink_vision_policy.h holds the same rule: this keeps the two files from drifting apart."""
+        import re
+        text = (REPO / "engine" / "src" / "inkling2" / "ink_vision_policy.h").read_text(encoding="utf-8")
+        gib = float(re.search(r"kVisionGpuMinGiB\s*=\s*([0-9.]+)", text).group(1))
+        idle = int(re.search(r"kVisionIdleSecondsDefault\s*=\s*(\d+)", text).group(1))
+        intel = re.search(r"kVisionIntelGpuByDefault\s*=\s*(true|false)", text).group(1) == "true"
+        self.assertEqual(gib, VR.GPU_MIN_VRAM_GB)
+        self.assertEqual(idle, VR.ELASTIC_IDLE_S_DEFAULT)
+        self.assertEqual(intel, VR.INTEL_GPU_READER_BY_DEFAULT)
+
+
 class Choose(unittest.TestCase):
     def test_the_default_reader_by_card_memory_is_one_rule_for_every_make(self):
         self.assertEqual(VR.default_mode(12), "cpu")

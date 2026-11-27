@@ -68,16 +68,26 @@ The number in the name is the RAM the pack is made for.
 </details>
 
 <details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Ornith-1.5-35B-A3B</b></summary>
+
+**Ornith AI (MIT):** Q4_K_M, Q5_K_M, Q6_K, Q8_0. The same architecture and engine path as Qwen3.6-35B-A3B. Catalog entry from eSPiYa's patch.
+
+[Sizes and setup](docs/MODELS.md#ornith-15-35b-a3b).
+
+</details>
+
+<details>
 <summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
 
 | Provider | Choices |
 | --- | --- |
-| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
-| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+| **Strata** | SQ-20 (19.37 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **GSQ-RCO** | IQ3\_S (11.43 GB) |
+| **Unsloth** | UD-Q4\_K\_XL (17.63 GB) |
 
 SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
 
-[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
+[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [GSQ-RCO GGUF file](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -96,7 +106,7 @@ Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-me
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.22-windows-x64-setup.exe` · `Strata-0.2.22-linux-x86_64.AppImage` · `Strata-0.2.22-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.23-windows-x64-setup.exe` · `Strata-0.2.23-linux-x86_64.AppImage` · `Strata-0.2.23-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">

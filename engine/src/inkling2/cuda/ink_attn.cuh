@@ -211,6 +211,7 @@ __global__ void __launch_bounds__(128) k_ink_post_qkv_fused(
     bool is_global,
     int mode,                              // 0 = single-tok M=1, 1 = batched B=1..64, 2 = Tree-16 verify
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.y;
     const int blk = blockIdx.x;
     const int tid = threadIdx.x;  // 0..127
@@ -318,6 +319,7 @@ __global__ void __launch_bounds__(256) k_ink_rel_table(
     const float* __restrict__ rel_proj,   // [16, 1024] F32 (note: col 1024 is implicitly 0.0f!)
     float* __restrict__ table,            // [M, 24, 1025] F32
     int M) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
     const int m = blockIdx.y;
     const int h = blockIdx.x;  // 0..23
     if (m >= M || h >= kInkHeads) return;
@@ -327,6 +329,35 @@ __global__ void __launch_bounds__(256) k_ink_rel_table(
 
     float* dst = table + ((size_t)m * kInkHeads + h) * (kInkRelExtent + 1);
     for (int d = threadIdx.x; d < kInkRelExtent; d += 256) {
+        float acc = 0.0f;
+#pragma unroll
+        for (int c = 0; c < kInkDRel; ++c) {
+            acc = fmaf(sr[c], rel_proj[(size_t)c * kInkRelExtent + d], acc);
+        }
+        dst[d] = acc;
+    }
+    if (threadIdx.x == 0) dst[kInkRelExtent] = 0.0f;
+}
+
+// The same table for the first `max_dist` distances only (RTX 50 fast mode, the multi-chain verify: positions are < cur_max_pos + 1, the rest is never read).
+// A separate kernel on purpose: the shipped k_ink_rel_table above stays instruction-for-instruction what it was.
+__global__ void __launch_bounds__(256) k_ink_rel_table_md(
+    const float* __restrict__ r,
+    const float* __restrict__ rel_proj,
+    float* __restrict__ table,
+    int M,
+    int max_dist) {
+    INK_PDL_WAIT();   // PERF-STEP: first statement on every path (programmatic dependent launch)
+    const int m = blockIdx.y;
+    const int h = blockIdx.x;
+    if (m >= M || h >= kInkHeads) return;
+    __shared__ float sr[kInkDRel];
+    if (threadIdx.x < kInkDRel) sr[threadIdx.x] = r[((size_t)m * kInkHeads + h) * kInkDRel + threadIdx.x];
+    __syncthreads();
+
+    float* dst = table + ((size_t)m * kInkHeads + h) * (kInkRelExtent + 1);
+    const int d_lim = min(max_dist, kInkRelExtent);
+    for (int d = threadIdx.x; d < d_lim; d += 256) {
         float acc = 0.0f;
 #pragma unroll
         for (int c = 0; c < kInkDRel; ++c) {

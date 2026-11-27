@@ -5,6 +5,7 @@ real StrataEngine and Service, so the server's side is tested without a GPU: req
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -389,6 +390,36 @@ class PickSlot(unittest.TestCase):
         e.slot_held = [[], [], list(range(1, n - 10))]              # n - 11 tokens: re-prefilling that costs well under a second
         self.assertEqual(e.pick_slot(list(range(1, n - 10)) + [7]), 0)
         self.assertEqual(n, 512)
+
+    def test_a_long_chat_in_slot_zero_is_kept_from_a_cold_request_while_another_slot_is_free(self):
+        # #7226: the drafter's preference for slot 0 gave way only for a conversation that continued the request, so a cold request (of any size)
+        # wiped the long chat in slot 0 although slot 1 was empty.  STRATA_INKLING_KEEP_CHATS=0 brings the old rule back.
+        big = StrataEngine.SIDE_REQUEST_MIN
+        for env, want_cold in (({}, 1), ({"STRATA_INKLING_KEEP_CHATS": "0"}, 0), ({"STRATA_INKLING_KEEP_CHATS": "off"}, 0), ({"STRATA_INKLING_KEEP_CHATS": "1"}, 1)):
+            with self.subTest(env=env), mock.patch.dict("os.environ", env):
+                if not env:
+                    os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+                e = self.inkling(3)
+                e.slot_held = [[1] * big, [], []]
+                e.slot_used = [time.time(), 0.0, 1.0]                                  # the chat in slot 0 was used just now
+                self.assertEqual(e.pick_slot([7, 8]), want_cold)                       # a short cold request
+                self.assertEqual(e.pick_slot([7] * 5000), want_cold)                   # a large cold request
+                self.assertEqual(e.pick_slot([1] * big + [2]), 0)                      # the chat's own next turn keeps slot 0
+                e.slot_held = [[1] * (big - 1), [], []]                                # a chat under SIDE_REQUEST_MIN is not worth keeping
+                self.assertEqual(e.pick_slot([7, 8]), 0)
+                e.slot_held = [[1] * big, [], []]
+                e.slot_busy[1] = e.slot_busy[2] = True                                 # no other slot free: slot 0 as before
+                self.assertEqual(e.pick_slot([7, 8]), 0)
+                e.slot_busy = [False] * 3
+                e.slot_used[0] = time.time() - StrataEngine.KEEP_IDLE_S - 60           # a chat nobody has used for a long time is not kept: the lone client
+                self.assertEqual(e.pick_slot([7, 8]), 0)                               # that starts a new conversation drafts in slot 0, as in 0.2.22
+
+    def test_the_keep_switch_is_on_unless_it_is_set_to_zero(self):
+        for val, want in ((None, True), ("", True), ("1", True), ("0", False), ("false", False), ("No", False), ("off", False)):
+            with self.subTest(val=val), mock.patch.dict("os.environ", {} if val is None else {"STRATA_INKLING_KEEP_CHATS": val}):
+                if val is None:
+                    os.environ.pop("STRATA_INKLING_KEEP_CHATS", None)
+                self.assertEqual(StrataEngine.inkling_keep_chats(), want)
 
     def test_nothing_changes_without_the_drafter_or_for_another_engine(self):
         for make in (lambda: self.engine(3), lambda: self.inkling(3, "off")):

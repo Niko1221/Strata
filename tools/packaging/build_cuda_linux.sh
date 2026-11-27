@@ -80,6 +80,6 @@ mkdir -p "$out"
 # shellcheck disable=SC2086
 "$py" tools/packaging/package_engine.py --src "$stage" --backend cuda --version "$ver" --out "$out" $arch_args --arch "compute_$last" \
     --min-driver nvidia=$mindriver --variant "$variant" --platform linux-x86_64 --build-id "release-${ver}-${variant}-${cudafull}" \
-    --include SYSTEM-LIBS.txt --include 'libstrata_kq*' $shape_pkg
+    --include SYSTEM-LIBS.txt --include 'libstrata_kq*' --include 'licenses/*' $shape_pkg
 for d in "$out"/*/; do "$py" tools/packaging/package_engine.py --verify "$d"; "$py" tools/packaging/binary_deps.py "$d"; done
 echo "built: $out"

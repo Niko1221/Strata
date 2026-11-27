@@ -11,12 +11,13 @@ export function NativeDeleteDialog({ id, onClose }: { id: string | null; onClose
     const native = useNative();
     const [pending, setPending] = useState(false), [error, setError] = useState('');
     const entry = native?.installed?.models.find(m => m.model === id);
-    const label = (() => { const sizes = nativeCatalogModels(native?.catalog?.families ?? []).flatMap(f => f.sizes); const v = sizes.find(s => s.id === id); return v ? `${catalogVersionLabel(v)} · ${v.model}` : entry?.model_name ?? id ?? ''; })();
+    const label = (() => { const sizes = nativeCatalogModels(native?.catalog?.families ?? [], native?.installed?.models).flatMap(f => f.sizes); const v = sizes.find(s => s.id === id); return v ? `${catalogVersionLabel(v)} · ${v.model}` : entry?.model_name ?? id ?? ''; })();
     const running = !!native?.instances.some(i => i.model === id);
     const busy = !!native?.jobs.some(j => j.state === 'running');
     const size = entry?.diskGb ?? 0, gb = entry?.removableGb ?? size;
     // Files in the person's own folder (an adopted GGUF) stay where they are: only the entry is removed.
-    const keepsFiles = entry?.removableGb === 0 && size > 0;
+    const custom = entry?.custom === true;      // a custom build: only Strata's own entry for it is removed, never the person's model files
+    const keepsFiles = custom || (entry?.removableGb === 0 && size > 0);
     function close() { if (!pending) { onClose(); setError(''); } }
     async function remove() {
         setPending(true);
@@ -37,9 +38,9 @@ export function NativeDeleteDialog({ id, onClose }: { id: string | null; onClose
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
         finally { setPending(false); }
     }
-    return <Dialog open={!!id} compact title={tr("Delete this version?")} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr("Keep version")}</Btn><Btn variant="danger" disabled={pending || busy || !entry} onClick={() => void remove()}>{tr(pending ? 'Working…' : 'Delete version')}</Btn></>}>
+    return <Dialog open={!!id} compact title={tr(custom ? "Remove this model from Strata?" : "Delete this version?")} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr(custom ? "Keep model" : "Keep version")}</Btn><Btn variant="danger" disabled={pending || busy || !entry} onClick={() => void remove()}>{tr(pending ? 'Working…' : custom ? 'Remove from Strata' : 'Delete version')}</Btn></>}>
       <p>{tr(label)}{tr(size ? ` · ${sizeGb(size)}` : '')}</p>
-      {tr(!entry ? <p className="small muted">{tr("This version is no longer downloaded.")}</p> : <p className="small muted storage-delete-note">{keepsFiles ? tr('These files are in your own folder, so they stay there. Only the entry in Strata is removed.') : tr('Remove {0} GB of downloaded files. You can download this version again.', [gb ? gb.toFixed(1) : '0'])}{tr(running ? ' ' : '')}{tr(running ? (keepsFiles ? 'The running model will be unloaded.' : 'The running model will be unloaded and its files deleted.') : '')}</p>)}
+      {tr(!entry ? <p className="small muted">{tr("This version is no longer downloaded.")}</p> : <p className="small muted storage-delete-note">{custom ? tr('Only the entry in Strata is removed. Your .strata or .gguf files stay where they are and are not changed.') : keepsFiles ? tr('These files are in your own folder, so they stay there. Only the entry in Strata is removed.') : tr('Remove {0} GB of downloaded files. You can download this version again.', [gb ? gb.toFixed(1) : '0'])}{tr(running ? ' ' : '')}{tr(running ? (keepsFiles ? 'The running model will be unloaded.' : 'The running model will be unloaded and its files deleted.') : '')}</p>)}
       {tr(error ? <ErrorNotice message={error}/> : null)}
     </Dialog>;
 }

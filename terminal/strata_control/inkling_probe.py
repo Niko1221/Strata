@@ -40,7 +40,7 @@ TOKENS = 128           # tokens decoded per probe request (64 was too short: the
 REPS = 2               # requests per prompt and arm; the median is used
 READY_TIMEOUT = 900.0
 STEP_TIMEOUT = 300.0
-ON_ARGS = ["--draft", "dspark", "--draft-beam", "1", "--draft-adapt"]   # what a drafting run config starts with (inkling_kind.drafter_args)
+ON_ARGS = ["--draft", "dflash2", "--draft-beam", "1", "--draft-adapt"]   # what a drafting run config starts with (inkling_kind.drafter_args): DFlash 2 is the only drafter
 _PLACEMENT_FLAGS = ("--native", "--max-context", "--vram-experts-gb", "--ram-experts-gb", "--ssd-experts", "--kv", "--kv-offload",
                     "--vision", "--gpus", "--layer-split", "--dspark")
 
@@ -73,6 +73,8 @@ def placement_key(cfg: dict) -> str:
         if a in _PLACEMENT_FLAGS:
             nxt = args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") else ""
             picked[a] = os.path.basename(nxt) if a in ("--native", "--vision", "--dspark") else nxt
+    native = next((args[i + 1] for i, a in enumerate(args) if a == "--native" and i + 1 < len(args)), "")
+    picked["dflash2"] = "1" if (native and os.path.isfile(os.path.join(os.path.dirname(native), "dflash2.safetensors"))) else "0"      # the drafter's file: a probe made without it says nothing about a run with it
     picked["backend"] = str(cfg.get("backend") or "cuda")
     picked["gpu"] = json.dumps(cfg.get("gpu"), sort_keys=True)
     return hashlib.sha1(json.dumps(picked, sort_keys=True).encode()).hexdigest()[:16]

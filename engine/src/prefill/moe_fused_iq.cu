@@ -50,6 +50,7 @@
 #include "../kernels/cuda/tq_lut_i8.cuh"
 
 #include <algorithm>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -70,6 +71,37 @@ void ck(cudaError_t e, const char* what) {
         std::fprintf(stderr, "prefill fused experts (native): %s: %s\n", what, cudaGetErrorString(e));
         std::exit(1);
     }
+}
+
+// STRATA_PF_SYNC_DEBUG=1 (a diagnostic, #7115): the launch check ck() after a launch reports the first error the process has pending, which can come from
+// any earlier kernel of any stream (an "illegal memory access" at "experts_native" names the check, not the kernel).  With the switch on every launch of the
+// native fused kernels is followed by a stream synchronize and, on an error, a line that names THIS launch: stage, pair, rows, experts, tile, grid and the memory
+// kind of the batch's blobs.  Off by default (the synchronize stalls the stream); the default launches and bits are unchanged.
+bool sync_debug() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_SYNC_DEBUG"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+template <class B>
+void dbg_sync(cudaStream_t s, const char* stage, const B& b, int gu_type, int d_type, int64_t n, int n_expert, int ww, unsigned grid) {
+    if (!sync_debug()) return;
+    std::vector<int> kind;   // the blobs' memory kinds are asked before the synchronize: after a fault the context answers nothing
+    for (int i = b.e0; i < b.e1; ++i) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+        hipPointerAttribute_t pa{};   // the HIP build has no mapping for the CUDA names (fnx_hip.h maps the same two)
+        if (hipPointerGetAttributes(&pa, b.blob[i - b.e0]) == hipSuccess) kind.push_back((int) pa.type);
+#else
+        cudaPointerAttributes pa{};
+        if (cudaPointerGetAttributes(&pa, b.blob[i - b.e0]) == cudaSuccess) kind.push_back((int) pa.type);
+#endif
+        else { cudaGetLastError(); kind.push_back(-1); }
+    }
+    const cudaError_t e = cudaStreamSynchronize(s);
+    if (e == cudaSuccess) return;
+    std::fprintf(stderr, "prefill fused experts (native): STRATA_PF_SYNC_DEBUG: %s of pair %d / %d failed: %s (rows %lld, %d experts in the layer, batch experts [%d, %d), tile ww %d, grid %u)\n",
+                 stage, gu_type, d_type, cudaGetErrorString(e), (long long) n, n_expert, b.e0, b.e1, ww, grid);
+    for (int i = b.e0; i < b.e1; ++i)
+        std::fprintf(stderr, "  blob of expert %d: %p memory type %d%s\n", i, (const void*) b.blob[i - b.e0], kind[(size_t) (i - b.e0)], kind[(size_t) (i - b.e0)] < 0 ? " (not known to the driver)" : "");
+    std::exit(1);
 }
 
 constexpr int AB = 80;                  // activation bytes per 64 values: 64 codes, {d0, d1}, 8 unused
@@ -3892,10 +3924,15 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         }
         if (g.gu_type == T_Q4_K) launch<T_Q4_K, true>(ww, k_gu, b, g, tb, xa, src, ha, nullptr, s);
         else launch<T_Q5_K, true>(ww, k_gu, b, g, tb, xa, src, ha, nullptr, s);
+        dbg_sync(s, "gate/up", b, g.gu_type, g.d_type, n, n_expert, ww, k_gu);
         if (g.d_type == T_Q8_0) {   // (A2) its own occupancy
             const unsigned k8 = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_kq8);
             launch<T_Q8_0, false>(ww, k8, b, g, tb, ha, src, nullptr, dm, s);
-        } else launch<T_Q5_1, false>(ww, k_d, b, g, tb, ha, src, nullptr, dm, s);
+            dbg_sync(s, "down", b, g.gu_type, g.d_type, n, n_expert, ww, k8);
+        } else {
+            launch<T_Q5_1, false>(ww, k_d, b, g, tb, ha, src, nullptr, dm, s);
+            dbg_sync(s, "down", b, g.gu_type, g.d_type, n, n_expert, ww, k_d);
+        }
         ck(cudaGetLastError(), "experts_native");
         return;
     }
@@ -3946,6 +3983,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     }
 #endif
     else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+    dbg_sync(s, "gate/up + down", b, g.gu_type, g.d_type, n, n_expert, ww, g_d);
     ck(cudaGetLastError(), "experts_native");
 }
 

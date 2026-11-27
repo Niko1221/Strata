@@ -127,6 +127,8 @@ class LaunchSettings:
     family: str | None = None                  # catalog family id (qwen, swift, coder, unsloth, gyro, nvfp4...)
     model: str | None = None                   # catalog size (IQ3_XXS ...)
     model_path: str | None = None              # "Use model files I already have": a .gguf file or a folder
+    custom_id: str | None = None               # a custom build (the person's own .strata / .gguf files): its run config's id (strata-<id>.json); family / model are its base model
+    custom_label: str | None = None            # the display name the person gave that build (--custom-label); setup writes it into the run config
     data_dir: str | None = None                # where model files are stored (None: the Strata default)
     gpus: list[int] | None = None              # None = the engine's choice (all usable cards)
     gpu_roles: dict[str, str] | None = None    # {"1": "main", "0": "helper", "2": "off"}: a role for every card; None = the recommendation
@@ -386,7 +388,9 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
 
 
 #: Options whose value is a WORD the engine reads (on, off, auto, none): the word goes through as typed (none since DeepSeek's --dspark left, #3959).
-WORD_VALUE_FLAGS: frozenset[str] = frozenset()
+#: --draft (Inkling-2-Mini): `on` asks for DFlash 2 by name, so the engine never leaves it out to keep the model on the card; without this the word "on" read as "the flag is present"
+#: and the engine got a bare `--draft` (`strata launch --set draft=on`, the Advanced screen).
+WORD_VALUE_FLAGS: frozenset[str] = frozenset({"--draft"})
 
 
 def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str],
@@ -423,10 +427,16 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
     if preset:
         parts.append(f'--preset "{preset}"')
     else:
-        if s.model_path:
+        if s.custom_label and s.model_path:           # the person's own files, named: setup writes a run config of its own for them
             parts.append(f'--model-path "{s.model_path}"')
-        if s.model:                                   # own files the table recognised say which model they are, so the line stays exact
-            parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
+            parts.append(f'--custom-label "{s.custom_label}"')
+        elif s.custom_id:                             # an installed custom build, by its id
+            parts.append(f"--model {s.custom_id}")
+        else:
+            if s.model_path:
+                parts.append(f'--model-path "{s.model_path}"')
+            if s.model:                               # own files the table recognised say which model they are, so the line stays exact
+                parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
         if s.data_dir:
             parts.append(f'--data-dir "{s.data_dir}"')
         if s.context:
@@ -455,6 +465,9 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
         elif s.gpus:
             parts.append("--gpu " + ",".join(str(g) for g in s.gpus))
     for k, v in sorted(s.extra.items()):
+        if k == "STRATA_INK_TAIL_SKIP" and v in ("turbo", "turbo-max"):
+            parts.append("--" + v)                      # the copyable line says --turbo / --turbo-max, as typed
+            continue
         parts.append(f"--set {k[2:] if k.startswith('--') else k}={v}" if v else f"--set {k[2:] if k.startswith('--') else k}")
     return " ".join(parts)
 

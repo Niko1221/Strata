@@ -26,7 +26,27 @@ class MockBackend final : public ink2::InkBackend {
         recurrent[s] = ck.recurrent;
         return true;
     }
+    // what a real backend's teardown does to the stack below main (CUDA / driver calls, free lists): it reuses the frames the serve loop had
+#if defined(_MSC_VER)
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    static void scribble_stack(int depth) {
+        volatile unsigned char buf[16384];
+        for (size_t i = 0; i < sizeof buf; ++i) buf[i] = 0xA5;
+        if (depth > 0) scribble_stack(depth - 1);
+        buf[0] = buf[sizeof buf - 1];
+    }
 public:
+    // INK_TEST_SLOW_TEARDOWN_MS: the real backends take seconds to free a model after the serve loop returns (QUIT); the shutdown test uses this
+    // to hold that window open while the client has already closed stdin, and the stack below main is overwritten as a real teardown does.
+    ~MockBackend() override {
+        if (const char* ms = std::getenv("INK_TEST_SLOW_TEARDOWN_MS")) {
+            scribble_stack(16);
+            std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(ms)));
+        }
+    }
     const char* backend_name() const noexcept override { return "prefix-test"; }
     std::string device_info() const override { return "mock"; }
     ink2::BackendStats stats() const override { return {}; }
@@ -71,6 +91,11 @@ int main() {
     cfg.bopts.chunk = 64;
     cfg.bopts.max_ctx = 32768;
     cfg.draft_mode = "off";
-    MockBackend backend;
-    return ink2::run_serve_loop(cfg, model, backend);
+    if (const char* t = std::getenv("INK_TEST_TAIL_ROLE")) cfg.tail_role_token = std::atoll(t);   // --tail-role-token
+    int rc;
+    {
+        MockBackend backend;
+        rc = ink2::run_serve_loop(cfg, model, backend);
+    }                                   // the backend is torn down here, as in ink_main.cpp
+    ink2::leave_after_quit(rc);
 }

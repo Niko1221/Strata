@@ -66,6 +66,16 @@ SWITCHES: tuple[Switch, ...] = (
            choices=(("7", "On"),) + tuple((str(r), str(r)) for r in (1, 2, 3, 4, 5, 6, 8, 9)),
            choice_note="Lower numbers skip more parts and are faster; answers can change more. Only 7 has been measured.",
            choice_sets="set 7 to turn it on, or 1 to 9 to choose how much is skipped"),
+    # Inkling-2-Mini opt-in router tail skip (lane TAILSKIP, owner 2026-11-26): two presets, both OFF by default and never the default.  `strata launch --turbo` and
+    # `--turbo-max` write STRATA_INK_TAIL_SKIP=turbo / turbo-max, the engine expands the names (engine/src/inkling2/cuda/ink_tail_skip.cuh).  Terminal only.
+    # turbo: Pass 2 only, about 3 % of the expert reads skipped, KL about 1e-3.  turbo-max: about 16 % skipped, KL about 1.3e-2.  docs/INKLING_TURBO.md.
+    Switch("inkling_turbo", "Inkling: skip rarely used experts (turbo)",
+           "Faster answers on Inkling-2-Mini: experts that matter least for a word are not read. Answers differ slightly from exact. Off by default.",
+           (("STRATA_INK_TAIL_SKIP", "turbo"),), "inkling-tail", default="off", terminal_only=True,
+           words=(("on", "On"), ("off", "Off (default)")),
+           choices=(("turbo", "Turbo"), ("turbo-max", "Turbo max")),
+           choice_note="Turbo skips about 3 percent of the expert reads; turbo-max about 16 percent, which is faster and changes answers more.",
+           choice_sets="set turbo (about 3 percent of the reads skipped) or turbo-max (about 16 percent, faster, answers differ more)"),
     # (0.2.16: the "Picture reader" row, STRATA_VISION_TOWER=mtmd for llama.cpp's reader, is gone with llama.cpp's reader itself: Strata's own reader is the
     # only one.  A run config that still carries the entry starts as before; strata-vision no longer reads the name.)
     # Troubleshooting only, in the Terminal's Advanced table and nowhere else: every Qwen 0.2.7 default back to its 0.2.6 behaviour.
@@ -123,6 +133,9 @@ def applies(switch: Switch | str, cfg: Mapping[str, Any] | None, gpus: Iterable[
         return not (cfg or {}).get("arch") and backend == "cuda" and _small_nvidia(gpus)
     if sw.only == "qwen-radeon-9000":
         return backend == "hip" and _radeon_9000(gpus)
+    if sw.only == "inkling-tail":
+        # the Inkling engine has the skip on CUDA and HIP (its direct MoE path)
+        return str((cfg or {}).get("arch") or "").lower() == "inkling2_loop" and backend in ("cuda", "hip")
     if sw.only == "tail-skip":
         # the engine reads STRATA_ROUTE_TAIL_SKIP on CUDA builds and on HIP gfx1200/gfx1201 only
         return backend == "cuda" or (backend == "hip" and _radeon_9000(gpus))

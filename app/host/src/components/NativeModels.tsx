@@ -52,7 +52,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const [toastedJob, setToastedJob] = useKept('models.toasted', ''), [appliedSig, setAppliedSig] = useKept('models.applied', '');
     const presetPending = useRef(false), visionPicks = useRef(new Map<string, string>());   // Read pictures per version: what the person set, or what the version opened with; later reports of the host never overwrite it
     const [deleting, setDeleting] = useState<string | null>(null);
-    const families = nativeCatalogModels(native?.catalog?.families ?? []);
+    const families = nativeCatalogModels(native?.catalog?.families ?? [], native?.installed?.models);
     const expertSection = useRef<HTMLElement>(null);
     // The card is inserted above the fold and the browser's scroll anchoring
     // immediately compensates by scrolling down, which cancelled the smooth
@@ -298,11 +298,11 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
   <NativeDeleteDialog id={deleting} onClose={() => setDeleting(null)}/>
   <Dialog open={manage} compact title={tr("Manage models")} onClose={() => setManage(false)} actions={<Btn onClick={() => setManage(false)}>{tr("Done")}</Btn>}><div className="native-manage">
    {tr(downloaded.some(m => !m.retired && (m.ready || m.diskGb)) ? <div className="native-manage-list" role="list">{tr(downloaded.filter(m => !m.retired && (m.ready || m.diskGb)).map(m => { const v = allSizes.find(x => x.id === m.model), loaded = native?.instances.some(i => i.model === m.model && i.status === 'ready'); return <div className="native-manage-row" role="listitem" key={m.model} data-selected={selectedSize?.id === m.model || undefined}>
-     <span className="native-manage-name"><strong>{tr(v ? `${catalogVersionLabel(v)}` : m.model_name ?? m.model)}</strong><small>{tr(v ? v.model : m.model)}{tr(m.diskGb ? ` · ${sizeGb(m.diskGb)}` : '')}</small></span>
-     <span className={loaded ? 'st-pill st-pill--accent' : 'st-pill'}>{tr(loaded ? 'Loaded' : 'Downloaded')}</span>
-     <span className="native-manage-actions"><Btn size="sm" disabled={!!active || !v} onClick={() => { if (v) setSize(v.id); setManage(false); }}>{tr(selectedSize?.id === m.model ? 'Selected' : 'Use version')}</Btn><Btn size="sm" variant="danger" disabled={!!active} onClick={() => setDeleting(m.model)}>{tr("Delete")}</Btn></span>
+     <span className="native-manage-name"><strong>{tr(v ? `${catalogVersionLabel(v)}` : m.model_name ?? m.model)}</strong><small>{tr(m.custom ? `${tr('Custom')} · ${m.base_model ?? ''}` : v ? v.model : m.model)}{tr(m.diskGb ? ` · ${sizeGb(m.diskGb)}` : '')}</small></span>
+     <span className={loaded ? 'st-pill st-pill--accent' : 'st-pill'}>{tr(loaded ? 'Loaded' : m.custom ? 'Local' : 'Downloaded')}</span>
+     <span className="native-manage-actions"><Btn size="sm" disabled={!!active || !v} onClick={() => { if (v) setSize(v.id); setManage(false); }}>{tr(selectedSize?.id === m.model ? 'Selected' : 'Use version')}</Btn><Btn size="sm" variant="danger" disabled={!!active} onClick={() => setDeleting(m.model)}>{tr(m.custom ? "Remove from Strata" : "Delete")}</Btn></span>
     </div>; }))}</div> : <p className="small muted native-manage-empty">{tr("No downloaded models")}</p>)}
-   <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF…")}</Btn></div>
+   <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use local model files (.strata or .gguf)…")}</Btn></div>
   </div></Dialog>
  {selectedSize && !isHy4Selected ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'} visionUnavailable={noReader}/> : null}
  </Screen>;

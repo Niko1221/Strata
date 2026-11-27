@@ -20,8 +20,18 @@
 
 using namespace strata::ink;
 
-static std::vector<int32_t> parse_ids_arg(const std::string& s) {
+static std::vector<int32_t> parse_ids_arg(const std::string& s_in) {
     std::vector<int32_t> ids;
+    std::string s = s_in;
+    if (!s.empty() && s[0] == '@') {   // @file: the ids in a text file
+        s.clear();
+        if (FILE* f = std::fopen(s_in.c_str() + 1, "rb")) {
+            char buf[65536];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) s.append(buf, n);
+            std::fclose(f);
+        }
+    }
     const char* p = s.c_str();
     while (*p) {
         while (*p == ',' || *p == ' ') ++p;
@@ -54,6 +64,8 @@ int main(int argc, char** argv) {
     bool use_screen = true;
     bool prof = false;
     bool probe_early = false;
+    bool print_toks = false;
+    int spec_run_idx = 0;
     int beam_w = 4;
     std::string dump_logits_path;
 
@@ -75,6 +87,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-screen") use_screen = false;
         else if (a == "--prof") { prof = true; use_graph = false; }
         else if (a == "--probe-early-exit") probe_early = true;
+        else if (a == "--print-toks") print_toks = true;
         else if (a == "--beam-w") beam_w = std::atoi(next_s().c_str());
         else if (a == "--dump-logits") dump_logits_path = next_s();
     }
@@ -83,6 +96,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    auto print_tok_list = [&](const char* label, const std::vector<int32_t>& v) {
+        if (!print_toks) return;
+        uint64_t h = 1469598103934665603ull;
+        for (int32_t t : v) { h ^= (uint32_t)t; h *= 1099511628211ull; }
+        std::printf("[TOKS %s] n=%zu fnv=%016llx ids=", label, v.size(), (unsigned long long)h);
+        for (size_t i = 0; i < v.size(); ++i) std::printf("%s%d", i ? "," : "", v[i]);
+        std::printf("\n");
+    };
     cudaDeviceProp prop{};
     INK_CK(cudaGetDeviceProperties(&prop, gpu_id));
     std::printf("GPU: %s (sm_%d%d, %d SMs, %.1f GiB VRAM, sm120_tc=%d)\n",
@@ -204,6 +225,7 @@ int main(int argc, char** argv) {
                         measured, dt_dec * 1000.0, (double)measured / dt_dec, (dt_dec * 1000.0) / measured);
             if (prof) runner.prof_print("DECODE-M1", measured);
         }
+        print_tok_list("plain", plain_toks);
         std::printf("  first 16 plain tokens:");
         for (int i = 0; i < std::min(16, (int)plain_toks.size()); ++i) std::printf(" %d", plain_toks[i]);
         std::printf("\n");
@@ -246,6 +268,7 @@ int main(int argc, char** argv) {
                         st.t_draft_ms / std::max(1L, st.iters),
                         st.t_verify_ms / std::max(1L, st.iters),
                         st.t_commit_ms / std::max(1L, st.iters));
+            { char lbl[32]; std::snprintf(lbl, sizeof(lbl), "spec%d", spec_run_idx++); print_tok_list(lbl, spec_toks); }
             if (check_parity) {
                 int match = 0, cmp_n = std::min((int)plain_toks.size(), (int)spec_toks.size());
                 int first_diff = -1;
@@ -293,6 +316,7 @@ int main(int argc, char** argv) {
                         st.t_draft_ms / std::max(1L, st.iters),
                         st.t_verify_ms / std::max(1L, st.iters),
                         st.t_commit_ms / std::max(1L, st.iters));
+            { char lbl[32]; std::snprintf(lbl, sizeof(lbl), "spec%d", spec_run_idx++); print_tok_list(lbl, spec_toks); }
             if (check_parity) {
                 int match = 0, cmp_n = std::min((int)plain_toks.size(), (int)spec_toks.size());
                 int first_diff = -1;
@@ -346,6 +370,7 @@ int main(int argc, char** argv) {
                         st.t_draft_ms / std::max(1L, st.iters),
                         st.t_verify_ms / std::max(1L, st.iters),
                         st.t_commit_ms / std::max(1L, st.iters));
+            { char lbl[32]; std::snprintf(lbl, sizeof(lbl), "spec%d", spec_run_idx++); print_tok_list(lbl, spec_toks); }
             if (check_parity) {
                 int match = 0, cmp_n = std::min((int)plain_toks.size(), (int)spec_toks.size());
                 int first_diff = -1;

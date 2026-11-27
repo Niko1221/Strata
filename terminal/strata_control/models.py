@@ -22,8 +22,9 @@ import stat
 import sys
 from pathlib import Path
 
-from strata_control import discovery
+from strata_control import custom_models, discovery, strata_manifest
 from strata_control.doctor import inspect as inspect_components
+from strata_control import gguf_preflight
 from strata_control.gguf_preflight import inspect_metadata, real_model_file
 from strata_control.profiles import ProfileError
 
@@ -167,14 +168,20 @@ def _summary(model_id: str, path: Path, raw: bytes, cfg: dict, report: dict) -> 
     context_tokens = int(context) if isinstance(context, str) and 1 <= len(context) <= 8 and \
         context.isascii() and context.isdecimal() and 1 <= int(context) <= 16_777_216 else None
     backend = cfg.get("backend")
-    return {"id": model_id, "name": _short(cfg.get("model_name")) or model_id,
-            "source_config": str(path), "source_sha256": hashlib.sha256(raw).hexdigest(),
-            "backend": _short(backend) if backend is not None else None,
-            "context_tokens": context_tokens,
-            "component_status": "present" if report["ok"] else "missing_or_invalid",
-            "issue_codes": [item.get("code") for item in report["issues"]][:32],
-            "missing": _missing_parts(report),
-            "execution_compatibility": "unverified"}
+    row = {"id": model_id, "name": _short(cfg.get("model_name")) or model_id,
+           "source_config": str(path), "source_sha256": hashlib.sha256(raw).hexdigest(),
+           "backend": _short(backend) if backend is not None else None,
+           "context_tokens": context_tokens,
+           "component_status": "present" if report["ok"] else "missing_or_invalid",
+           "issue_codes": [item.get("code") for item in report["issues"]][:32],
+           "missing": _missing_parts(report),
+           "execution_compatibility": "unverified"}
+    custom = custom_models.summary_fields(cfg)
+    if custom:                                          # a custom build: the person's own name for it, and what it is run as
+        row.update(custom)
+        row["name"] = custom["display_name"]
+        row["alias"] = _short(cfg.get("model_name"))
+    return row
 
 
 def _inspect_one(model_id: str, path: Path) -> tuple[dict, dict]:
@@ -311,8 +318,9 @@ def _candidate_by_header(shards: list[Path], tensors: int, payload: int, experts
 
 def _qwen36_candidate(shards: list[Path], issues: list[str], notes: list[str]) -> dict | None:
     """A qwen35moe file set (#5869): every tensor's type checked against what the Qwen3.6 engine's loader takes (strata_control/q36_types.py);
-    any tensor it would refuse makes the set unsupported (the existing words), otherwise family qwen36 at the size setup installs it as."""
-    from strata_control import gguf_preflight, q36_types
+    any tensor it would refuse makes the set unsupported (the existing words), otherwise family qwen36 at the size setup installs it as.
+    An Ornith-1.5-35B file runs on the same engine path, so it is read as family ornith with its own sizes (strata_control/ornith_types.py)."""
+    from strata_control import gguf_preflight, q36_types, ornith_types
     types: dict[str, int] = {}
     try:
         for item in shards:
@@ -323,28 +331,32 @@ def _qwen36_candidate(shards: list[Path], issues: list[str], notes: list[str]) -
     if q36_types.problems(types) or len(shards) != 1:      # the engine reads one GGUF file
         issues.append("unsupported_or_missing_architecture")
         return None
-    model, published = q36_types.size_for(shards[0].name, types)
+    # the family by the file's own name first: Ornith's files are the same architecture under their own names and sizes
+    is_ornith = str(shards[0].name).lower().startswith("ornith-1.5-35b")
+    table = ornith_types if is_ornith else q36_types
+    family = table.FAMILY
+    model, published = table.size_for(shards[0].name, types)
     if not published:
-        notes.append(f"These files are not exactly a build Strata has tested; they have the layout of {q36_types.FAMILY} "
+        notes.append(f"These files are not exactly a build Strata has tested; they have the layout of {family} "
                      f"{model}, so Strata uses them as that model. Check a few answers before you rely on them.")
     from tools.gguf_reader import GGML_TYPES
     experts = sorted({GGML_TYPES.get(t, str(t)) for n, t in types.items() if n.endswith("_exps.weight")})
-    return {"family": q36_types.FAMILY, "model": model, "basis": "qwen35moe_engine_types" if not published else "published_file_name",
+    return {"family": family, "model": model, "basis": "qwen35moe_engine_types" if not published else "published_file_name",
             "expected_expert_types": experts, "expected_tensor_count": len(types),
-            "setup_args_hint": ["--family", q36_types.FAMILY, "--model", model, "--gguf-dir", str(shards[0].parent)]}
+            "setup_args_hint": ["--family", family, "--model", model, "--gguf-dir", str(shards[0].parent)]}
 
 
 def _inkling_build_for_bytes(total_bytes: int, name: str = "") -> str:
     """Map a local Inkling-2-Mini .strata or .gguf file size/name to the closest catalog build."""
     low = str(name or "").lower()
-    if "sq-20" in low or "sq_20" in low:
+    if "sq-20" in low or "sq_20" in low or "sqv2-20" in low or "sqv2_20" in low:       # (0.2.23's file is Inkling-2-Mini-SQv2-20.strata)
         return "SQ-20"
     if "sq-15" in low or "sq_15" in low:
         return "SQ-15"
     if "sq-10" in low or "sq_10" in low:
         return "SQ-10"
     from strata_control import inkling_fit
-    for b in inkling_fit.GGUF_ORDER:
+    for b in inkling_fit.GGUF_ORDER:                    # every GGUF build the engine reads: the offered ones and the quants that are no longer offered
         if b.lower() in low:
             return b
     if total_bytes >= 17_000_000_000:
@@ -358,14 +370,15 @@ def _inkling_candidate(shards: list[Path], total_bytes: int, observed_experts: s
                        observed_tensor_count: int, model_dir: Path, notes: list[str]) -> dict:
     """An Inkling-2-Mini GGUF file set (both unsloth `inkling2` and ggml-org `inkling2_loop`)."""
     build = _inkling_build_for_bytes(total_bytes, shards[0].name)
-    dspark = next((p.name for p in sorted(model_dir.iterdir())
-                   if p.is_file() and (p.name.lower().startswith("dspark") and p.name.lower().endswith(".gguf")
-                                       or p.name.lower() == "mtp.safetensors")), None)
-    if dspark:
-        notes.append(f"Found Inkling-2-Mini DSpark drafter ({dspark}) beside the model; Strata will use it.")
-    vision_strata = model_dir / "Inkling-2-Mini-Vision.strata"
-    if vision_strata.is_file():
-        notes.append("Found Inkling-2-Mini-Vision.strata beside the model; pictures will work.")
+    sidecar = model_dir / "dflash2.safetensors"
+    if sidecar.is_file():
+        notes.append("Found the Inkling-2-Mini DFlash 2 drafter (dflash2.safetensors) beside the model; Strata will use it.")
+    elif any(p.is_file() and (p.name.lower().startswith("dspark") and p.name.lower().endswith(".gguf") or p.name.lower() == "mtp.safetensors")
+             for p in model_dir.iterdir()):
+        notes.append("Found an older DSpark drafter file beside the model; Strata 0.2.23 does not use it. Its one drafter is DFlash 2 (dflash2.safetensors); without that file the model runs with no drafter.")
+    vision_strata = next((model_dir / n for n in ("Inkling-2-Mini-Vision-v2.strata", "Inkling-2-Mini-Vision.strata") if (model_dir / n).is_file()), None)
+    if vision_strata is not None:
+        notes.append(f"Found {vision_strata.name} beside the model; pictures will work.")
     target = str(shards[0]) if len(shards) == 1 else str(model_dir)
     return {"family": "inkling-2-mini", "model": build, "basis": "inkling2_gguf",
             "expected_expert_types": sorted(observed_experts),
@@ -416,8 +429,53 @@ def _list_strata(folder: Path) -> tuple[list[Path], list[str]]:
     return sorted(models, key=lambda p: p.name), sorted(visions)
 
 
+def _strata_build_for(family: str, total_bytes: int, name: str) -> str:
+    """The closest published build of a .strata file of this family: by a size word in its name (sq-64 ...), else by size."""
+    if family == "hy4-flash":
+        from strata_control import hy4_fit
+        low = str(name or "").lower().replace("_", "-")
+        for build in hy4_fit.BUILDS:
+            if build.lower() in low:
+                return build
+        return min(hy4_fit.BUILDS, key=lambda b: abs(float(hy4_fit.BUILDS[b]["file_gb"]) * 1e9 - total_bytes))
+    return _inkling_build_for_bytes(total_bytes, name)
+
+
+def _official_strata(family: str, name: str, total_bytes: int) -> bool:
+    """A file Strata published: its exact name and its exact byte size (setup's own table). Anything else is a custom build."""
+    if family == "hy4-flash":
+        from strata_control import hy4_family
+        return hy4_family.size_of(name) == total_bytes
+    from strata_control import inkling_family
+    row = getattr(inkling_family, "ALL_FILES", {}).get(name)
+    return bool(row) and row[0] == total_bytes
+
+
+def _official_inkling_gguf(name: str, total_bytes: int) -> bool:
+    from strata_control import inkling_family
+    row = getattr(inkling_family, "ALL_FILES", {}).get(name)
+    return bool(row) and row[0] == total_bytes
+
+
+def _custom_candidate_info(candidate: dict | None, *, official: bool, suggestion: str, kind: str) -> None:
+    """Say on the candidate whether this is a custom build (files of a family Strata runs that Strata did not publish: a fine-tune, a merge, another
+    maker's quantization) and what to call it. The family and size in `candidate` stay what Strata runs the files as (`base_family`, `base_model`)."""
+    if candidate is None:
+        return
+    custom = not official
+    candidate.update({"custom": custom, "base_family": candidate["family"], "base_model": candidate["model"],
+                      "family_title": custom_models.DISPLAY_FAMILY.get(candidate["family"], candidate["family"]),
+                      "suggested_label": custom_models.clean_label(suggestion, "Custom build"), "file_kind": kind})
+
+
+def _strata_label(path: Path, info: dict) -> str:
+    stem = re.sub(r"(?i)\.strata\Z", "", path.name)
+    return info.get("name") or stem
+
+
 def _plan_import_strata(path: Path, is_dir: bool) -> dict:
-    """Inspect a local Inkling-2-Mini .strata v1.1 file or folder holding .strata files."""
+    """Inspect a local .strata model file (Inkling-2-Mini or HY-4 Flash, any file name) or a folder holding .strata files. The family comes from the file's own
+    manifest (Section 0: `arch` / `model_type`; both header layouts, the 4 KiB one at 0x10 and the 16 KiB-aligned one at 0x20), never from the file name alone."""
     notes: list[str] = []
     issues: list[str] = []
     folder_holds: list[dict] = []
@@ -427,10 +485,15 @@ def _plan_import_strata(path: Path, is_dir: bool) -> dict:
             raise ProfileError("no GGUF or .strata model files found at the model import path", 5)
         if len(shards) > 1:
             issues.append("multiple_model_groups")
-            folder_holds = [{"file": p.name, "files": 1, "folder": str(path),
-                             "family": "inkling-2-mini" if "inkling" in p.name.lower() else None,
-                             "model": _inkling_build_for_bytes(p.stat().st_size, p.name) if "inkling" in p.name.lower() else None}
-                            for p in shards]
+            for p in shards:
+                fam = None
+                try:
+                    fam = strata_manifest.inspect(p)["family"]
+                except (ValueError, OSError):
+                    pass
+                size = p.stat().st_size
+                folder_holds.append({"file": p.name, "files": 1, "folder": str(path), "family": fam,
+                                     "model": _strata_build_for(fam, size, p.name) if fam else None})
         model_dir = path
     else:
         if "vision" in path.name.lower():
@@ -447,32 +510,30 @@ def _plan_import_strata(path: Path, is_dir: bool) -> dict:
         except ProfileError as exc:
             issues.append(f"{item.name}: {exc}")
     total_bytes = sum(f["bytes"] for f in files)
-    arch: str | None = None
+    family: str | None = None
+    identity: dict = {}
     if files and not issues and len(shards) == 1:
-        # Check manifest if zstd is available; otherwise accept known Inkling-2-Mini .strata filename
         try:
-            from tools import inkling_tokenizer
-            manifest = inkling_tokenizer.read_manifest(shards[0])
-            cfg_root = manifest.get("config") or {}
-            tc = cfg_root.get("text_config") or {}
-            arch_str = str(manifest.get("arch") or cfg_root.get("model_type") or tc.get("model_type") or "").lower()
-            if "inkling" in arch_str or "inkling" in shards[0].name.lower():
-                arch = "inkling2_loop"
-            else:
+            identity = strata_manifest.inspect(shards[0])
+            family = identity["family"]
+            if family is None:
                 issues.append("unsupported_or_missing_architecture")
-        except RuntimeError:
-            if "inkling" in shards[0].name.lower():
-                arch = "inkling2_loop"
-            else:
-                issues.append("unsupported_or_missing_architecture")
-        except Exception:
-            issues.append(f"{shards[0].name}: invalid .strata manifest")
+            elif identity["guessed"]:
+                notes.append(f"Strata could not unpack the description inside {shards[0].name} on this computer, so it took the model type from the file's "
+                             f"name or size: {custom_models.DISPLAY_FAMILY[family]}. If that is wrong, the engine will say so when it loads.")
+        except (ValueError, OSError) as exc:
+            issues.append(f"{shards[0].name}: {exc}")
     candidate = None
-    if arch == "inkling2_loop" and not issues:
-        build = _inkling_build_for_bytes(total_bytes, shards[0].name)
-        candidate = {"family": "inkling-2-mini", "model": build, "basis": "inkling2_strata",
-                     "expected_expert_types": [], "expected_tensor_count": None,
-                     "setup_args_hint": ["--family", "inkling-2-mini", "--model", build, "--gguf-dir", str(shards[0])]}
+    arch = None
+    if family and not issues:
+        build = _strata_build_for(family, total_bytes, shards[0].name)
+        arch = "inkling2_loop" if family == "inkling-2-mini" else "hy4flash"
+        basis = "inkling2_strata" if family == "inkling-2-mini" else "hy4_strata"
+        candidate = {"family": family, "model": build, "basis": basis, "expected_expert_types": [], "expected_tensor_count": None,
+                     "setup_args_hint": ["--family", family, "--model", build, "--gguf-dir", str(shards[0])]}
+        _custom_candidate_info(candidate, official=_official_strata(family, shards[0].name, total_bytes),
+                               suggestion=_strata_label(shards[0], identity), kind="strata")
+    title = custom_models.DISPLAY_FAMILY.get(family or "", "the model")
     messages = list(notes)
     if folder_holds:
         names = [f"{h['family']} {h['model']} ({h['file']})" if h.get("model") else h["file"] for h in folder_holds[:8]]
@@ -480,25 +541,27 @@ def _plan_import_strata(path: Path, is_dir: bool) -> dict:
                         ". Choose the folder of the one you want, or type the path of its .strata or .gguf file.")
     if any(i == "unsupported_or_missing_architecture" for i in issues):
         messages.append(UNSUPPORTED_MODEL_TYPE)
-    elif visions:
-        messages.append(f"{visions[0]} is the picture reader shard for Inkling-2-Mini; pictures will work.")
+    elif visions and family:
+        messages.append(f"{visions[0]} is the picture reader shard for {title}; pictures will work.")
     return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
-            "file_count": len(files), "total_bytes": total_bytes,
+            "file_count": len(files), "total_bytes": total_bytes, "file_kind": "strata",
+            "custom": bool(candidate and candidate.get("custom")),
             "metadata": {"architecture": arch, "tokenizer_model": "gpt2", "tokenizer_tokens_present": True,
-                         "tokenizer_merges_present": True} if arch else None,
+                         "tokenizer_merges_present": True, "strata_layout": identity.get("layout"),
+                         "manifest_read": identity.get("manifest_read", False)} if arch else None,
             "candidate_selection": candidate,
             "plain_issues": list(dict.fromkeys(plain_issue(i) for i in issues)),
             "observed_expert_types": [], "observed_tensor_count": 0,
             "ignored_auxiliary_files": sorted(visions),
             "projectors": [{"name": v, "status": "ok", "pinned": True,
-                            "plain": f"{v} is the picture reader shard for Inkling-2-Mini; pictures will work."} for v in visions],
+                            "plain": f"{v} is the picture reader shard for {title}; pictures will work."} for v in visions] if family else [],
             "messages": messages, "already_set_up": _already_set_up(shards, candidate),
             "reads_pictures": bool(visions) and not issues,
             "folder_holds": folder_holds, "missing_shards": [],
             "file_set_status": "plausible" if not issues and candidate is not None else "invalid_or_incomplete",
             "issues": issues, "adoption_status": "requires_architecture_quantization_tokenizer_and_engine_checks",
             "execution_compatibility": "unverified", "would_write": False,
-            "notes": ["Local .strata v1.1 file inspected read-only; no model is adopted or copied by this preview"]}
+            "notes": ["Local .strata file inspected read-only; no model is adopted or copied by this preview"]}
 
 
 def known_set_by_header(first_shard: Any) -> str | None:
@@ -589,6 +652,9 @@ _REASON_WORDS = (
     ("is missing", "the file is not there"),
     ("link to a file that is not there", "this is a shortcut to a file that is not there any more"),
     ("does not begin with a gguf header", "this is not a GGUF model file"),
+    ("does not begin with a strata", "this is not a .strata model file"),
+    ("strata header is not valid", "the .strata file's header is damaged or cut short (a download or copy that did not finish)"),
+    ("strata manifest", "the description inside this .strata file cannot be read"),
     ("header version", "this GGUF is from a format Strata does not read"),
     ("requires gguf v3", "this GGUF is in an old format (version 2); Strata reads version 3"),
     ("metadata is truncated", "the file is cut short (a download or copy that did not finish)"),
@@ -611,7 +677,7 @@ def plain_issue(code: str) -> str:
     if code in ISSUE_WORDS:
         return ISSUE_WORDS[code]
     name, sep, reason = code.partition(": ")
-    if not (sep and name.lower().endswith(".gguf")):
+    if not (sep and name.lower().endswith((".gguf", ".strata"))):
         name, reason = "", code
     low = reason.lower()
     words = next((w for key, w in _REASON_WORDS if key in low), reason.replace("_", " "))
@@ -644,7 +710,7 @@ def problem_words(issues: list, limit: int = 3, missing: list | None = None) -> 
     for code in codes:
         words = plain_issue(code)
         name, sep, reason = words.partition(": ")
-        if sep and name.lower().endswith(".gguf"):
+        if sep and name.lower().endswith((".gguf", ".strata")):
             by_reason.setdefault(reason, []).append(name)
         else:
             by_reason.setdefault(words, [])
@@ -1000,9 +1066,11 @@ def plan_import(raw_path: str) -> dict:
     is_inkling = metadata is not None and metadata["architecture"] in INKLING_ARCHS
     if is_inkling:
         projectors = []
-        if (model_dir / "Inkling-2-Mini-Vision.strata").is_file():
-            projectors.append({"name": "Inkling-2-Mini-Vision.strata", "status": "ok", "pinned": True,
-                               "plain": "Inkling-2-Mini-Vision.strata is the picture reader shard for Inkling-2-Mini; pictures will work."})
+        for vname in ("Inkling-2-Mini-Vision-v2.strata", "Inkling-2-Mini-Vision.strata"):          # 0.2.23's file, 0.2.22's file (the same weights)
+            if (model_dir / vname).is_file():
+                projectors.append({"name": vname, "status": "ok", "pinned": True,
+                                   "plain": f"{vname} is the picture reader shard for Inkling-2-Mini; pictures will work."})
+                break
         for n in sorted(ignored_auxiliary)[:8]:
             projectors.append({"name": n, "status": "ok", "pinned": False,
                                "plain": f"{n} is a picture reader next to Inkling-2-Mini; pictures will work."})
@@ -1035,8 +1103,16 @@ def plan_import(raw_path: str) -> dict:
         expected = set(candidate["expected_expert_types"])
         if not observed_experts or observed_experts - expected:
             issues.append("missing_or_unexpected_expert_quantization")
+    if candidate is not None:
+        basis = candidate.get("basis")
+        official = basis in ("known_shard_names_only", "header_size_and_tensors", "published_file_name") or \
+            (basis == "inkling2_gguf" and len(shards) == 1 and _official_inkling_gguf(shards[0].name, total_bytes))
+        stem = SHARD.sub(lambda m: m.group(1) + ".gguf", shards[0].name)
+        _custom_candidate_info(candidate, official=official, kind="gguf",
+                               suggestion=gguf_preflight.general_name(shards[0]) or re.sub(r"(?i)\.gguf\Z", "", stem))
     return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
-            "file_count": len(files), "total_bytes": total_bytes,
+            "file_count": len(files), "total_bytes": total_bytes, "file_kind": "gguf",
+            "custom": bool(candidate and candidate.get("custom")),
             "metadata": metadata, "candidate_selection": candidate,
             "plain_issues": list(dict.fromkeys((missing_words(missing_shards) if (i == "incomplete_or_invalid_shard_set" and missing_shards) else plain_issue(i)) for i in issues)),
             "observed_expert_types": sorted(observed_experts),

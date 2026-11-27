@@ -292,7 +292,8 @@ fn pick_port() -> Result<u16, String> {
 /// launch starts with empty storage, as before).
 const PREFERRED_PORT: u16 = 47831;
 
-/// Set when the port the person (or the app) wanted was busy: "busy:<wanted>:<used>". The host gets it as STRATA_PORT_NOTICE and tells the
+/// Set when the port the person (or the app) wanted was busy: "busy:<wanted>:<used>" (or "reserved:<wanted>:<used>" when nothing listens on it:
+/// the system keeps it back, #7244). The host gets it as STRATA_PORT_NOTICE and tells the
 /// person (the chats and settings saved on the page belong to the port, so a different port starts empty) (#3402).
 static PORT_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -306,10 +307,28 @@ fn pick_stable_port() -> Result<u16, String> {
             Ok(wanted)
         }
         Err(_) => {
-            let used = pick_port()?;
+            // #7244: the port used the last time this one could not be bound, if it is free now (the page's chats and settings belong to the
+            // port, so one fallback port kept across starts keeps them in one place); else a new free one, remembered for the next start.
+            let remembered = shell::read_fallback(wanted).filter(|p| TcpListener::bind(("127.0.0.1", *p)).is_ok());
+            let used = match remembered {
+                Some(port) => port,
+                None => {
+                    let port = pick_port()?;
+                    shell::write_fallback(wanted, port);
+                    port
+                }
+            };
             // A model started from the Terminal (`strata launch`, port 8080 unless told otherwise) is the usual holder: say so (#6278).
             let by_terminal = health_answer(wanted) == identity::Answer::ModelServer;
-            *PORT_NOTICE.lock().unwrap() = Some(if by_terminal { identity::terminal_notice(wanted, used) } else { shell::busy_notice(wanted, used) });
+            // Nobody listens on it (the connection is refused): the system keeps that port back (WSL mirrored networking, Hyper-V, Docker), #7244.
+            let notice = if by_terminal {
+                identity::terminal_notice(wanted, used)
+            } else if shell::holder_of(wanted) == shell::Holder::Nobody {
+                shell::reserved_notice(wanted, used)
+            } else {
+                shell::busy_notice(wanted, used)
+            };
+            *PORT_NOTICE.lock().unwrap() = Some(notice);
             Ok(used)
         }
     }

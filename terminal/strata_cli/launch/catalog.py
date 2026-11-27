@@ -125,10 +125,23 @@ class ModelRow:
     disk_free_gb: float | None = None   # ... and what is free in the data folder's drive
     mem_verdict: str = ""         # verdict "disk": the memory verdict it replaced (fits / tight / slower), "" when the disk mark is not set
     mem_words: str = ""
+    offered: bool = True          # False: a quant 0.2.23 no longer offers (Inkling-2-Mini); it is listed only because it is installed, never recommended, never downloaded
+    update: bool = False          # installed, and the installed file is an older one than the one offered now (SQ-20 of 0.2.22 against SQv2-20): never deleted, offered on request
+    credit: str = ""              # the line of credit shown with the model (GSQ-RCO: "GSQ + RCO by IST Austria DASLab, Apache-2.0")
+    custom: bool = False          # a custom build: the person's own compatible .strata / .gguf files; `id` is its run config's id, `model` its base model
+    display_name: str = ""        # ... and the name they gave it
+    custom_bytes: int = 0         # ... and the size of its files (the fit figures are the base model's, scaled by this)
 
     @property
     def title(self) -> str:
+        if self.custom:
+            return f"{self.family_title} {self.display_name or self.id}"
         return f"{self.family_title} {self.model}"
+
+    @property
+    def key(self) -> tuple:
+        """What a menu row stands for: (family, model), and for a custom build the id as a third part (the official build of the same base model stays its own row)."""
+        return (self.family, self.model, self.id) if self.custom else (self.family, self.model)
 
     def without_disk(self) -> "ModelRow":
         """This row as it is when the download does fit after all (another drive, or the person's own files): the memory verdict alone."""
@@ -148,6 +161,16 @@ class ModelRow:
                 text += ". It may also run slower on this computer, because it is more than the memory holds"
             return text
         return self.words
+
+
+def pick_row(rows, s) -> "ModelRow | None":
+    """The list row these settings stand for: the custom build's own row when they name one, else the official row of (family, model)."""
+    cid = getattr(s, "custom_id", None)
+    if cid:
+        found = next((x for x in rows if getattr(x, "custom", False) and x.id == cid), None)
+        if found is not None:
+            return found
+    return next((x for x in rows if not getattr(x, "custom", False) and x.family == s.family and x.model == s.model), None)
 
 
 @dataclass
@@ -381,7 +404,9 @@ class Catalog:
             hw = dict(self._hardware_override)
             hw.setdefault("disk_free_gb", self.strata.disk_free(self.strata.data_dir()))
             return hw
-        hw = dict(self.strata.hardware(fresh=fresh))
+        # #7183: a screen that lives for hours never waits for a re-read: an answer older than ten minutes is shown at once and the PC is read
+        # again in the background (a read is 12 s on a Windows PC with a slow PowerShell start-up)
+        hw = dict(self.strata.hardware(fresh=fresh, stale_ok=True))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
         if not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()
@@ -485,9 +510,46 @@ class Catalog:
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
                     installed=self.installed_with_files(str(size["id"])), mem_total=bool(size.get("mem_total")),
                     memory_gb=float(size.get("memory_gb") or 0), fit_gb=float(size.get("fit_gb") or size.get("memory_gb") or 0),
-                    recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
+                    recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"]),
+                    offered=size.get("offered", True) is not False, credit=str(size.get("credit") or ""), update=bool(size.get("update_available"))))
         self.apply_disk(out, hw, own)
+        for row in self.custom_rows(out, hw):                  # under the family of their base model, after its official builds
+            at = max((i for i, r in enumerate(out) if r.family == row.family), default=len(out) - 1)
+            out.insert(at + 1, row)
         return out
+
+    def custom_rows(self, official: list[ModelRow], hw: dict | None = None) -> list[ModelRow]:
+        """The custom builds installed here (the person's own .strata / .gguf files), one row each, grouped with the family of their base model. Their fit
+        figures are the base model's, scaled to the size of the person's files; the verdict is the base model's. They need no download."""
+        import dataclasses
+        from strata_cli.launch import custom
+        rows: list[ModelRow] = []
+        for e in custom.entries(self):
+            base = next((r for r in official if r.family == e["base_family"] and r.model == e["base_model"]), None)
+            if base is None:
+                continue
+            gb = e["bytes"] / 1e9
+            ratio = (gb / base.download_gb) if gb > 0 and base.download_gb > 0 else 1.0
+            vram, ram, spill, memory, fit = (round(base.need_vram_gb * ratio, 1), round(base.need_ram_gb * ratio, 1), round(base.spill_gb * ratio, 1),
+                                            base.memory_gb * ratio, base.fit_gb * ratio)
+            if hw and e["bytes"] > 0 and e["base_family"] in ("inkling-2-mini", "hy4-flash"):
+                try:                                       # the closest published build's rules with the real size of the files (strata_control/custom_models.py)
+                    from strata_control import custom_models
+                    card = Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []), engine_vendor=self.engine_vendor(hw)).main_vram_gb
+                    placed = custom_models.fit_placement(e["cfg"], float(card) if card else None, float(hw.get("ram_gb") or 0))
+                    if isinstance(placed, dict) and "vram_gb" in placed and "ram_gb" in placed:
+                        vram, ram, spill = round(float(placed["vram_gb"]), 1), round(float(placed["ram_gb"]), 1), round(float(placed.get("ssd_gb") or 0), 1)
+                        memory = fit = vram + ram
+                except Exception:                          # noqa: BLE001 - the scaled figures above stand
+                    pass
+            rows.append(dataclasses.replace(
+                base, id=e["id"], custom=True, display_name=e["display_name"], custom_bytes=e["bytes"], installed=self.installed_with_files(e["id"]),
+                recommended=False, offered=True, update=False, experimental=False, credit="", download_gb=round(gb, 1) if gb > 0 else base.download_gb,
+                need_vram_gb=vram, need_ram_gb=ram, spill_gb=spill, memory_gb=memory, fit_gb=fit,
+                about="your own build of this model's family, run with the settings of " + base.model + " (memory figures follow the size of your files)"))
+        order = {r.family: i for i, r in enumerate(official)}
+        rows.sort(key=lambda r: (order.get(r.family, 99), r.display_name.lower()))
+        return rows
 
     def apply_disk(self, rows: list[ModelRow], hw: dict, own: tuple[str, str] | None = None) -> None:
         """T10: "fits" said nothing about the disk. A model that is not on this computer yet and whose download (what is still missing, plus room
@@ -523,7 +585,7 @@ class Catalog:
                     elif r.family == "inkling-2-mini":
                         from strata_control import inkling_family
                         got = sum(f.stat().st_size for f in folder.glob("*.strata")
-                                  if f.name in inkling_family.FILES) / 1e9
+                                  if f.name in inkling_family.ALL_FILES) / 1e9
                     else:
                         got = sum(f.stat().st_size for f in folder.glob("*.gguf")
                                   if not f.name.lower().startswith("mmproj")) / 1e9
@@ -578,7 +640,9 @@ class Catalog:
         fam = _merge_families(self, self.tables()[1]).get(family) or {}
         return f"{fam.get('name', family)}-{model.lower()}"
 
-    def tag_of(self, family: str, model: str) -> str:
+    def tag_of(self, family: str, model: str, custom_id: str | None = None) -> str:
+        if custom_id:                                      # a custom build has a run config of its own, never the official one's
+            return str(custom_id).lower()
         _m, families, _c, _s = self.tables()
         all_families = _merge_families(self, families)
         return (all_families[family].get("tag", "") + model).lower()

@@ -1002,7 +1002,11 @@ class StrataEngine:
             pass
         try:                                            # which drafter runs, and in plain words why not the one that was asked for
             if self.inkling_engine:
-                self.info.update(inkling_kind.drafting_info(args, self.info))
+                ink_log = start_log_text(log, log_start)
+                self.info.update(inkling_kind.drafting_info(args, self.info, ink_log))
+                left_out = inkling_kind.veto_line(ink_log)
+                if left_out:                            # the engine kept DFlash 2 out to keep the model on the card: say it where the person reads the start (Terminal, app log)
+                    print(f"[strata] {left_out}", flush=True)
             else:
                 self.info.update(drafting.engine_info(args, start_log_text(log, log_start), drafting.take_note()))
         except Exception:                               # noqa: BLE001 - a note must never stop a start
@@ -1156,11 +1160,11 @@ class StrataEngine:
                     "ended. The next request starts it again. If this repeats, please report it at github.com/Niko1221/Strata/issues "
                     "with the log.")
         rc = self.exit_code()
-        if rc is not None and rc >= 0 and self.last_err:  # its own last words on stdout: they say why
+        if rc is not None and rc >= 0 and not engine_crashed(rc) and self.last_err:  # its own last words on stdout: they say why
             return (f"The engine exited (code {rc}) after it reported: {self.last_err} - please report it at "
                     "github.com/Niko1221/Strata/issues with the log.")
         last = next((x.strip() for x in reversed(tail.splitlines()) if x.strip().startswith(("strata", "ERR"))), "")
-        if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
+        if rc is not None and rc >= 0 and not engine_crashed(rc) and last:          # it ended by itself: its own last words say why (#215)
             return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
                     "report it at github.com/Niko1221/Strata/issues with the log.")
         card = next((x.strip() for x in reversed(tail.splitlines())
@@ -1174,6 +1178,22 @@ class StrataEngine:
             return ("The engine was ended by signal 9. " + rt_note + " If dmesg (sudo dmesg | grep -i -E 'killed "
                     "process|out of memory') shows an out-of-memory kill instead, close other programs or use a smaller "
                     "model (Q2_0 / IQ2_XS).")
+        # #7245: RAM is named only where something points at it: the engine's own log (bad_alloc ...), the kernel's kill (signal 9) or, on Linux and
+        # macOS, an exit nobody can read. A crash the system itself reports (an access violation, a stack overrun, an illegal instruction, a SIGSEGV) is
+        # a fault in the engine, and on Windows memory never ends a process by itself (it slows down): the 0.1.69 host-copy overrun died with
+        # 0xC0000005 and this text told the reporter to close programs.
+        ram_in_log = re.search(r"bad_alloc|cannot allocate memory|not enough memory|out of memory", tail, re.I)
+        windows = sys.platform == "win32"
+        if rc != -9 and not ram_in_log and engine_crashed(rc):
+            return ("The engine crashed (" + engine_exit_words(rc) + "). That is a fault in the engine itself, not a lack of memory: closing other "
+                    "programs or choosing a smaller model will not help. Please report it at github.com/Niko1221/Strata/issues with the engine log"
+                    + (" and the Application error entry of Windows Event Viewer (Windows Logs, Application: the faulting module and offset)."
+                       if windows else "."))
+        if windows and not ram_in_log:
+            return ("The engine ended and Windows gave no exit status, so the cause is not known. It is not known to be a memory problem: "
+                    "Windows slows down when it runs short of memory, it does not end programs. If it repeats, please report it at "
+                    "github.com/Niko1221/Strata/issues with the engine log and the Application error entry of Windows Event Viewer "
+                    "(Windows Logs, Application: the faulting module and offset).")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -2055,6 +2075,25 @@ class StrataEngine:
                        for b in range(self.batch))
 
     INKLING_ROUTE_MIN = 32       # a held prefix shorter than this does not decide the slot
+
+    @staticmethod
+    def inkling_keep_chats() -> bool:
+        """#7226: Inkling with several slots keeps a long conversation in its slot.  A request that continues nothing never takes the slot
+        of a chat of SIDE_REQUEST_MIN tokens or more while another slot is free, whatever its own size, the drafter's preference for slot 0
+        gives way to that, and the wrap-up pass of a thinking budget leaves the first pass's checkpoint recorded.  On unless
+        STRATA_INKLING_KEEP_CHATS is 0 (or false / no / off): then every decision is as in 0.2.22.  The price: the chat that lives in another slot
+        decodes without drafts (the drafter works in slot 0 only)."""
+        return os.environ.get("STRATA_INKLING_KEEP_CHATS", "").strip().lower() not in ("0", "false", "no", "off")
+
+    # A chat in slot 0 is only worth keeping from a request that continues nothing while it is alive: one that was used within this many seconds
+    # (STRATA_INKLING_KEEP_IDLE_S, default 600).  A lone client that starts a new conversation after a longer pause takes slot 0 again, with the drafter, as before.
+    KEEP_IDLE_S = float(os.environ.get("STRATA_INKLING_KEEP_IDLE_S", "600") or 600)
+
+    def _keeps_slot0_chat(self) -> bool:
+        """#7226: slot 0 holds a chat of SIDE_REQUEST_MIN tokens or more that was used lately, and the switch is on."""
+        return bool(self.inkling_keep_chats() and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
+                    and time.time() - self.slot_used[0] <= self.KEEP_IDLE_S)
+
     _side_note_said = False      # the "--parallel 2 keeps it" line is printed once per server run
 
     def _inkling_route(self, prompt: list[int]) -> int:
@@ -2074,7 +2113,8 @@ class StrataEngine:
                       f"prefix per slot {held}", flush=True)
             if held[best] >= self.INKLING_ROUTE_MIN:
                 return best
-            if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN and len(prompt) < self.SIDE_REQUEST_MIN):
+            if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
+                    and (len(prompt) < self.SIDE_REQUEST_MIN or self._keeps_slot0_chat())):
                 free = [b for b in range(1, self.batch) if not self.slot_busy[b]]
                 if free:
                     return min(free, key=lambda b: (bool(self.slot_held[b]), len(self.slot_held[b]) >= self.SIDE_REQUEST_MIN,
@@ -2171,7 +2211,9 @@ class StrataEngine:
                             print(f"[strata] a side request ({len(prompt)} tokens) replaced the cached chat ({len(self.slot_held[0])} tokens); "
                                   "--parallel 2 keeps it", flush=True)
                         self.slot_held[0] = []              # the solo path is slot 0 of this engine: the read overwrites what it held
-                        self.slot_prompt[0] = list(prompt)
+                        self.slot_used[0] = time.time()     # (#7226: the solo path used slot 0 now: the least-recently-used choice and the keep window read it)
+                        if not (" ckpt=0" in keys0 and self.inkling_keep_chats() and prompt[:len(self.slot_prompt[0])] == self.slot_prompt[0]):
+                            self.slot_prompt[0] = list(prompt)   # (a later pass, ckpt=0, keeps the first pass's checkpoint: so does this record, #7226)
                         solo_leg = (list(prompt), len(out), self.gen)
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
@@ -2330,7 +2372,8 @@ class StrataEngine:
                     if started is not None:
                         started()
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
-                    self.slot_prompt[slot] = list(prompt)   # (Inkling: valid once the BDONE sets slot_held again)
+                    if not (" ckpt=0" in keys0 and self.inkling_keep_chats() and prompt[:len(self.slot_prompt[slot])] == self.slot_prompt[slot]):
+                        self.slot_prompt[slot] = list(prompt)   # (Inkling: valid once the BDONE sets slot_held again; a ckpt=0 pass keeps the first pass's, #7226)
                     adm_from = len(out)                     # (the admission's own token comes after these)
                     admission_pending, admission_before = True, self.last
                     phase = "admit"
@@ -2624,8 +2667,10 @@ class StrataEngine:
     OWN_SLOT_WAIT_S = 5.0     # Inkling: a pass that continues a slot's request (a thinking budget's second pass) waits this long for that slot to be released
 
     def drafter_in_slot_zero(self) -> bool:
-        """Inkling-2-Mini started with its DSpark drafter (Qwen and every other engine: never; their slot choice is untouched)."""
-        return bool(getattr(self, "inkling_engine", False) and (getattr(self, "info", None) or {}).get("drafting") == "dspark")
+        """Inkling-2-Mini started with its DSpark or DFlash 2 drafter (Qwen and every other engine: never; their slot choice is untouched).
+        Both run through the engine's one drafter path, which exists only in slot 0; since the 0.2.23 lineup Control names the default one
+        "dflash2" (drafting.engine_info), and the check for "dspark" alone silently turned the slot-0 preference off."""
+        return bool(getattr(self, "inkling_engine", False) and (getattr(self, "info", None) or {}).get("drafting") in ("dspark", "dflash2"))
 
     def pick_slot(self, prompt: list[int], patience_until: float | None = None) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
@@ -2655,7 +2700,10 @@ class StrataEngine:
         agreed = {}
         held_prefix = lambda b: self._slot_prefix(b, prompt, agreed)
         best = max(free, key=held_prefix)
-        if self.drafter_in_slot_zero() and 0 in free and (best == 0 or held_prefix(best) < self.SLOT0_PREFIX_MAX):
+        # #7226: slot 0 holds a long chat and another slot is free: the drafter's preference gives way (the chat keeps its slot; the request takes an empty or the
+        # least recently used slot below).  STRATA_INKLING_KEEP_CHATS=0 brings back the 0.2.22 rule.
+        keep0 = getattr(self, "inkling_engine", False) and self._keeps_slot0_chat() and any(b != 0 for b in free)
+        if self.drafter_in_slot_zero() and 0 in free and not keep0 and (best == 0 or held_prefix(best) < self.SLOT0_PREFIX_MAX):
             # the DSpark drafter exists only for slot 0 (the engine's spec step and tap ingest are slot 0 only), so a lone request drafts only there. Nothing
             # worth keeping (a held start of fewer than SLOT0_PREFIX_MAX tokens re-prefills in well under a second) beats slot 0; a real conversation keeps its slot
             return 0
@@ -3643,6 +3691,15 @@ def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
             known = b"--tail-role-token" in f.read()
     except OSError:
         known = False
+    if inkling_kind.is_inkling_exe(exe):         # #7241: the thinking level of Inkling-2-Mini at the end of the prompt, its own system turn
+        role = tok.encode(inkling_dialect.TAIL_ROLE_TEXT, parse_special=True)
+        if not known or len(role) != 1:
+            print("[strata] effort_position \"end\" for Inkling-2-Mini needs an Inkling engine that keeps a checkpoint in front of the trailing "
+                  "level turn (--tail-role-token); this engine has none, so the thinking level stays at the top of the prompt", flush=True)
+            return None
+        print("[strata] effort_position end: the thinking level of a request that is not the default goes right before the answer, so changing "
+              "it keeps the cached conversation (the level then blends with the default one: it is not the same answer as at the top)", flush=True)
+        return ["--tail-role-token", str(role[0])]
     role = tok.encode("system", parse_special=True)
     if not known or len(role) != 1:
         print("[strata] effort_position \"end\" needs engine 0.1.39 or newer (--tail-role-token): the reasoning "
@@ -4298,7 +4355,8 @@ class Service:
         self.inkling_budget_cap = os.environ.get("STRATA_INKLING_BUDGET_CAP", "").strip().lower() not in ("0", "false", "no", "off")
         self.inkling_budget_cap_said = False          # the line that says a client's budget was lowered is printed once
         self.inkling_cpu_pictures = False             # #7043: the engine reads pictures on the CPU (CUDA, cpu): a request with pictures gets a silence allowance by their size
-        self.inkling_image_max_px = 0                 # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
+        self.inkling_cfg = {}                         # the run config (its inkling_image_max_mp and --vision-reader), for the cap that follows the engine's reader
+        self.inkling_image_max_px = 0                # #7043: pictures for Inkling's CPU reader are scaled down to this many pixels (0: no cap; set at start-up from the config)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -4652,12 +4710,12 @@ class Service:
         return asked if isinstance(asked, str) and asked in self.aliases else self.model
 
     _STRATA_MODEL_PREFIXES = (
-        "inkling-2-mini", "hy4-flash", "qwen3.8-flash-next", "qwen3.6-", "qwen3.5-",
+        "inkling-2-mini", "hy4-flash", "qwen3.8-flash-next", "qwen3.6-", "qwen3.5-", "ornith-1.5-",
     )
     # #6778: the catalog's own size names ("iq3_s", "q2_0", "ud-q4_k_xl", "ud-iq4_xs-v31", "sq-15", "gyro-s") are Strata ids
     # too: a client set to one of them while another size is loaded gets the error, not the loaded model's answer.
     _STRATA_SIZE_NAME = re.compile(r"(?:(?:ud-)?i?q\d_[0-9a-z_]+(?:-v\d+)?|sq-\d+|gyro-[a-z])\Z")
-    _FAMILY_PREFIX = re.compile(r"(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|hy4-flash|inkling-2-mini)-")
+    _FAMILY_PREFIX = re.compile(r"(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|ornith-1\.5-35b-a3b|hy4-flash|inkling-2-mini)-")
 
     @classmethod
     def is_strata_model_id(cls, asked_l: str) -> bool:
@@ -5557,8 +5615,15 @@ class Service:
         if self.inkling:                               # Inkling-2-Mini: the request's thinking level reaches the template; level 0 skips the thinking turn at the prompt boundary (#6612, #6620, #6627)
             tk = inkling_dialect.template_kwargs(kwargs)
             on = bool(tk["enable_thinking"])
+            tail = ""
+            if getattr(self, "effort_end", False) and not (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"):
+                # #7241 (opt-in, "effort_position": "end"): the history at the constant level, the request's own level as the last system turn (a
+                # prefilled reply keeps the level at the top: a turn after it would cut the reply off)
+                head, tail = inkling_dialect.effort_tail(kwargs)
+                if tail:                    # enable_thinking too: the frontend renders the history differently when it is false
+                    tk = {**tk, "reasoning_effort": head, "enable_thinking": inkling_dialect.effort_of({"reasoning_effort": head})[1] > 0.0}
             rendered = self.template.render(inkling_dialect.prepare_messages(messages, has_tools=bool(tools), thinking=on), tools=tools, **tk)
-            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools), thinking=on)
+            return inkling_dialect.finish_prompt(rendered + tail, has_tools=bool(tools), thinking=on)
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -5688,7 +5753,19 @@ class Service:
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
             sizes: list[int] = []
 
-            def picture(data, _cap=self.inkling_image_max_px if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
+            # the reader the engine really chose (its INFO line, `vision_reader=gpu|cpu`; the Qwen rule covers Inkling) decides the cap and the silence allowance:
+            # a CUDA card with the GPU reader is not capped, a small card that reads on the CPU is; an engine that does not say keeps the start-up setting
+            ink_cpu = self.inkling_cpu_pictures
+            ink_cap = self.inkling_image_max_px
+            if self.inkling and (getattr(self.engine, "info", None) or {}).get("vision_reader") in ("gpu", "cpu"):
+                ink_info = self.engine.info
+                ink_cpu = inkling_kind.cpu_picture_reader(self.inkling_cfg, ink_info)
+                try:
+                    ink_cap = inkling_kind.image_cap_pixels(self.inkling_cfg, info=ink_info)
+                except ValueError:
+                    pass
+
+            def picture(data, _cap=ink_cap if self.inkling else 0):     # #7043: the CPU picture reader gets a bounded picture
                 data = Vision.normalize(data)
                 if _cap:
                     data, note = inkling_kind.cap_picture(data, _cap)
@@ -5703,7 +5780,7 @@ class Service:
                 self.embeddings.inkling = written
                 # #7043: where the reader is the CPU, the engine says nothing while it reads a picture: this request may stay silent for as long as the
                 # pictures take (measured), at least engine_silence_s (StrataEngine.generate)
-                allow = inkling_kind.picture_allowance_s(sizes, self.inkling_image_max_px) if self.inkling_cpu_pictures else 0.0
+                allow = inkling_kind.picture_allowance_s(sizes, ink_cap) if ink_cpu else 0.0
                 self.embeddings.inkling_allow = allow
                 if allow > float(getattr(self.engine, "silence_s", 0) or 0):
                     print(f"[strata] {len(sizes)} picture(s), {sum(sizes) / 1e6:.2f} MP in all: the engine's CPU picture reader may take a while, "
@@ -5887,7 +5964,7 @@ class Service:
             effort = kwargs.get("reasoning_effort")
             off = kwargs.get("enable_thinking") is False        # render_prompt's rule for #458's effort_end
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
-                  if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
+                  if self.effort_end and (self.inkling or off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))   # #7241: Inkling's history is always at the constant level
             kw["add_generation_prompt"] = False
             if self.inkling:
                 marked = inkling_dialect.prepare_messages(marked)
@@ -9699,7 +9776,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
-    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (CUDA, cpu), its own setting, 0 = off
+    if svc.inkling:                                     # #7043: a cap on the pictures the CPU picture reader gets (the reader the run config names, else CUDA and cpu), its own setting, 0 = off
+        svc.inkling_cfg = cfg
         svc.inkling_cpu_pictures = inkling_kind.cpu_picture_reader(cfg)
         try:
             svc.inkling_image_max_px = inkling_kind.image_cap_pixels(cfg)

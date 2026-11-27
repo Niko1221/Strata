@@ -29,6 +29,9 @@ class ProbeWiring(unittest.TestCase):
         self.addCleanup(t.cleanup)
         self.path = Path(t.name) / "launch.json"
         self.started = []
+        sidecar = mock.patch.object(inkling_family, "dflash2_sidecar", return_value=Path("dflash2.safetensors"))      # the DFlash 2 file is there (0.2.23: no file, no drafter, no probe)
+        sidecar.start()
+        self.addCleanup(sidecar.stop)
 
     def runner(self, cfg=None):
         self.path.write_text(json.dumps(cfg or CFG), encoding="utf-8")

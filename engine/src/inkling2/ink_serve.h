@@ -28,6 +28,7 @@
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_vision.h"
+#include "ink_vision_policy.h"
 
 namespace ink2 {
 
@@ -383,61 +384,83 @@ inline bool parse_gen_cmd(const std::string& line, ParsedGen& r, std::string& er
 }
 
 // ---- Non-blocking stdin reader thread ----
+//
+// The reader is detached: it sits in getline() on stdin and cannot be woken, so it can outlive run_serve_loop().  Its mutex, queue
+// and flags therefore live in a State that the thread owns a share of (shared_ptr), never in this object: after QUIT the serve loop
+// returns, `in` is destroyed while the backend is still being torn down (seconds on a big GPU model), and the harness closing stdin
+// then woke the reader, which locked a destroyed mutex ("terminate called after throwing std::system_error: Invalid argument") or
+// wrote into a freed stack frame (segmentation fault), in about 1 of 6 runs on every build.
 class ServeInput {
 public:
-    std::atomic<bool> solo_stop{false};
     void start() {
-        th_ = std::thread([this] {
+        auto st = st_;
+        std::thread([st] {
             std::string line;
             while (std::getline(std::cin, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-                if (line == "STOP") {
-                    solo_stop.store(true);
-                    std::lock_guard<std::mutex> lk(m_);
-                    q_.push_back(line);
-                    cv_.notify_one();
-                    continue;
-                }
-                std::lock_guard<std::mutex> lk(m_);
-                q_.push_back(std::move(line));
-                cv_.notify_one();
+                if (line == "STOP") st->solo_stop.store(true);
+                std::lock_guard<std::mutex> lk(st->m);
+                st->q.push_back(std::move(line));
+                st->cv.notify_one();
             }
-            std::lock_guard<std::mutex> lk(m_);
-            eof_ = true;
-            cv_.notify_all();
-        });
-        th_.detach();
+            std::lock_guard<std::mutex> lk(st->m);
+            st->eof = true;
+            st->cv.notify_all();
+        }).detach();
     }
 
     bool poll(std::string& out) {
-        std::lock_guard<std::mutex> lk(m_);
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->q.empty()) return false;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
         return true;
     }
 
     bool wait_next(std::string& out) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait(lk, [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::unique_lock<std::mutex> lk(st_->m);
+        st_->cv.wait(lk, [this] { return !st_->q.empty() || st_->eof; });
+        if (st_->q.empty()) return false;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
         return true;
     }
 
+    // Like wait_next, for at most ms milliseconds: 1 = a line was read, 0 = nothing came in time, -1 = the input has ended.
+    int wait_next_for(std::string& out, int ms) {
+        std::unique_lock<std::mutex> lk(st_->m);
+        st_->cv.wait_for(lk, std::chrono::milliseconds(std::max(1, ms)), [this] { return !st_->q.empty() || st_->eof; });
+        if (st_->q.empty()) return st_->eof ? -1 : 0;
+        out = std::move(st_->q.front());
+        st_->q.pop_front();
+        return 1;
+    }
+
     bool is_eof() {
-        std::lock_guard<std::mutex> lk(m_);
-        return eof_ && q_.empty();
+        std::lock_guard<std::mutex> lk(st_->m);
+        return st_->eof && st_->q.empty();
     }
 
 private:
-    std::thread th_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::string> q_;
-    bool eof_ = false;
+    struct State {
+        std::mutex m;
+        std::condition_variable cv;
+        std::deque<std::string> q;
+        std::atomic<bool> solo_stop{false};
+        bool eof = false;
+    };
+    std::shared_ptr<State> st_ = std::make_shared<State>();
 };
+
+/// After QUIT, with the backend already released: leave the process without exit()'s own teardown.  The stdin reader above is a detached thread
+/// blocked in getline(); with stdin still open, exit() waits for it on glibc (it holds the stdio lock) and the engine never ended until its client
+/// killed it.  Nothing is left to flush or free that matters here.
+[[noreturn]] inline void leave_after_quit(int rc) {
+    std::cout.flush();
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(rc);
+}
 
 struct ActiveReq {
     bool active = false;
@@ -464,7 +487,8 @@ struct ActiveReq {
     std::vector<int32_t> shared_prefix;
     int pin = 0;
     bool shared_pending = false;
-    bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
+    bool ckpt_pending = false;                // true while prefilling up to ckpt_at to save the prompt checkpoint
+    int ckpt_at = 0;                          // where that checkpoint is taken: prompt_len - 1, or one token before the trailing level turn (--tail-role-token)
     double t_start = 0.0;
     double prompt_ms = 0.0;
     double decode_t0 = 0.0;
@@ -488,8 +512,25 @@ struct ServeConfig {
     std::string draft_mode = "auto";  // auto | dspark | off
     bool force_cpu = false;
     bool anti_loop = true;
-    std::string version = "0.1.69";
+    // --tail-role-token ID (#7241, opt-in, -1 = off): the id of the token that opens a system turn (<|message_system|>).  A prompt that ends with a
+    // short turn of that role (the thinking-effort turn Control puts at the END of the prompt, effort_position "end") has its prompt checkpoint one
+    // token in front of that turn instead of at the end of the prompt, so a request that changes only the level reads only the tail.
+    int64_t tail_role_token = -1;
+    std::string version = "0.1.70";
 };
+
+/// Where the prompt checkpoint of `ids` goes: prompt_len - 1 (the end of the prompt; the default), or with tail_role_token >= 0 and a system turn
+/// that starts within the last kTailTurnMaxTokens tokens: one token in front of that turn (the checkpoint then holds the conversation, whichever
+/// level the next request asks for).  The turn must start after the first 16 tokens (the head's own level / tool turns are not a tail).
+constexpr int kTailTurnMaxTokens = 64;
+inline int prompt_ckpt_position(const std::vector<int32_t>& ids, int64_t tail_role_token) {
+    const int n = static_cast<int>(ids.size());
+    int at = n - 1;
+    if (tail_role_token < 0) return at;
+    for (int i = n - 1; i > 16 && n - i <= kTailTurnMaxTokens; --i)
+        if (ids[i] == tail_role_token) return std::min(at, i - 1);
+    return at;
+}
 
 inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& backend) {
     const InkCfg& c = mf.m.c;
@@ -504,7 +545,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
     bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
     if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
-    const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
+    else prefill_cap = backend.preferred_prefill_cap_with_decoders();   // 0 on every backend except one that opts in (HIP R9700 / Strix fast mode)
+    const bool use_dspark = (cfg.draft_mode != "off") && backend.dspark_ready();   // the backend says whether a drafter runs: DSpark from the model file, or the DFlash 2 sidecar beside it
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
     const bool spec_tree = !(spec_env && std::string(spec_env) == "block");
@@ -537,6 +579,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (vision_probe(cfg.vision_path, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[inkling2-vision] disabled: %s\n", verr.c_str());
     }
+    // Which reader reads pictures: the card's encoder or the CPU reference (ink_vision_policy.h, the rule Qwen3.8-Flash-Next uses).  The backend's
+    // encode_image is only asked when the rule says GPU; a picture it cannot take (no room, no encoder) is read on the CPU, with one line.
+    bool vision_gpu = false;
+    if (images_ok) {
+        const VisionPlan vplan = plan_vision_reader(vision_ask_from(cfg.bopts.vision_reader), backend.backend_name(),
+                                                    static_cast<double>(backend.primary_device_bytes()) / 1073741824.0);
+        vision_gpu = vplan.gpu;
+        fprintf(stderr, "[inkling2-vision] picture reader: %s - %s\n", vision_gpu ? "GPU" : "CPU", vplan.reason.c_str());
+    }
+    bool vision_gpu_failed_noted = false;
 
     // Allocate all P slots (lazy paged KV uses near-zero memory until populated!)
     for (int s = 0; s < P; ++s) {
@@ -559,12 +611,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (kd == KvDtype::K8V4)     return "k8v4";
         return "fp16";
     }();
-    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1",
+    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1 vision_reader=%s",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
           P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
-          mf.m.dspark.present ? "dspark" : "none",
+          (mf.m.dspark.present || backend.dspark_ready()) ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
-          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots);
+          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots, images_ok ? (vision_gpu ? "gpu" : "cpu") : "off");
     proto("READY %d stop hold holdb", eff_max_ctx);
 
     std::vector<ActiveReq> reqs(P);
@@ -645,7 +697,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             for (size_t k = 0; k < recs.size(); ++k) {
                 std::vector<float> emb;
                 std::string verr;
-                if (!backend.encode_image(recs[k], emb, verr)) {
+                if (!(vision_gpu && backend.encode_image(recs[k], emb, verr))) {
+                    if (vision_gpu && !verr.empty() && !vision_gpu_failed_noted) {
+                        vision_gpu_failed_noted = true;
+                        fprintf(stderr, "[inkling2-vision] the GPU reader could not read this picture (%s): reading it on the CPU\n", verr.c_str());
+                    }
                     if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
                     if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
                 }
@@ -726,9 +782,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.reused_tokens = reuse;
         // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
         // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
-        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        rq.ckpt_at = pg.images.empty() ? prompt_ckpt_position(rq.prompt_ids, cfg.tail_role_token) : rq.prompt_len - 1;
+        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.ckpt_at);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
+        backend.hint_prompt_len(rq.slot, rq.prompt_len);
         rq.hist = rq.prompt_ids;
         rq.next_tok = -1;
         rq.gov_plain_left = 0; rq.gov_win_steps = 0; rq.gov_win_emit = 0; rq.gov_gain = -1.0;
@@ -784,6 +842,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     reqs[s].cached_prefix.clear();
                     reqs[s].prompt_ckpt_prefix.clear();
                     reqs[s].shared_prefix.clear();
+                    if (backend.supports_bco_prewarm() && !cids.empty() && static_cast<int>(cids.size()) < eff_max_ctx) {
+                        std::string berr;
+                        if (backend.bco_prewarm(s, cids.data(), static_cast<int>(cids.size()), berr)) {
+                            reqs[s].cached_prefix = cids;
+                        }
+                    }
                     proto("BCOK %d %zu", s, cids.size());
                 }
             }
@@ -846,7 +910,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         std::string line;
         if (!any_active) {
             if (quit_requested) break;
-            if (!in.wait_next(line)) break;
+            // While nothing runs, an elastic GPU resource (the NVIDIA picture reader) is given back once it has been idle long enough.
+            bool got = false;
+            for (;;) {
+                const int due_ms = backend.idle_release_in_ms();
+                if (due_ms < 0) { got = in.wait_next(line); break; }
+                if (due_ms == 0) { backend.idle_release(); continue; }
+                const int r = in.wait_next_for(line, due_ms);
+                if (r != 0) { got = (r > 0); break; }
+            }
+            if (!got) break;
             handle_line(line);
             while (!quit_requested && in.poll(line)) {
                 handle_line(line);
@@ -877,17 +950,70 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
             reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
             reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
+            !backend.draft_plain_now(reqs[sole_slot].cur_pos) &&   // the one drafter rule: a plain step skips the whole block (the tree step AND the dspark_draft path below)
             !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {
             auto& rq = reqs[sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
             if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
-                int32_t emitted[16]{};
+                int32_t emitted[32]{};
                 int drafted = 0;
                 std::string serr;
-                const int max_emit = rq.max_new - rq.generated;
+                const int max_emit = std::min(rq.max_new - rq.generated, std::max(1, eff_max_ctx - rq.cur_pos - 2));
                 const double gov_t0 = now_s();
                 const int n_emit = backend.dspark_spec_step_greedy(
                     rq.slot, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
+                if (n_emit < 0) {
+                    proto("ERR fatal GPU error: %s", serr.c_str());
+                    return 1;
+                }
+                if (n_emit > 0) {
+                    rq.drafts_offered += drafted;
+                    if (spec_adapt) gov_step(rq, n_emit, (now_s() - gov_t0) * 1000.0);
+                    int kept = 0;
+                    bool done = false;
+                    const char* fin = nullptr;
+                    for (int i = 0; i < n_emit; ++i) {
+                        const int32_t tok = emitted[i];
+                        rq.hist.push_back(tok);
+                        rq.gen_ids.push_back(tok);
+                        rq.cached_prefix.push_back(i == 0 ? rq.next_tok : emitted[i - 1]);
+                        ++rq.generated;
+                        ++kept;
+                        if (i + 1 < n_emit) ++rq.drafts_accepted;
+                        if (rq.is_solo) proto("T %d", tok);
+                        else if (rq.is_ext_gen) proto("T %s %d", rq.req_id.c_str(), tok);
+                        else proto("BT %d %d", rq.slot, tok);
+
+                        if (is_stop_tok(tok)) { fin = "stop"; done = true; break; }
+                        if (rq.generated >= rq.max_new) { fin = "length"; done = true; break; }
+                        if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; break; }
+                    }
+                    if (!done) {
+                        rq.next_tok = emitted[n_emit - 1];
+                        rq.cur_pos += n_emit;
+                    } else {
+                        if (kept < n_emit) {
+                            backend.rollback_slot(rq.slot, rq.cur_pos + kept);
+                        }
+                        rq.cur_pos += kept;
+                        if (fin) finish_req(rq, fin);
+                    }
+                    continue;
+                }
+            }
+            // 2a-sampled. Optional on-GPU lossless stochastic tree speculative step (temperature > 0, no penalties)
+            if (spec_tree && !rq.s.greedy() && !rq.s.penalties() && backend.supports_sampled_spec() && rq.cur_pos + 16 < eff_max_ctx) {
+                int32_t emitted[16]{};
+                int drafted = 0;
+                std::string serr;
+                const int max_emit = std::min(rq.max_new - rq.generated, std::max(1, eff_max_ctx - rq.cur_pos - 1));
+                const double gov_t0 = now_s();
+                const uint64_t rng_seed = rq.s.seed ? rq.s.seed : rq.rng();
+                const uint64_t rng_off = static_cast<uint64_t>(rq.cur_pos) * 65537ULL + static_cast<uint64_t>(rq.generated) * 131ULL;
+                const int n_emit = backend.dspark_spec_step_sampled(
+                    rq.slot, rq.next_tok, rq.cur_pos, max_emit,
+                    rq.s.temperature, rq.s.top_k, rq.s.top_p, rq.s.min_p,
+                    rng_seed, rng_off, emitted, &drafted, serr);
                 if (n_emit < 0) {
                     proto("ERR fatal GPU error: %s", serr.c_str());
                     return 1;
@@ -1000,6 +1126,75 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             }
         }
 
+        // 2b. Opt-in Batched Multi-Slot Greedy Speculative Step (B >= 2 concurrent decoding slots in ONE pass!)
+        if (use_dspark && spec_tree && n_active >= 2 && backend.supports_batched_dspark()) {
+            bool all_bspec_ok = true;
+            std::vector<int> bs_slots; bs_slots.reserve(n_active);
+            std::vector<int32_t> bs_anc; bs_anc.reserve(n_active);
+            std::vector<int> bs_pos; bs_pos.reserve(n_active);
+            std::vector<int> bs_rem; bs_rem.reserve(n_active);
+            for (int s = 0; s < P; ++s) {
+                auto& rq = reqs[s];
+                if (!rq.active) continue;
+                if (rq.prefill_pos < rq.prompt_len || !rq.s.greedy() || rq.s.penalties() ||
+                    rq.s.hold_budget > 0 || rq.generated + 2 > rq.max_new || rq.cur_pos + 8 >= eff_max_ctx) {
+                    all_bspec_ok = false;
+                    break;
+                }
+                bs_slots.push_back(s);
+                bs_anc.push_back(rq.next_tok);
+                bs_pos.push_back(rq.cur_pos);
+                bs_rem.push_back(rq.max_new - rq.generated);
+            }
+            if (all_bspec_ok && bs_slots.size() >= 2) {
+                const int B = static_cast<int>(bs_slots.size());
+                std::vector<int32_t> bs_emit(static_cast<size_t>(B) * 8, 0);
+                std::vector<int> bs_ne(B, 0), bs_dr(B, 0);
+                std::string berr;
+                const int tot = backend.dspark_spec_step_batched_greedy(
+                    B, bs_slots.data(), bs_anc.data(), bs_pos.data(), bs_rem.data(),
+                    8, bs_emit.data(), bs_ne.data(), bs_dr.data(), berr);
+                if (tot < 0) {
+                    proto("ERR fatal GPU error: %s", berr.c_str());
+                    return 1;
+                }
+                if (tot > 0) {
+                    for (int b = 0; b < B; ++b) {
+                        auto& rq = reqs[bs_slots[b]];
+                        const int ne = bs_ne[b];
+                        rq.drafts_offered += bs_dr[b];
+                        int kept = 0;
+                        bool done = false;
+                        const char* fin = nullptr;
+                        for (int i = 0; i < ne; ++i) {
+                            const int32_t tok = bs_emit[static_cast<size_t>(b) * 8 + i];
+                            rq.hist.push_back(tok);
+                            rq.gen_ids.push_back(tok);
+                            rq.cached_prefix.push_back(i == 0 ? rq.next_tok : bs_emit[static_cast<size_t>(b) * 8 + i - 1]);
+                            ++rq.generated;
+                            ++kept;
+                            if (i + 1 < ne) ++rq.drafts_accepted;
+                            if (rq.is_solo) proto("T %d", tok);
+                            else if (rq.is_ext_gen) proto("T %s %d", rq.req_id.c_str(), tok);
+                            else proto("BT %d %d", rq.slot, tok);
+
+                            if (is_stop_tok(tok)) { fin = "stop"; done = true; break; }
+                            if (rq.generated >= rq.max_new || rq.cur_pos + kept + 1 >= eff_max_ctx) { fin = "length"; done = true; break; }
+                            if (cfg.anti_loop && detect_repetition_loop(rq.gen_ids)) { fin = "stop"; done = true; break; }
+                        }
+                        if (!done) {
+                            rq.next_tok = bs_emit[static_cast<size_t>(b) * 8 + (ne - 1)];
+                            rq.cur_pos += ne;
+                        } else {
+                            rq.cur_pos += kept;
+                            if (fin) finish_req(rq, fin);
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
         // 3. Continuous Batched 48-Visit Step across ALL active slots (B = 1..64)!
         // Coalesces chunked-prefill tokens + decode tokens from every active request into ONE StepBatch!
         batch.clear();
@@ -1007,20 +1202,34 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         merged_img_embeds.clear();
         logit_slots.clear();
         int token_budget = std::max(chunk_sz, n_active);
+        if (n_active == 1) {
+            const int macro_cap = backend.max_macro_prefill_tokens();
+            if (macro_cap > token_budget) token_budget = macro_cap;
+        }
         std::vector<int> prefill_fed(P, 0);
         double t_step0 = now_s();
 
         // First schedule 1 decode token for every decoding slot (zero head-of-line blocking!)
-        for (int s = 0; s < P; ++s) {
-            auto& rq = reqs[s];
-            if (!rq.active || rq.prefill_pos < rq.prompt_len) continue;
-            if (rq.cur_pos >= eff_max_ctx) {
-                finish_req(rq, "length");
-                continue;
+        // Under opt-in multi-slot C64 batched mode (supports_batched_dspark), finish all queued prompt prefills
+        // in full per-slot chunks BEFORE starting batched decode so all 64 slots lock-step into B=64 decode!
+        bool c64_prefill_first = false;
+        if (backend.batched_dspark_prefill_first() && n_active >= 2) {
+            for (int s = 0; s < P; ++s) {
+                if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) { c64_prefill_first = true; break; }
             }
-            batch.push(s, rq.cur_pos, rq.next_tok, true);
-            logit_slots.push_back(s);
-            --token_budget;
+        }
+        if (!c64_prefill_first) {
+            for (int s = 0; s < P; ++s) {
+                auto& rq = reqs[s];
+                if (!rq.active || rq.prefill_pos < rq.prompt_len) continue;
+                if (rq.cur_pos >= eff_max_ctx) {
+                    finish_req(rq, "length");
+                    continue;
+                }
+                batch.push(s, rq.cur_pos, rq.next_tok, true);
+                logit_slots.push_back(s);
+                --token_budget;
+            }
         }
         // While some slot decodes, a prompt is read at most `prefill_cap` tokens per step: one step then costs the decode tokens plus
         // that chunk, so the decoding slots keep their cadence while a long prompt is read (a 2048-token chunk was ~0.5 s per decode token).
@@ -1031,14 +1240,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             std::vector<int> pf_slots;
             for (int s = 0; s < P; ++s) if (reqs[s].active && reqs[s].prefill_pos < reqs[s].prompt_len) pf_slots.push_back(s);
             if (!pf_slots.empty()) {
-                const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
-                for (int s : pf_slots) {
+                if (c64_prefill_first) {
+                    // Whole-slot sequential prefill (1 full forward_seq per slot instead of 64x M=5 -> 15x faster C64 prefill!)
+                    int s = pf_slots[0];
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
-                    int take = std::min(rem, per_slot);
-                    // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
-                    if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
-                        take = (rq.prompt_len - 1) - rq.prefill_pos;
+                    int take = std::min(rem, token_budget);
+                    // the checkpoint position is rq.ckpt_at (the prompt end - 1, or the tail-role checkpoint of #7241); a backend that saves the prompt-end checkpoint asynchronously
+                    // (prefers_async_prompt_ckpt) does not pause the prompt-end one
+                    if (rq.ckpt_pending && (!backend.prefers_async_prompt_ckpt() || rq.ckpt_at != rq.prompt_len - 1) && rq.prefill_pos < rq.ckpt_at && rq.prefill_pos + take > rq.ckpt_at) {
+                        take = rq.ckpt_at - rq.prefill_pos;
                     }
                     if (rq.shared_pending && rq.prefill_pos < rq.pin) {
                         take = std::min(take, rq.pin - rq.prefill_pos);
@@ -1055,6 +1266,32 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         if (is_last) logit_slots.push_back(s);
                     }
                     prefill_fed[s] = take;
+                } else {
+                    const int per_slot = std::max(1, token_budget / static_cast<int>(pf_slots.size()));
+                    for (int s : pf_slots) {
+                        auto& rq = reqs[s];
+                        const int rem = rq.prompt_len - rq.prefill_pos;
+                        int take = std::min(rem, per_slot);
+                        // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
+                        if (rq.ckpt_pending && (!backend.prefers_async_prompt_ckpt() || rq.ckpt_at != rq.prompt_len - 1) && rq.prefill_pos < rq.ckpt_at && rq.prefill_pos + take > rq.ckpt_at) {
+                            take = rq.ckpt_at - rq.prefill_pos;
+                        }
+                        if (rq.shared_pending && rq.prefill_pos < rq.pin) {
+                            take = std::min(take, rq.pin - rq.prefill_pos);
+                        }
+                        const int img_base = static_cast<int>(merged_img_embeds.size()) / c.hidden;
+                        if (!rq.img_embeds.empty()) {
+                            merged_img_embeds.insert(merged_img_embeds.end(), rq.img_embeds.begin(), rq.img_embeds.end());
+                        }
+                        for (int k = 0; k < take; ++k) {
+                            const int p_i = rq.prefill_pos + k;
+                            const bool is_last = (p_i == rq.prompt_len - 1);
+                            int img_idx = (rq.prompt_img_idx[p_i] >= 0) ? (img_base + rq.prompt_img_idx[p_i]) : -1;
+                            batch.push(s, p_i, rq.prompt_ids[p_i], is_last, img_idx);
+                            if (is_last) logit_slots.push_back(s);
+                        }
+                        prefill_fed[s] = take;
+                    }
                 }
             }
         }
@@ -1116,10 +1353,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         rq.shared_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.pin);
                     }
                 }
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                if (rq.ckpt_pending && (rq.prefill_pos == rq.ckpt_at || (backend.prefers_async_prompt_ckpt() && rq.ckpt_at == rq.prompt_len - 1 && rq.prefill_pos == rq.prompt_len))) {
                     rq.ckpt_pending = false;
-                    if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
-                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
+                    const int ckpt_pos = rq.ckpt_at;   // the prompt end - 1, or the tail-role checkpoint (#7241)
+                    if (backend.save_prompt_checkpoint(rq.slot, ckpt_pos)) {
+                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + ckpt_pos);
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {

@@ -3629,5 +3629,11 @@
   "modelPortActive": "Porta de modelo ativa: {0}.",
   "modelPortHint": "A porta inicial usada pelos servidores de modelos locais (padrão 18500). Deixe vazio para automático; o Strata evita sondar a porta 8080 para não entrar em conflito com outros aplicativos locais, como o Spring Boot. Aplica-se na próxima vez que um modelo for carregado.",
   "promptCacheSpreadLabel": "Distribuir pontos de verificação do cache de prompt",
-  "promptCacheSpreadHint": "Passa --prompt-cache-spread para modelos locais para que os pontos de verificação fiquem distribuídos ao longo de conversas longas em vez de concentrados no final. Usa a mesma RAM e reduz o tempo de releitura na compactação em modelos híbridos. Aplica-se na próxima vez que um modelo for carregado."
+  "promptCacheSpreadHint": "Passa --prompt-cache-spread para modelos locais para que os pontos de verificação fiquem distribuídos ao longo de conversas longas em vez de concentrados no final. Usa a mesma RAM e reduz o tempo de releitura na compactação em modelos híbridos. Aplica-se na próxima vez que um modelo for carregado.",
+  "hideFailedToolsLabel": "Ocultar as etapas que falharam",
+  "hideFailedToolsHint": "Uma etapa que o assistente tentou e não funcionou, como uma página que não abriu, não aparece na conversa. O assistente continua a ver o erro e pode tentar de novo. Uma etapa recusada, ou que precisa da sua resposta, é sempre mostrada.",
+  "portReservedTitle": "A porta {0} está reservada pelo sistema",
+  "portReservedBody": "Nenhum programa usa a porta {0}, mas o sistema a mantém reservada; no Windows isso costuma ser o WSL (rede espelhada), o Hyper-V ou o Docker. O Strata iniciou na porta {1} e vai usá-la de novo da próxima vez, para que as suas conversas e definições fiquem num só lugar. Para escolher uma porta, abra as Definições e defina a porta da aplicação. As conversas e definições guardadas na porta {0} não são mostradas aqui.",
+  "s9160": "Não é mais oferecido",
+  "s9161": "Atualização disponível"
 }

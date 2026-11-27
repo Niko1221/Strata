@@ -48,7 +48,7 @@ class DrafterBudget(unittest.TestCase):
 
     def test_the_download_still_counts_the_drafter_file(self):
         row = next(r for r in F.rows(8.0, 32.0) if r["build"] == "UD-Q4_K_XL")
-        self.assertAlmostEqual(row["download_gb"], F.BUILDS["UD-Q4_K_XL"]["file_gb"] + F.DSPARK_GGUF_GB, places=2)
+        self.assertAlmostEqual(row["download_gb"], F.BUILDS["UD-Q4_K_XL"]["file_gb"] + F.DFLASH2_GB, places=2)       # 0.2.23: the download is the model and the DFlash 2 file
 
 
 if __name__ == "__main__":

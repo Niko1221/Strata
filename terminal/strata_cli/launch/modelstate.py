@@ -150,12 +150,14 @@ def mmproj_name(catalog, family: str | None) -> str:
 
 def assess(catalog, family: str | None, model: str | None, *, vision: str = "off", model_path: str | None = None,
            data_dir: str | Path | None = None, config: Path | None = None, desc: dict | None = None, rows: list | None = None,
-           mtp: str | None = None, drafting: str | None = None, use_installed: bool = True) -> ModelState:
+           mtp: str | None = None, drafting: str | None = None, use_installed: bool = True, custom_id: str | None = None) -> ModelState:
     """The state of `family model` for these choices. `config` / `desc` are the installed run config and its description (looked up when
     not given)."""
     st = ModelState()
     mtp = mtp_choice(mtp, drafting)
-    row = next((r for r in (rows if rows is not None else catalog.rows()) if r.family == family and r.model == model), None) if (family and model) else None
+    pool = (rows if rows is not None else catalog.rows()) if (family and model) else []
+    row = (next((r for r in pool if custom_id and getattr(r, "custom", False) and r.id == custom_id), None)
+           or next((r for r in pool if r.family == family and r.model == model and not getattr(r, "custom", False)), None))
     st.total_gb = float(row.download_gb) if row else 0.0
     wants_pictures = vision not in ("off", "no") and (row is None or row.images)
     data = Path(data_dir) if data_dir else None
@@ -179,7 +181,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
             st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
         return st
     if config is None and family and model and use_installed:          # (False: the installed copy is in another data folder than the one this launch uses)
-        config = catalog.installed_config(catalog.tag_of(family, model))
+        config = catalog.installed_config(catalog.tag_of(family, model, custom_id))
     cfg = None
     if config is not None:
         try:
@@ -329,7 +331,13 @@ def reader_present(catalog, family: str | None, data_folders, own: Path | None =
             except OSError:
                 pass
         return False
-    name = mmproj_name(catalog, family)
+    if family == "inkling-2-mini":                          # 0.2.23's Vision file, or 0.2.22's (the same weights): either one is a reader
+        from strata_control import inkling_family
+        return any(_reader_present_named(catalog, family, data_folders, own, n) for n in inkling_family.VISION_FILES)
+    return _reader_present_named(catalog, family, data_folders, own, mmproj_name(catalog, family))
+
+
+def _reader_present_named(catalog, family: str | None, data_folders, own: Path | None, name: str) -> bool:
     for base in data_folders:
         if not base:
             continue

@@ -148,7 +148,7 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "UD-IQ1_M",
                                 "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL",
                                 "SQ-64", "SQ-96", "SQ-128",
-                                "SQ-20", "SQ-15", "SQ-10", "UD-IQ1_S", "UD-IQ2_XXS", "UD-IQ4_XS", "UD-Q4_K_M", "UD-Q8_K_XL"})   # Unsloth's sets + Hy4-Flash + Inkling-2-Mini builds on Mac
+                                "SQ-20", "SQ-15", "SQ-10", "GSQ-RCO-IQ3_S"})   # Unsloth's sets + Hy4-Flash + Inkling-2-Mini's offered builds on Mac (UD-Q4_K_XL is both Qwen's Unsloth size and Inkling's); the other Inkling quants are not offered
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
             self.assertEqual(rows["IQ3_S"].verdict, "slower")
@@ -947,6 +947,25 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(p["settings"]["mtp"], "off")
         self.assertIn("--mtp off", p["flags"])
         code, out, err = run_cli(["launch", "--plan", "--mtp", "maybe"])
+        self.assertNotEqual(code, 0)
+
+    def test_turbo_flags_are_listed_planned_and_copyable(self):
+        """Owner 2026-11-26: --turbo and --turbo-max are the two opt-in Inkling tail-skip presets; both off unless asked, mapped onto STRATA_INK_TAIL_SKIP."""
+        code, out, err = run_cli(["launch", "--help"])
+        for flag in ("--turbo", "--turbo-max"):
+            self.assertIn(flag, out)
+        self.assertEqual(self.plan("--model", "q2_0")["settings"]["extra"], {})              # off by default
+        for flag, word in (("--turbo", "turbo"), ("--turbo-max", "turbo-max")):
+            p = self.plan("--model", "q2_0", flag)
+            self.assertEqual(p["settings"]["extra"], {"STRATA_INK_TAIL_SKIP": word})
+            self.assertIn(flag, p["flags"])                                                   # the copyable line says what was typed
+            self.assertNotIn("--set STRATA_INK_TAIL_SKIP", p["flags"])
+            self.assertTrue(any("differ slightly from exact" in w for w in p["warnings"]), p["warnings"])
+        # the person's own --set wins over the flag, with a warning
+        p = self.plan("--model", "q2_0", "--turbo", "--set", "STRATA_INK_TAIL_SKIP=thr=0.05")
+        self.assertEqual(p["settings"]["extra"], {"STRATA_INK_TAIL_SKIP": "thr=0.05"})
+        self.assertTrue(any("is ignored" in w for w in p["warnings"]), p["warnings"])
+        code, out, err = run_cli(["launch", "--plan", "--turbo", "--turbo-max"])              # one of the two
         self.assertNotEqual(code, 0)
 
     def test_vision_help_says_the_picture_rule(self):

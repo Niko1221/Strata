@@ -72,12 +72,13 @@
 
 | 提供方 | 可选项 |
 | --- | --- |
-| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
-| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+| **Strata** | SQ-20 (19.37 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **GSQ-RCO** | IQ3\_S (11.43 GB) |
+| **Unsloth** | UD-Q4\_K\_XL (17.63 GB) |
 
 SQ-20 适合 24 GiB 显卡，SQ-15 适合 16 GiB，SQ-10 适合 12 GiB。最低 4 GiB 显卡即可起步。
 
-[Hugging Face 上的 Strata 版本包](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF 文件](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
+[Hugging Face 上的 Strata 版本包](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF 文件](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) · [GSQ-RCO IQ3_S](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF)
 
 </details>
 
@@ -95,7 +96,7 @@ SQ-20 适合 24 GiB 显卡，SQ-15 适合 16 GiB，SQ-10 适合 12 GiB。最低 
 
 安装应用，选择模型，就可以开始聊天。每个系统只有一个安装程序。首次启动时，应用会下载适合你显卡的引擎。[安装程序帮助](../INSTALL.md#the-app)。
 
-<sub>文件: `Strata-0.2.22-windows-x64-setup.exe` · `Strata-0.2.22-linux-x86_64.AppImage` · `Strata-0.2.22-macos-arm64.dmg`</sub>
+<sub>文件: `Strata-0.2.23-windows-x64-setup.exe` · `Strata-0.2.23-linux-x86_64.AppImage` · `Strata-0.2.23-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="Strata 桌面应用，聊天和实时代码预览并排显示">

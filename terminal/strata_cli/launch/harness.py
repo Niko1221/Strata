@@ -113,6 +113,8 @@ def _display_name(t: Target) -> str:
         return "Inkling-2-Mini (Strata, local)"
     if m.startswith("qwen3.6") or m.startswith("qwen36"):
         return "Qwen3.6-35B-A3B (Strata, local)"
+    if m.startswith("ornith-1.5"):
+        return "Ornith-1.5-35B-A3B (Strata, local)"
     return "Qwen3.8-Flash-Next (Strata, local)"
 
 

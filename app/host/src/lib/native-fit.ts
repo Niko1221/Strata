@@ -104,7 +104,7 @@ export const OTHER_NOTE = 'the other choice';
  */
 export function recommendedVersions<V extends { sourceFamily: string; model: string }>(versions: V[], pick?: PcPick | null): { r: typeof RECOMMENDED[number]; v: V }[] {
   type Row = { r: typeof RECOMMENDED[number]; v: V };
-  const find = (family: string, model: string) => versions.find(v => v.sourceFamily === family && v.model === model);
+  const find = (family: string, model: string) => versions.find(v => v.sourceFamily === family && v.model === model && !(v as { custom?: boolean }).custom);   // a custom build never takes an official build's place
   const rows: Row[] = RECOMMENDED.map(r => ({ r, v: find(r.family, r.model) })).filter((x): x is Row => !!x.v);
   if (!pick?.family || !pick.model) return rows;
   const chosen = find(pick.family, pick.model);

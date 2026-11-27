@@ -7,10 +7,10 @@
 #include <sstream>
 
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/artifact/strata_layout.hpp"
 
 namespace strata::artifact {
 namespace {
-constexpr uint8_t kStrataMagic[8] = {'S', 'T', 'R', 'A', 'T', 'A', 0x00, 0x01};
 bool seek_abs(std::FILE* fp, uint64_t off) noexcept {
 #if defined(_WIN32)
     return _fseeki64(fp, static_cast<__int64>(off), SEEK_SET) == 0;
@@ -25,6 +25,7 @@ void StrataFileReader::close() {
         std::fclose(fp_);
         fp_ = nullptr;
     }
+    file_size_ = 0;
     manifest_json_.clear();
     experts_.clear();
 }
@@ -42,30 +43,11 @@ bool StrataFileReader::open(const std::string& path, std::string& err) {
         close();
         return false;
     }
-    if (std::memcmp(frame, kStrataMagic, 8) != 0) {
-        err = "Invalid .strata magic";
+    file_size_ = strata_file_size(fp_);
+    if (!strata_parse_header_frame(frame, STRATA_PAGE_SIZE, file_size_, hdr_, err)) {
         close();
         return false;
     }
-    std::memcpy(&hdr_.flags, frame + 8, 4);
-    uint16_t prof = 0;
-    std::memcpy(&prof, frame + 12, 2);
-    hdr_.profile = static_cast<StrataProfile>(prof);
-    std::memcpy(&hdr_.num_sections, frame + 14, 2);
-    if (hdr_.num_sections != STRATA_NUM_SECTIONS) {
-        err = "Unexpected .strata num_sections: " + std::to_string(hdr_.num_sections);
-        close();
-        return false;
-    }
-    for (int i = 0; i < STRATA_NUM_SECTIONS; ++i) {
-        std::memcpy(&hdr_.sections[i], frame + 0x10 + i * sizeof(StrataSectionEntry), sizeof(StrataSectionEntry));
-        if (hdr_.sections[i].byte_length > 0 && (hdr_.sections[i].file_offset % STRATA_PAGE_SIZE) != 0) {
-            err = "Section " + std::to_string(i) + " is not 4 KiB aligned";
-            close();
-            return false;
-        }
-    }
-    std::memcpy(hdr_.engram_shard_sha256, frame + 0x190, 32);
 
     // manifest: sidecar JSON next to the file
     {
@@ -82,15 +64,36 @@ bool StrataFileReader::open(const std::string& path, std::string& err) {
             close();
             return false;
         }
-        if (s3.size() % sizeof(StrataExpertEntry) != 0) {
-            err = "Section 3 byte_length not a multiple of 32 B StrataExpertEntry";
+        size_t n = 0;
+        if (!strata_section3_entry_count(hdr_, s3.size(), false, 0, n, err)) {
             close();
             return false;
         }
-        experts_.resize(s3.size() / sizeof(StrataExpertEntry));
-        std::memcpy(experts_.data(), s3.data(), s3.size());
+        if (hdr_.layout == StrataLayout::Page16K) {  // padded: the zero entries at the tail are padding, a real entry has a body
+            static const uint8_t kZero[sizeof(StrataExpertEntry)] = {};
+            while (n > 0 && std::memcmp(s3.data() + (n - 1) * sizeof(StrataExpertEntry), kZero, sizeof(kZero)) == 0) --n;
+        }
+        experts_.resize(n);
+        if (n) std::memcpy(experts_.data(), s3.data(), n * sizeof(StrataExpertEntry));
     }
     return true;
+}
+
+bool StrataFileReader::manifest_top_string(const char* key, std::string& out) const {
+    return strata_manifest_top_value(manifest_json_, key, true, out);
+}
+
+bool StrataFileReader::manifest_top_uint(const char* key, uint64_t& out) const {
+    std::string t;
+    if (!strata_manifest_top_value(manifest_json_, key, false, t)) return false;
+    out = std::strtoull(t.c_str(), nullptr, 10);
+    return true;
+}
+
+bool StrataFileReader::is_vision_shard() const {
+    if (hdr_.profile == StrataProfile::VisionShard) return true;
+    std::string arch;
+    return manifest_top_string("arch", arch) && arch == "inkling2_vision";
 }
 
 bool StrataFileReader::read_at(uint64_t abs_offset, void* dst, size_t bytes, std::string& err) const {

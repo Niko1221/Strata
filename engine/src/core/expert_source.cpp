@@ -2198,6 +2198,7 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
             v = i;
         }
     if (v == stage_buf_.size()) {
+        if (stage_blob_ == 0) return false;   // no buffer size is known: a zero-byte buffer would be a blob-sized overrun
         // Pinned, where the driver allows: a stage buffer is the source of the cache fill's cudaMemcpyAsync,
         // and a pageable source is staged through the driver's bounce buffer - an extra copy at a fraction of
         // the transfer rate, on the calling thread.  A failure falls back to pageable for this buffer.
@@ -3110,8 +3111,10 @@ bool FileExpertSource::begin_startup_unbuffered(std::string& why) {
         fail = "an unbuffered read of the first blob failed or differed from the mapping";
         for (void* d : direct_) close_direct(d);
         direct_.clear();
-        std::lock_guard<std::mutex> lk(stage_mu_);
-        stage_blob_ = 0;
+        if (role_ptr_.empty()) {   // experts.bin: the buffers were the unbuffered reads' (open_direct); the GGUF in place keeps its pool size
+            std::lock_guard<std::mutex> lk(stage_mu_);
+            stage_blob_ = 0;
+        }
     }
     std::string again;
     why = map_view(again) ? fail : fail + "; " + again;
@@ -3132,20 +3135,30 @@ bool FileExpertSource::end_startup_unbuffered(std::string& why) {
     }
     for (void* d : direct_) close_direct(d);
     direct_.clear();
-    {   // the mapped tier hands out the mapping: the startup's stage buffers go
-        std::lock_guard<std::mutex> lk(stage_mu_);
-        stage_buf_.clear();
-        stage_key_.clear();
-        stage_epoch_.clear();
-        stage_used_.clear();
-        stage_busy_.clear();
-        stage_pf_.clear();
-        stage_of_.clear();
-        stage_blob_ = 0;
-    }
+    release_startup_stage();
     file_blob_bytes_.store(startup_blob_bytes_);
     file_us_.store(startup_us_);
     return true;
+}
+
+// The stage-pool step of end_startup_unbuffered.  experts.bin: the mapped tier hands out the mapping, so the startup's stage
+// buffers go.  The GGUF in place (role_ptr_) keeps its pool: blob() assembles every expert the RAM copy lacks into a stage
+// buffer for the rest of the run, and stage_blob_ is the size of a buffer.  Zeroing it here made the next claim_stage
+// allocate a zero-byte buffer that fill_stage then copied a whole blob into (a heap overrun: the 0.1.67 Windows crash
+// after the first window starts).
+void FileExpertSource::release_startup_stage() {
+    if (!role_ptr_.empty()) return;
+    std::lock_guard<std::mutex> lk(stage_mu_);
+    if (!stage_ev_.empty()) (void) cudaDeviceSynchronize();   // the buffers' last copies end before they are freed (#1237), as close()
+    stage_free_events();
+    stage_buf_.clear();
+    stage_key_.clear();
+    stage_epoch_.clear();
+    stage_used_.clear();
+    stage_busy_.clear();
+    stage_pf_.clear();
+    stage_of_.clear();
+    stage_blob_ = 0;
 }
 
 bool FileExpertSource::map_view(std::string& why) {

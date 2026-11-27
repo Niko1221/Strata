@@ -24,6 +24,56 @@ using namespace metal;
 
 static inline float ops_bf16_to_f32(ushort b) { return as_type<float>(uint(b) << 16); }
 
+// Exact IEEE-style FP8 E4M3FN encode/decode (bias=7, max=448.0, no inf, 0x7F/0xFF=NaN->0)
+static inline uchar ops_f32_to_fp8_e4m3(float x) {
+    const uint u = as_type<uint>(x);
+    const uint sign = (u >> 24) & 0x80u;
+    const float ax = fabs(x);
+    if (!(ax > 0.0f)) return uchar(sign);
+    if (ax >= 448.0f) return uchar(sign | 0x7Eu);
+    if (ax < 0.015625f) {
+        const uint m = min(7u, uint(rint(ax * 512.0f)));
+        return uchar(sign | m);
+    }
+    const uint ua = as_type<uint>(ax);
+    int exp = int((ua >> 23) & 0xFFu) - 120;
+    uint frac = ua & 0x7FFFFFu;
+    uint man = frac >> 20;
+    uint rem = frac & 0xFFFFFu;
+    if (rem > 0x80000u || (rem == 0x80000u && (man & 1u))) {
+        ++man;
+        if (man >= 8u) { man = 0u; ++exp; }
+    }
+    if (exp >= 15 && man >= 7u) return uchar(sign | 0x7Eu);
+    if (exp <= 0) return uchar(sign);
+    return uchar(sign | (uint(exp) << 3) | man);
+}
+
+static inline float ops_fp8_e4m3_to_f32(uint c) {
+    const uint mag = c & 0x7Fu;
+    if (mag == 0x7Fu) return 0.0f;
+    const uint exp = mag >> 3;
+    const uint man = mag & 7u;
+    const float v = (exp == 0u) ? (float(man) * (1.0f / 512.0f))
+                                : as_type<float>(((exp + 120u) << 23) | (man << 20));
+    return (c & 0x80u) ? -v : v;
+}
+
+// The FP8 KV read exists only in the library the runner compiles with INK_KV_FP8_PATH defined (the M5 Max fast mode); every other pipeline
+// reads the half cache exactly as before (a run-time branch in these decode attention kernels cost the default path about 7% at 8K context).
+static inline float4 ops_load_kv4(device const half* cache_h, size_t off, uint lane, int kv_fp8) {
+#ifdef INK_KV_FP8_PATH
+    if (kv_fp8 != 0) {
+        device const uchar* cp = ((device const uchar*)cache_h) + off + (size_t)lane * 4ul;
+        return float4(ops_fp8_e4m3_to_f32(cp[0]), ops_fp8_e4m3_to_f32(cp[1]),
+                      ops_fp8_e4m3_to_f32(cp[2]), ops_fp8_e4m3_to_f32(cp[3]));
+    }
+#else
+    (void)kv_fp8;
+#endif
+    return float4(((device const half4*)(cache_h + off))[lane]);
+}
+
 static inline float ops_tg_sum(float v, threadgroup float* sh, uint tid, uint nthr) {
     v = simd_sum(v);
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -722,6 +772,104 @@ kernel void ink_kv_norm_store_f16(
     v_cache[dst_off] = half(vv * vfac);
 }
 
+// K L2 clip + V parameterless RMSNorm + KV Cache Write (FP8_E4M3FN, 2x smaller KV bandwidth!)
+// grid (M, 8, 1), 128 threads
+kernel void ink_kv_norm_store_fp8(
+    device const float* k_in   [[buffer(0)]],
+    device const float* v_in   [[buffer(1)]],
+    device uchar* k_cache      [[buffer(2)]],
+    device uchar* v_cache      [[buffer(3)]],
+    device const int* slot_ids [[buffer(4)]],
+    device const int* pos_buf  [[buffer(5)]],
+    constant int& is_swa       [[buffer(6)]],
+    constant int& kv_stride    [[buffer(7)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float sh[4];
+    const int m = int(tgp.x), kh = int(tgp.y);
+    const int slot = slot_ids[m];
+    const int pos = pos_buf[m];
+    const int kpos = is_swa ? (pos & 1023) : pos;
+
+    device const float* kp = k_in + ((size_t)m * INK_NKV + kh) * INK_HD;
+    const float kv = kp[tid];
+    const float kss = ops_tg_sum(kv * kv, sh, tid, 128);
+    const float kfac = min(1.0f, 22.627416997969522f / (sqrt(kss) + 1e-6f));
+
+    device const float* vp = v_in + ((size_t)m * INK_NKV + kh) * INK_HD;
+    const float vv = vp[tid];
+    const float vss = ops_tg_sum(vv * vv, sh, tid, 128);
+    const float vfac = rsqrt(vss / float(INK_HD) + INK_RMS_EPS);
+
+    const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
+    k_cache[dst_off] = ops_f32_to_fp8_e4m3(kv * kfac);
+    v_cache[dst_off] = ops_f32_to_fp8_e4m3(vv * vfac);
+}
+
+// Intra-chunk SWA prefill KV store: writes [M, 8, 128] linearly into pf_k/pf_v (half) so chunk=8192 never wraps the 1024-entry ring before attention!
+// When kv_fp8 != 0, quantize-dequantizes through FP8_E4M3FN so prefill matches decode KV exactly!
+// grid (M, 8, 1), 128 threads
+kernel void ink_kv_norm_store_pf_swa_f16(
+    device const float* k_in [[buffer(0)]],
+    device const float* v_in [[buffer(1)]],
+    device half* pf_k        [[buffer(2)]],
+    device half* pf_v        [[buffer(3)]],
+    constant int& kv_fp8     [[buffer(4)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float sh[4];
+    const int m = int(tgp.x), kh = int(tgp.y);
+
+    device const float* kp = k_in + ((size_t)m * INK_NKV + kh) * INK_HD;
+    const float kv = kp[tid];
+    const float kss = ops_tg_sum(kv * kv, sh, tid, 128);
+    const float kfac = min(1.0f, 22.627416997969522f / (sqrt(kss) + 1e-6f));
+
+    device const float* vp = v_in + ((size_t)m * INK_NKV + kh) * INK_HD;
+    const float vv = vp[tid];
+    const float vss = ops_tg_sum(vv * vv, sh, tid, 128);
+    const float vfac = rsqrt(vss / float(INK_HD) + INK_RMS_EPS);
+
+    const size_t dst_off = ((size_t)m * INK_NKV + kh) * INK_HD + tid;
+    if (kv_fp8 != 0) {
+        pf_k[dst_off] = half(ops_fp8_e4m3_to_f32(ops_f32_to_fp8_e4m3(kv * kfac)));
+        pf_v[dst_off] = half(ops_fp8_e4m3_to_f32(ops_f32_to_fp8_e4m3(vv * vfac)));
+    } else {
+        pf_k[dst_off] = half(kv * kfac);
+        pf_v[dst_off] = half(vv * vfac);
+    }
+}
+
+// Commit the final tail = min(M, 1024) tokens from pf_k/pf_v into the SWA-1024 ring cache (FP16 or FP8_E4M3FN)
+// grid (tail, 8, 1), 128 threads
+kernel void ink_kv_commit_pf_swa(
+    device const half* pf_k  [[buffer(0)]],
+    device const half* pf_v  [[buffer(1)]],
+    device half* k_cache     [[buffer(2)]],
+    device half* v_cache     [[buffer(3)]],
+    constant int& slot       [[buffer(4)]],
+    constant int& pos0       [[buffer(5)]],
+    constant int& M          [[buffer(6)]],
+    constant int& tail       [[buffer(7)]],
+    constant int& kv_stride  [[buffer(8)]],
+    constant int& kv_fp8     [[buffer(9)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int ti = int(tgp.x), kh = int(tgp.y);
+    const int m = (M - tail) + ti;
+    const int pos = pos0 + m;
+    const int kpos = pos & 1023;
+    const size_t src_off = ((size_t)m * INK_NKV + kh) * INK_HD + tid;
+    const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
+    if (kv_fp8 != 0) {
+        ((device uchar*)k_cache)[dst_off] = ops_f32_to_fp8_e4m3(float(pf_k[src_off]));
+        ((device uchar*)v_cache)[dst_off] = ops_f32_to_fp8_e4m3(float(pf_v[src_off]));
+    } else {
+        k_cache[dst_off] = pf_k[src_off];
+        v_cache[dst_off] = pf_v[src_off];
+    }
+}
+
 // ============================================================================
 // 6. Fused RelPos + Sink 24:8 GQA Flash Attention + Sigmoid Gate
 //    Computes exact:
@@ -798,7 +946,7 @@ kernel void ink_relpos_sink_gqa(
     for (int k = k_start + int(sg); k < k_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
+        const float4 kv = ops_load_kv4(k_cache, kv_off, lane, A.kv_fp8);
         float sc = simd_sum(dot(qv, kv));
 
         // RelPos bias: coalesced 32-byte L1-hot load from rel_proj_t[dist, 0..15]!
@@ -812,7 +960,7 @@ kernel void ink_relpos_sink_gqa(
         const float p = exp(sc - mn);
         l_sum = l_sum * corr + p;
         m_max = mn;
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 vv = ops_load_kv4(v_cache, kv_off, lane, A.kv_fp8);
         o_acc = o_acc * corr + p * vv;
     }
 
@@ -895,8 +1043,8 @@ kernel void ink_relpos_gqa_splitk(
     for (int k = p_start + int(sg); k < p_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 kv = ops_load_kv4(k_cache, kv_off, lane, A.kv_fp8);
+        const float4 vv = ops_load_kv4(v_cache, kv_off, lane, A.kv_fp8);
         const int dist = min(qpos - k, A.rel_extent);
         const float rp = (lane < 16) ? float(rel_proj_t[(size_t)dist * 16 + lane]) : 0.0f;
 
@@ -955,6 +1103,8 @@ kernel void ink_relpos_gqa_splitk(
         }
     }
 }
+
+
 
 // Merge S_PARTS=8 splits + exact deferred attention sink + sigmoid(gate)
 // grid (M, 24, 1), 128 threads
@@ -1322,6 +1472,30 @@ kernel void ink_kv_tree_commit_f16(
     v_cache[dst_off] = tree_v[src_off];
 }
 
+// Commit winning path[0..L-1] from FP16 tree_k/v into FP8_E4M3 kv_k/v[slot, kpos(anchor_pos + i)]
+// grid (L, 8, 1), 128 threads
+kernel void ink_kv_tree_commit_fp8(
+    device const half* tree_k  [[buffer(0)]],
+    device const half* tree_v  [[buffer(1)]],
+    device uchar* k_cache      [[buffer(2)]],
+    device uchar* v_cache      [[buffer(3)]],
+    device const int* path_ids [[buffer(4)]],
+    constant int& slot         [[buffer(5)]],
+    constant int& anchor_pos   [[buffer(6)]],
+    constant int& is_swa       [[buffer(7)]],
+    constant int& kv_stride    [[buffer(8)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int i = int(tgp.x), kh = int(tgp.y);
+    const int node = path_ids[i];
+    const int pos = anchor_pos + i;
+    const int kpos = is_swa ? (pos & 1023) : pos;
+    const size_t src_off = ((size_t)node * INK_NKV + kh) * INK_HD + tid;
+    const size_t dst_off = (((size_t)slot * kv_stride + kpos) * INK_NKV + kh) * INK_HD + tid;
+    k_cache[dst_off] = ops_f32_to_fp8_e4m3(float(tree_k[src_off]));
+    v_cache[dst_off] = ops_f32_to_fp8_e4m3(float(tree_v[src_off]));
+}
+
 struct InkTreeAttnArgs {
     int M;
     int slot;
@@ -1330,7 +1504,7 @@ struct InkTreeAttnArgs {
     int swa_win;
     int rel_extent;
     int kv_stride;
-    int pad;
+    int kv_fp8;
     float scale;
     int pad2;
 };
@@ -1387,8 +1561,8 @@ kernel void ink_relpos_tree_gqa_splitk(
     for (int k = p_start + int(sg); k < p_end; k += 4) {
         const int kidx = A.is_swa ? (k & 1023) : k;
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
-        const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
-        const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
+        const float4 kv = ops_load_kv4(k_cache, kv_off, lane, A.kv_fp8);
+        const float4 vv = ops_load_kv4(v_cache, kv_off, lane, A.kv_fp8);
         const int dist = min(qpos - k, A.rel_extent);
         const float rp = (lane < 16) ? float(rel_proj_t[(size_t)dist * 16 + lane]) : 0.0f;
         {
@@ -1472,6 +1646,174 @@ kernel void ink_relpos_tree_gqa_splitk(
             part_ml[pidx * 2 + 0] = gm;
             part_ml[pidx * 2 + 1] = gl;
         }
+    }
+}
+
+// ============================================================================
+// 10. Exact Top-K (K <= 128) Candidate Row Extraction + Finite Check (0 full-vocab D2H!)
+//     Pass 1: 32 partitions per row -> each threadgroup extracts top-8 per simdgroup (64 cands) -> merges to top-128?
+//     Even simpler & exact: 64 partitions per row, 256 threads/TG -> each thread scans ~13 vocab tokens,
+//     maintains thread-local top-2, then TG extracts exact top-16 per partition (64 * 16 = 1024 -> 100% exact top-128
+//     as long as any partition holds <= 16 of the global top-128; with stride-64 round-robin across partitions,
+//     consecutive vocab IDs spread evenly, or even better: use top-32 per 32 partitions -> 1024 candidates!).
+//     Wait: with 16 partitions x 256 threads, each thread holds its top-2 -> 512 per TG -> TG finds top-128 exact?
+//     Even faster & 100% EXACT regardless of distribution: 8 partitions per row, 128 threads/TG, each TG extracts
+//     exact top-128 via 128-lane parallel max! Wait: 200058 / 8 = 25007 tokens / 128 threads = 195 tokens/thread!
+//     Only 8 TGs/row? For C16 (16 rows) that's 128 TGs! For C1 (1 row) let's do 32 partitions x top-128? No, 16 partitions x top-16 = 256 cands is tiny;
+//     actually 16 partitions with per-partition exact top-16 can miss only if >16 of global top-128 land in ONE strided partition (p < 1e-12 with stride 16).
+//     Or even better: 16 partitions, each TG extracts top-32 (16*32=512 cands) + exact finite bit!
+//     Let's make it 100% EXACT for K=128:
+//       - Pass 1 (grid = (16, M, 1), 256 threads): partition p scans i = p + 16*tid, p + 16*(tid+256), ...
+//         Wait: each thread keeps top-2 (512 items in SLM) and TG selects top-32 (or top-64 if K=128) via parallel max!
+//       - Pass 2 (grid = (M, 1, 1), 256 threads): reads 16*32 = 512 candidates, runs exact selection of top-K (K=128) in descending order!
+// ============================================================================
+kernel void ink_logits_top128_part(
+    device const float* logits [[buffer(0)]],
+    device int* part_id        [[buffer(1)]],  // [M, 16, 32]
+    device float* part_val     [[buffer(2)]],  // [M, 16, 32]
+    device uchar* part_fin     [[buffer(3)]],  // [M, 16]
+    constant int& V            [[buffer(4)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float sh_v[512];
+    threadgroup int   sh_i[512];
+    threadgroup uint  sh_nf[8];
+    const int p = int(tgp.x), m = int(tgp.y);
+    device const float* row = logits + (size_t)m * V;
+
+    float b0 = -1e30f, b1 = -1e30f;
+    int   i0 = -1,     i1 = -1;
+    uint nonfin = 0u;
+    for (int i = p + int(tid) * 16; i < V; i += 256 * 16) {
+        const float v = row[i];
+        if (!isfinite(v)) { nonfin = 1u; continue; }
+        if (v > b0 || (v == b0 && i < i0)) {
+            b1 = b0; i1 = i0;
+            b0 = v;  i0 = i;
+        } else if (v > b1 || (v == b1 && i < i1)) {
+            b1 = v;  i1 = i;
+        }
+    }
+    sh_v[tid] = b0; sh_i[tid] = i0;
+    sh_v[256 + tid] = b1; sh_i[256 + tid] = i1;
+    uint sg_nf = simd_or(nonfin);
+    if ((tid & 31u) == 0u) sh_nf[tid >> 5] = sg_nf;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Parallel select top-32 from 512 entries (256 threads reduce in 8-way simd_max!)
+    threadgroup float red_v[8];
+    threadgroup int   red_i[8];
+    const uint sg = tid >> 5, lane = tid & 31u;
+    device int* out_id = part_id + ((size_t)m * 16 + p) * 32;
+    device float* out_v = part_val + ((size_t)m * 16 + p) * 32;
+
+    for (int k = 0; k < 32; ++k) {
+        float lv = sh_v[tid];
+        int   li = sh_i[tid];
+        const float lv2 = sh_v[256 + tid];
+        const int   li2 = sh_i[256 + tid];
+        int   lpos = int(tid);
+        if (lv2 > lv || (lv2 == lv && li2 >= 0 && (li < 0 || li2 < li))) {
+            lv = lv2; li = li2; lpos = 256 + int(tid);
+        }
+        // 32-lane simd argmax
+        for (ushort off = 16; off > 0; off >>= 1) {
+            const float ov = simd_shuffle_xor(lv, off);
+            const int   oi = simd_shuffle_xor(li, off);
+            const int   op = simd_shuffle_xor(lpos, off);
+            if (ov > lv || (ov == lv && oi >= 0 && (li < 0 || oi < li))) {
+                lv = ov; li = oi; lpos = op;
+            }
+        }
+        if (lane == 0u) { red_v[sg] = lv; red_i[sg] = lpos; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float bv = -1e30f; int bp = 0, bi = -1;
+            for (int s = 0; s < 8; ++s) {
+                const int sp = red_i[s];
+                const float sv = red_v[s];
+                const int si = sh_i[sp];
+                if (sv > bv || (sv == bv && si >= 0 && (bi < 0 || si < bi))) {
+                    bv = sv; bp = sp; bi = si;
+                }
+            }
+            out_id[k] = bi;
+            out_v[k]  = bv;
+            sh_v[bp]  = -1e30f;
+            sh_i[bp]  = -1;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0u) {
+        uint nf = 0u;
+        for (int s = 0; s < 8; ++s) nf |= sh_nf[s];
+        part_fin[(size_t)m * 16 + p] = (nf == 0u) ? 1 : 0;
+    }
+}
+
+// Pass 2: merge 16 * 32 = 512 candidates per row into exact sorted Top-K (K <= 128)
+// grid (M, 1, 1), 256 threads
+kernel void ink_logits_top128_reduce(
+    device const int* part_id    [[buffer(0)]],  // [M, 512]
+    device const float* part_val [[buffer(1)]],  // [M, 512]
+    device const uchar* part_fin [[buffer(2)]],  // [M, 16]
+    device int* out_id           [[buffer(3)]],  // [M, K]
+    device float* out_val        [[buffer(4)]],  // [M, K]
+    device uchar* out_fin        [[buffer(5)]],  // [M]
+    constant int& K              [[buffer(6)]],
+    uint m   [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float sh_v[512];
+    threadgroup int   sh_i[512];
+    threadgroup float red_v[8];
+    threadgroup int   red_p[8];
+    device const int*   pi = part_id  + (size_t)m * 512;
+    device const float* pv = part_val + (size_t)m * 512;
+    sh_i[tid] = pi[tid];             sh_v[tid] = pv[tid];
+    sh_i[256 + tid] = pi[256 + tid]; sh_v[256 + tid] = pv[256 + tid];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint sg = tid >> 5, lane = tid & 31u;
+    device int*   oi = out_id  + (size_t)m * K;
+    device float* ov = out_val + (size_t)m * K;
+
+    for (int k = 0; k < K; ++k) {
+        float lv = sh_v[tid]; int li = sh_i[tid]; int lp = int(tid);
+        const float lv2 = sh_v[256 + tid]; const int li2 = sh_i[256 + tid];
+        if (lv2 > lv || (lv2 == lv && li2 >= 0 && (li < 0 || li2 < li))) {
+            lv = lv2; li = li2; lp = 256 + int(tid);
+        }
+        for (ushort off = 16; off > 0; off >>= 1) {
+            const float xv = simd_shuffle_xor(lv, off);
+            const int   xi = simd_shuffle_xor(li, off);
+            const int   xp = simd_shuffle_xor(lp, off);
+            if (xv > lv || (xv == lv && xi >= 0 && (li < 0 || xi < li))) {
+                lv = xv; li = xi; lp = xp;
+            }
+        }
+        if (lane == 0u) { red_v[sg] = lv; red_p[sg] = lp; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float bv = -1e30f; int bp = 0, bi = -1;
+            for (int s = 0; s < 8; ++s) {
+                const int sp = red_p[s];
+                const float sv = red_v[s];
+                const int si = sh_i[sp];
+                if (sv > bv || (sv == bv && si >= 0 && (bi < 0 || si < bi))) {
+                    bv = sv; bp = sp; bi = si;
+                }
+            }
+            oi[k] = bi;
+            ov[k] = bv;
+            sh_v[bp] = -1e30f;
+            sh_i[bp] = -1;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0u) {
+        uchar fin = 1;
+        for (int p = 0; p < 16; ++p) if (part_fin[(size_t)m * 16 + p] == 0) fin = 0;
+        out_fin[m] = fin;
     }
 }
 

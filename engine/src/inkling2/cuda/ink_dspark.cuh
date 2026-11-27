@@ -12,6 +12,7 @@
 #pragma once
 
 #include "ink_runner.cuh"
+#include "ink_dflash2.cuh"   // opt-in DFlash 2 drafter (STRATA_INK_DRAFTER=dflash2); every hook of it below starts with `if (df2)`
 
 namespace strata::ink {
 
@@ -1045,15 +1046,59 @@ __global__ void __launch_bounds__(256) k_dspark_beam_expand(
 }
 
 // ============================================================================
+// SpecAdapt: the draft window follows what the card measures, not a constant per card (PERF-LONGCTX; fast mode only, STRATA_INK_SM120_SPEC_ADAPT).
+// The window-size model of draft_beam_tree picks the node count M that maximises  E[tokens](M) / cost(M)  with  cost(M) = 1 + R * (1 - (15/16)^M)  (R: the MoE share of a
+// step, a constant of the card's table row). Here R and the drafter's calibration are estimated online from the steps the engine runs:
+//   * R: a decayed least-squares fit of the measured step time  t = a + b * x,  x = 1 - (15/16)^M  (R = b / a): a card whose cold experts cost more per extra row (a hybrid
+//     card, a long context) measures a larger R and gets a smaller window; a drafter whose rows are cheap gets a larger one;
+//   * accept scale: the measured share of the predicted extra tokens (emitted - 1) / (E[tokens] - 1) that really came out, applied to the model's expectation;
+//   * the plain step is the M = 1 bucket of the same model, so drafting switches itself off (the caller's plain margin allows it) when no window pays.
+// The window changes with timing, so the exact form keeps the static model (the table's R).
+// ============================================================================
+struct SpecAdapt {
+    bool on = false;
+    double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;   // decayed sums of the fit
+    double accept = 1.0;                                // EMA of the measured / predicted extra tokens
+    long steps = 0;
+    static double xof(int M) { return 1.0 - std::pow(15.0 / 16.0, (double)M); }
+    void observe(int M, double ms, int n_emit, double pred_etok, int pred_m) {
+        if (!on || M < 1 || ms <= 0.0 || ms > 2000.0) return;
+        const double d = 0.985;
+        sw *= d; sx *= d; sy *= d; sxx *= d; sxy *= d;
+        const double x = xof(M);
+        sw += 1; sx += x; sy += ms; sxx += x * x; sxy += x * ms;
+        if (M == pred_m && M >= 3 && pred_etok > 1.05) {
+            const double q = std::min(1.5, std::max(0.0, ((double)n_emit - 1.0) / (pred_etok - 1.0)));
+            accept = 0.97 * accept + 0.03 * q;
+        }
+        ++steps;
+    }
+    // R for the window model; the prior (the table row's constant) until the fit has seen enough steps with different window sizes
+    double ratio(double prior) const {
+        if (!on || sw < 12.0) return prior;
+        const double den = sw * sxx - sx * sx;
+        if (den < 1e-3 * sw * sw) return prior;
+        const double b = (sw * sxy - sx * sy) / den;
+        const double a = (sy - b * sx) / sw;
+        if (!(a > 0.5) || !(b > 0.0)) return prior;
+        return std::min(60.0, std::max(0.5, b / a));
+    }
+    double accept_scale() const { return on ? std::min(1.2, std::max(0.25, accept)) : 1.0; }
+};
+
+// ============================================================================
 // InkDSpark: On-GPU 3-Layer Block-8 / Tree-16 Recurrent Markov Drafter
 // ============================================================================
 struct InkDSpark {
+    SpecAdapt adapt;   // the online window model (off unless the backend turns it on)
     InkCudaRunner& r;
     InkCudaModel& m;
     bool ready = false;
     int max_ctx = 4096;
     double last_pred_etok = 0.0;  // the last tree step: expected tokens (1 + sum of the kept paths' probabilities) and its node count
     int last_m = 0;
+    int last_deepest_node = 0;
+    float last_deepest_logp = -1e30f;
     int K_cand = 256;  // reduced-vocab L2-cached candidate pool for Markov RNN
 
     // Context KV cache for 3 DSpark layers (layers 0 & 2 = compact SWA-1025 rings; layer 1 = elastic global!) + compact f_rnn ring!
@@ -1121,15 +1166,119 @@ struct InkDSpark {
     uint16_t* d_bf16_pool = nullptr;
     __half*   d_unembed_fp16 = nullptr;  // Optional FP16 unembed on V100 sm_70 (32GB) -> 0.67 ms TC screening!
     bool cache_is_fp16 = false;
+    bool ctx_is_host[3] = {false, false, false};
+    void* h_ctx_k_raw[3] = {nullptr, nullptr, nullptr};
+    void* h_ctx_v_raw[3] = {nullptr, nullptr, nullptr};
+
+    // Opt-in Multi-Slot Batched DSpark (STRATA_INK_RTX5060TI=1 + parallel >= 2):
+    // Mapped-host per-slot context KV (0 MiB VRAM!) + tiny (~18 MiB) B_ch=16 batched scratch -> drafts 64 slots in ~8 ms!
+    bool multislot_ready = false;
+    int  ms_max_slots    = 0;
+    int  ms_ctx_cap[3]   = {0, 0, 0};
+    int  ms_frnn_cap     = 16;
+    int  ms_k_cand       = 64;
+    void*   ms_ctx_k_raw[3] = {};
+    void*   ms_ctx_v_raw[3] = {};
+    __half* ms_ctx_k[3]     = {};
+    __half* ms_ctx_v[3]     = {};
+    // Opt-in GDDR7 VRAM + Mapped-Host-Tail FP8 KV for Multi-Slot DSpark (eliminates 7 ms/step PCIe reads during C64 drafting!)
+    uint8_t* ms_vram_kv_slab = nullptr;
+    int      ms_vram_cap     = 0;
+    int      ms_host_tail[3] = {0, 0, 0};
+    InkKvVisitDesc ms_kv_desc[3] = {};
+    void*    ms_tail_k_raw[3]   = {};
+    void*    ms_tail_v_raw[3]   = {};
+    void*    ms_tail_ksc_raw[3] = {};
+    void*    ms_tail_vsc_raw[3] = {};
+    float*  ms_f_rnn        = nullptr;  // [ms_max_slots, ms_frnn_cap, 2304]
+    float  *ms_cur = nullptr, *ms_h = nullptr, *ms_q = nullptr, *ms_k = nullptr, *ms_v = nullptr;
+    float  *ms_qkv_fused = nullptr, *ms_gu_fused = nullptr, *ms_attn_out = nullptr, *ms_proj = nullptr, *ms_act = nullptr;
+    float  *ms_rnn_state = nullptr, *ms_rnn_joint = nullptr, *ms_rnn_proj = nullptr, *ms_rnn_lat = nullptr;
+    float  *ms_corr = nullptr, *ms_cand_scores = nullptr;
+    int32_t *ms_cand_ids = nullptr;     // [ms_max_slots, 7, ms_k_cand]
+    float   *ms_cand_base = nullptr;    // [ms_max_slots, 7, ms_k_cand]
+    int32_t *ms_slot_ids = nullptr, *ms_apos = nullptr, *ms_anchor_ids = nullptr, *ms_pos = nullptr;
+    int32_t *ms_prev_toks = nullptr, *ms_out_drafts = nullptr;
+    int32_t *ms_ing_slots = nullptr, *ms_ing_pos = nullptr, *ms_ing_rows = nullptr;
+    float   *ms_taps_comp[4] = {};      // [r.max_batch, 2304] compact taps for multi-slot ingest
+    int32_t *h_ms_drafts   = nullptr;   // pinned [ms_max_slots, 7]
+    int32_t *h_ms_meta     = nullptr;   // pinned scratch for draft_block8_batched
+    int32_t *h_ms_ing_meta = nullptr;   // 64-slot ring buffer for ingest_taps_slots/selected (zero async overwrite across 64 slots!)
+    size_t   ms_ing_ring_stride = 0;
+    size_t   ms_ing_ring_idx    = 0;
+    uint8_t *ms_slab            = nullptr;
+    // Vocab-tiled INT8 Tensor Core screener scratch (~18.7 MiB total; reads 441 MiB unembed_screen ONCE across all 64 slots!)
+    int8_t  *ms_h_q8        = nullptr;  // [R_pad, 2304]
+    float   *ms_h_sc        = nullptr;  // [R_pad]
+    int32_t *ms_tile_i32    = nullptr;  // [R_pad, ms_vt_nom]
+    int32_t *ms_top_tmp_ids = nullptr;  // [R_pad, 2048]
+    float   *ms_top_tmp_vals= nullptr;  // [R_pad, 2048]
+    int      ms_vt_nom      = 0;
+
+    // Opt-in DFlash 2 drafter (STRATA_INK_DRAFTER=dflash2): when set, the entry points below hand over to it and DSpark's own buffers are not allocated.
+    InkDFlash2* df2 = nullptr;
 
     InkDSpark(InkCudaRunner& runner) : r(runner), m(runner.m) {}
 
+    bool init_dflash2(int ctx) {
+        const std::string path = InkDFlash2::resolve_path(df2_model_path());
+        if (path.empty()) {
+            std::fprintf(stderr, "[InkDFlash2] DFlash 2 is the drafter, but no weights file was found (STRATA_INK_DFLASH2, or dflash2.safetensors next to "
+                                 "the model)\n");
+            return false;
+        }
+        int slots = std::max(1, r.max_slots);
+        if (const char* e = std::getenv("STRATA_INK_DFLASH2_SLOTS")) slots = std::max(1, std::min(slots, std::atoi(e)));
+        else {
+            size_t vf_s = 0, vt_s = 0;
+            (void)ink_cuda_mem_info(&vf_s, &vt_s);
+            const bool small_card = m.all_sf4_vram || (vt_s > 0 && vt_s < (24ull << 30));
+            slots = std::min(slots, small_card ? 16 : 32);   // rings are 42 MiB a slot; a 16 GB card keeps its memory for the experts, slots above 16 of it decode without a drafter; on a 32 GB card DFlash 2 won +12% at 32 slots and lost 7% at 64 (RTX 5090, fast), so batches of more than 32 decode plainly
+        }
+        auto d = std::make_unique<InkDFlash2>(r);
+        std::string err;
+        size_t vf0 = 0, vt0 = 0, vf1 = 0;
+        (void)ink_cuda_mem_info(&vf0, &vt0);
+        const auto t_load0 = std::chrono::steady_clock::now();
+        if (!d->load(path, slots, err)) {
+            std::fprintf(stderr, "[InkDFlash2] %s\n", err.c_str());
+            d->free_all();
+            return false;
+        }
+        (void)ink_cuda_mem_info(&vf1, &vt0);
+        df2 = d.release();
+        max_ctx = ctx;
+        ready = true;
+        // the 5060 Ti family's multi-user chain verify asks for this flag (it was DSpark's mapped-host multi-slot mode)
+        if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16 && m.all_sf4_vram) multislot_ready = true;
+        std::fprintf(stderr, "[InkDFlash2] DFlash 2 drafter on: %s, %d slot(s), weights %.0f MiB + scratch %.0f MiB (GPU memory taken %.0f MiB), codebooks on the %s, %s block weights, loaded in %.2f s\n",
+                     path.c_str(), df2->max_slots, (double)df2->bytes_weights / 1048576.0, (double)df2->bytes_scratch / 1048576.0,
+                     (double)(vf0 > vf1 ? vf0 - vf1 : 0) / 1048576.0, df2->host_codebooks ? "host (mapped)" : "GPU", df2->var.attn == 0 ? "bf16" : (df2->var.attn == 1 && df2->var.ffn == 1 ? "Q8" : (df2->var.attn == 2 ? "4-bit groups" : (df2->var.ffn == 3 ? (df2->var.attn == 1 ? "mix Q8 + SF4" : "SF4") : "mixed"))),
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load0).count());
+        return true;
+    }
+
     void init(int ctx, int k_cand = 512, int init_glob_ctx = 0) {
         if (!m.man.has_dspark) return;
+        if (InkDFlash2::requested()) {
+            if (init_dflash2(ctx)) return;
+        }
+        if (!df2_dspark_selected()) {   // DFlash 2 is the only drafter (owner, 2026-11-26): no sidecar, or it could not start, means no drafter, not DSpark
+            std::fprintf(stderr, "[InkDFlash2] this run has no drafter (DFlash 2 is the only drafter and it is not used here: no sidecar file, 2..15 slots on a card below 24 GiB, or it could not start; STRATA_INK_DRAFTER=dspark selects the dormant DSpark)\n");
+            ready = false;
+            return;
+        }
+        if (m.man.dspark.empty()) {
+            std::fprintf(stderr, "[InkDSpark] the model file carries no DSpark weights; this run has no drafter\n");
+            ready = false;
+            return;
+        }
         max_ctx = ctx;
-        K_cand = k_cand;
+        K_cand = m.all_sf4_vram ? std::min(k_cand, 128) : k_cand;
         const int swa_cap = std::min(max_ctx, m.man.c.dspark_swa_win + std::max(r.max_batch, 64));
-        const int glob_init = (init_glob_ctx > 0) ? std::min(max_ctx, std::max(256, init_glob_ctx)) : std::min(max_ctx, 8192);
+        const int def_glob = rtx5090::dspark_opt_on() ? 32768
+                           : ((ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16) ? 256 : 8192);
+        const int glob_init = (init_glob_ctx > 0) ? std::min(max_ctx, std::max(256, init_glob_ctx)) : std::min(max_ctx, def_glob);
         frnn_cap = std::max(64, r.max_batch + 32);
 
         // Pre-check free VRAM so DSpark NEVER crashes with CUDA error 2 (exit 3) on tight 4-16 GB GPUs!
@@ -1144,25 +1293,55 @@ struct InkDSpark {
                         const int c = (m.man.c.dspark_is_swa[il] != 0) ? swa_cap : gcap;
                         kv_need += (size_t)c * kInkKVHeads * kInkHeadDim * 4;
                     }
-                    return kv_need + (size_t)frnn_cap * kInkHidden * 4 + (80ull << 20);
+                    const size_t fixed_ov = m.all_sf4_vram ? (20ull << 20) : (80ull << 20);
+                    return kv_need + (size_t)frnn_cap * kInkHidden * 4 + fixed_ov;
                 };
-                if (vf < calc_need(eff_glob_init) + (96ull << 20) && eff_glob_init > 2048) {
+                const size_t shrink_pad = m.all_sf4_vram ? (24ull << 20) : (96ull << 20);
+                const size_t min_pad    = m.all_sf4_vram ? (12ull << 20) : (64ull << 20);
+                if (vf < calc_need(eff_glob_init) + shrink_pad && eff_glob_init > 2048) {
                     eff_glob_init = 2048;
                 }
-                if (vf < calc_need(eff_glob_init) + (96ull << 20) && eff_glob_init > 512) {
+                if (vf < calc_need(eff_glob_init) + shrink_pad && eff_glob_init > 512) {
                     eff_glob_init = 512;
                 }
                 const size_t base_need = calc_need(eff_glob_init);
-                if (vf < base_need + (64ull << 20)) {
+                if (vf < base_need + min_pad) {
                     std::fprintf(stderr, "[InkCUDA] Skipping DSpark drafter: tight VRAM (%.0f MiB free < %.0f MiB needed)\n",
-                                 (double)vf / 1048576.0, (double)(base_need + (64ull << 20)) / 1048576.0);
+                                 (double)vf / 1048576.0, (double)(base_need + min_pad) / 1048576.0);
                     ready = false;
                     return;
                 }
             }
         }
+        // In C64 (max_slots >= 16) multi-slot mode, skip unused single-slot KV/logits buffers (~36 MiB VRAM saved for C64 KV prefetch!)
+        if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 16 && m.all_sf4_vram) {
+            d_ctx_tmp      = dalloc<float>((size_t)r.max_batch * kInkHidden);
+            d_kc_tmp       = dalloc<float>((size_t)r.max_batch * kInkKVDim);
+            d_vc_tmp       = dalloc<float>((size_t)r.max_batch * kInkKVDim);
+            d_kv_ctx_fused = dalloc<float>((size_t)r.max_batch * 2 * kInkKVDim);
+            d_h_q8         = dalloc<int8_t>(7ull * kInkHidden);
+            d_h_sc         = dalloc<float>(7);
+            init_multislot(r.max_slots, ctx);
+            ready = multislot_ready;
+            return;
+        }
         for (int il = 0; il < 3; ++il) {
-            ctx_cap[il] = (m.man.c.dspark_is_swa[il] != 0) ? swa_cap : eff_glob_init;
+            const bool is_swa_l = (m.man.c.dspark_is_swa[il] != 0);
+            if (!is_swa_l && m.all_sf4_vram) {
+                const int hcap = std::min(max_ctx, 32768);
+                const size_t elems = (size_t)hcap * kInkKVHeads * kInkHeadDim;
+                if (InkCudaRunner::alloc_mapped_host<__half>(elems, h_ctx_k_raw[il], d_ctx_k[il]) &&
+                    InkCudaRunner::alloc_mapped_host<__half>(elems, h_ctx_v_raw[il], d_ctx_v[il])) {
+                    ctx_cap[il] = hcap;
+                    ctx_is_host[il] = true;
+                    continue;
+                }
+                if (h_ctx_k_raw[il]) { cudaFreeHost(h_ctx_k_raw[il]); h_ctx_k_raw[il] = nullptr; }
+                if (h_ctx_v_raw[il]) { cudaFreeHost(h_ctx_v_raw[il]); h_ctx_v_raw[il] = nullptr; }
+                d_ctx_k[il] = nullptr; d_ctx_v[il] = nullptr;
+            }
+            ctx_is_host[il] = false;
+            ctx_cap[il] = is_swa_l ? swa_cap : eff_glob_init;
             d_ctx_k[il] = dalloc<__half>((size_t)ctx_cap[il] * kInkKVHeads * kInkHeadDim);
             d_ctx_v[il] = dalloc<__half>((size_t)ctx_cap[il] * kInkKVHeads * kInkHeadDim);
         }
@@ -1277,7 +1456,8 @@ struct InkDSpark {
         const bool pack_ho = (cache_is_fp16 || m.tinfo(ho_w).fmt != FMT_BF16);
         if (pack_rn) tot_elems += (size_t)m.tinfo(rn_w).rows() * m.tinfo(rn_w).cols();
         if (pack_ho) tot_elems += (size_t)m.tinfo(ho_w).rows() * m.tinfo(ho_w).cols();
-        if (m.sm_cc >= 70 && vfree > tot_elems * 2 + (768ull << 20)) {
+        const size_t bf16_guard = ink_rtx5060ti_cfg(m.primary_gpu).pack ? (32ull << 20) : (768ull << 20);
+        if (!m.all_sf4_vram && m.sm_cc >= 70 && vfree > tot_elems * 2 + bf16_guard) {
             d_bf16_pool = dalloc<uint16_t>(tot_elems);
             size_t cur = 0;
             for (int il = 0; il < 3; ++il) {
@@ -1354,6 +1534,433 @@ struct InkDSpark {
             }
         }
         ready = true;
+        if (ink_rtx5060ti_cfg(m.primary_gpu).c64_spec && r.max_slots >= 2) {
+            init_multislot(r.max_slots, ctx);
+        }
+    }
+
+    // Opt-in Multi-Slot Batched DSpark Initialization (0 MiB VRAM for 64-slot KV via mapped host RAM!)
+    void init_multislot(int slots, int ctx) {
+        if (multislot_ready || slots < 2 || !m.unembed_screen.ready) return;
+        ms_max_slots = slots;
+        ms_k_cand = 128;
+        ms_frnn_cap = 4;
+        const int swa_c = std::min(ctx, m.man.c.dspark_swa_win + 64);
+        const int glb_c = std::min(ctx, 4096);
+        bool ok = true;
+        for (int il = 0; il < 3 && ok; ++il) {
+            ms_ctx_cap[il] = (m.man.c.dspark_is_swa[il] != 0) ? swa_c : glb_c;
+            const size_t elems = (size_t)ms_max_slots * ms_ctx_cap[il] * kInkKVHeads * kInkHeadDim;
+            ok = InkCudaRunner::alloc_mapped_host<__half>(elems, ms_ctx_k_raw[il], ms_ctx_k[il])
+              && InkCudaRunner::alloc_mapped_host<__half>(elems, ms_ctx_v_raw[il], ms_ctx_v[il]);
+        }
+        if (!ok) {
+            free_multislot();
+            return;
+        }
+        constexpr int kBCh = 32;
+        constexpr int kMCh = kBCh * kInkDsparkBlock;  // 256
+        try {
+            const int V_u = (m.unembed_screen.V_pad > 0) ? m.unembed_screen.V_pad : m.man.c.vocab_unpadded;
+            const int max_kd = std::max(3, ink_rtx5060ti_cfg(m.primary_gpu).c64_draft_k);
+            const int R_pad = ((std::max(r.max_batch, ms_max_slots * max_kd) + 3) / 4) * 4;
+            ms_vt_nom = ((V_u + 7) / 8 + 3) & ~3;
+            const bool want_tc_scr = (m.sm_cc >= 75 && (V_u % 4 == 0) && ms_vt_nom > 0);
+            const size_t ing_cap = (size_t)std::max(r.max_batch, ms_max_slots * 8);
+
+            // Single 256-byte-aligned VRAM slab for all ~32 multi-slot buffers (eliminates ~55 MiB of 2 MiB cudaMalloc rounding!)
+            size_t slab_off = 0;
+            auto bind_ms = [&](int pass) {
+                slab_off = 0;
+                auto al = [&](auto*& ptr, size_t n) {
+                    using T = typename std::remove_pointer<typename std::remove_reference<decltype(ptr)>::type>::type;
+                    const size_t o = slab_off;
+                    slab_off += (n * sizeof(T) + 255ull) & ~255ull;
+                    if (pass == 1) ptr = reinterpret_cast<T*>(ms_slab + o);
+                };
+                al(ms_f_rnn,       (size_t)ms_max_slots * ms_frnn_cap * kInkHidden);
+                al(ms_cur,         (size_t)ms_max_slots * kInkDsparkBlock * kInkHidden);
+                al(ms_h,           (size_t)kMCh * kInkHidden);
+                al(ms_q,           (size_t)kMCh * kInkQDim);
+                al(ms_k,           (size_t)kMCh * kInkKVDim);
+                al(ms_v,           (size_t)kMCh * kInkKVDim);
+                al(ms_qkv_fused,   (size_t)kMCh * (kInkQDim + 2 * kInkKVDim));
+                al(ms_gu_fused,    (size_t)kMCh * (2 * kInkDsparkInter));
+                al(ms_attn_out,    (size_t)kMCh * kInkQDim);
+                al(ms_proj,        (size_t)kMCh * kInkHidden);
+                al(ms_act,         (size_t)kMCh * kInkDsparkInter);
+                al(ms_rnn_state,   (size_t)ms_max_slots * kInkMarkovRank);
+                al(ms_rnn_joint,   (size_t)ms_max_slots * (2 * kInkMarkovRank + 2 * kInkHidden));
+                al(ms_rnn_proj,    (size_t)ms_max_slots * 3 * kInkMarkovRank);
+                al(ms_rnn_lat,     (size_t)ms_max_slots * kInkMarkovRank);
+                al(ms_corr,        (size_t)ms_max_slots * kInkHidden);
+                al(ms_cand_scores, (size_t)ms_max_slots * ms_k_cand);
+                al(ms_cand_ids,    (size_t)ms_max_slots * 7 * ms_k_cand);
+                al(ms_cand_base,   (size_t)ms_max_slots * 7 * ms_k_cand);
+                al(ms_slot_ids,    (size_t)ms_max_slots);
+                al(ms_apos,        (size_t)ms_max_slots);
+                al(ms_anchor_ids,  (size_t)ms_max_slots);
+                al(ms_pos,         (size_t)kMCh);
+                al(ms_prev_toks,   (size_t)ms_max_slots);
+                al(ms_out_drafts,  (size_t)ms_max_slots * 7);
+                al(ms_ing_slots,   ing_cap);
+                al(ms_ing_pos,     ing_cap);
+                al(ms_ing_rows,    ing_cap);
+                for (int t = 0; t < 4; ++t) al(ms_taps_comp[t], (size_t)r.max_batch * kInkHidden);
+                if (want_tc_scr) {
+                    al(ms_h_q8,         (size_t)R_pad * kInkHidden);
+                    al(ms_h_sc,         (size_t)R_pad);
+                    al(ms_tile_i32,     (size_t)R_pad * ms_vt_nom);
+                    al(ms_top_tmp_ids,  (size_t)R_pad * 2048);
+                    al(ms_top_tmp_vals, (size_t)R_pad * 2048);
+                }
+            };
+            bind_ms(0);
+            ms_slab = dalloc<uint8_t>(slab_off);
+            bind_ms(1);
+            // Try placing positions [0..ms_vram_cap-1] of ALL 3 multi-slot DSpark layers in GDDR7 VRAM (K8V4, 75.0 MiB for 256 pos!)
+            // with mapped host RAM tail for [ms_vram_cap..ctx-1]! Keeps BOTH DSpark KV & c64_kv_pf at cap_pos=256 with 50+ MiB free!
+            if (m.all_sf4_vram && ctx <= 2048) {
+                size_t vf_ds = 0, vt_ds = 0;
+                if (ink_cuda_mem_info(&vf_ds, &vt_ds, m.primary_gpu) == cudaSuccess) {
+                    const int base_kd_res = std::max(1, std::min(7, ink_rtx5060ti_cfg(m.primary_gpu).c64_draft_k));
+                    const size_t sc_res = (size_t)kInkVisits * (size_t)ms_max_slots * (base_kd_res + 1) * kInkSconvCh * sizeof(uint16_t);
+                    const size_t pf_res = 68ull << 20;  // reserve for c64_kv_pf (cap_pos=256 = 66 MiB)
+                    const size_t keep_free = sc_res + pf_res + (44ull << 20);  // +44 MiB for argmax tile + 4-row logits + safety!
+                    auto vram_bytes_for = [&](int dc) -> size_t {
+                        const size_t kb = ((size_t)ms_max_slots * dc * kInkKVHeads * kInkHeadDim + 255ull) & ~255ull;
+                        const size_t vb = ((size_t)ms_max_slots * dc * kInkKVHeads * (kInkHeadDim / 2) + 255ull) & ~255ull;
+                        const size_t sb = ((size_t)ms_max_slots * dc * kInkKVHeads * sizeof(float) + 255ull) & ~255ull;
+                        return 3u * (kb + vb + 2u * sb);
+                    };
+                    int chosen_dc = 0;
+                    if (vf_ds > vram_bytes_for(256) + keep_free)      chosen_dc = 256;
+                    else if (vf_ds > vram_bytes_for(192) + keep_free) chosen_dc = 192;
+                    else if (vf_ds > vram_bytes_for(128) + keep_free) chosen_dc = 128;
+                    if (chosen_dc > 0) {
+                        const size_t tot_v = vram_bytes_for(chosen_dc);
+                        if (cudaMalloc(&ms_vram_kv_slab, tot_v) == cudaSuccess) {
+                            const size_t kb = ((size_t)ms_max_slots * chosen_dc * kInkKVHeads * kInkHeadDim + 255ull) & ~255ull;
+                            const size_t vb = ((size_t)ms_max_slots * chosen_dc * kInkKVHeads * (kInkHeadDim / 2) + 255ull) & ~255ull;
+                            const size_t sb = ((size_t)ms_max_slots * chosen_dc * kInkKVHeads * sizeof(float) + 255ull) & ~255ull;
+                            size_t vo = 0;
+                            bool tail_ok = true;
+                            for (int il = 0; il < 3 && tail_ok; ++il) {
+                                const int full_c = std::min(ctx, 2048);
+                                const int htail  = std::max(0, full_c - chosen_dc);
+                                ms_host_tail[il] = htail;
+                                InkKvVisitDesc& d = ms_kv_desc[il];
+                                d = {};
+                                d.k_f8     = ms_vram_kv_slab + vo; vo += kb;
+                                d.v_f8     = ms_vram_kv_slab + vo; vo += vb;
+                                d.k_sc     = reinterpret_cast<float*>(ms_vram_kv_slab + vo); vo += sb;
+                                d.v_sc     = reinterpret_cast<float*>(ms_vram_kv_slab + vo); vo += sb;
+                                d.dev_cap  = chosen_dc;
+                                d.host_cap = htail;
+                                d.cap_pos  = chosen_dc + htail;
+                                d.is_swa   = false;
+                                d.kv_fmt   = (uint8_t)InkKvDtype::K8V4;
+                                if (htail > 0) {
+                                    const size_t he  = (size_t)ms_max_slots * htail * kInkKVHeads * kInkHeadDim;
+                                    const size_t hve = he / 2u;
+                                    const size_t hs  = (size_t)ms_max_slots * htail * kInkKVHeads;
+                                    tail_ok = InkCudaRunner::alloc_mapped_host<uint8_t>(he,  ms_tail_k_raw[il],   d.h_k_f8)
+                                           && InkCudaRunner::alloc_mapped_host<uint8_t>(hve, ms_tail_v_raw[il],   d.h_v_f8)
+                                           && InkCudaRunner::alloc_mapped_host<float>(hs,    ms_tail_ksc_raw[il], d.h_k_sc)
+                                           && InkCudaRunner::alloc_mapped_host<float>(hs,    ms_tail_vsc_raw[il], d.h_v_sc);
+                                }
+                            }
+                            if (tail_ok) {
+                                ms_vram_cap = chosen_dc;
+                                // Free the unused FP16 mapped-host buffers to save ~1.6 GiB host RAM!
+                                for (int il = 0; il < 3; ++il) {
+                                    if (ms_ctx_k_raw[il]) { cudaFreeHost(ms_ctx_k_raw[il]); ms_ctx_k_raw[il] = nullptr; }
+                                    if (ms_ctx_v_raw[il]) { cudaFreeHost(ms_ctx_v_raw[il]); ms_ctx_v_raw[il] = nullptr; }
+                                    ms_ctx_k[il] = nullptr; ms_ctx_v[il] = nullptr;
+                                }
+                                std::fprintf(stderr, "[Ink5060Ti] Multi-slot DSpark VRAM K8V4 KV active (dev_cap=%d, %.1f MiB VRAM + host tail)\n",
+                                             ms_vram_cap, (double)tot_v / 1048576.0);
+                            } else {
+                                cudaFree(ms_vram_kv_slab); ms_vram_kv_slab = nullptr;
+                                for (int il = 0; il < 3; ++il) {
+                                    if (ms_tail_k_raw[il])   { cudaFreeHost(ms_tail_k_raw[il]);   ms_tail_k_raw[il]   = nullptr; }
+                                    if (ms_tail_v_raw[il])   { cudaFreeHost(ms_tail_v_raw[il]);   ms_tail_v_raw[il]   = nullptr; }
+                                    if (ms_tail_ksc_raw[il]) { cudaFreeHost(ms_tail_ksc_raw[il]); ms_tail_ksc_raw[il] = nullptr; }
+                                    if (ms_tail_vsc_raw[il]) { cudaFreeHost(ms_tail_vsc_raw[il]); ms_tail_vsc_raw[il] = nullptr; }
+                                    ms_kv_desc[il] = {};
+                                }
+                            }
+                        } else {
+                            (void)cudaGetLastError();
+                            ms_vram_kv_slab = nullptr;
+                        }
+                    }
+                }
+            }
+            h_ms_drafts        = halloc_pinned<int32_t>((size_t)ms_max_slots * 7);
+            h_ms_meta          = halloc_pinned<int32_t>(ing_cap * 3 + 256);
+            ms_ing_ring_stride = ing_cap * 3 + 64;
+            ms_ing_ring_idx    = 0;
+            h_ms_ing_meta      = halloc_pinned<int32_t>(64ull * ms_ing_ring_stride);
+            multislot_ready = true;
+            std::fprintf(stderr, "[Ink5060Ti] Multi-slot batched DSpark ready (%d slots, %.1f MiB slab, SWA=%d / Glob=%d mapped host KV)\n",
+                         ms_max_slots, (double)slab_off / 1048576.0, swa_c, glb_c);
+        } catch (...) {
+            (void)cudaGetLastError();
+            free_multislot();
+        }
+    }
+
+    // Ingest arbitrary-slot target taps [4, M, 2304] into multi-slot DSpark context KV + f_rnn!
+    void ingest_taps_slots(float* const taps[4], const int32_t* h_slots, const int32_t* h_pos, int M) {
+        if (df2) { if (M > 0) df2->ingest(taps, nullptr, h_slots, h_pos, M); return; }
+        if (!multislot_ready || M <= 0) return;
+        const int cap = std::min(M, r.max_batch);
+        int32_t* ing_buf = h_ms_ing_meta + (ms_ing_ring_idx++ & 63ull) * ms_ing_ring_stride;
+        std::memcpy(ing_buf, h_slots, (size_t)cap * 4);
+        std::memcpy(ing_buf + cap, h_pos, (size_t)cap * 4);
+        INK_CK(cudaMemcpyAsync(ms_ing_slots, ing_buf, (size_t)cap * 4, cudaMemcpyHostToDevice, r.st));
+        INK_CK(cudaMemcpyAsync(ms_ing_pos,   ing_buf + cap, (size_t)cap * 4, cudaMemcpyHostToDevice, r.st));
+        const float* fw = (const float*)m.trunk_ptr("dspark.fuse_weight");
+
+        for (int il = 0; il < 3; ++il) {
+            const std::string p = "dspark.layers." + std::to_string(il);
+            k_dspark_mix_taps<<<cap, 256, 0, r.st>>>(
+                taps[0], taps[1], taps[2], taps[3], fw, il,
+                (const float*)m.trunk_ptr(p + ".dflare_norm.weight"), d_ctx_tmp, cap);
+            auto it_kv = bf16_cache.find(p + ".kv_ctx_fused");
+            if (it_kv != bf16_cache.end()) {
+                dspark_gemm_bf16(it_kv->second, d_ctx_tmp, d_kv_ctx_fused, cap, 2 * kInkKVDim, kInkHidden, false);
+                k_dspark_split_kv<<<dim3((2 * kInkKVDim + 255) / 256, cap), 256, 0, r.st>>>(d_kv_ctx_fused, d_kc_tmp, d_vc_tmp, cap);
+            } else {
+                r.linear(p + ".self_attn.k_proj_ctx.weight", d_ctx_tmp, d_kc_tmp, cap);
+                r.linear(p + ".self_attn.v_proj_ctx.weight", d_ctx_tmp, d_vc_tmp, cap);
+            }
+            dim3 g(kInkKVHeads, cap);
+            k_dspark_rmsnorm_rope<<<g, 128, 0, r.st>>>(
+                d_kc_tmp, (const float*)m.trunk_ptr(p + ".self_attn.k_norm_ctx.weight"),
+                ms_ing_pos, m.man.c.dspark_rope_theta, cap, kInkKVHeads);
+            if (ms_vram_cap > 0) {
+                k_ink_kv_write<<<g, 128, 0, r.st>>>(d_kc_tmp, d_vc_tmp, ms_ing_slots, 0, ms_ing_pos, ms_kv_desc[il], cap);
+            } else {
+                InkKvVisitDesc desc{};
+                desc.k_f16   = ms_ctx_k[il];
+                desc.v_f16   = ms_ctx_v[il];
+                desc.cap_pos = ms_ctx_cap[il];
+                desc.dev_cap = ms_ctx_cap[il];
+                desc.host_cap = 0;
+                desc.is_swa  = (m.man.c.dspark_is_swa[il] != 0);
+                desc.kv_fmt  = 0;
+                k_ink_kv_write<<<g, 128, 0, r.st>>>(d_kc_tmp, d_vc_tmp, ms_ing_slots, 0, ms_ing_pos, desc, cap);
+            }
+        }
+        k_dspark_mix_taps_ring_slots<<<cap, 256, 0, r.st>>>(
+            taps[0], taps[1], taps[2], taps[3], fw, 3,
+            (const float*)m.trunk_ptr("dspark.markov_head.dflare_norm.weight"),
+            ms_f_rnn, ms_ing_slots, 0, ms_ing_pos, ms_frnn_cap, cap);
+    }
+
+    // Compact selected rows `h_src_rows[0..n_tot-1]` from r.d_taps[0..3] and ingest into multi-slot DSpark!
+    void ingest_taps_selected(const int32_t* h_src_rows, const int32_t* h_slots, const int32_t* h_pos, int n_tot) {
+        if (df2) { if (n_tot > 0) df2->ingest(r.d_taps, h_src_rows, h_slots, h_pos, n_tot); return; }
+        if (!multislot_ready || n_tot <= 0) return;
+        const int cap = std::min(n_tot, r.max_batch);
+        int32_t* row_buf = h_ms_ing_meta + (ms_ing_ring_idx++ & 63ull) * ms_ing_ring_stride;
+        std::memcpy(row_buf, h_src_rows, (size_t)cap * 4);
+        INK_CK(cudaMemcpyAsync(ms_ing_rows, row_buf, (size_t)cap * 4, cudaMemcpyHostToDevice, r.st));
+        for (int t = 0; t < 4; ++t) {
+            k_ink_compact_taps_rows<<<cap, 256, 0, r.st>>>(r.d_taps[t], ms_taps_comp[t], ms_ing_rows, cap);
+        }
+        ingest_taps_slots(ms_taps_comp, h_slots, h_pos, cap);
+    }
+
+    // Batched Multi-Slot Block-8 Drafting: drafts k_draft (1..7) tokens for each of B concurrent slots (B <= 64)!
+    void draft_block8_batched(
+        int B,
+        const int32_t* h_slots,
+        const int32_t* h_anchor_toks,
+        const int32_t* h_apos,
+        int32_t* out_drafts_7,
+        int k_draft = 7) {
+        if (df2) {
+            std::vector<float> conf((size_t)std::max(1, B) * 7);
+            if (B > 0 && !df2->draft(B, h_slots, h_anchor_toks, h_apos, out_drafts_7, conf.data()))
+                for (int i = 0; i < B * 7; ++i) out_drafts_7[i] = h_anchor_toks[i / 7];
+            return;
+        }
+        if (!multislot_ready || B <= 0) return;
+        const int n_dr = std::max(1, std::min(7, k_draft));
+        std::memcpy(h_ms_meta, h_slots, (size_t)B * 4);
+        std::memcpy(h_ms_meta + B, h_anchor_toks, (size_t)B * 4);
+        std::memcpy(h_ms_meta + 2 * B, h_apos, (size_t)B * 4);
+        INK_CK(cudaMemcpyAsync(ms_slot_ids,   h_ms_meta,         (size_t)B * 4, cudaMemcpyHostToDevice, r.st));
+        INK_CK(cudaMemcpyAsync(ms_anchor_ids, h_ms_meta + B,     (size_t)B * 4, cudaMemcpyHostToDevice, r.st));
+        INK_CK(cudaMemcpyAsync(ms_apos,       h_ms_meta + 2 * B, (size_t)B * 4, cudaMemcpyHostToDevice, r.st));
+
+        // 1. Embed anchors + mask tokens for all B slots -> ms_cur [B*8, 2304]
+        const auto& ei = m.tinfo("model.llm.embed.weight");
+        k_dspark_embed_mask_batch<<<dim3(kInkDsparkBlock, B), 256, 0, r.st>>>(
+            m.embed_ptr(), ei.fmt,
+            (const float*)m.trunk_ptr("model.llm.embed_norm.weight"),
+            (const float*)m.trunk_ptr("dspark.mask_embed"),
+            ms_anchor_ids, ms_cur, B);
+
+        // 2. Run 3-layer Block-8 Transformer in chunks of B_ch = 32 slots (256 rows -> 2x fewer weight reads & full INT8 TC!)
+        constexpr int kBCh = 32;
+        const int V = m.man.c.vocab_unpadded;
+        for (int b0 = 0; b0 < B; b0 += kBCh) {
+            const int bc = std::min(kBCh, B - b0);
+            const int M = bc * kInkDsparkBlock;
+            float* cur_p = ms_cur + (size_t)b0 * kInkDsparkBlock * kInkHidden;
+            int32_t* h_p_tmp = h_ms_meta + 3 * B + b0 * kInkDsparkBlock;
+            for (int bi = 0; bi < bc; ++bi) {
+                for (int s = 0; s < kInkDsparkBlock; ++s) h_p_tmp[bi * kInkDsparkBlock + s] = h_apos[b0 + bi] + s;
+            }
+            INK_CK(cudaMemcpyAsync(ms_pos, h_p_tmp, (size_t)M * 4, cudaMemcpyHostToDevice, r.st));
+
+            for (int il = 0; il < 3; ++il) {
+                const std::string p = "dspark.layers." + std::to_string(il);
+                k_ink_rms_norm<<<M, 256, 0, r.st>>>(cur_p, (const float*)m.trunk_ptr(p + ".input_layernorm.weight"), ms_h, nullptr, M, kInkHidden);
+                auto it_qkv = bf16_cache.find(p + ".qkv_fused");
+                if (it_qkv != bf16_cache.end()) {
+                    dspark_gemm_bf16(it_qkv->second, ms_h, ms_qkv_fused, M, kInkQDim + 2 * kInkKVDim, kInkHidden, false);
+                    k_dspark_split_qkv<<<dim3((kInkQDim + 2 * kInkKVDim + 255) / 256, M), 256, 0, r.st>>>(ms_qkv_fused, ms_q, ms_k, ms_v, M);
+                } else {
+                    dspark_linear_b8(p + ".self_attn.q_proj.weight", ms_h, ms_q, M, false);
+                    dspark_linear_b8(p + ".self_attn.k_proj.weight", ms_h, ms_k, M, true);
+                    dspark_linear_b8(p + ".self_attn.v_proj.weight", ms_h, ms_v, M, true);
+                }
+                k_dspark_rmsnorm_rope<<<dim3(kInkHeads, M), 128, 0, r.st>>>(
+                    ms_q, (const float*)m.trunk_ptr(p + ".self_attn.q_norm.weight"), ms_pos, m.man.c.dspark_rope_theta, M, kInkHeads);
+                k_dspark_rmsnorm_rope<<<dim3(kInkKVHeads, M), 128, 0, r.st>>>(
+                    ms_k, (const float*)m.trunk_ptr(p + ".self_attn.k_norm.weight"), ms_pos, m.man.c.dspark_rope_theta, M, kInkKVHeads);
+                if (ms_vram_cap > 0) {
+                    k_dspark_block_attn_batch_fp8<<<dim3(kInkKVHeads, bc), 128, 0, r.st>>>(
+                        ms_q, ms_k, ms_v, ms_kv_desc[il],
+                        ms_slot_ids + b0, ms_apos + b0,
+                        m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ms_kv_desc[il].cap_pos, bc, ms_attn_out);
+                } else {
+                    k_dspark_block_attn_batch<<<dim3(kInkKVHeads, bc), 128, 0, r.st>>>(
+                        ms_q, ms_k, ms_v, ms_ctx_k[il], ms_ctx_v[il],
+                        ms_slot_ids + b0, ms_apos + b0,
+                        m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ms_ctx_cap[il], bc, ms_attn_out);
+                }
+                dspark_linear_b8(p + ".self_attn.o_proj.weight", ms_attn_out, ms_proj, M, false);
+                k_ink_add<<<(M * kInkHidden + 255) / 256, 256, 0, r.st>>>(cur_p, cur_p, ms_proj, M * kInkHidden);
+
+                k_ink_rms_norm<<<M, 256, 0, r.st>>>(cur_p, (const float*)m.trunk_ptr(p + ".post_attention_layernorm.weight"), ms_h, nullptr, M, kInkHidden);
+                auto it_gu = bf16_cache.find(p + ".gu_fused");
+                if (it_gu != bf16_cache.end()) {
+                    dspark_gemm_bf16(it_gu->second, ms_h, ms_gu_fused, M, 2 * kInkDsparkInter, kInkHidden, false);
+                    k_dspark_swiglu_fused<<<dim3((kInkDsparkInter + 255) / 256, M), 256, 0, r.st>>>(ms_gu_fused, ms_act, M);
+                } else {
+                    dspark_linear_b8(p + ".mlp.gate_proj.weight", ms_h, ms_gu_fused, M, false);
+                    dspark_linear_b8(p + ".mlp.up_proj.weight", ms_h, ms_gu_fused + (size_t)M * kInkDsparkInter, M, true);
+                    k_dspark_swiglu<<<(M * kInkDsparkInter + 255) / 256, 256, 0, r.st>>>(ms_gu_fused, ms_gu_fused + (size_t)M * kInkDsparkInter, ms_act, M * kInkDsparkInter);
+                }
+                dspark_linear_b8(p + ".mlp.down_proj.weight", ms_act, ms_proj, M, false);
+                k_ink_add<<<(M * kInkHidden + 255) / 256, 256, 0, r.st>>>(cur_p, cur_p, ms_proj, M * kInkHidden);
+            }
+            k_ink_rms_norm<<<M, 256, 0, r.st>>>(cur_p, (const float*)m.trunk_ptr("dspark.norm.weight"), cur_p, nullptr, M, kInkHidden);
+        }
+
+        // 3. Base logits screening + Top-ms_k_cand for ONLY B*n_dr active draft rows!
+        const int V_gemm = (m.unembed_screen.V_pad > 0) ? m.unembed_screen.V_pad : V;
+        if (ms_tile_i32 && (V_gemm % 4 == 0)) {
+            const int R = B * n_dr;
+            const int R_pad = ((R + 3) / 4) * 4;
+            k_dspark_quant_h_q8_slots<<<R, 256, 0, r.st>>>(ms_cur, ms_h_q8, ms_h_sc, B, n_dr);
+            if (R_pad > R) {
+                INK_CK(cudaMemsetAsync(ms_h_q8 + (size_t)R * kInkHidden, 0, (size_t)(R_pad - R) * kInkHidden, r.st));
+            }
+            const int32_t ialpha = 1, ibeta = 0;
+            for (int ti = 0; ti < 8; ++ti) {
+                const int v0 = ti * ms_vt_nom;
+                const int vt = std::max(0, std::min(ms_vt_nom, V_gemm - v0));
+                if (vt > 0) {
+                    INK_CUBLAS_CK(cublasGemmEx(
+                        r.cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        vt, R_pad, kInkHidden, &ialpha,
+                        m.unembed_screen.q8 + (size_t)v0 * kInkHidden, CUDA_R_8I, kInkHidden,
+                        ms_h_q8, CUDA_R_8I, kInkHidden, &ibeta,
+                        ms_tile_i32, CUDA_R_32I, vt,
+                        CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+                }
+                k_dspark_tile_top16_i32<<<dim3(16, R), 256, 0, r.st>>>(
+                    ms_tile_i32, m.unembed_screen.sc, ms_h_sc, v0, vt, ti, 16, V, ms_top_tmp_ids, ms_top_tmp_vals);
+            }
+            k_dspark_top_cand_s2<<<R, 256, 0, r.st>>>(ms_top_tmp_ids, ms_top_tmp_vals, ms_k_cand, ms_cand_ids, ms_cand_base);
+        } else {
+            for (int b = 0; b < B; ++b) {
+                const float* hs7 = ms_cur + ((size_t)b * kInkDsparkBlock + 1) * kInkHidden;
+                k_dspark_quant_h_q8<<<7, 256, 0, r.st>>>(hs7, d_h_q8, d_h_sc);
+                k_dspark_screen_dp4a7<<<(V + 3) / 4, 128, 0, r.st>>>(
+                    m.unembed_screen.q8, m.unembed_screen.sc, d_h_q8, d_h_sc, d_base_logits, V);
+                k_dspark_top_cand_s1<<<dim3(128, 7), 256, 0, r.st>>>(d_base_logits, V, d_top_tmp_ids, d_top_tmp_vals, V);
+                k_dspark_top_cand_s2<<<7, 256, 0, r.st>>>(
+                    d_top_tmp_ids, d_top_tmp_vals, ms_k_cand,
+                    ms_cand_ids + (size_t)b * 7 * ms_k_cand,
+                    ms_cand_base + (size_t)b * 7 * ms_k_cand);
+            }
+        }
+
+        // 4. Batched n_dr-Step On-GPU Markov RNN across ALL B slots simultaneously!
+        const int cand_stride = (ms_tile_i32 && (V_gemm % 4 == 0)) ? n_dr : 7;
+        INK_CK(cudaMemsetAsync(ms_rnn_state, 0, (size_t)B * kInkMarkovRank * 4, r.st));
+        INK_CK(cudaMemcpyAsync(ms_prev_toks, ms_anchor_ids, (size_t)B * 4, cudaMemcpyDeviceToDevice, r.st));
+        const auto& ti_mw1 = m.tinfo("dspark.markov_head.markov_w1.weight");
+        const auto& ti_rpb = m.tinfo("dspark.markov_head.rnn_proj.bias");
+        const auto& ti_hob = m.tinfo("dspark.markov_head.hidden_out.bias");
+
+        for (int s = 0; s < n_dr; ++s) {
+            k_dspark_markov_prep_slots<<<B, 256, 0, r.st>>>(
+                ms_prev_toks, ms_rnn_state, ms_cur, s, ms_f_rnn, ms_slot_ids, ms_apos, ms_frnn_cap,
+                m.d_trunk + ti_mw1.off, ti_mw1.fmt, ms_rnn_joint, B);
+            dspark_linear_b8("dspark.markov_head.rnn_proj.weight", ms_rnn_joint, ms_rnn_proj, B);
+            k_dspark_gru_upd_slots<<<B, 256, 0, r.st>>>(
+                ms_rnn_proj, (const float*)(m.d_trunk + ti_rpb.off), ms_rnn_state, ms_rnn_lat, B);
+            dspark_linear_b8("dspark.markov_head.hidden_out.weight", ms_rnn_lat, ms_corr, B);
+            k_dspark_add_bias_h_slots<<<dim3((kInkHidden + 255) / 256, B), 256, 0, r.st>>>(
+                ms_corr, (const float*)(m.d_trunk + ti_hob.off), ms_cur, s, true, B);
+            k_dspark_score_cand_dp4a_slots<<<dim3((ms_k_cand + 7) / 8, B), 256, 0, r.st>>>(
+                m.unembed_screen.q8, m.unembed_screen.sc, ms_corr, ms_cand_ids, s, cand_stride, ms_k_cand, B, ms_cand_scores);
+            k_dspark_top1_reduce_slots<<<B, 256, 0, r.st>>>(
+                ms_cand_scores, ms_cand_ids, s, cand_stride, ms_k_cand, B, ms_prev_toks, ms_out_drafts);
+        }
+        INK_CK(cudaMemcpyAsync(h_ms_drafts, ms_out_drafts, (size_t)B * 7 * 4, cudaMemcpyDeviceToHost, r.st));
+        INK_CK(cudaStreamSynchronize(r.st));
+        std::memcpy(out_drafts_7, h_ms_drafts, (size_t)B * 7 * 4);
+    }
+
+    void free_multislot() {
+        const bool had_slab = (ms_slab != nullptr);
+        if (ms_slab) { cudaFree(ms_slab); ms_slab = nullptr; }
+        auto fr = [&](auto*& p) { if (had_slab) p = nullptr; else if (p) { cudaFree(p); p = nullptr; } };
+        if (ms_vram_kv_slab) { cudaFree(ms_vram_kv_slab); ms_vram_kv_slab = nullptr; }
+        ms_vram_cap = 0;
+        for (int il = 0; il < 3; ++il) {
+            if (ms_ctx_k_raw[il])    { cudaFreeHost(ms_ctx_k_raw[il]);    ms_ctx_k_raw[il]    = nullptr; }
+            if (ms_ctx_v_raw[il])    { cudaFreeHost(ms_ctx_v_raw[il]);    ms_ctx_v_raw[il]    = nullptr; }
+            if (ms_tail_k_raw[il])   { cudaFreeHost(ms_tail_k_raw[il]);   ms_tail_k_raw[il]   = nullptr; }
+            if (ms_tail_v_raw[il])   { cudaFreeHost(ms_tail_v_raw[il]);   ms_tail_v_raw[il]   = nullptr; }
+            if (ms_tail_ksc_raw[il]) { cudaFreeHost(ms_tail_ksc_raw[il]); ms_tail_ksc_raw[il] = nullptr; }
+            if (ms_tail_vsc_raw[il]) { cudaFreeHost(ms_tail_vsc_raw[il]); ms_tail_vsc_raw[il] = nullptr; }
+            ms_ctx_k[il] = nullptr; ms_ctx_v[il] = nullptr;
+            ms_kv_desc[il] = {}; ms_host_tail[il] = 0;
+        }
+        fr(ms_f_rnn); fr(ms_cur); fr(ms_h); fr(ms_q); fr(ms_k); fr(ms_v);
+        fr(ms_qkv_fused); fr(ms_gu_fused); fr(ms_attn_out); fr(ms_proj); fr(ms_act);
+        fr(ms_rnn_state); fr(ms_rnn_joint); fr(ms_rnn_proj); fr(ms_rnn_lat);
+        fr(ms_corr); fr(ms_cand_scores); fr(ms_cand_ids); fr(ms_cand_base);
+        fr(ms_slot_ids); fr(ms_apos); fr(ms_anchor_ids); fr(ms_pos);
+        fr(ms_prev_toks); fr(ms_out_drafts); fr(ms_ing_slots); fr(ms_ing_pos); fr(ms_ing_rows);
+        for (int t = 0; t < 4; ++t) fr(ms_taps_comp[t]);
+        if (h_ms_drafts)   { cudaFreeHost(h_ms_drafts);   h_ms_drafts   = nullptr; }
+        if (h_ms_meta)     { cudaFreeHost(h_ms_meta);     h_ms_meta     = nullptr; }
+        if (h_ms_ing_meta) { cudaFreeHost(h_ms_ing_meta); h_ms_ing_meta = nullptr; }
+        fr(ms_h_q8); fr(ms_h_sc); fr(ms_tile_i32); fr(ms_top_tmp_ids); fr(ms_top_tmp_vals);
+        ms_vt_nom = 0;
+        multislot_ready = false;
     }
 
     // Fast cuBLAS BF16 (sm_80+) or FP16 (sm_70/75) Tensor Core linear for DSpark!
@@ -1393,17 +2000,26 @@ struct InkDSpark {
                 return;
             }
         }
-        r.linear(wn, X, Y, B);
+        r.linear(wn, X, Y, B, 0, reuse_x);
     }
 
     // Elastic growth for DSpark Global layer(s) (e.g. layer 1) as sequence length grows!
     bool ensure_ctx_cap(int needed_pos) {
+        if (df2) return true;   // DFlash 2's rings are fixed-size sliding windows
         if (!ready || needed_pos <= 0) return true;
         const int target = std::min(max_ctx, std::max(needed_pos, ((needed_pos + 8191) / 8192) * 8192));
         bool grew = false;
         for (int il = 0; il < 3; ++il) {
             if (m.man.c.dspark_is_swa[il] != 0) continue;
             if (target <= ctx_cap[il]) continue;
+            if (ctx_is_host[il]) {
+                // the COMPACT drafter keeps this layer's context in mapped host memory with a fixed capacity: it cannot grow (the code below would cudaFree a mapped
+                // device pointer), so the drafter stops here, as it does when the card is tight
+                std::fprintf(stderr, "[InkDSpark] global ctx %d is fixed at %d tokens on mapped host memory, the prompt needs %d; disabling DSpark gracefully\n",
+                             il, ctx_cap[il], target);
+                ready = false;
+                return false;
+            }
             INK_CK(cudaStreamSynchronize(r.st));
             const size_t new_elems = (size_t)target * kInkKVHeads * kInkHeadDim;
             const size_t old_bytes = (size_t)ctx_cap[il] * kInkKVHeads * kInkHeadDim * sizeof(__half);
@@ -1436,6 +2052,7 @@ struct InkDSpark {
 
     // Ingest target taps [4, M, 2304] at positions [p0 .. p0 + M - 1] into DSpark context KV & f_rnn (ZERO host sync!)
     void ingest_taps_from(float* const taps[4], int p0, int M) {
+        if (df2) { if (M > 0) df2->ingest_seq(taps, 0, p0, M); return; }
         if (!ready || M <= 0) return;
         if (!ensure_ctx_cap(p0 + M)) return;
         for (int i = 0; i < M; ++i) h_pos_pin[i] = p0 + i;
@@ -1482,7 +2099,7 @@ struct InkDSpark {
         const int B = kInkDsparkBlock;  // 8
         const auto& ei = m.tinfo("model.llm.embed.weight");
         k_ink_embed_norm<<<1, 256, 0, r.st>>>(
-            m.d_trunk + ei.off, ei.fmt,
+            m.embed_ptr(), ei.fmt,
             (const float*)m.trunk_ptr("model.llm.embed_norm.weight"),
             d_anchor_id, nullptr, nullptr, d_cur, 1, kInkHidden);
         const float* mask_e = (const float*)m.trunk_ptr("dspark.mask_embed");
@@ -1496,6 +2113,12 @@ struct InkDSpark {
             if (it_qkv != bf16_cache.end()) {
                 dspark_gemm_bf16(it_qkv->second, d_h, d_qkv_fused, B, kInkQDim + 2 * kInkKVDim, kInkHidden, false);
                 k_dspark_split_qkv<<<dim3((kInkQDim + 2 * kInkKVDim + 255) / 256, B), 256, 0, r.st>>>(d_qkv_fused, d_q, d_k, d_v, B);
+            } else if (m.all_sf4_vram) {
+                const std::string qkv_names[3] = {
+                    p + ".self_attn.q_proj.weight", p + ".self_attn.k_proj.weight", p + ".self_attn.v_proj.weight"
+                };
+                float* qkv_ys[3] = { d_q, d_k, d_v };
+                r.linear_multi(qkv_names, qkv_ys, 3, d_h, B);
             } else {
                 dspark_linear_b8(p + ".self_attn.q_proj.weight", d_h, d_q, B, false);
                 dspark_linear_b8(p + ".self_attn.k_proj.weight", d_h, d_k, B, true);
@@ -1505,9 +2128,27 @@ struct InkDSpark {
                 d_q, (const float*)m.trunk_ptr(p + ".self_attn.q_norm.weight"), d_pos, m.man.c.dspark_rope_theta, B, kInkHeads);
             k_dspark_rmsnorm_rope<<<dim3(kInkKVHeads, B), 128, 0, r.st>>>(
                 d_k, (const float*)m.trunk_ptr(p + ".self_attn.k_norm.weight"), d_pos, m.man.c.dspark_rope_theta, B, kInkKVHeads);
-            k_dspark_block_attn<<<dim3(kInkHeads, B), 128, 0, r.st>>>(
-                d_q, d_k, d_v, d_ctx_k[il], d_ctx_v[il], d_apos,
-                m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ctx_cap[il], B, d_attn_out);
+            if (ctx_is_host[il]) {
+                k_dspark_block_attn_batch<<<dim3(kInkKVHeads, 1), 128, 0, r.st>>>(
+                    d_q, d_k, d_v, d_ctx_k[il], d_ctx_v[il], nullptr, d_apos,
+                    m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ctx_cap[il], 1, d_attn_out);
+            } else {
+                // fast only (TC_ATTN): the drafter's global layers read the whole committed context for every block row (4.5 ms a call at 128K, one block per head and row): the
+                // tensor-core kernel in block mode (no bias, no sink, every row sees the whole block) reads each K/V tile once for the 8 rows
+                bool tc_done = false;
+                if (m.man.c.dspark_is_swa[il] == 0 && sm120_cfg(m.primary_gpu).tc_attn && tcattn::force_ref() != 0 && B <= 10 && B <= r.tree_cap) {
+                    InkKvVisitDesc cd{};
+                    cd.k_f16 = const_cast<__half*>(reinterpret_cast<const __half*>(d_ctx_k[il])); cd.v_f16 = const_cast<__half*>(reinterpret_cast<const __half*>(d_ctx_v[il]));
+                    cd.cap_pos = ctx_cap[il]; cd.dev_cap = ctx_cap[il]; cd.host_cap = 0; cd.is_swa = false; cd.kv_fmt = 0;
+                    constexpr int kBlk = tcattn::kFlagNoBias | tcattn::kFlagNoSink | tcattn::kFlagBlockTail;
+                    tc_done = tcattn::launch(r.st, d_q, nullptr, nullptr, cd, nullptr, 0, d_apos, d_k, d_v, nullptr, nullptr, 0, r.d_attn_pm, r.d_attn_pl, r.d_attn_po, B, B, kBlk);
+                    if (tc_done) tcattn::merge(r.st, r.d_attn_pm, r.d_attn_pl, r.d_attn_po, nullptr, d_attn_out, nullptr, d_apos, true, ctx_cap[il], B, B, kBlk);
+                }
+                if (!tc_done)
+                k_dspark_block_attn<<<dim3(kInkHeads, B), 128, 0, r.st>>>(
+                    d_q, d_k, d_v, d_ctx_k[il], d_ctx_v[il], d_apos,
+                    m.man.c.dspark_is_swa[il] != 0, m.man.c.dspark_swa_win, ctx_cap[il], B, d_attn_out);
+            }
             dspark_linear_b8(p + ".self_attn.o_proj.weight", d_attn_out, d_proj, B, false);
             k_ink_add<<<(B * kInkHidden + 255) / 256, 256, 0, r.st>>>(d_cur, d_cur, d_proj, B * kInkHidden);
 
@@ -1516,6 +2157,13 @@ struct InkDSpark {
             if (it_gu != bf16_cache.end()) {
                 dspark_gemm_bf16(it_gu->second, d_h, d_gu_fused, B, 2 * kInkDsparkInter, kInkHidden, false);
                 k_dspark_swiglu_fused<<<dim3((kInkDsparkInter + 255) / 256, B), 256, 0, r.st>>>(d_gu_fused, d_act, B);
+            } else if (m.all_sf4_vram) {
+                const std::string gu_names[2] = {
+                    p + ".mlp.gate_proj.weight", p + ".mlp.up_proj.weight"
+                };
+                float* gu_ys[2] = { d_g, d_u };
+                r.linear_multi(gu_names, gu_ys, 2, d_h, B);
+                k_dspark_swiglu<<<(B * kInkDsparkInter + 255) / 256, 256, 0, r.st>>>(d_g, d_u, d_act, B * kInkDsparkInter);
             } else {
                 dspark_linear_b8(p + ".mlp.gate_proj.weight", d_h, d_g, B, false);
                 dspark_linear_b8(p + ".mlp.up_proj.weight", d_h, d_u, B, true);
@@ -1648,12 +2296,23 @@ struct InkDSpark {
         }
     }
 
-    // Draft 7 tokens (Block-8) + Top-2 candidates per slot on GPU (CUDA Graph captured!)
-    void draft_block8(int32_t anchor_tok, int apos, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+    // Draft 7 tokens (Block-8) at custom RoPE position pos0 while attending committed ctx [0..ctx_apos-1]!
+    void draft_block8_at(int32_t anchor_tok, int ctx_apos, int pos0, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+        if (df2) {
+            // a block that starts past the committed context (the 2-block chain) attends the context and its own rows; the gap in between is masked
+            float conf[7];
+            const int32_t slot0 = 0;
+            const bool ok = df2->draft(1, &slot0, &anchor_tok, &pos0, out_ids_7, conf, &ctx_apos);
+            for (int s = 0; s < 7; ++s) {
+                if (!ok) out_ids_7[s] = anchor_tok;
+                if (out_conf_7) out_conf_7[s] = ok ? conf[s] : 0.0f;
+            }
+            return;
+        }
         const int B = kInkDsparkBlock;  // 8
         h_meta_pin[0] = anchor_tok;
-        h_meta_pin[1] = apos;
-        for (int i = 0; i < B; ++i) h_meta_pin[2 + i] = apos + i;
+        h_meta_pin[1] = ctx_apos;
+        for (int i = 0; i < B; ++i) h_meta_pin[2 + i] = pos0 + i;
         INK_CK(cudaMemcpyAsync(d_anchor_id, h_meta_pin + 0, 4, cudaMemcpyHostToDevice, r.st));
         INK_CK(cudaMemcpyAsync(d_apos,      h_meta_pin + 1, 4, cudaMemcpyHostToDevice, r.st));
         INK_CK(cudaMemcpyAsync(d_pos,       h_meta_pin + 2, B * 4, cudaMemcpyHostToDevice, r.st));
@@ -1693,9 +2352,86 @@ struct InkDSpark {
         }
     }
 
+    // Draft 7 tokens (Block-8) + Top-2 candidates per slot on GPU (CUDA Graph captured!)
+    void draft_block8(int32_t anchor_tok, int apos, int32_t* out_ids_7, float* out_conf_7 = nullptr) {
+        draft_block8_at(anchor_tok, apos, apos, out_ids_7, out_conf_7);
+    }
+
+    // DFlash 2 drafts one linear chain, so its "tree" is a path of the anchor and up to 7 drafts. The node count follows the same expected-tokens-per-cost rule
+    // as the beam tree below (adaptive_moe_ratio > 0), with the chain's cumulative confidences as the prefix probabilities.
+    // Cost of one more verify row, in plain steps, at context position apos: 0 where the K/V is in VRAM (a 24 GB card or more), else about 2.2e-5 per context token
+    // (RTX 5060 Ti: 32K -> 0.7, 128K -> 1.3 measured). A step at or above 0.5 (about 25K tokens) is a plain step.
+    double df2_ctx_cost(int apos) const {
+        return (df2 && df2->host_codebooks) ? std::min(3.0, 2.2e-5 * (double)std::max(0, apos - 2048)) : 0.0;
+    }
+    bool df2_plain_ctx(int apos) const { return df2_ctx_cost(apos) >= 0.5; }
+
+    void draft_chain_tree_df2(int32_t anchor_tok, int apos, int max_nodes, InkTreeSpec& out_tree, float adaptive_moe_ratio, float plain_margin) {
+        max_nodes = std::max(2, std::min(r.tree_cap, max_nodes));
+        if (df2_plain_ctx(apos)) {   // a plain step: no draft, no window (the ring keeps being fed by the ingest)
+            out_tree = InkTreeSpec{};
+            out_tree.M = 1;
+            out_tree.tok[0] = anchor_tok;
+            out_tree.parent[0] = -1;
+            out_tree.depth[0] = 0;
+            out_tree.build();
+            last_pred_etok = 1.0;
+            last_m = 1;
+            last_deepest_node = 0;
+            last_deepest_logp = -1e30f;
+            return;
+        }
+        int32_t ids[7] = {};
+        float conf[7] = {};
+        const int32_t slot0 = 0;
+        if (!df2->draft(1, &slot0, &anchor_tok, &apos, ids, conf))
+            for (int s = 0; s < 7; ++s) { ids[s] = anchor_tok; conf[s] = 0.0f; }
+        double pref_p[9];
+        pref_p[0] = 1.0;
+        double cum = 1.0;
+        for (int i = 0; i < 7; ++i) {
+            conf[i] = (float)std::pow(std::max(0.0, std::min(1.0, (double)conf[i])), df2->conf_pow);
+            cum *= std::max(0.0, std::min(1.0, (double)conf[i]));
+            pref_p[i + 1] = pref_p[i] + cum;
+        }
+        int want = std::min(max_nodes, 8);
+        // On a card whose K/V lives (partly) in host memory every verify row reads the whole context again: a window row costs more the longer the context. Measured on the
+        // RTX 5060 Ti (32K: a step at M = 8 took 3.3x a plain step, 128K: 8.6x): about 1.3e-5 of a plain step per row and context token, so wide windows are not worth it there.
+        const double ctx_row_cost = df2_ctx_cost(apos);
+        if (adaptive_moe_ratio > 0.0f || ctx_row_cost > 0.0) {
+            double best_rate = -1.0;
+            int best_m = std::min(rtx5090::dspark_opt_on() ? 4 : 3, 8);
+            const double ratio = std::max(0.0f, adaptive_moe_ratio);
+            for (int mb = 1; mb <= want; ++mb) {
+                if (mb < 3 && plain_margin <= 0.0f && ctx_row_cost <= 0.1) continue;
+                const double e_tok = pref_p[mb - 1];
+                const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)mb);
+                double rate = e_tok / (1.0 + ratio * exp_frac + ctx_row_cost * (double)(mb - 1));
+                if (mb < 3) rate *= (plain_margin > 0.0f ? (double)plain_margin : 1.0);
+                if (rate > best_rate) { best_rate = rate; best_m = mb; }
+            }
+            want = best_m;
+            last_pred_etok = pref_p[best_m - 1];
+            last_m = best_m;
+        }
+        out_tree = InkTreeSpec{};
+        for (int i = 0; i < want; ++i) {
+            const int nid = out_tree.M++;
+            out_tree.tok[nid] = (i == 0) ? anchor_tok : ids[i - 1];
+            out_tree.parent[nid] = (i == 0) ? -1 : (int8_t)(i - 1);
+            out_tree.depth[nid] = (uint8_t)i;
+        }
+        last_deepest_node = want - 1;
+        // the log-probability of the chain to its end: the 2-block chain (fast mode, depth 7) asks for exp(it) >= 0.55
+        last_deepest_logp = 0.0f;
+        for (int i = 0; i + 1 < want; ++i) last_deepest_logp += std::log(std::max(1e-9f, conf[i]));
+        out_tree.build();
+    }
+
     // Draft True W=2..4 Multi-Branch Bayes-Optimal Connected Tree (M <= 16..32 nodes, CUDA Graph captured!)
     // When adaptive_moe_ratio > 0, dynamically picks M* in {4, 6, 8, 10, 12, 16} maximizing E[emit(M)] / (1 + ratio*(1-(15/16)^M))!
     void draft_beam_tree(int32_t anchor_tok, int apos, int beam_w, int max_nodes, InkTreeSpec& out_tree, float adaptive_moe_ratio = 0.0f, float plain_margin = 0.0f) {
+        if (df2) { draft_chain_tree_df2(anchor_tok, apos, max_nodes, out_tree, adaptive_moe_ratio, plain_margin); return; }
         beam_w = std::max(1, std::min(kInkMaxBeam, beam_w));
         max_nodes = std::max(2, std::min(r.tree_cap, max_nodes));
         const int B = kInkDsparkBlock;  // 8
@@ -1726,10 +2462,20 @@ struct InkDSpark {
                     emit_draft_beam_tree(beam_w);
                 } else {
                     beam_graph_w = beam_w;
-                    INK_CK(cudaGraphLaunch(beam_graph, r.st));
+                    cudaError_t le = cudaGraphLaunch(beam_graph, r.st);
+                    if (le != cudaSuccess) {
+                        cudaGetLastError();
+                        cudaGraphExecDestroy(beam_graph); beam_graph = nullptr; beam_graph_w = 0;
+                        emit_draft_beam_tree(beam_w);
+                    }
                 }
             } else {
-                INK_CK(cudaGraphLaunch(beam_graph, r.st));
+                cudaError_t le = cudaGraphLaunch(beam_graph, r.st);
+                if (le != cudaSuccess) {
+                    cudaGetLastError();
+                    cudaGraphExecDestroy(beam_graph); beam_graph = nullptr; beam_graph_w = 0;
+                    emit_draft_beam_tree(beam_w);
+                }
             }
         } else {
             emit_draft_beam_tree(beam_w);
@@ -1753,8 +2499,15 @@ struct InkDSpark {
 
         int want = std::min(max_nodes, cnt);
         if (adaptive_moe_ratio > 0.0f) {
-            // Exact Sparse-MoE Bayes-Optimal Dynamic Tree Sizing across cached CUDA Graph buckets {3, 4, 5, 6, 8, 10, 12}!
-            static constexpr int kBuckets[] = {1, 2, 3, 4, 5, 6, 8, 10, 12, 16};
+            // Exact Sparse-MoE Bayes-Optimal Dynamic Tree Sizing across cached CUDA Graph buckets!
+            // Three lists: the shipped one (switches off), the RTX 5090 one and the RTX 5060 Ti one (shipped + 20, 24).
+            static constexpr int kBucketsBase[]  = {1, 2, 3, 4, 5, 6, 8, 10, 12, 16};
+            static constexpr int kBucketsRtx[]   = {1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24};
+            static constexpr int kBucketsSmall[] = {1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24};
+            const bool bk_rtx = rtx5090::dspark_opt_on();
+            const bool bk_small = !bk_rtx && ink_rtx5060ti_cfg(m.primary_gpu).enabled;
+            const int* buckets = bk_rtx ? kBucketsRtx : (bk_small ? kBucketsSmall : kBucketsBase);
+            const int n_bkt = bk_rtx ? 11 : (bk_small ? 12 : 10);
             double pref_p[kInkBeamPoolCap + 1];
             pref_p[0] = 1.0;  // root always emits 1 token
             for (int i = 0; i < n_cand; ++i) {
@@ -1762,14 +2515,17 @@ struct InkDSpark {
                 pref_p[i + 1] = pref_p[i] + ((lp > -20.0f) ? std::exp((double)lp) : 0.0);
             }
             double best_rate = -1.0;
-            int best_m = std::min(3, cnt);
-            for (int mb : kBuckets) {
+            int best_m = std::min(rtx5090::dspark_opt_on() ? 4 : 3, cnt);
+            for (int bi = 0; bi < n_bkt; ++bi) {
+                const int mb = buckets[bi];
                 if (mb > max_nodes || mb > cnt) continue;
                 if (mb < 3 && plain_margin <= 0.0f) continue;  // the 1 and 2 node trees exist only when the caller lets the step fall back to plain decoding
                 const double e_tok = pref_p[mb - 1];
                 const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)mb);
-                const double cost = 1.0 + (double)adaptive_moe_ratio * exp_frac;
-                double rate = e_tok / cost;
+                const double R_eff = adapt.on ? adapt.ratio((double)adaptive_moe_ratio) : (double)adaptive_moe_ratio;
+                const double cost = 1.0 + R_eff * exp_frac;
+                const double e_adj = adapt.on ? 1.0 + adapt.accept_scale() * (e_tok - 1.0) : e_tok;
+                double rate = e_adj / cost;
                 if (mb < 3) rate *= (double)plain_margin;
                 if (rate > best_rate) { best_rate = rate; best_m = mb; }
             }
@@ -1781,12 +2537,14 @@ struct InkDSpark {
         uint8_t keep[kInkBeamPoolCap] = {};
         keep[0] = 1;
         int n_kept = 1;
+        const bool prune_lowp = m.all_sf4_vram;
         for (int i = 0; i < n_cand && n_kept < want; ++i) {
             const int u = ord[i];
             if (h_pool_logp[u] <= -1e20f) break;
             if (!keep[u]) {
                 const int par = (int)h_pool_parent[u];
                 if (par >= 0 && keep[par]) {
+                    if (prune_lowp && (h_pool_logp[u] - h_pool_logp[par]) < -1.14f) continue;  // step prob < 0.32 -> skip
                     keep[u] = 1;
                     ++n_kept;
                 }
@@ -1796,6 +2554,9 @@ struct InkDSpark {
         out_tree = InkTreeSpec{};
         int8_t remap[kInkBeamPoolCap];
         std::memset(remap, -1, sizeof(remap));
+        last_deepest_node = 0;
+        last_deepest_logp = -1e30f;
+        int best_dep = 0;
         for (int p = 0; p < cnt; ++p) {
             if (!keep[p]) continue;
             const int nid = out_tree.M++;
@@ -1803,19 +2564,34 @@ struct InkDSpark {
             out_tree.tok[nid] = h_pool_tok[p];
             out_tree.parent[nid] = (p == 0) ? -1 : remap[(int)h_pool_parent[p]];
             out_tree.depth[nid] = h_pool_depth[p];
+            if ((int)h_pool_depth[p] > best_dep ||
+                ((int)h_pool_depth[p] == best_dep && h_pool_logp[p] > last_deepest_logp)) {
+                best_dep = (int)h_pool_depth[p];
+                last_deepest_node = nid;
+                last_deepest_logp = h_pool_logp[p];
+            }
         }
         out_tree.build();
     }
 
     void free_all() {
+        if (df2) { df2->free_all(); delete df2; df2 = nullptr; }
+        free_multislot();
         if (draft_graph) { cudaGraphExecDestroy(draft_graph); draft_graph = nullptr; }
         if (beam_graph)  { cudaGraphExecDestroy(beam_graph);  beam_graph = nullptr; beam_graph_w = 0; }
         bf16_cache.clear();
         if (d_bf16_pool) { cudaFree(d_bf16_pool); d_bf16_pool = nullptr; }
         if (d_unembed_fp16) { cudaFree(d_unembed_fp16); d_unembed_fp16 = nullptr; }
         for (int il = 0; il < 3; ++il) {
-            if (d_ctx_k[il]) { cudaFree(d_ctx_k[il]); d_ctx_k[il] = nullptr; }
-            if (d_ctx_v[il]) { cudaFree(d_ctx_v[il]); d_ctx_v[il] = nullptr; }
+            if (ctx_is_host[il]) {
+                if (h_ctx_k_raw[il]) { cudaFreeHost(h_ctx_k_raw[il]); h_ctx_k_raw[il] = nullptr; }
+                if (h_ctx_v_raw[il]) { cudaFreeHost(h_ctx_v_raw[il]); h_ctx_v_raw[il] = nullptr; }
+                d_ctx_k[il] = nullptr; d_ctx_v[il] = nullptr;
+                ctx_is_host[il] = false;
+            } else {
+                if (d_ctx_k[il]) { cudaFree(d_ctx_k[il]); d_ctx_k[il] = nullptr; }
+                if (d_ctx_v[il]) { cudaFree(d_ctx_v[il]); d_ctx_v[il] = nullptr; }
+            }
         }
         auto fr = [](auto*& p) { if (p) { cudaFree(p); p = nullptr; } };
         fr(d_f_rnn); fr(d_cur); fr(d_h); fr(d_q); fr(d_k); fr(d_v); fr(d_qkv_fused); fr(d_gu_fused); fr(d_attn_out);

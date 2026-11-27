@@ -24,7 +24,11 @@ export function pickerGroups(library: ModelLibrary) {
 }
 
 /** Optimized models that are on this PC but not loaded yet: the chat picker must list them, or it says "none downloaded" while Storage shows them (#3814). */
-export function pickerNativeModels<M extends { model: string; model_name?: string; ready?: boolean }>(installed: M[] | undefined | null, instances: { label: string }[] | undefined | null): M[] {
+export function pickerNativeModels<M extends { model: string; model_name?: string; ready?: boolean; custom?: boolean; display_name?: string }>(installed: M[] | undefined | null, instances: { label: string }[] | undefined | null): M[] {
   const loaded = new Set((instances ?? []).map(i => i.label));
-  return (installed ?? []).filter(m => m.ready !== false && !loaded.has(m.model_name ?? m.model));
+  return (installed ?? []).filter(m => m.ready !== false && !loaded.has(pickerNativeName(m)));
+}
+/** The name the chat picker shows for an installed model: a custom build goes by the name its owner gave it. */
+export function pickerNativeName(m: { model: string; model_name?: string; custom?: boolean; display_name?: string }): string {
+  return (m.custom === true && m.display_name) || m.model_name || m.model;
 }

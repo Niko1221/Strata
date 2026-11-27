@@ -1,10 +1,13 @@
 """Which Inkling-2-Mini build fits a PC, and where its parts go: the one rule setup's menu, `strata launch`, the serve start line and the app's estimate use.
 
-Thinking Machines Inkling-2-Mini (26.4B-A3.4B / 5.4B looped-active, 24 physical layers -> 48 virtual visits, `.strata` v1.1) comes as three builds of the same model:
-  - SQ-20 (19.35 GB / 18.02 GiB): bit-exact 0.00000 KLD lossless native SF4+MX8 LLM + embedded DSpark Block-8 drafter
-  - SQ-15 (14.35 GB / 13.36 GiB): flagship 16 GiB GPU / 24 GiB Mac / 12 GiB hybrid quality build + DSpark
-  - SQ-10 (10.47 GB / 9.75 GiB): compact 12 GiB 100%-VRAM / 8 GiB GPU / 16 GiB Mac / 780M (gfx1103) & Strix Point (gfx1150) iGPU build + DSpark
-plus an on-demand lossless BF16 Vision shard (`Inkling-2-Mini-Vision.strata`, 0.64 GB / 0.59 GiB, loaded when images are enabled/attached).
+Thinking Machines Inkling-2-Mini (26.4B-A3.4B / 5.4B looped-active, 24 physical layers -> 48 virtual visits, `.strata` v1.1) is offered (0.2.23, owner 2026-11-26) as five builds, in this order everywhere:
+  - SQ-20 (19.37 GB / 18.04 GiB): bit-exact 0.00000 KLD lossless native SF4+MX8 LLM (the re-adjusted 16 KiB-layout file Inkling-2-Mini-SQv2-20.strata)
+  - SQ-15 (14.35 GB / 13.36 GiB): flagship 16 GiB GPU / 24 GiB Mac / 12 GiB hybrid quality build
+  - SQ-10 (10.47 GB / 9.75 GiB): compact 12 GiB 100%-VRAM / 8 GiB GPU / 16 GiB Mac / 780M (gfx1103) & Strix Point (gfx1150) iGPU build
+  - GSQ-RCO-IQ3_S (11.43 GB): the GSQ-RCO GGUF of ISTA-DASLab, 3.50 bits per weight
+  - UD-Q4_K_XL (17.63 GB): Unsloth's Dynamic GGUF (basic support)
+every build with the DFlash 2 drafter (dflash2.safetensors beside the model, 0.55 GB), plus an on-demand lossless BF16 Vision shard (`Inkling-2-Mini-Vision-v2.strata`, 0.64 GB / 0.59 GiB, loaded
+when images are enabled/attached). The other nine Unsloth quants of 0.2.22 stay in BUILDS (an install that has one keeps working) but are not offered (LEGACY_ORDER).
 
 Hardware auto-selection (docs/10-GUI-TUI.md + Track 1E):
   - >= 24 GiB discrete GPU OR >= 32 GiB UMA (Mac 32..128 GB, Strix Halo gfx1151, DGX Spark): SQ-20 (100% VRAM / UMA)
@@ -38,8 +41,9 @@ DESKTOP_RESERVE_GB = 0.80        # more, when the card drives a display: the des
 FREE_RAM_MARGIN_GB = 1.50        # free RAM that stays free beside the experts held in RAM
 UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
 SSD_NEAR_RESIDENT_GB = 2.0
-VISION_GB = 0.637                # Inkling-2-Mini-Vision.strata (636,526,592 B, CPU / on-demand on <=12 GiB GPUs)
-DSPARK_GGUF_GB = 0.636           # the drafter file of a GGUF build: mtp.safetensors (635,801,416 B, BF16, the default); Unsloth's Q8_0 copy is 0.402 GB (small cards, fallback)
+VISION_GB = 0.637                # Inkling-2-Mini-Vision-v2.strata (636,551,168 B; 0.2.22's file is 636,526,592 B; CPU / on-demand on <=12 GiB GPUs)
+DSPARK_GGUF_GB = 0.636           # PLANNER memory term of a GGUF build's drafter weights, unchanged from 0.2.22 (no DSpark file is downloaded any more); the DFlash 2 reserve (about 0.44 GiB measured on an RTX 5060 Ti) is the DFLASH2 lane's to re-measure
+DFLASH2_GB = 0.552              # the DFlash 2 sidecar every build downloads beside the model: dflash2.safetensors (551,600,700 B: Strata's Q8 + SF4 mix; the original is 989,975,616 B)
 DEFAULT_CONTEXT = 32768          # docs/10-GUI-TUI.md default: 32K (up to 1M available)
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
 MAX_CONTEXT = 1048576
@@ -70,9 +74,13 @@ BIG_UMA_ARCHS = frozenset({"121", "sm_121", "gfx1151"})
 #: name -> exact Section 1 (dense + DSpark) and Section 4 (expert bodies) sizes from the verified .strata v1.1 binaries,
 #: plus direct-download Unsloth Dynamic GGUF builds from unsloth/Inkling-2-Mini-GGUF.
 BUILDS = {
-    "SQ-20": {"file": "Inkling-2-Mini-SQ-20.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35, "format": "strata"},
+    "SQ-20": {"file": "Inkling-2-Mini-SQv2-20.strata", "footprint_gb": 19.37, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.37, "format": "strata"},
     "SQ-15": {"file": "Inkling-2-Mini-SQ-15.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35, "format": "strata"},
     "SQ-10": {"file": "Inkling-2-Mini-SQ-10.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47, "format": "strata"},
+    # GSQ-RCO IQ3_S (ISTA-DASLab, 3.50 bpw): bodies_gb / expert_elems_e9 are read from the file's GGUF header at the pinned commit (704 tensors, arch inkling2_loop, routed experts
+    # IQ1_S/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S gate_up and Q2_0/IQ4_NL down, no NVFP4 scale tensors; the 0.93 GB BF16 token embedding stays in system memory). dense_gb is the
+    # shared GGUF trunk figure (the loader expands every non-expert tensor to BF16, the same 3.93 GB trunk): no engine run has measured it for this file yet.
+    "GSQ-RCO-IQ3_S": {"file": "Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf", "footprint_gb": 11.43, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 9.52, "file_gb": 11.43, "format": "gguf", "expert_elems_e9": {"IQ1_S": 2.038, "IQ2_S": 2.038, "IQ2_XS": 1.359, "IQ2_XXS": 4.077, "IQ3_S": 2.718, "IQ3_XXS": 4.077, "IQ4_NL": 7.135, "Q2_0": 1.019}},
     "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 19.62, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
     "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 15.80, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
     "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 14.78, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
@@ -85,11 +93,18 @@ BUILDS = {
     "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 6.53, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
 }
 STRATA_ORDER = ("SQ-20", "SQ-15", "SQ-10")       # primary recommended native .strata builds, best quality first
-GGUF_ORDER = (
-    "UD-Q8_K_XL", "UD-Q4_K_XL", "UD-Q4_K_M", "UD-IQ4_XS", "UD-Q3_K_XL",
+#: The 0.2.23 lineup (owner decision 2026-11-26): the three Strata packs, then GSQ-RCO IQ3_S (ISTA-DASLab), then Unsloth's UD-Q4_K_XL. This is the order of every list: setup,
+#: the launcher, the app. Nothing else is offered.
+OFFERED_GGUF_ORDER = ("GSQ-RCO-IQ3_S", "UD-Q4_K_XL")
+#: The other nine Unsloth quants that 0.2.22 offered. They stay in BUILDS (an install that already has one keeps running it: `base support`) but are never offered, listed for
+#: download, or recommended; the lists show one only when it is installed, as "no longer offered".
+LEGACY_UNSLOTH_ORDER = (
+    "UD-Q8_K_XL", "UD-Q4_K_M", "UD-IQ4_XS", "UD-Q3_K_XL",
     "UD-IQ3_XXS", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S",
 )
-ORDER = (*STRATA_ORDER, *GGUF_ORDER)
+GGUF_ORDER = (*OFFERED_GGUF_ORDER, *LEGACY_UNSLOTH_ORDER)       # every GGUF build the engine reads, the offered ones first
+ORDER = (*STRATA_ORDER, *OFFERED_GGUF_ORDER)                      # what is offered, in display order
+LEGACY_ORDER = LEGACY_UNSLOTH_ORDER
 
 
 def is_gguf_build(build: str | None) -> bool:
@@ -538,7 +553,7 @@ def rows(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int
     out = []
     for b in ORDER:
         placed = place(b, vram_gib, ram_gib, unified, ctx, vision, parallel, desktop=desktop, ram_free_gib=ram_free_gib, backend=backend, sm=sm)
-        dl = BUILDS[b]["file_gb"] + (DSPARK_GGUF_GB if is_gguf_build(b) else 0.0)
+        dl = BUILDS[b]["file_gb"] + DFLASH2_GB
         out.append({
             "build": b,
             "file": BUILDS[b]["file"],
@@ -568,8 +583,9 @@ def max_context(build: str, vram_gib: float | None, ram_gib: float, unified: boo
 
 
 def disk_gb(build: str, vision: bool = False, dspark: bool = True) -> float:
-    extra_dspark = DSPARK_GGUF_GB if (dspark and is_gguf_build(build)) else 0.0
-    return round(BUILDS[build]["file_gb"] + extra_dspark + (VISION_GB if vision else 0.0), 2)
+    """The download of a build: the model file, the DFlash 2 sidecar (`dspark` is the old name of the drafter switch) and the Vision shard when pictures are on."""
+    extra_drafter = DFLASH2_GB if dspark else 0.0
+    return round(BUILDS[build]["file_gb"] + extra_drafter + (VISION_GB if vision else 0.0), 2)
 
 
 def build_of_model_name(model_name: str | None) -> str | None:

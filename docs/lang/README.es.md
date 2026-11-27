@@ -72,12 +72,13 @@ El número del nombre indica la memoria RAM para la que está pensado el paquete
 
 | Proveedor | Opciones |
 | --- | --- |
-| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
-| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+| **Strata** | SQ-20 (19.37 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **GSQ-RCO** | IQ3\_S (11.43 GB) |
+| **Unsloth** | UD-Q4\_K\_XL (17.63 GB) |
 
 SQ-20 está pensado para una tarjeta gráfica de 24 GiB, SQ-15 para 16 GiB y SQ-10 para 12 GiB. Con una tarjeta de 4 GiB basta para empezar.
 
-[Paquetes de Strata en Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Archivos GGUF de Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
+[Paquetes de Strata en Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Archivos GGUF de Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) · [GSQ-RCO IQ3_S](https://huggingface.co/ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF)
 
 </details>
 
@@ -95,7 +96,7 @@ SQ-20 está pensado para una tarjeta gráfica de 24 GiB, SQ-15 para 16 GiB y SQ-
 
 Instala la aplicación, elige un modelo y empieza a chatear. Hay un instalador por sistema. En el primer arranque, la aplicación descarga el motor para tu tarjeta gráfica. [Ayuda con el instalador](../INSTALL.md#the-app).
 
-<sub>Archivos: `Strata-0.2.22-windows-x64-setup.exe` · `Strata-0.2.22-linux-x86_64.AppImage` · `Strata-0.2.22-macos-arm64.dmg`</sub>
+<sub>Archivos: `Strata-0.2.23-windows-x64-setup.exe` · `Strata-0.2.23-linux-x86_64.AppImage` · `Strata-0.2.23-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="Aplicación de escritorio de Strata con un chat y una vista previa del código en vivo, una junto a otra">
