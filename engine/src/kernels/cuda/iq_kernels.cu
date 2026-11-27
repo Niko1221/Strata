@@ -114,6 +114,14 @@ __device__ __forceinline__ float vec_dot_q2_0_q8_1(const void* __restrict__ vbq,
     return d2 * d8 * sumi;
 }
 
+// SG = 1 (mode 6): the signs without byte-SIMD ops, which gfx906 lacks (strata_vcmpne4 / strata_vsub4 unpack to
+// ~12 word ops each).  m = the sign nibble as 0x00/0xff bytes; (g ^ m) is g or -g-1 per byte, so
+// dp4a(g ^ m, u) - dp4a(m, u) = sum(s g u) exactly - the same integers, the same floats.
+__device__ __forceinline__ int nib_mask(uint32_t n) {
+    const uint32_t b = __umul24(n & 0xFu, 0x204081u) & 0x01010101u;
+    return (int) ((b << 8) - b);
+}
+
 __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                       const int& kbx, const int& iqs) {
     const block_iq2_xxs* bq2 = (const block_iq2_xxs*) vbq + kbx;
@@ -124,13 +132,20 @@ __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ v
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xxs_grid)[aux8[k0 / 2]];
+#if defined(STRATA_HIP_GFX906)
+        const uint32_t v = (aux32 >> (7 * k0 / 2)) & 0x7Fu, sg = v | ((__popc(v) & 1u) << 7);
+        const uint32_t m0 = (uint32_t) nib_mask(sg), m1 = (uint32_t) nib_mask(sg >> 4);
+        const int grid0 = (int) ((grid_pos.x ^ m0) + (m0 & 0x01010101u));
+        const int grid1 = (int) ((grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 0);
-        sumi = ggml_cuda_dp4a(grid0, u0, sumi);
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 0);
+        sumi = ggml_cuda_dp4a(grid0, u0, sumi);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 1);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
     }
@@ -151,12 +166,19 @@ __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(const void* __restrict__ vb
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xs_grid)[q2[l0 / 2] & 0x1FF];
+#if defined(STRATA_HIP_GFX906)
+        const uint32_t v = (q2[l0 / 2] >> 9) & 0x7Fu, sg = v | ((__popc(v) & 1u) << 7);
+        const uint32_t m0 = (uint32_t) nib_mask(sg), m1 = (uint32_t) nib_mask(sg >> 4);
+        const int grid_l = (int) ((grid_pos.x ^ m0) + (m0 & 0x01010101u));
+        const int grid_h = (int) ((grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
         const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         if (l0 < 4) {
             sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
@@ -185,10 +207,17 @@ __device__ __forceinline__ float vec_dot_iq2_s_q8_1(const void* __restrict__ vbq
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int* grid_pos = (const int*) (iq2s_grid + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if defined(STRATA_HIP_GFX906)
+        const uint8_t sb = signs_packed_8[l0 / 2];
+        const uint32_t m0 = (uint32_t) nib_mask(sb), m1 = (uint32_t) nib_mask(sb >> 4);
+        const int grid_l = (int) (((uint32_t) grid_pos[0] ^ m0) + (m0 & 0x01010101u));
+        const int grid_h = (int) (((uint32_t) grid_pos[1] ^ m1) + (m1 & 0x01010101u));
+#else
         const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
         const int grid_l = __vsub4(grid_pos[0] ^ signs0, signs0);
         const int grid_h = __vsub4(grid_pos[1] ^ signs1, signs1);
+#endif
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         if (l0 < 4) {
@@ -214,12 +243,19 @@ __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(const void* __restrict__ v
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
+#if defined(STRATA_HIP_GFX906)
+        const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7Fu, sg = v | ((__popc(v) & 1u) << 7);
+        const uint32_t m0 = (uint32_t) nib_mask(sg), m1 = (uint32_t) nib_mask(sg >> 4);
+        const int grid_l = (int) (((uint32_t) grid_pos.x ^ m0) + (m0 & 0x01010101u));
+        const int grid_h = (int) (((uint32_t) grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
@@ -243,10 +279,17 @@ __device__ __forceinline__ float vec_dot_iq3_s_q8_1(const void* __restrict__ vbq
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
                                         iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+#if defined(STRATA_HIP_GFX906)
+        const uint8_t sb = signs_packed_8[l0 / 2];
+        const uint32_t m0 = (uint32_t) nib_mask(sb), m1 = (uint32_t) nib_mask(sb >> 4);
+        const int grid_l = (int) (((uint32_t) grid_pos.x ^ m0) + (m0 & 0x01010101u));
+        const int grid_h = (int) (((uint32_t) grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
         const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
@@ -1020,11 +1063,18 @@ template<> struct Split<16> {   // IQ2_XXS
 #pragma unroll
         for (int k0 = 0; k0 < 8; k0 += 2) {
             const uint2 grid_pos = grid_lut[aux8[k0 / 2]];
+#if defined(STRATA_HIP_GFX906)
+            const uint32_t v = (aux32 >> (7 * k0 / 2)) & 0x7Fu, sg = v | ((__popc(v) & 1u) << 7);
+            const uint32_t m0 = (uint32_t) nib_mask(sg), m1 = (uint32_t) nib_mask(sg >> 4);
+            r.g[k0 + 0] = (int) ((grid_pos.x ^ m0) + (m0 & 0x01010101u));
+            r.g[k0 + 1] = (int) ((grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
             r.g[k0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
             r.g[k0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.ls = aux32 >> 27 | 1;
         r.dw = __half2float(bq2->d);
@@ -1089,11 +1139,20 @@ template<> struct Split<17> : SplitLs2 {   // IQ2_XS
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const uint2 grid_pos = grid_lut[q2[l0 / 2] & 0x1FF];
+#if defined(STRATA_HIP_GFX906)
+            // gfx906: every byte of iq2xs_grid is odd (1, 3, 5, 7), so (g ^ m) + (m & 0x01010101u) negates
+            // each signed byte in load() with zero carry between bytes, and SplitLs2::apply stays 1 dp4a per word!
+            const uint32_t v = (q2[l0 / 2] >> 9) & 0x7F, sg = v | ((__popc(v) & 1) << 7);
+            const uint32_t m0 = (uint32_t) nib_mask(sg), m1 = (uint32_t) nib_mask(sg >> 4);
+            r.g[l0 + 0] = (int) ((grid_pos.x ^ m0) + (m0 & 0x01010101u));
+            r.g[l0 + 1] = (int) ((grid_pos.y ^ m1) + (m1 & 0x01010101u));
+#else
             const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
             r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
             r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.dw = __half2float(bq2->d);
         return r;
@@ -1118,10 +1177,19 @@ template<> struct Split<22> : SplitLs2 {   // IQ2_S
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int* grid_pos = (const int*) (grid_lut + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if defined(STRATA_HIP_GFX906)
+            // gfx906: every byte of iq2s_grid is odd (1, 3, 5), so (g ^ m) + (m & 0x01010101u) negates
+            // each signed byte in load() with zero carry between bytes, and SplitLs2::apply stays 1 dp4a per word!
+            const uint8_t sb = signs_packed_8[l0 / 2];
+            const uint32_t m0 = (uint32_t) nib_mask(sb), m1 = (uint32_t) nib_mask(sb >> 4);
+            r.g[l0 + 0] = (int) (((uint32_t) grid_pos[0] ^ m0) + (m0 & 0x01010101u));
+            r.g[l0 + 1] = (int) (((uint32_t) grid_pos[1] ^ m1) + (m1 & 0x01010101u));
+#else
             const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
             r.g[l0 + 0] = __vsub4(grid_pos[0] ^ signs0, signs0);
             r.g[l0 + 1] = __vsub4(grid_pos[1] ^ signs1, signs1);
+#endif
         }
         r.dw = __half2float(bq2->d);
         return r;
@@ -1149,11 +1217,18 @@ template<> struct Split<18> {   // IQ3_XXS
                 r.g[l0 + 0] = (int) ((grid_pos.x ^ ml) + (ml & 0x01010101u));
                 r.g[l0 + 1] = (int) ((grid_pos.y ^ mh) + (mh & 0x01010101u));
             } else {
+#if defined(STRATA_HIP_GFX906)
+                const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7fu, sg = v | ((__popc(v) & 1u) << 7);
+                const uint32_t ml = (uint32_t) nib_mask(sg), mh = (uint32_t) nib_mask(sg >> 4);
+                r.g[l0 + 0] = (int) (((uint32_t) grid_pos.x ^ ml) + (ml & 0x01010101u));
+                r.g[l0 + 1] = (int) (((uint32_t) grid_pos.y ^ mh) + (mh & 0x01010101u));
+#else
                 const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
                 const int signs0 = __vcmpne4(signs & 0x08040201, 0);
                 r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
                 const int signs1 = __vcmpne4(signs & 0x80402010, 0);
                 r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
             }
         }
         r.ls = aux32 >> 28;
@@ -1201,10 +1276,17 @@ template<> struct Split<21> {   // IQ3_S
                 r.g[l0 + 0] = (int) (((uint32_t) grid_pos.x ^ ml) + (ml & 0x01010101u));
                 r.g[l0 + 1] = (int) (((uint32_t) grid_pos.y ^ mh) + (mh & 0x01010101u));
             } else {
+#if defined(STRATA_HIP_GFX906)
+                const uint8_t sb = signs_packed_8[l0 / 2];
+                const uint32_t ml = (uint32_t) nib_mask(sb), mh = (uint32_t) nib_mask(sb >> 4);
+                r.g[l0 + 0] = (int) (((uint32_t) grid_pos.x ^ ml) + (ml & 0x01010101u));
+                r.g[l0 + 1] = (int) (((uint32_t) grid_pos.y ^ mh) + (mh & 0x01010101u));
+#else
                 const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
                 const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
                 r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
                 r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
             }
         }
         r.ls = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
@@ -1311,15 +1393,15 @@ template<> struct Split<20> {   // IQ4_NL
 };
 template<> inline constexpr bool kSplit<23> = true;
 template<> struct Split<23> {   // IQ4_XS
-    struct W { int2 v[4]; int ls; float dw; };
+    struct W { int2 v[4]; float d; };
     template<bool STAGE_GRID = false>
     __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
         const block_iq4_xs* bq4 = (const block_iq4_xs*) vbq + kbx;
         W r;
 #pragma unroll
         for (int j = 0; j < 4; ++j) r.v[j] = get_int_from_table_16(get_int_b4(bq4->qs, iqs + j), kvalues_iq4nl);
-        r.ls = ((bq4->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs / 2)) & 0x03) << 4);
-        r.dw = __half2float(bq4->d);
+        const int ls = ((bq4->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs / 2)) & 0x03) << 4);
+        r.d = __half2float(bq4->d) * (ls - 32);
         return r;
     }
     __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
@@ -1331,8 +1413,7 @@ template<> struct Split<23> {   // IQ4_XS
             sumi = ggml_cuda_dp4a(r.v[j].x, u0, sumi);
             sumi = ggml_cuda_dp4a(r.v[j].y, u1, sumi);
         }
-        sumi *= r.ls - 32;
-        const float d = r.dw * __low2float(bq8_1[iqs / 4].ds);
+        const float d = r.d * __low2float(bq8_1[iqs / 4].ds);
         return d * sumi;
     }
 };
@@ -1480,6 +1561,48 @@ template<> struct S27<7> {   // Q5_1
         return sumi * (dm5.x * d8) + sumu * (dm5.y * d8);
     }
 };
+template<> struct S27<6> {   // Q5_0 (the Flash-Next pack's down projection on 33 of 48 layers)
+    // vec_dot_q5_0_q8_1 split into its weight-only half (the two decoded 32-bit weight pairs and the
+    // fp16 block scale) and the activation/dot half.  apply is that dot's own integer chain
+    // and float expression, in the same order: d5 * d8 * (sumi - 16 * sumu).
+    struct W { int vi0[VDR_Q5_0]; int vi1[VDR_Q5_0]; float d; };
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs) {
+        const block_q5_0* b = (const block_q5_0*) vbq + kbx;
+        const int qh = get_int_b2(b->qh, 0);
+        W r;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_0; ++i) {
+            const int vl = get_int_b2(b->qs, iqs + i);
+            const int vh = qh >> (4 * (iqs + i));
+            int vi0 = (vl >> 0) & 0x0F0F0F0F;
+            vi0 |= (vh << 4) & 0x00000010;
+            vi0 |= (vh << 11) & 0x00001000;
+            vi0 |= (vh << 18) & 0x00100000;
+            vi0 |= (vh << 25) & 0x10000000;
+            r.vi0[i] = vi0;
+            int vi1 = (vl >> 4) & 0x0F0F0F0F;
+            vi1 |= (vh >> 12) & 0x00000010;
+            vi1 |= (vh >> 5) & 0x00001000;
+            vi1 |= (vh << 2) & 0x00100000;
+            vi1 |= (vh << 9) & 0x10000000;
+            r.vi1[i] = vi1;
+        }
+        r.d = __half2float(b->d);
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        int sumi = 0, sumu = 0;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_0; ++i) {
+            const int u0 = get_int_b4(bq8_1->qs, iqs + i), u1 = get_int_b4(bq8_1->qs, iqs + i + QI5_0);
+            sumi = ggml_cuda_dp4a(r.vi0[i], u0, sumi);
+            sumi = ggml_cuda_dp4a(r.vi1[i], u1, sumi);
+            sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
+        }
+        const float d8 = __low2float(bq8_1->ds);
+        return r.d * d8 * (float) (sumi - 16 * sumu);
+    }
+};
 template<> struct S27<8> {   // Q8_0
     struct W { int q[VDR_Q8_0]; float d; };
     __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs) {
@@ -1508,9 +1631,11 @@ template<int TY> struct SplitK : S27<TY> {
         return S27<TY>::load(vbq, kbx, iqs);
     }
 };
+template<> inline constexpr bool kSplit<6> = true;
 template<> inline constexpr bool kSplit<12> = true;
 template<> inline constexpr bool kSplit<13> = true;
 template<> inline constexpr bool kSplit<8> = true;
+template<> struct Split<6> : SplitK<6> {};
 template<> struct Split<12> : SplitK<12> {};
 template<> struct Split<13> : SplitK<13> {};
 template<> struct Split<8> : SplitK<8> {};
@@ -1755,6 +1880,82 @@ __device__ __forceinline__ void row_dot_40_sub8(const uint8_t* row, const block_
         if (EXACT_N || c < n) {
 #pragma unroll
             for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+        }
+    }
+}
+
+// 8-lane sub-warp row dot for K = nb * ipb == 40 (TD == 20, IQ4_NL and TD == 6, Q5_0 with n_ff == 640) for two rows at once:
+// both rows' weight loads of each step issued before either is applied; bitwise identical addition tree to row_dot_40_sub8.
+template<int TY, int NC, bool EXACT_N = false, bool STAGE_GRID = false>
+__device__ __forceinline__ void row_dot2_40_sub8(const uint8_t* ra, const uint8_t* rb, const block_q8_1* x, const int (&off)[NC], int n,
+                                                 int t, float (&sa)[NC], float (&sb)[NC], const uint32_t* __restrict__ s_grid = nullptr) {
+    using F = Fmt<TY>;
+    using S = Split<TY>;
+#pragma unroll
+    for (int c = 0; c < NC; ++c) { sa[c] = 0.0f; sb[c] = 0.0f; }
+    for (int k = t; k < 40; k += 32) {
+        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W wa = S::template load<STAGE_GRID>(ra, kbx, iqs, s_grid);
+        const typename S::W wb = S::template load<STAGE_GRID>(rb, kbx, iqs, s_grid);
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            if (EXACT_N || c < n) {
+                sa[c] += S::apply(wa, x + off[c] + kbx * (F::qk / 32), iqs);
+                sb[c] += S::apply(wb, x + off[c] + kbx * (F::qk / 32), iqs);
+            }
+    }
+    {
+        const int k = t + 16, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W wa = S::template load<STAGE_GRID>(ra, kbx, iqs, s_grid);
+        const typename S::W wb = S::template load<STAGE_GRID>(rb, kbx, iqs, s_grid);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            if (EXACT_N || c < n) {
+                float a16 = 0.0f, b16 = 0.0f;
+                a16 += S::apply(wa, x + off[c] + kbx * (F::qk / 32), iqs);
+                b16 += S::apply(wb, x + off[c] + kbx * (F::qk / 32), iqs);
+                sa[c] = __fadd_rn(sa[c], a16);
+                sb[c] = __fadd_rn(sb[c], b16);
+            }
+        }
+    }
+    float a8[NC], b8[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) { a8[c] = 0.0f; b8[c] = 0.0f; }
+    {
+        const int k = t + 8, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W wa = S::template load<STAGE_GRID>(ra, kbx, iqs, s_grid);
+        const typename S::W wb = S::template load<STAGE_GRID>(rb, kbx, iqs, s_grid);
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            if (EXACT_N || c < n) {
+                a8[c] += S::apply(wa, x + off[c] + kbx * (F::qk / 32), iqs);
+                b8[c] += S::apply(wb, x + off[c] + kbx * (F::qk / 32), iqs);
+            }
+    }
+    {
+        const int k = t + 24, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W wa = S::template load<STAGE_GRID>(ra, kbx, iqs, s_grid);
+        const typename S::W wb = S::template load<STAGE_GRID>(rb, kbx, iqs, s_grid);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            if (EXACT_N || c < n) {
+                float a24 = 0.0f, b24 = 0.0f;
+                a24 += S::apply(wa, x + off[c] + kbx * (F::qk / 32), iqs);
+                b24 += S::apply(wb, x + off[c] + kbx * (F::qk / 32), iqs);
+                sa[c] = __fadd_rn(sa[c], __fadd_rn(a8[c], a24));
+                sb[c] = __fadd_rn(sb[c], __fadd_rn(b8[c], b24));
+            }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        if (EXACT_N || c < n) {
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) {
+                sa[c] += __shfl_xor_sync(0xffffffffu, sa[c], o);
+                sb[c] += __shfl_xor_sync(0xffffffffu, sb[c], o);
+            }
         }
     }
 }
@@ -6075,12 +6276,9 @@ template<> struct GridOf<23> { using T = uint32_t; static constexpr int N = 1; _
 template<> struct GridOf<40> { using T = uint32_t; static constexpr int N = 1; __device__ static const T* src() { return iq3s_grid; } };   // NVFP4: no grid
 
 // SG = 1 (mode 6): the signs without byte-SIMD ops, which gfx906 lacks (strata_vcmpne4 / strata_vsub4 unpack to
-// ~12 word ops each).  m = the sign nibble as 0x00/0xff bytes; (g ^ m) is g or -g-1 per byte, so
-// dp4a(g ^ m, u) - dp4a(m, u) = sum(s g u) exactly - the same integers, the same floats.
-__device__ __forceinline__ int nib_mask(uint32_t n) {
-    const uint32_t b = __umul24(n & 0xFu, 0x204081u) & 0x01010101u;
-    return (int) ((b << 8) - b);
-}
+// ~12 word ops each; nib_mask is defined above, before SplitLs2 which uses it on gfx906).  m = the sign nibble as
+// 0x00/0xff bytes; (g ^ m) is g or -g-1 per byte, so dp4a(g ^ m, u) - dp4a(m, u) = sum(s g u) exactly - the same
+// integers, the same floats.
 template<int TY, int SG> struct DotG;
 template<int SG> struct DotG<22, SG> { __device__ static __forceinline__ float f(const void* vbq, const block_q8_1* bq8_1, int kbx, int iqs,
                                                       const uint64_t* grid) {
@@ -6401,6 +6599,38 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
             // 8-lane sub-warp (4 rows/warp = 32 rows/block in 2 passes of 32 = 64 rows), 100% active lanes + hoisted load!
             const int sub_row = (tid >> 3);   // 0..31 within block
             const int slane = tid & 7;        // 0..7 within sub-warp
+            if constexpr (kSplit<TD> && TD == 20) {
+                if (n_items == 40 && cn > 1) {
+                    const int r0 = blockIdx.x * LDS_RB + sub_row;
+                    if (r0 < nrow) {
+                        const int r1 = r0 + 32;
+                        const bool two = r1 < nrow;
+                        const uint8_t* w0 = blob + L.down_off + (size_t) r0 * L.d_row;
+                        const uint8_t* w1 = blob + L.down_off + (size_t) (two ? r1 : r0) * L.d_row;
+                        auto pass8_2 = [&](auto ntc) {
+                            constexpr int NTC = decltype(ntc)::value;
+                            int off[NTC];
+#pragma unroll
+                            for (int j = 0; j < NTC; ++j) off[j] = j * hb;
+                            float s0[NTC], s1[NTC];
+                            row_dot2_40_sub8<TD, NTC, true, kStageSplit>(w0, w1, sh, off, NTC, slane, s0, s1, sgrid);
+                            if (slane == 0) {
+#pragma unroll
+                                for (int j = 0; j < NTC; ++j) {
+                                    out[(size_t) ent_dst[c0 + j] * L.n_embd + r0] = s0[j];
+                                    if (two) out[(size_t) ent_dst[c0 + j] * L.n_embd + r1] = s1[j];
+                                }
+                            }
+                        };
+                        switch (cn) {
+                            case 2: pass8_2(std::integral_constant<int, 2>{}); break;
+                            case 3: pass8_2(std::integral_constant<int, 3>{}); break;
+                            default: pass8_2(std::integral_constant<int, 4>{}); break;
+                        }
+                    }
+                    continue;
+                }
+            }
             for (int p = 0; p < 2; ++p) {
                 const int r = blockIdx.x * LDS_RB + p * 32 + sub_row;
                 if (r >= nrow) break;
@@ -6408,7 +6638,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                 auto pass8 = [&](auto ntc) {
                     constexpr int NTC = decltype(ntc)::value;
                     float s[NTC];
-                    if constexpr (kSplit<TD> && (TD == 20)) {
+                    if constexpr (kSplit<TD> && (TD == 6 || TD == 20)) {
                         if (n_items == 40) {
                             int off[NTC];
 #pragma unroll
@@ -7358,7 +7588,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     cudaGetDevice(&dev_d);
     // gfx1151: the LDS down kernel is slower than the CUDA layout for IQ4_NL (86 vs 63 us, 24 groups) and faster for Q2_0 (-18%)
     const bool lds_down_ok = L.n_ff <= 4096 &&
-                             (L.d_type == 8 || L.d_type == 12 || L.d_type == 13 ||
+                             (L.d_type == 6 || L.d_type == 8 || L.d_type == 12 || L.d_type == 13 ||
 #ifdef STRATA_Q6K_EXPERTS
                               L.d_type == 14 ||
 #endif
@@ -7368,6 +7598,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
         switch (L.d_type) {
+            case 6:  native_down_lds_kernel<6><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
             case 8:  native_down_lds_kernel<8><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
             case 12: native_down_lds_kernel<12><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
             case 13: native_down_lds_kernel<13><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
