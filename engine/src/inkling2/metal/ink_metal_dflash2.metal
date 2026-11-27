@@ -116,7 +116,8 @@ kernel void df2_sk6_to_q8row(
         const float eff = float(as_type<half>(d16)) * (float(blk[2 + g]) * (1.0f / 255.0f));
         device const uchar* pl = blk + 6;
         const uint lo = (uint(pl[j >> 1]) >> ((j & 1) * 4)) & 15u;
-        const uint hi = (uint(pl[128 + (j >> 2)]) >> ((j & 3) * 2)) & 3u;
+        device const uchar* ph = pl + 128;   // (the pointer is formed first: Apple7 / Apple8 cannot select `pl[128 + (j >> 2)]`, #6608)
+        const uint hi = (uint(ph[j >> 2]) >> ((j & 3) * 2)) & 3u;
         const float v = (float(int(lo | (hi << 4))) - 31.5f) * eff;
         mx = max(mx, fabs(v));
     }
@@ -136,7 +137,8 @@ kernel void df2_sk6_to_q8row(
         const float eff = float(as_type<half>(d16)) * (float(blk[2 + g]) * (1.0f / 255.0f));
         device const uchar* pl = blk + 6;
         const uint lo = (uint(pl[j >> 1]) >> ((j & 1) * 4)) & 15u;
-        const uint hi = (uint(pl[128 + (j >> 2)]) >> ((j & 3) * 2)) & 3u;
+        device const uchar* ph = pl + 128;   // (the pointer is formed first: Apple7 / Apple8 cannot select `pl[128 + (j >> 2)]`, #6608)
+        const uint hi = (uint(ph[j >> 2]) >> ((j & 3) * 2)) & 3u;
         const float v = (float(int(lo | (hi << 4))) - 31.5f) * eff;
         qp[col] = char(clamp(int(rint(v * inv)), -127, 127));
     }

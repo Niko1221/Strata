@@ -1159,7 +1159,8 @@ static inline void gguf_decode_8_rco(uint t, device const uchar* row, int col, t
         const uint i1 = uint(qs[2 * l4])     | ((uint(qh) << (8u - 2u * uint(l4))) & 256u);
         const uint i2 = uint(qs[2 * l4 + 1]) | ((uint(qh) << (7u - 2u * uint(l4))) & 256u);
         const uchar sg = blk[74 + sub * 4 + l4];
-        const uchar scb = blk[106 + (sub >> 1)];
+        device const uchar* sbp = blk + 106;   // (the pointer is formed first: Apple7 / Apple8 cannot select `blk[106 + (sub >> 1)]`, #6608)
+        const uchar scb = sbp[sub >> 1];
         const float dl = d * float(1 + 2 * int((scb >> (4 * (sub & 1))) & 15u));
         const uint g1 = kMtlIq3SGrid[i1];
         const uint g2 = kMtlIq3SGrid[i2];
