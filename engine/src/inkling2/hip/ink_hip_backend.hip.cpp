@@ -6302,54 +6302,7 @@ private:
                             B, c_.n_kv, c_.head_dim, 0);
                     }
                 }
-            } else {
-            if (!is_fp8 && c_.head_dim <= 128 && c_.d_rel <= 16 && (c_.rel_extent & 3) == 0) {
-                k2_qrkv_kvstore_relpos_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
-                    q, f32_ptr(q_sc_k), q_sc_stride,
-                    r_raw, f32_ptr(r_sc_k), r_sc_stride,
-                    f32_ptr(p + ".attn.rel_logits_proj.proj"), rbias,
-                    k_cv, v_cv,
-                    reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
-                    reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
-                    reinterpret_cast<half_t*>(kvp.k_pool.dev_ptr),
-                    reinterpret_cast<half_t*>(kvp.v_pool.dev_ptr),
-                    !is_swa, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
-                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_r, c_.rel_extent);
-            } else {
-                if (c_.head_dim <= 128 && c_.d_rel <= 32) {
-                    k2_qrkv_norm_clip_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
-                        q, f32_ptr(q_sc_k), q_sc_stride, r_raw, f32_ptr(r_sc_k), r_sc_stride, k_cv, v_cv,
-                        is_swa ? nullptr : pos_dev, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
-                        B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel);
-                } else {
-                    k2_head_l2_clip<<<dim3(c_.n_head, B), 128, 0, stream_>>>(
-                        q, f32_ptr(q_sc_k), q_sc_stride, is_swa ? nullptr : pos_dev, c_.qk_l2_clip, B, c_.n_head, c_.head_dim);
-                    k2_head_l2_clip<<<dim3(c_.n_head, B), 128, 0, stream_>>>(
-                        r_raw, f32_ptr(r_sc_k), r_sc_stride, is_swa ? nullptr : pos_dev, c_.rel_l2_clip, B, c_.n_head, c_.d_rel);
-                    k2_head_l2_clip<<<dim3(c_.n_kv, B), 128, 0, stream_>>>(
-                        k_cv, nullptr, 0, nullptr, c_.qk_l2_clip, B, c_.n_kv, c_.head_dim);
-                    k_rms_norm_rows<<<B * c_.n_kv, 256, 0, stream_>>>(v_cv, nullptr, v_cv, B * c_.n_kv, c_.head_dim, c_.rms_eps);
-                }
-                if (is_fp8) {
-                    k3_kv_paged_store<true><<<B, 256, 0, stream_>>>(
-                        k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
-                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
-                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
-                        reinterpret_cast<float*>(kvp.k_scales.dev_ptr), reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
-                        B, c_.n_kv, c_.head_dim, swa_r);
-                } else {
-                    k3_kv_paged_store<false><<<B, 256, 0, stream_>>>(
-                        k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
-                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
-                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        B, c_.n_kv, c_.head_dim, swa_r);
-                }
-                k_relpos_bias_proj<<<dim3(c_.n_head, B), 256, 0, stream_>>>(
-                    r_raw, f32_ptr(p + ".attn.rel_logits_proj.proj"), pos_dev, rbias, B, c_.n_head, c_.d_rel, c_.rel_extent);
-            }
-
-            pmark(3);
-            if (use_halo_fused_attn) {
+                pmark(3);
                 const dim3 fgrid(c_.n_head, (B + 127) / 128);
                 const half_t* rel_proj_p = reinterpret_cast<const half_t*>(halo_->rel_proj_f16[ip].dev_ptr);
                 if (is_swa) {
@@ -6400,7 +6353,54 @@ private:
                             aout, B, c_.n_head, c_.n_kv, 0, 0, c_.d_rel, c_.rel_extent);
                     }
                 }
-            } else if (is_contiguous_single_slot && B >= 64 && mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
+            } else {
+            if (!is_fp8 && c_.head_dim <= 128 && c_.d_rel <= 16 && (c_.rel_extent & 3) == 0) {
+                k2_qrkv_kvstore_relpos_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
+                    q, f32_ptr(q_sc_k), q_sc_stride,
+                    r_raw, f32_ptr(r_sc_k), r_sc_stride,
+                    f32_ptr(p + ".attn.rel_logits_proj.proj"), rbias,
+                    k_cv, v_cv,
+                    reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                    reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                    reinterpret_cast<half_t*>(kvp.k_pool.dev_ptr),
+                    reinterpret_cast<half_t*>(kvp.v_pool.dev_ptr),
+                    !is_swa, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
+                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_r, c_.rel_extent);
+            } else {
+                if (c_.head_dim <= 128 && c_.d_rel <= 32) {
+                    k2_qrkv_norm_clip_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
+                        q, f32_ptr(q_sc_k), q_sc_stride, r_raw, f32_ptr(r_sc_k), r_sc_stride, k_cv, v_cv,
+                        is_swa ? nullptr : pos_dev, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
+                        B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel);
+                } else {
+                    k2_head_l2_clip<<<dim3(c_.n_head, B), 128, 0, stream_>>>(
+                        q, f32_ptr(q_sc_k), q_sc_stride, is_swa ? nullptr : pos_dev, c_.qk_l2_clip, B, c_.n_head, c_.head_dim);
+                    k2_head_l2_clip<<<dim3(c_.n_head, B), 128, 0, stream_>>>(
+                        r_raw, f32_ptr(r_sc_k), r_sc_stride, is_swa ? nullptr : pos_dev, c_.rel_l2_clip, B, c_.n_head, c_.d_rel);
+                    k2_head_l2_clip<<<dim3(c_.n_kv, B), 128, 0, stream_>>>(
+                        k_cv, nullptr, 0, nullptr, c_.qk_l2_clip, B, c_.n_kv, c_.head_dim);
+                    k_rms_norm_rows<<<B * c_.n_kv, 256, 0, stream_>>>(v_cv, nullptr, v_cv, B * c_.n_kv, c_.head_dim, c_.rms_eps);
+                }
+                if (is_fp8) {
+                    k3_kv_paged_store<true><<<B, 256, 0, stream_>>>(
+                        k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                        reinterpret_cast<float*>(kvp.k_scales.dev_ptr), reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
+                        B, c_.n_kv, c_.head_dim, swa_r);
+                } else {
+                    k3_kv_paged_store<false><<<B, 256, 0, stream_>>>(
+                        k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                        B, c_.n_kv, c_.head_dim, swa_r);
+                }
+                k_relpos_bias_proj<<<dim3(c_.n_head, B), 256, 0, stream_>>>(
+                    r_raw, f32_ptr(p + ".attn.rel_logits_proj.proj"), pos_dev, rbias, B, c_.n_head, c_.d_rel, c_.rel_extent);
+            }
+
+            pmark(3);
+            if (is_contiguous_single_slot && B >= 64 && mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                 // Wave32 WMMA FlashAttention-2 Prefill (BQ=64, BK=64, 27 KB LDS = 2 WG/CU, uint2 V + hoisted rel_bias skip!)
                 const dim3 fgrid(c_.n_head, (B + 63) / 64);
                 if (is_fp8) {
