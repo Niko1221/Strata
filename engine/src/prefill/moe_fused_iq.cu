@@ -86,8 +86,13 @@ void dbg_sync(cudaStream_t s, const char* stage, const B& b, int gu_type, int d_
     if (!sync_debug()) return;
     std::vector<int> kind;   // the blobs' memory kinds are asked before the synchronize: after a fault the context answers nothing
     for (int i = b.e0; i < b.e1; ++i) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+        hipPointerAttribute_t pa{};   // the HIP build has no mapping for the CUDA names (fnx_hip.h maps the same two)
+        if (hipPointerGetAttributes(&pa, b.blob[i - b.e0]) == hipSuccess) kind.push_back((int) pa.type);
+#else
         cudaPointerAttributes pa{};
         if (cudaPointerGetAttributes(&pa, b.blob[i - b.e0]) == cudaSuccess) kind.push_back((int) pa.type);
+#endif
         else { cudaGetLastError(); kind.push_back(-1); }
     }
     const cudaError_t e = cudaStreamSynchronize(s);
