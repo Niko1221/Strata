@@ -181,7 +181,7 @@ html[data-motion='reduced'] .voice-wave span, html[data-motion='reduced'] .agent
 .dialog-head:has(.protocol-switch) { flex-wrap: wrap; }
 .dialog-head:has(.protocol-switch) h2 { flex: 1; }
 .dialog-head .protocol-switch { align-self: auto; }
-.dialog-surface.dialog-surface--compact { width: min(440px, calc(100dvw - 32px)); height: auto; max-height: calc(100dvh - 48px); }
+.dialog-surface.dialog-surface--compact { width: min(600px, calc(100dvw - 32px)); height: auto; max-height: calc(100dvh - 48px); }
 .dialog-surface--compact .dialog-body { flex: none; line-height: 1.6; }
 .dialog-surface--compact .dialog-body p { margin: 0; overflow-wrap: anywhere; }
 .serving-access-status { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
