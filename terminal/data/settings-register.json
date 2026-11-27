@@ -14521,14 +14521,14 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 945,
+     "line": 953,
      "backend": "hip",
      "fn": "getenv"
     }
    ],
    "parse": "int",
    "default_state": null,
-   "code_default": "999999",
+   "code_default": null,
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [],
@@ -14542,7 +14542,7 @@
    "last_date": "2026-11-22",
    "status": "opt-in",
    "owner": "inkling2/hip",
-   "note": "code_default=999999 in engine/src/inkling2/hip/ink_hip_backend.hip.cpp:638; opt-in batch threshold for unpack-once hipBLASLt MoE",
+   "note": "code_default=999999 in engine/src/inkling2/hip/ink_hip_backend.hip.cpp:638; opt-in batch threshold for unpack-once hipBLASLt MoE The default is 64 on RDNA2 with the rocBLAS route (unpack-once + rocBLAS), else 999999 (off).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16927,6 +16927,42 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_ATTN_TILED",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 10209,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:572",
+    "docs/AMD_HIP.md:583"
+   ],
+   "first_commit": "3a9c682699",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "3a9c682699",
+   "last_date": "2026-11-27",
+   "status": "rollback",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP, RDNA2 only: prompt chunks (B >= 64, one slot) use the query-tiled attention k3_flash_swa_gqa_qtile (8 queries share 32-key K/V tiles in LDS, fdot2); same sinks / rel bias / SWA ring / FP8 KV; attention 155 -> 62 ms per 512-token chunk on an RX 6900 XT. =0 keeps k3_flash_swa_gqa.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_CHUNK_AUTO",
    "backends": [
     "cuda-hip"
@@ -17028,6 +17064,41 @@
    "status": "default",
    "owner": "inkling2",
    "note": "Fraction of missed MoE experts streamed to GPU over PCIe concurrently with CPU workers during inkling2 decode/verify (-1=auto, 0=off, 0..1=fixed share).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_DEC_SPLITS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 890,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:586"
+   ],
+   "first_commit": "035a83d339",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "035a83d339",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP split-KV decode attention: KV splits per head (4, 16 or 32). Default 16 on RDNA2 when max context > 8K (+5% decode at 1K, +14% at 30K on an RX 6900 XT), else 4; fixed per engine because graph capture records the grid.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -18648,6 +18719,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_KEEP_CHUNK",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1800,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:585"
+   ],
+   "first_commit": "4e3fcde803",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "4e3fcde803",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP: =1 keeps the configured --chunk on a card with < 2.5 GiB free after load (the tight-VRAM cap to 512 / 256), for a caller that measured its VRAM peak with that chunk.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_KEEP_MAPPED_PAGES",
    "backends": [
     "cuda-hip"
@@ -19161,6 +19267,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_MOE_PROF",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 10149,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:587"
+   ],
+   "first_commit": "b6c17805da",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "b6c17805da",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP: =1 prints one [MOE-PROF] line per prompt chunk (B >= 64): GPU time of weight unpack, GEMM, SITU, RAM-expert waits, the offsets sync gap, and rocBLAS host time.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_MOE_V1",
    "backends": [
     "cuda-hip"
@@ -19592,6 +19733,42 @@
    "status": "rollback",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA sm_80..89 (0221 PARITY): prefill chunks of 256 tokens or more run the SF4 / MX8 experts with 64 tokens of an expert per tile (k_ink_moe_pf_fp16tc: the weight tile is decoded once per 64 tokens instead of once per 16); same arithmetic, bit-identical logits, +24 percent UD-Q4_K_XL and +47 percent SQ-20 prefill on a 4090; =0 keeps the 16-token kernel; A/B and rollback switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_PIN_CORE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 1378,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:574",
+    "docs/AMD_HIP.md:584"
+   ],
+   "first_commit": "4e3fcde803",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "4e3fcde803",
+   "last_date": "2026-11-27",
+   "status": "opt-in",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP hybrid placement: =1 loads every expert of the looped core layers into VRAM first, then the rest in the pack order. The core visits (36 of 48) then take the zero-sync GPU decode path. RX 6900 XT SQ-15 with 9.79 GB VRAM experts: decode 37.8 -> 41.2 tok/s.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -20480,6 +20657,155 @@
    "status": "opt-in",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA, elastic K/V: explicit host RAM ceiling in MiB for the host-expert and K/V budgets.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ROCBLAS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_blaslt.hpp",
+     "line": 64,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:572",
+    "docs/AMD_HIP.md:581"
+   ],
+   "first_commit": "b6c17805da",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "b6c17805da",
+   "last_date": "2026-11-27",
+   "status": "rollback",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP, RDNA2 (gfx103x, no hipBLASLt kernels): prompt chunks (M >= 64) run their dense and expert GEMMs through rocBLAS (gemm_ex FP16 in, FP16 out, FP32 accumulate; FP16 out is 1.6-5x faster than FP32 out on gfx103x Tensile). RX 6900 XT SQ-15: prefill 264 -> 765 tok/s at 2K, KLD vs CPU FP32 0.0042 (old path 0.0046). =0 keeps the native kernels.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ROCBLAS_DENSE",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 10210,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:582"
+   ],
+   "first_commit": "34ac7879ea",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "34ac7879ea",
+   "last_date": "2026-11-27",
+   "status": "rollback",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP RDNA2 rocBLAS route: dense BF16 projections of prompt chunks widen the weight to FP16 per call and run one FP16 GEMM (BF16 GEMMs run ~6.7 TFLOPS on gfx103x). =0 keeps the BF16 route.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ROCBLAS_F32OUT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_blaslt.hpp",
+     "line": 370,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 952,
+     "backend": "hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 952,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "b6c17805da",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "6df858b46a",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP RDNA2 rocBLAS route: =1 makes the expert GEMMs write FP32 directly (the slower gfx103x Tensile path), for A/B against the FP16-out route.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ROCBLAS_MIN_ROWS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 10213,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "16",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6df858b46a",
+   "first_date": "2026-11-27",
+   "since": null,
+   "last_commit": "6df858b46a",
+   "last_date": "2026-11-27",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP RDNA2 rocBLAS route: experts with fewer rows than N (default 16) in a prompt chunk run in two grouped native launches instead of an FP16 unpack + rocBLAS each.",
    "retire_after": "",
    "retired_in": ""
   },
