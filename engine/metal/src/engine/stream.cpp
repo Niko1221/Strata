@@ -161,6 +161,7 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     pre_k2_ = env_int("STRATA_METAL_PREFETCH2", 0);
     prefetch_ = pre_k_ > 0;
     pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
+    pre_cache_min_ = env_int("STRATA_METAL_PREFETCH_CACHE_MIN", 0) != 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
     fake_ = env_int("STRATA_METAL_STREAM_FAKE", 0) != 0;
     return true;
@@ -574,21 +575,37 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     return true;
 }
 
+template <bool CacheMin>
+static void prefetch_top(const float* logits, int experts, int count, int* top) {
+    for (int j = 0; j < count; ++j) top[j] = j;
+    const auto weakest = [&] {
+        int minimum = 0;
+        for (int j = 1; j < count; ++j)
+            if (logits[top[j]] < logits[top[minimum]]) minimum = j;
+        return minimum;
+    };
+    int minimum = 0;
+    if constexpr (CacheMin) minimum = weakest();
+    for (int expert = count; expert < experts; ++expert) {
+        if constexpr (!CacheMin) minimum = weakest();
+        if (logits[expert] > logits[top[minimum]]) {
+            top[minimum] = expert;
+            if constexpr (CacheMin) minimum = weakest();
+        }
+    }
+}
+
 // the experts a predicted routing names, most likely first (by the best logit over the window's tokens)
 void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
-    K = std::min(K, 32);
+    const int nt = std::min({K, 32, ne_});
+    if (nt <= 0) return;
     std::pair<float, int> pw[8 * 32];
     int np = 0;
     for (int t = 0; t < T; ++t) {
         const float* lg = pred + (size_t) t * NE;
         int top[32];
-        int nt = 0;
-        for (int e = 0; e < ne_; ++e) {
-            if (nt < K) { top[nt++] = e; continue; }
-            int m = 0;
-            for (int j = 1; j < K; ++j) if (lg[top[j]] < lg[top[m]]) m = j;
-            if (lg[e] > lg[top[m]]) top[m] = e;
-        }
+        if (pre_cache_min_) prefetch_top<true>(lg, ne_, nt, top);
+        else prefetch_top<false>(lg, ne_, nt, top);
         for (int j = 0; j < nt; ++j) {
             int q = 0;
             while (q < np && pw[q].second != top[j]) ++q;
