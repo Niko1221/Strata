@@ -492,8 +492,7 @@ a config has none; a config written by hand should pass it too, or let the engin
 cache does not: IQ3_S's 24,576 experts need `STRATA_MIRROR_MIB=61440` (53.3 GiB), while 30,720 MiB left 10,749 of
 them unplaced and the start was refused (report on #3607, Arc Pro B60 24 GB).
 
-What has **not** been run on Windows: pictures, two cards, and the Docker path. The Arc A-series **has** now been run
-(an A770 16 GB, below). WSL2 with an Arc has been used by one tester (the B580 row above), but setup cannot detect the
+What has **not** been run on Windows: pictures and the Docker path. Two cards have now run (2x A770 16 GB with a layer split, below), as has the Arc A-series (an A770 16 GB, below). WSL2 with an Arc has been used by one tester (the B580 row above), but setup cannot detect the
 card there, because it reads `/sys/class/drm`, which WSL2 does not have.
 
 Pictures are therefore off by default on Windows: setup passes `--vision none` unless `--vision yes` is given. (0.2.3
@@ -549,6 +548,14 @@ Three things to expect on this card.
   8K decodes at 22.77, 16K at 22.0-22.55, and **64K at 21.42** (k8v4 KV, 512 tokens). `--pcie-frac` has no effect on
   the arena: the share is computed (90/256) but `pcie experts` stays 0.00 because the PCIe share is staged from the
   mirror and the arena has none.
+
+  Reproduced on the branch, not just in the fork: 2x A770 16 GB, engine 0.1.69 (`aeb2e3b`), an IQ2_XS abliterated
+  pack (18,742 experts), greedy, 128 tokens, one run per arm (reported on #3607). Without a drafter the stepped arm
+  is only slightly ahead - 14.8 / 16.3 tok/s at 3.4 K / 15.5 K against 13.8 / 16.1 for the pinned mirror - and
+  `22 tok/s` does **not** reproduce: every arm proposed at most 3 drafts and accepted 0 of 0, because that pack
+  carries no MTP artifacts. With `--mtp` the figure does reproduce: 21.4 / **23.6** tok/s on the arena arm against
+  19.1 / 19.5 on the mirror (+21%), drafts accepted 62/63 and 52/63. The `--mtp` layer is what the earlier arms were
+  missing, and it costs 813 MiB of VRAM (5,839 -> 5,045 cache slots on one card).
 - **The arena needs `STRATA_ARENA_COPY_REGISTER=0` on a 16 GB card.** The arena is imported wholesale for device
   copies, which a 16 GB card cannot hold: cache fill dies with `UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY` whatever the
   cache size. With the import off it loads and runs (prompt streaming goes through the stager at ~6 GB/s instead of
@@ -566,9 +573,16 @@ Measured on 0.1.65 and reported by an Arc A770 owner with **two** A770 16 GB car
 
 - A 16K prompt stops at the first verify window (`--spec 4`, position 12189 of 12194) - the window's wait, not the
   prompt; `--spec 0` and the wait's exact text are the next checks.
-- `--layer-split 2` is refused: the second card's 6773 slots leave 16,779 experts neither resident nor mirrored, and
-  `STRATA_STAGE_TRIM=1` does not close it. The host mirror and the host plan cover the first stage only, so a
-  two-card split under `STRATA_VERIFY_NO_HOST` is unsupported until the mirror covers later stages.
+- `--layer-split 2` is refused **under `STRATA_VERIFY_NO_HOST`**: the second card's 6773 slots leave 16,779 experts
+  neither resident nor mirrored, `STRATA_STAGE_TRIM=1` does not close it, and with no host the later stages' experts
+  have nobody to serve them. With `NO_HOST=0` + `STRATA_VERIFY_STEPPED=1` the host serves the later stages and the
+  split starts: `layer split: 6244 experts of the later stages are not in VRAM (served by the host)`. `--layer-split 23`
+  read 15,469 tokens at **449.8 tok/s** (against 252.1 on one card) and decoded at 17.3; `--layer-split 2` is lopsided
+  (card 0 keeps layers 0-1 and 1,024 slots) and lands at 15.7.
+- **With MTP on, the split stops paying.** The draft head's 813 MiB costs cache slots (6,556 -> 5,970 on the split),
+  so the split decodes 20.7 against 23.6 on one card and reads at 312.7 against 449.8 without MTP. On that box the
+  fastest decode is one card + arena + MTP, the fastest prompt read is the split without MTP, and split + MTP is the
+  worst of both.
 
 Two build-environment traps, reported on the same run: `api-ms-win-crt-*.dll` are not in the root of `System32` but
 under `System32\downlevel\`, and `vc_redist.x64` returns `0x80070666` when a newer runtime is already installed.
