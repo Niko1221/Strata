@@ -576,6 +576,11 @@ KV splits per head above 8K context.
 `--ring-check 64` passes at `--chunk 512` and `--chunk 1024` (median KL 0.0005). On a 16 GB card the experts in VRAM decide
 decode speed: moving 1.1 GB of experts to RAM cost about 25% decode, so prefer a shorter context over fewer VRAM experts.
 
+The DFlash 2 drafter pays off on top of this. It takes about 0.8 GiB of the card (414 MiB of drafter plus scratch), so on a 16 GB card
+move about 0.3 GB of experts to RAM for it. With 10.0 GB of VRAM experts, 64K context, FP8 KV and `--chunk 1024`, it decoded 400-token
+answers at 72.7 tok/s for code (46.7 without, 78% of drafts accepted), 74.3 for JSON (48.0, 83%) and 57.4 for chat (51.5, 60%), and 38-42
+tok/s after a 64K prompt (33.7). The whole card peaked at 15.49 GiB, the desktop's 477 MiB included.
+
 | Switch | Effect |
 | --- | --- |
 | `STRATA_INK_ROCBLAS=0` | Keeps the generic kernels for prompt chunks (the way back) |
