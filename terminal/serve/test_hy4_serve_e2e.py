@@ -345,7 +345,7 @@ class Hy4Serve(unittest.TestCase):
         self.addCleanup(lambda: self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8"))
         self.cfg_path.write_text(json.dumps({**cfg, "drafting": "off"}), encoding="utf-8")
         self.start([self.ids_of("Hi." + END)], caps="drafter=dfly2 images=1")
-        self.assertNotIn("--draft", self.started_line())
+        self.assertIn("--draft off", self.started_line())      # said explicitly: the engine's default under --serve is auto (on)
 
     def test_the_start_line_has_none_of_the_flash_next_flags(self):
         self.start([self.ids_of("Hi." + END)])
