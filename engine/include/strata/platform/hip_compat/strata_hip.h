@@ -131,6 +131,11 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+// peer_experts.cpp's P2P topology probe runs its CUDA branch on the gfx906 build (STRATA_USE_HIP and __HIPCC__
+// are both undefined there): map the two names it needs onto their HIP equivalents
+#define cudaDevP2PAttrNativeAtomicSupported hipDevP2PAttrNativeAtomicSupported
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
+#define cudaDeviceGetP2PAttribute hipDeviceGetP2PAttribute
 #define cudaStreamCreateWithPriority hipStreamCreateWithPriority
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
