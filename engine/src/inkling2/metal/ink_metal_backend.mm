@@ -150,7 +150,7 @@ public:
     int effective_max_ctx() const override { return runner_.max_ctx; }
 
     int effective_chunk() const override {
-        return runner_.m5.active ? std::min(runner_.m5.prefill_chunk, runner_.max_batch) : 512;
+        return runner_.m5.active ? std::min(runner_.m5.prefill_chunk, runner_.max_batch) : 0;   // 0 = the --chunk value (default 512), as before the M5 Max work
     }
 
     bool supports_candidates() const noexcept override {
