@@ -98,7 +98,7 @@ public:
         std::string df2_path = opts.enable_dspark ? ink_sycl::df2_resolve_path(model.path, opts.dspark_path) : "";
         {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2 (never vetoed, never cut to plain steps)
             const char* de = std::getenv("STRATA_INK_DRAFTER");
-            const std::string dl = de ? to_lower_ascii(de) : "";
+            const std::string dl = de ? ink_sycl::to_lower_ascii(de) : "";
             draft_user_on_ = opts.draft_forced || dl == "dflash2" || dl == "df2";
         }
         // Exact runner + KV + DFlash2/DSpark + Vision + XMX/Hybrid reserve (ink_sy_fit.h), so an 8-16 GB Arc card is told BEFORE the runner allocates
