@@ -15,3 +15,5 @@ Copyright: Intel Corporation and the authors named in those files.
 Source code: the open source parts (the SYCL runtime, the Unified Runtime and its adapters, the LLVM OpenMP runtime) are developed in the
 public repositories named in the third-party file (for example https://github.com/intel/llvm). The libraries of this package are listed
 below with the folder they were copied from.
+
+These libraries keep their own license; bundling them with the engine does not change the license of Strata, which is MIT.
