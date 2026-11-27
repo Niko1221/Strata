@@ -1,0 +1,8 @@
+{
+  "id": "T3-minimal-api",
+  "title": "ASP.NET Core minimal API",
+  "files": ["app/TodoApi.cs"],
+  "buildArgs": [],
+  "timeoutSec": 90,
+  "prompt": "Implementuj Eval.TodoApi.MapTodoEndpoints(IEndpointRouteBuilder app) pre in-memory zoznam uloh. Pozadovane spravanie:\n- GET /todos -> 200 a JSON pole vsetkych uloh (prazdne pole, ked nic nie je)\n- GET /todos/{id} -> 200 s ulohou, alebo 404\n- POST /todos s JSON telom {\"title\":\"...\"} -> 201, hlavicka Location obsahuje /todos/<id>, ulozena uloha ma Done=false; prazdny alebo chybajuci title -> 400\n- PUT /todos/{id}/done -> 204 a uloha ma Done=true; neexistujuca -> 404\n- DELETE /todos/{id} -> 204; neexistujuca -> 404\nID prideluj od 1 a zvysuj. Zachovaj namespace Eval, triedu TodoApi, record Todo a podpis metody. Testy si aplikaciu hostuju samy, takze MapTodoEndpoints nesmie startovat server ani nic vypisovat."
+}
