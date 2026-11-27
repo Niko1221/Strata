@@ -78,6 +78,9 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
+    // ggml-cpu's vec_dot reads the block scales through ggml_table_f32_f16 on x86, which only ggml_cpu_init() fills:
+    // without it every vec_dot reference below is 0 and the row-kernel checks fail at rel ~1e33
+    ggml_cpu_init();
     if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [layer ...] | --synthetic GU/DOWN ...\n"); return 2; }
     const bool synthetic = std::string(argv[1]) == "--synthetic";
     std::unique_ptr<strata::GgufFile> gguf_p;
