@@ -31,6 +31,7 @@
 #include "strata/platform/numa_balancing.hpp"
 #endif
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -939,10 +940,12 @@ public:
         if (const char* ev = std::getenv("STRATA_HIPBLASLT_MIN_M")) {
             const int v = std::atoi(ev);
             if (v >= 1) blaslt_min_m_ = v;
+        } else if (blaslt_.is_rocblas()) {
+            blaslt_min_m_ = 64;   // RDNA2 rocBLAS: prompt chunks only; decode and verify keep the graph-captured native kernels
         }
         // Fused zero-DRAM-write 2-launch INT8/FP16 WMMA Grouped-MoE beats unpack-once on both R9700 & Strix Halo
         // (10x less memory traffic, 300x fewer launches!). Keep unpack-once env-tunable via STRATA_HIPBLASLT_MOE_MIN_B.
-        blaslt_moe_min_b_ = 999999;
+        blaslt_moe_min_b_ = blaslt_.is_rocblas() ? 64 : 999999;   // RDNA2 has no grouped WMMA MoE: unpack-once + rocBLAS for prompt chunks
         if (const char* ev = std::getenv("STRATA_HIPBLASLT_MOE_MIN_B")) {
             const int v = std::atoi(ev);
             if (v >= 16) blaslt_moe_min_b_ = v;
@@ -4946,6 +4949,9 @@ private:
         const int chunk_cap = std::max(1, max_gu_rows);
 
         // 1. Unpack w13 [2*inter, D] ONCE -> L3/MALL-resident 11.8 MB FP16 buffer -> chunked hipBLASLt FP16 GEMM + SITU!
+        const bool mp = moe_prof_.armed;
+        if (mp) { ++moe_prof_.calls; moe_prof_.rows += m_e; }
+        size_t mp_a = mp ? moe_prof_.mark(stream_) : 0;
         float alpha13 = 1.0f;
         if (gu_code == CODE_SF4) {
             const uint8_t* p = body_dev + 16;
@@ -4962,6 +4968,7 @@ private:
             const uint8_t* gu_ptr = body_dev + static_cast<size_t>(inter) * 2;
             launch_unpack_sk_f16_dispatch(gu_ptr, gu_code, w13_f16, n13, D, stream_);
         }
+        if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(1, mp_a, b); mp_a = b; }
         const half_t* sq_dn = (dn_code != CODE_SF4 && dn_code != CODE_MX8 && dn_code != CODE_GGUF_RAW)
             ? reinterpret_cast<const half_t*>(body_dev) : nullptr;
         // Slice m_e by chunk_cap so gu_buf [max_gu_rows, 2*inter] NEVER overflows when m_e > B (#6580)!
@@ -4981,9 +4988,11 @@ private:
                     launch_sk_linear(body_dev + static_cast<size_t>(inter) * 2, gu_code, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_);
                 }
             }
+            if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(2, mp_a, b); mp_a = b; }
             // 2. Fused SITU + optional S_K sq_xd_dn divide directly on FP32 gu_buf -> FP16 act_sub!
             k_situ_interleaved_sq<<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
                 gu_buf, sq_dn, act_sub, cur_m, inter, c_.situ_beta, c_.situ_lb);
+            if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(3, mp_a, b); mp_a = b; }
         }
 
         // 3. Unpack w2 [D, inter] ONCE -> L3/MALL-resident 5.9 MB FP16 buffer -> hipBLASLt FP16 GEMM!
@@ -5002,7 +5011,10 @@ private:
         } else {
             launch_unpack_sk_paired2_f16_dispatch(body_dev + dn_offset, dn_code, w2_f16, D, inter, stream_);
         }
-        if (!blaslt_.gemm_f16_f32(w2_f16, act_buf, y_out_f32, m_e, D, inter, stream_, alpha2)) {
+        if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(1, mp_a, b); mp_a = b; }
+        const bool mp_ok2 = blaslt_.gemm_f16_f32(w2_f16, act_buf, y_out_f32, m_e, D, inter, stream_, alpha2);
+        if (mp) moe_prof_.seg(2, mp_a, moe_prof_.mark(stream_));
+        if (!mp_ok2) {
             if (dn_code == CODE_SF4) {
                 const uint8_t* p = body_dev + dn_offset;
                 launch_sf4_linear(p, p + static_cast<size_t>(D) * (inter >> 1), sf4_w2_outer, act_buf, y_out_f32, m_e, D, inter, mem_info_.gen, stream_, false);
@@ -6561,6 +6573,8 @@ private:
             // Fast Path B1 (Hybrid partial-VRAM, B <= 16): Strata Predictive CPU/RAM Hybrid (GPU VRAM+ElasticCache || Spin-Wait CPU Pool + 3x-Loop Async DMA Prefetch!)
             // Fast Path B2 (Hybrid partial-VRAM, B > 16): Chunked Double-Buffered GPU Matrix-Core Expert Streaming!
             bool fused_moe_post = false;
+            moe_prof_.armed = moe_prof_.on && B >= 64;
+            const size_t mp_span0 = moe_prof_.armed ? moe_prof_.mark(stream_) : 0;
             if (ep2_active_) {
                 // Dual-GPU Expert Parallelism: launch GPU 1 peer experts FIRST, then compute GPU 0 (+ optional hybrid RAM) in parallel!
                 if (!fused_router_f16) {
@@ -6681,10 +6695,12 @@ private:
                     mlpin, d_btk, d_bx, B * c_.top_k, D);
 
                 int32_t h_off[129];
+                const auto mp_h0 = std::chrono::steady_clock::now();
                 if (!hip_ok(hipMemcpyAsync(h_off, d_off, 129 * sizeof(int32_t), hipMemcpyDeviceToHost, stream_), "moe off D2H", err) ||
                     !hip_ok(hipStreamSynchronize(stream_), "moe off sync", err)) {
                     return false;
                 }
+                if (moe_prof_.armed) moe_prof_.host_sync_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mp_h0).count();
                 const auto& dir = adj_dir_;
                 for (int eid = 0; eid < c_.n_experts; ++eid) {
                     const int beg = h_off[eid];
@@ -7173,10 +7189,12 @@ private:
                     mlpin, d_btk, d_bx, B * c_.top_k, D);
 
                 int32_t h_off[129];
+                const auto mp_h0 = std::chrono::steady_clock::now();
                 if (!hip_ok(hipMemcpyAsync(h_off, d_off, 129 * sizeof(int32_t), hipMemcpyDeviceToHost, stream_), "moe off D2H", err) ||
                     !hip_ok(hipStreamSynchronize(stream_), "moe off sync", err)) {
                     return false;
                 }
+                if (moe_prof_.armed) moe_prof_.host_sync_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mp_h0).count();
 
                 const auto& dir = adj_dir_;
                 struct ActiveExp {
@@ -7317,6 +7335,7 @@ private:
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
             }
+            if (moe_prof_.armed) moe_prof_.seg(0, mp_span0, moe_prof_.mark(stream_));
             if (ep2_active_ && !layer_all_ep2_[ip]) {
                 if (!finish_peer_moe_add(B, moeout, err)) return false;
             }
@@ -7517,6 +7536,7 @@ private:
         }
 
         const bool ok = hip_ok(hipStreamSynchronize(stream_), "forward_batch sync", err);
+        if (moe_prof_.on && B >= 64 && moe_prof_.used > 0) moe_prof_.report(B);
         if (prof_on) {
             double sum = 0.0;
             for (int i = 0; i < 8; ++i) sum += p_acc[i];
@@ -9943,6 +9963,34 @@ private:
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
     HybProf hyb_prof_;
+    // STRATA_INK_MOE_PROF=1: GPU time of the prompt-chunk MoE (B >= 64), split into weight unpack, GEMM, SITU and the rest
+    // (bucket build, the host sync on the bucket offsets, RAM expert DMA waits, reduce), one line per chunk.
+    struct MoeProf {
+        bool on = [] { const char* e = std::getenv("STRATA_INK_MOE_PROF"); return e && e[0] == '1'; }();
+        bool armed = false;
+        std::vector<hipEvent_t> ev;
+        size_t used = 0;
+        std::vector<std::array<size_t, 3>> segs;   // kind, start event, end event
+        double host_sync_ms = 0.0;
+        long calls = 0, rows = 0;
+        size_t mark(hipStream_t s) {
+            if (used == ev.size()) { hipEvent_t e{}; (void)hipEventCreate(&e); ev.push_back(e); }
+            (void)hipEventRecord(ev[used], s);
+            return used++;
+        }
+        void seg(int kind, size_t a, size_t b) { segs.push_back({static_cast<size_t>(kind), a, b}); }
+        void report(int B) {
+            double t[4] = {0, 0, 0, 0};
+            for (const auto& g : segs) {
+                float ms = 0.0f;
+                (void)hipEventElapsedTime(&ms, ev[g[1]], ev[g[2]]);
+                t[g[0]] += ms;
+            }
+            std::fprintf(stderr, "[MOE-PROF] B=%d moe=%.1fms | unpack=%.1f gemm=%.1f situ=%.1f other=%.1f | host-sync wall %.1fms | %zu events | %ld expert calls, %.1f rows/call\n",
+                         B, t[0], t[1], t[2], t[3], t[0] - t[1] - t[2] - t[3], host_sync_ms, used, calls, calls ? double(rows) / calls : 0.0);
+            used = 0; segs.clear(); host_sync_ms = 0.0; armed = false; calls = 0; rows = 0;
+        }
+    } moe_prof_;
     int blaslt_min_m_ = 16;
     // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), every linear
     // layer uses the kernels whose row m is the value the one-token step gives (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.

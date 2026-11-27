@@ -22,6 +22,11 @@
 
 namespace strata::inkling2::hip {
 
+__global__ inline void k_rb_f16_to_f32(const _Float16* __restrict__ x, float* __restrict__ y, size_t n) {
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = static_cast<float>(x[i]);
+}
+
 // ABI-exact minimal C definitions matching ROCm hipblaslt.h + hip/library_types.h + hipblas-common.h
 struct DynBlasLtAlgo {
     uint8_t data[16]{};
@@ -52,8 +57,11 @@ public:
 
     bool init(bool is_uma, strata::hip_uma::AmdGen gen) noexcept {
         release();
-        if (gen == strata::hip_uma::AmdGen::Rdna2 || gen == strata::hip_uma::AmdGen::Unknown) {
-            return false;
+        if (gen == strata::hip_uma::AmdGen::Unknown) return false;
+        // RDNA2 has no hipBLASLt kernels; rocBLAS has gfx103x Tensile kernels. STRATA_INK_ROCBLAS=0 keeps the native kernels.
+        if (gen == strata::hip_uma::AmdGen::Rdna2) {
+            const char* env = std::getenv("STRATA_INK_ROCBLAS");
+            return (env && env[0] == '0') ? false : init_rocblas();
         }
         // Default ON for RDNA4 (gfx120x, tuned ROCm 7 Tensile BF16->FP32); default OFF for RDNA3/3.5
         // (native Wave32 k_bf16_wmma_bf16_64x128 + fdot2<8> beats Windows/ROCm gfx1151 Tensile by +26-42%).
@@ -124,6 +132,7 @@ public:
     }
 
     bool ready() const noexcept { return ready_; }
+    bool is_rocblas() const noexcept { return rb_handle_ != nullptr; }
 
     // One-time warmup inside backend init(): pays the ~600ms lazy Tensile library load at startup
     // instead of the user's first prompt TTFT, and pre-caches common trunk (M, N, K) shapes!
@@ -151,6 +160,29 @@ public:
                  const void* W_nk, const void* X_mk, void* Y_mn,
                  int M, int N, int K, hipStream_t stream, float alpha = 1.0f) noexcept {
         if (!ready_ || M <= 0 || N <= 0 || K <= 0) return false;
+        if (rb_handle_) {
+            // Same column-major problem as the hipBLASLt plan below: Y^T[N, M] = alpha * W^T(T)[N, K] @ X^T[K, M]
+            const int t = (in_type == kTypeF16) ? 150 : (in_type == kTypeBF16) ? 168 : 151;   // rocblas_datatype f16/bf16/f32
+            const int to = (out_type == kTypeF16) ? 150 : (out_type == kTypeBF16) ? 168 : 151;
+            const float beta = 0.0f;
+            if (fn_rb_set_stream_(rb_handle_, stream) != 0) return false;
+            // gfx103x Tensile: FP16 in / FP16 out (FP32 accumulate) runs 1.6-5x faster than FP16 in / FP32 out, so write FP16
+            // into a scratch buffer and widen it. STRATA_INK_ROCBLAS_F32OUT=1 keeps the direct FP32 output.
+            if (t == 150 && to == 151 && !rb_f32out_) {
+                const size_t n = static_cast<size_t>(M) * N;
+                if (rb_tmp_.bytes < n * 2) {
+                    strata::hip_uma::free_gpu_buffer(rb_tmp_);
+                    if (strata::hip_uma::alloc_gpu_buffer(rb_tmp_, n * 2, false) != hipSuccess) return false;
+                }
+                if (fn_rb_gemm_ex_(rb_handle_, kOpT, kOpN, N, M, K, &alpha, W_nk, t, K, X_mk, t, K, &beta,
+                                   rb_tmp_.dev_ptr, 150, N, rb_tmp_.dev_ptr, 150, N, 151, 0, 0, 0) != 0) return false;
+                k_rb_f16_to_f32<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
+                    reinterpret_cast<const _Float16*>(rb_tmp_.dev_ptr), static_cast<float*>(Y_mn), n);
+                return true;
+            }
+            return fn_rb_gemm_ex_(rb_handle_, kOpT, kOpN, N, M, K, &alpha, W_nk, t, K, X_mk, t, K, &beta,
+                                  Y_mn, to, N, Y_mn, to, N, 151, 0, 0, 0) == 0;
+        }
         const PlanKey key{in_type, out_type, M, N, K};
         auto it = cache_.find(key);
         if (it == cache_.end()) {
@@ -200,6 +232,8 @@ public:
             if (cp.md && fn_md_destroy_) fn_md_destroy_(cp.md);
         }
         cache_.clear();
+        if (rb_handle_ && fn_rb_destroy_) { fn_rb_destroy_(rb_handle_); rb_handle_ = nullptr; }
+        strata::hip_uma::free_gpu_buffer(rb_tmp_);
         if (pref_ && fn_pref_destroy_) { fn_pref_destroy_(pref_); pref_ = nullptr; }
         if (handle_ && fn_destroy_) { fn_destroy_(handle_); handle_ = nullptr; }
         strata::hip_uma::free_gpu_buffer(ws_);
@@ -216,6 +250,32 @@ public:
     }
 
 private:
+    bool init_rocblas() noexcept {
+#ifdef _WIN32
+        lib_ = static_cast<void*>(LoadLibraryA("rocblas.dll"));
+#else
+        lib_ = dlopen("librocblas.so.5", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib_) lib_ = dlopen("librocblas.so", RTLD_LAZY | RTLD_LOCAL);
+#endif
+        if (!lib_) return false;
+#ifdef _WIN32
+        auto sym = [&](const char* n) -> void* { return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(lib_), n)); };
+#else
+        auto sym = [&](const char* n) -> void* { return dlsym(lib_, n); };
+#endif
+        auto fn_create = reinterpret_cast<FnCreate>(sym("rocblas_create_handle"));
+        fn_rb_destroy_    = reinterpret_cast<FnDestroy>(sym("rocblas_destroy_handle"));
+        fn_rb_set_stream_ = reinterpret_cast<FnRbSetStream>(sym("rocblas_set_stream"));
+        fn_rb_gemm_ex_    = reinterpret_cast<FnRbGemmEx>(sym("rocblas_gemm_ex"));
+        if (!fn_create || !fn_rb_destroy_ || !fn_rb_set_stream_ || !fn_rb_gemm_ex_ || fn_create(&rb_handle_) != 0 || !rb_handle_) {
+            rb_handle_ = nullptr;
+            release();
+            return false;
+        }
+        ready_ = true;
+        return true;
+    }
+
     struct PlanKey {
         int in_type, out_type, M, N, K;
         bool operator==(const PlanKey& o) const noexcept {
@@ -285,6 +345,16 @@ private:
     using FnMatmul      = int32_t (*)(void*, void*, const void*, const void*, void*, const void*, void*,
                                       const void*, const void*, void*, void*, void*, const DynBlasLtAlgo*,
                                       void*, size_t, hipStream_t);
+
+    using FnRbSetStream = int32_t (*)(void*, hipStream_t);
+    using FnRbGemmEx    = int32_t (*)(void*, int, int, int, int, int, const void*, const void*, int, int, const void*, int, int,
+                                      const void*, const void*, int, int, void*, int, int, int, int, int32_t, uint32_t);
+    void* rb_handle_ = nullptr;
+    strata::hip_uma::GpuBuffer rb_tmp_{};
+    bool rb_f32out_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_F32OUT"); return e && e[0] == '1'; }();
+    FnDestroy     fn_rb_destroy_    = nullptr;
+    FnRbSetStream fn_rb_set_stream_ = nullptr;
+    FnRbGemmEx    fn_rb_gemm_ex_    = nullptr;
 
     void* lib_ = nullptr;
     void* handle_ = nullptr;
