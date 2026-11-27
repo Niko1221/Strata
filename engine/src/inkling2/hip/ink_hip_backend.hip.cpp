@@ -820,6 +820,13 @@ public:
                                         false
 #endif
         );
+        // HIP reports WGPs, not CUs, on RDNA (an R9700's 64 CUs read as 32), so a big discrete card lands in the <= 36 class (2048).
+        // STRATA_INK_MAX_PREFILL_CHUNK=N sets the cap by hand.
+        if (const char* ev = std::getenv("STRATA_INK_MAX_PREFILL_CHUNK"); ev && std::atoi(ev) >= 64) {
+            guard_.max_prefill_chunk = std::atoi(ev);
+        }
+        std::fprintf(stderr, "[ink-hip] dispatch guard: max_prefill_chunk %d (cu_count %d as HIP reports it)\n",
+                     guard_.max_prefill_chunk, mem_info_.cu_count);
 
         // Opt-in AMD Radeon AI PRO R9700 32GB (gfx1201) fast/exact path (STRICTLY OFF by default!)
         if (r9700::master_requested()) {
