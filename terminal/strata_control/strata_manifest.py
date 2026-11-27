@@ -163,6 +163,57 @@ def family_from_hints(name: str, size: int) -> str | None:
     return None
 
 
+INFO_TIMEOUT = 15.0
+
+
+def _engine_programs() -> list:
+    """[(family, program path)] of the installed engines that read a .strata file (strata-inkling, strata-hy4); a missing one is left out."""
+    from strata_control import engine_component, hy4_family, inkling_family
+    found = []
+    for family, component in ((inkling_family.FAMILY, inkling_family.COMPONENT), (hy4_family.FAMILY, hy4_family.COMPONENT)):
+        try:
+            exe = engine_component.expand(engine_component.REFERENCE_PREFIX + component, {}, full=False)
+        except Exception:                                            # noqa: BLE001 - no such engine installed (or a damaged folder): not asked
+            continue
+        if exe and Path(exe).is_file():
+            found.append((family, Path(exe)))
+    return found
+
+
+def _run_info(exe: Path, path: Path, timeout: float = INFO_TIMEOUT) -> str | None:
+    """`exe --info FILE`: the program's own account of the pack's header (it reads Section 0 and starts no graphics card, loads no weights); its output, or None when it fails."""
+    import subprocess
+    from strata_control.childenv import quiet_crash_env
+    try:
+        done = subprocess.run([str(exe), "--info", str(path)], capture_output=True, text=True, errors="replace", timeout=timeout,
+                              env=quiet_crash_env(dict(os.environ)), cwd=str(Path(exe).parent), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def parse_info(text: str | None) -> dict:
+    """The key=value facts of an engine's `--info` line (arch=inkling2_loop layers=24 hidden=2304 ...); {} when there is none."""
+    for line in str(text or "").splitlines():
+        if line.startswith("arch="):
+            return dict(p.split("=", 1) for p in line.split() if "=" in p)
+    return {}
+
+
+def family_from_engine(path: Path) -> tuple[str | None, dict]:
+    """(family, the engine's facts) for a file whose manifest this Python cannot unpack: ask the installed engines `--info FILE`, the one the file's name
+    points to first. The first program that answers with an `arch` Strata runs names the family. (None, {}) when no engine is installed or none answers."""
+    programs = _engine_programs()
+    hint = family_from_hints(Path(path).name, 0)
+    programs.sort(key=lambda item: item[0] != hint)
+    for family, exe in programs:
+        facts = parse_info(_run_info(exe, Path(path)))
+        named = family_of_manifest({"arch": facts.get("arch")}) if facts.get("arch") else None
+        if named is not None:
+            return named, facts
+    return None, {}
+
+
 def inspect(path: Path) -> dict:
     """{"layout", "size", "family", "arch", "manifest_read", "guessed", "name", "build"} of one .strata file. ValueError for a file that is not a valid .strata."""
     head = read_header(path)
@@ -171,7 +222,11 @@ def inspect(path: Path) -> dict:
     try:
         manifest = read_manifest(path, head)
     except NeedsZstd:
-        result["family"] = family_from_hints(Path(path).name, head["size"])
+        family, facts = family_from_engine(path)                     # first: the installed engine's own reading of the header
+        if family is not None:
+            result.update(family=family, arch=facts.get("arch"), engine_facts=facts, read_by_engine=True)
+            return result
+        result["family"] = family_from_hints(Path(path).name, head["size"])      # last: the name, then the size (a guess, said out loud)
         result["guessed"] = result["family"] is not None
         return result
     result["manifest_read"] = True

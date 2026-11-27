@@ -110,13 +110,74 @@ class StrataManifest(Base):
 
     def test_a_manifest_this_python_cannot_unpack_falls_back_to_the_name_then_the_size_and_says_so(self):
         p = self.write("renamed-hy4-tune.strata", hy4_strata())
-        with mock.patch.object(strata_manifest, "_decompress", side_effect=strata_manifest.NeedsZstd("no zstd")):
+        with mock.patch.object(strata_manifest, "_decompress", side_effect=strata_manifest.NeedsZstd("no zstd")), \
+             mock.patch.object(strata_manifest, "_engine_programs", return_value=[]):                  # no engine installed: only the guess is left
             by_name = strata_manifest.inspect(p)
             self.assertEqual((by_name["family"], by_name["guessed"], by_name["manifest_read"]), ("hy4-flash", True, False))
             plain = strata_manifest.inspect(self.write("plain.strata", inkling_strata()))
             self.assertEqual(plain["family"], "inkling-2-mini")                                   # small: Inkling-2-Mini's size class
             with mock.patch.object(strata_manifest, "INKLING_MAX_BYTES", 10), mock.patch.object(strata_manifest, "HY4_MIN_BYTES", 10 ** 9):
                 self.assertIsNone(strata_manifest.inspect(self.write("mid.strata", inkling_strata()))["family"])
+
+
+class AskTheEngine(Base):
+    """No zstd in this Python: the installed engine's `--info FILE` (header only, no weights) names the family before any guess from the name or size."""
+    INK = "arch=inkling2_loop layers=24 visits=48 hidden=2304 vocab=200058 experts=128 eos=200006 drafter=dspark images=1 parallel=64\n"
+    HY4 = "arch=hy4flash layers=42 hidden=3072 vocab=120832 experts=512 eos=120025 drafter=dfly2 images=1\n"
+
+    def ask(self, name: str, data: bytes, answers: dict, programs=None):
+        p = self.root / name
+        p.write_bytes(data)
+        programs = [("inkling-2-mini", Path("/e/strata-inkling")), ("hy4-flash", Path("/e/strata-hy4"))] if programs is None else programs
+        asked = []
+
+        def run_info(exe, path, timeout=15.0):
+            asked.append(exe.name)
+            return answers.get(exe.name)
+        with mock.patch.object(strata_manifest, "_decompress", side_effect=strata_manifest.NeedsZstd("no zstd")), \
+             mock.patch.object(strata_manifest, "_engine_programs", return_value=programs), mock.patch.object(strata_manifest, "_run_info", run_info):
+            return p, strata_manifest.inspect(p), asked
+
+    def test_the_engine_names_the_family_whatever_the_file_is_called(self):
+        _p, info, asked = self.ask("zzz-merge.strata", hy4_strata(), {"strata-hy4": self.HY4})            # the Inkling engine refuses a HY-4 file (no answer)
+        self.assertEqual((info["family"], info["guessed"], info["read_by_engine"], info["arch"]), ("hy4-flash", False, True, "hy4flash"))
+        self.assertEqual(info["engine_facts"]["experts"], "512")
+        self.assertEqual(asked, ["strata-inkling", "strata-hy4"])
+        _p, info, _ = self.ask("yyy-tune.strata", inkling_strata(), {"strata-inkling": self.INK})
+        self.assertEqual((info["family"], info["guessed"]), ("inkling-2-mini", False))
+
+    def test_the_name_only_chooses_which_engine_is_asked_first(self):
+        _p, info, asked = self.ask("my-hy4-tune.strata", hy4_strata(), {"strata-hy4": self.HY4})
+        self.assertEqual((info["family"], asked), ("hy4-flash", ["strata-hy4"]))
+
+    def test_an_engine_that_names_nothing_leaves_the_guess_with_its_words(self):
+        _p, info, _ = self.ask("renamed-hy4.strata", hy4_strata(), {"strata-hy4": "no arch line here\n", "strata-inkling": "arch=llama layers=2\n"})
+        self.assertEqual((info["family"], info["guessed"], info["read_by_engine"] if "read_by_engine" in info else False), ("hy4-flash", True, False))
+        _p, info, _ = self.ask("plain-name.strata", inkling_strata(), {}, programs=[])                  # no engine installed at all
+        self.assertEqual((info["family"], info["guessed"]), ("inkling-2-mini", True))
+
+    def test_plan_import_uses_the_engines_answer_and_does_not_say_it_guessed(self):
+        f = self.folder("eng")
+        p = f / "my-custom-pack.strata"
+        p.write_bytes(hy4_strata())
+        with mock.patch.object(strata_manifest, "_decompress", side_effect=strata_manifest.NeedsZstd("no zstd")), \
+             mock.patch.object(strata_manifest, "_engine_programs", return_value=[("hy4-flash", Path("/e/strata-hy4"))]), \
+             mock.patch.object(strata_manifest, "_run_info", return_value=self.HY4):
+            plan = models.plan_import(str(p))
+        self.assertEqual((plan["file_set_status"], plan["candidate_selection"]["family"]), ("plausible", "hy4-flash"))
+        self.assertFalse(any("took the model type from the file" in m for m in plan["messages"]))
+
+    def test_parse_info_and_the_call_to_the_program(self):
+        self.assertEqual(strata_manifest.parse_info("noise\n" + self.INK)["vocab"], "200058")
+        self.assertEqual(strata_manifest.parse_info(None), {})
+        import subprocess
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 1)):
+            self.assertIsNone(strata_manifest._run_info(Path("/e/strata-hy4"), Path("/f.strata")))
+        done = mock.Mock(stdout=self.HY4, returncode=0)
+        with mock.patch("subprocess.run", return_value=done) as called:
+            self.assertEqual(strata_manifest._run_info(Path("/e/strata-hy4"), Path("/f.strata")), self.HY4)
+        self.assertEqual(called.call_args[0][0][1], "--info")
+        self.assertEqual(called.call_args[1]["timeout"], strata_manifest.INFO_TIMEOUT)
 
 
 class StrataImportPlan(Base):
