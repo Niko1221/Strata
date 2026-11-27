@@ -1174,6 +1174,10 @@ every turn, is encoded once.
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500
 (about 5% of decode). `--vision gpu` is kept with a note.
 
+With a compact Q8_0 mmproj on CUDA, set `"env": {"STRATA_VIT_Q8_REUSE_WORKSPACE": "1"}` in the `"vision"` section
+to reuse the reader's temporary buffers for FP16 dequantization. Keep any other entries in that `"env"` object.
+This option defaults to off. The reader uses a dedicated workspace if its existing buffers are too small.
+
 ### Sending a picture
 
 Terminal chat: type `/image <path>`, press Enter, then type your question. OpenAI API: an `image_url` part (a `data:` URL, an

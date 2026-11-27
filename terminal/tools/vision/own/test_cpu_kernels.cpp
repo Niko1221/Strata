@@ -4,6 +4,7 @@
 #include "cpu_team.h"
 #include "vit_cpu.h"
 #include "vit_f16.h"
+#include "vit_q8_workspace.h"
 
 #include <atomic>
 #include <cmath>
@@ -347,6 +348,31 @@ static void test_f16_kind() {
     check(mok, "F16 kind: STRATA_VIT_BF16_AS_F16 values", "-", 0, 0);
 }
 
+static void test_q8_workspace() {
+    constexpr size_t width = 1152;
+    constexpr size_t scores = 8 << 20;
+    constexpr size_t layer = width * 4304;
+    constexpr size_t projector = 4608 * 4608;
+    check(vit_q8_can_reuse_workspace(8100 * width, scores, layer, projector),
+          "Q8 workspace: Qwen3.8 at 2025 image tokens", "-", 0, 0);
+    check(vit_q8_can_reuse_workspace(8192 * width, scores, layer, projector),
+          "Q8 workspace: Qwen3.8 at 2048 image tokens", "-", 0, 0);
+    check(vit_q8_can_reuse_workspace(16384 * width, 16 << 20, layer, projector),
+          "Q8 workspace: Qwen3.8 at 4096 image tokens", "-", 0, 0);
+    check(!vit_q8_can_reuse_workspace(4096 * width, scores, layer, projector),
+          "Q8 workspace: the projector must fit in the combined Q/K/V buffer", "-", 0, 0);
+    check(!vit_q8_can_reuse_workspace(8192 * width, layer - 1, layer, projector),
+          "Q8 workspace: the layer must fit even with the smaller score buffer", "-", 0, 0);
+    check(vit_q8_can_reuse_workspace(128, layer, layer, 384) &&
+          !vit_q8_can_reuse_workspace(128, layer, layer, 385) &&
+          !vit_q8_can_reuse_workspace(129, layer, layer, 384),
+          "Q8 workspace: exact capacities and all three bases aligned to 256 bytes", "-", 0, 0);
+    check(vit_q8_can_reuse_workspace(129, layer, layer, 0) &&
+          vit_q8_can_reuse_workspace(128, 0, 0, 384) &&
+          !vit_q8_can_reuse_workspace(128, scores, 0, 0),
+          "Q8 workspace: reuse only for stages with compact Q8 weights", "-", 0, 0);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "team") == 0) {     // only the fork-join team (a loop under ThreadSanitizer)
         const int reps = argc > 2 ? std::atoi(argv[2]) : 1;
@@ -383,6 +409,7 @@ int main(int argc, char** argv) {
     test_team();
     test_round_choice();
     test_f16_kind();
+    test_q8_workspace();
     std::printf(g_fail ? "%d FAILED\n" : "all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }
