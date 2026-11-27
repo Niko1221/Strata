@@ -10,6 +10,10 @@ the request latency (p50 / p95).  With --save DIR it writes every answer, so a l
 byte with `--compare DIR` (greedy answers of a request must not depend on who else ran).
 
 Standard library only.  The prompts are fixed texts, so two runs of the tool send the same requests.
+
+--shared-prefix sends every request the same long system document and does not set strata_prefix.
+Run it twice against the same server build: once with STRATA_AUTO_PREFIX=1 and once with the variable unset.
+Compare time to first token, and cached_tokens / timings.prompt_n (how much of the prompt was not read again).
 """
 import argparse, json, os, statistics, sys, threading, time, urllib.request
 
@@ -31,9 +35,14 @@ def prompt_for(i: int, words: int, nonce: str = "") -> str:
             f"Use plain prose, no lists.")
 
 
-def one(url, key, model, i, words, max_tokens, res, extra, think, nonce=""):
+def one(url, key, model, i, words, max_tokens, res, extra, think, nonce="", system=""):
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt_for(i, words, nonce)})
+    # No strata_prefix: with STRATA_AUTO_PREFIX=1 the server fills it; unset, the prompt is read in full.
     body = {"model": model, "stream": True, "max_tokens": max_tokens, "temperature": 0,
-            "messages": [{"role": "user", "content": prompt_for(i, words, nonce)}]}
+            "messages": messages}
     if not think:
         body["reasoning_effort"] = "none"
         body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -43,6 +52,7 @@ def one(url, key, model, i, words, max_tokens, res, extra, think, nonce=""):
                                           **({"Authorization": "Bearer " + key} if key else {})})
     t0 = time.perf_counter()
     first, n, text = None, 0, []
+    cached, read_n = None, None
     err = None
     try:
         with urllib.request.urlopen(req, timeout=900) as r:
@@ -67,9 +77,16 @@ def one(url, key, model, i, words, max_tokens, res, extra, think, nonce=""):
                         text.append(piece)
                 if j.get("usage"):
                     n = j["usage"].get("completion_tokens", n)
+                    details = j["usage"].get("prompt_tokens_details") or {}
+                    if details.get("cached_tokens") is not None:
+                        cached = details["cached_tokens"]
+                    timings = j.get("timings") or {}
+                    if timings.get("prompt_n") is not None:
+                        read_n = timings["prompt_n"]
     except Exception as e:                          # noqa: BLE001
         err = repr(e)
-    res[i] = {"first": first, "tokens": n, "total": time.perf_counter() - t0, "text": "".join(text), "err": err}
+    res[i] = {"first": first, "tokens": n, "total": time.perf_counter() - t0, "text": "".join(text), "err": err,
+              "cached": cached, "read_n": read_n}
 
 
 def pct(v, p):
@@ -96,7 +113,28 @@ def main():
     ap.add_argument("--save", help="write every answer (clients/round/request) here")
     ap.add_argument("--compare", help="compare every answer with the files a --save run wrote")
     ap.add_argument("--json", help="write the table as JSON")
+    ap.add_argument("--shared-prefix", action="store_true",
+                    help="every request shares one long system document and does not send strata_prefix; "
+                         "compare a server with STRATA_AUTO_PREFIX=1 against one without it")
+    ap.add_argument("--shared-words", type=int, default=800, help="words in that shared document")
     a = ap.parse_args()
+    manual = (
+        "Plant operations manual. The night shift inspects the pumps, the valves, the tanks and the logbook. "
+        "Every reading is written twice, compared with the last hour, and signed before the round continues. "
+    )
+    system = ""
+    if a.shared_prefix:
+        parts, words = [], 0
+        i = 0
+        while words < a.shared_words:
+            sentence = manual + f"Section {i} stays in force until the chief revises it. "
+            parts.append(sentence)
+            words += len(sentence.split())
+            i += 1
+        system = "".join(parts)
+        print("shared prefix: requests do not send strata_prefix. Compare this run with STRATA_AUTO_PREFIX=1 "
+              "against the same run with the variable unset. TTFT, cached_tokens and prompt_n are below.",
+              flush=True)
     extra = {}
     out = []
     bad = 0
@@ -107,7 +145,7 @@ def main():
             th = []
             t0 = time.perf_counter()
             for i in range(c):
-                t = threading.Thread(target=one, args=(a.url, a.key, a.model, i, a.words, a.max_tokens, res, extra, a.think, f" {a.nonce}-{c}-{rd}" if a.nonce else ""))
+                t = threading.Thread(target=one, args=(a.url, a.key, a.model, i, a.words, a.max_tokens, res, extra, a.think, f" {a.nonce}-{c}-{rd}" if a.nonce else "", system))
                 t.start()
                 th.append(t)
                 if a.stagger:
@@ -120,7 +158,10 @@ def main():
             firsts = [r["first"] for r in res.values() if r["first"] is not None]
             tot = [r["total"] for r in res.values()]
             per = [r["tokens"] / max(r["total"] - (r["first"] or 0), 1e-6) for r in res.values()]
-            rows.append({"wall": wall, "toks": toks, "tps": toks / wall, "first": firsts, "lat": tot, "per": per, "err": errs})
+            cacheds = [r["cached"] for r in res.values() if r.get("cached") is not None]
+            reads = [r["read_n"] for r in res.values() if r.get("read_n") is not None]
+            rows.append({"wall": wall, "toks": toks, "tps": toks / wall, "first": firsts, "lat": tot, "per": per,
+                         "err": errs, "cached": cacheds, "read_n": reads})
             if a.save:
                 d = os.path.join(a.save, f"c{c}", f"r{rd}")
                 os.makedirs(d, exist_ok=True)
@@ -140,15 +181,22 @@ def main():
         allf = [x for r in rows for x in r["first"]]
         alll = [x for r in rows for x in r["lat"]]
         allp = [x for r in rows for x in r["per"]]
+        all_cached = [x for r in rows for x in r["cached"]]
+        all_read = [x for r in rows for x in r["read_n"]]
         s = {"clients": c, "total_tps": statistics.median(r["tps"] for r in rows),
              "per_req_tps": statistics.median(allp) if allp else float("nan"),
              "first_p50": pct(allf, .5), "first_p95": pct(allf, .95),
-             "lat_p50": pct(alll, .5), "lat_p95": pct(alll, .95), "errors": sum(len(r["err"]) for r in rows)}
+             "lat_p50": pct(alll, .5), "lat_p95": pct(alll, .95), "errors": sum(len(r["err"]) for r in rows),
+             "cached_p50": pct(all_cached, .5) if all_cached else None,
+             "read_p50": pct(all_read, .5) if all_read else None}
         out.append(s)
-    print("\nclients  total tok/s  per-req tok/s  first p50/p95 (s)  latency p50/p95 (s)  errors")
+    print("\nclients  total tok/s  per-req tok/s  first p50/p95 (s)  latency p50/p95 (s)  cached p50  read p50  errors")
     for s in out:
+        cached = f"{s['cached_p50']:.0f}" if s["cached_p50"] is not None else "-"
+        read = f"{s['read_p50']:.0f}" if s["read_p50"] is not None else "-"
         print(f"{s['clients']:>7}  {s['total_tps']:>11.1f}  {s['per_req_tps']:>13.1f}  "
-              f"{s['first_p50']:>7.2f}/{s['first_p95']:<7.2f}  {s['lat_p50']:>8.2f}/{s['lat_p95']:<8.2f}  {s['errors']}")
+              f"{s['first_p50']:>7.2f}/{s['first_p95']:<7.2f}  {s['lat_p50']:>8.2f}/{s['lat_p95']:<8.2f}  "
+              f"{cached:>10}  {read:>8}  {s['errors']}")
     if a.json:
         json.dump(out, open(a.json, "w"), indent=1)
     if a.compare:

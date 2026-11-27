@@ -19,6 +19,9 @@ fits but prompt plus max tokens does not (Claude Code asks for 32000, the Harnes
 the room left (less CTX_SLACK) and the thinking budget follows it; `--no-fit-max-tokens` / `"fit_max_tokens": false`
 brings back the strict 400 of llama.cpp.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
+A client may mark a shared prompt start with "strata_prefix". STRATA_AUTO_PREFIX=1 (off unless set) fills that
+same field when the prompt's token ids share a long prefix with one this process has already accepted, so
+resolve_prefix and the engine see no difference. The log line then starts with "strata_prefix auto:".
 
 The engine boundary is `Engine.generate(prompt_ids, max_new, sampling, cancel) -> iterator of token ids`.
 `StrataEngine` keeps one `strata --serve` process resident (weights, expert arena and VRAM tier load once) and
@@ -345,6 +348,7 @@ tls.install()       # #3722: image URLs and tool servers over HTTPS are checked 
 from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import speed_switches  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
+from serve.pin_registry import AutoPrefix  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
 from strata_control import drafting  # noqa: E402
 from strata_control import vram_fit  # noqa: E402
@@ -4481,6 +4485,8 @@ class Service:
             slots = conversation_slots(engine)
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
+        # Off unless STRATA_AUTO_PREFIX=1. While it is off, prepare() does not read or write it.
+        self.auto_prefix = AutoPrefix.from_env()
 
     def set_family(self, family: str | None) -> None:
         """The model family (None: the Qwen form this server was written for)."""
@@ -5161,6 +5167,7 @@ class Service:
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
+        self.auto_prefix.invalidate()          # the new process has none of the pins the trie still named
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
@@ -5292,6 +5299,7 @@ class Service:
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
             self.engine.unload()
+            self.auto_prefix.invalidate()      # an unloaded engine keeps no checkpoint to match against
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             self.vision_held = False
@@ -5710,6 +5718,13 @@ class Service:
         if self.prompts is not None:
             self.prompts.forget(ids)
 
+    def _prefix_epoch(self):
+        """Identity of the engine process whose checkpoints the trie is allowed to name. A new pid, or an unload, is a new epoch."""
+        eng = self.engine
+        proc = getattr(eng, "proc", None)
+        pid = getattr(proc, "pid", None) if proc is not None else None
+        return (pid, bool(getattr(eng, "unloaded", False)))
+
 
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
@@ -5904,6 +5919,18 @@ class Service:
             if 0 < count < len(messages):
                 req["strata_prefix"] = {"messages": count}
                 auto_prefix = True
+        # STRATA_AUTO_PREFIX (off by default). Pictures stay out: resolve_prefix already refuses a prefix on them.
+        # Inkling has its own shared-prefix rule above; auto-detection only runs for everyone else.
+        track_prefix = self.auto_prefix.enabled and req is not None and not had_images and not self.inkling
+        if track_prefix:
+            self.auto_prefix.sync(self._prefix_epoch())
+        auto_n = None
+        if track_prefix and req.get("strata_prefix") is None:
+            auto_n, _auto_ref = self.auto_prefix.propose(ids)
+            if auto_n:
+                print(f"[strata] strata_prefix auto: matched {auto_n} tokens of the {len(ids)}-token prompt "
+                      "(client did not set strata_prefix)", flush=True)
+                req["strata_prefix"] = {"tokens": auto_n}
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, had_images)
             if self.inkling and not inkling_shared_ok:
@@ -5919,6 +5946,15 @@ class Service:
                 n = req["strata_prefix"].get("tokens", 0)
                 n = (n // chunk) * chunk if chunk > 0 else 0
                 req["strata_prefix"] = {"tokens": n} if n > 0 else {}
+        if track_prefix:
+            spec = req.get("strata_prefix")
+            pin = spec.get("tokens") if isinstance(spec, dict) else None
+            if not isinstance(pin, int) or isinstance(pin, bool) or pin < 1:
+                pin = None
+            if auto_n and pin != auto_n:
+                self.auto_prefix.release(ids, auto_n)     # resolve_prefix refused the boundary; the slot stays free
+            # A pin we did not invent (the client's own strata_prefix) counts even past the budget.
+            self.auto_prefix.remember(ids, pin, client=auto_n is None and pin is not None)
         if self.inkling:                       # the thinking level decides (a forced call skips the thinking)
             word, level = inkling_dialect.effort_of(kwargs)
             if isinstance(req, dict):
@@ -6468,17 +6504,20 @@ class Service:
                                 del segments[segments_before:]
                                 print("[strata] the engine's logits became non-finite before the first token (#879); it "
                                       "dropped its cached state: sending the request again once", flush=True)
+                                self.auto_prefix.invalidate(keep_armed=True)   # the retry below reads this same prompt
                                 continue
                             if n == 0:
                                 finish = "error"
                                 print("[strata] the engine's logits became non-finite again on the retry (#879): the "
                                       "request ends with an error", flush=True)
+                                self.auto_prefix.invalidate()
                                 raise EngineNonFinite("the model's output became non-finite (NaN) twice in a row "
                                                       "(#879); the engine has dropped its cached state - send the "
                                                       "request again")
                             print(f"[strata] the engine's logits became non-finite after {n} tokens (#879): the reply "
                                   "ends here as \"length\"; the engine dropped its cached state, so the next request "
                                   "reads its prompt from the start", flush=True)
+                            self.auto_prefix.invalidate()
                             finish = "length"
                             break
                         if recover_prompt is not None and not cancel.is_set() and n < max_new:
@@ -6671,6 +6710,12 @@ class Service:
                     with self.status_lock:
                         if st.get("busy") and not timed_out:
                             last = request_stats(segments)          # only this request's own DONEs count
+                            if self.auto_prefix.enabled:
+                                spec = (sampling or {}).get("strata_prefix") if isinstance(sampling, dict) else None
+                                pin = spec.get("tokens") if isinstance(spec, dict) else None
+                                self.auto_prefix.confirm_read(
+                                    ids, pin if isinstance(pin, int) and not isinstance(pin, bool) else None,
+                                    last.get("prompt_read"), finish)
                             started = st.get("started", time.time())
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
@@ -6974,7 +7019,14 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 "Explain any gaps in the available evidence. Do not request or emit further tool calls."})
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
         try:
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+            # A strata_prefix resolved for an earlier round's (shorter) ids must not ride along unchanged: the
+            # max_rounds branch above inserts a message in the middle of the list, not just at the end, so a
+            # frozen {"tokens": n} from a previous round can point past content that has since shifted. Dropping
+            # it here lets this round's prepare() decide fresh - re-running resolve_prefix (an explicit client
+            # prefix) or the auto-prefix matcher (STRATA_AUTO_PREFIX=1) against the round's actual ids, instead of
+            # resending a boundary nobody re-checked.
+            sampling.pop("strata_prefix", None)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, req=sampling, cancel=cancel)
         except ClientGone:                                      # #1999: the client left while a picture was prepared
             done = {**done, "finish": "cancel"}
             break

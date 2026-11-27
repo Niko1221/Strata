@@ -9,6 +9,7 @@ import argparse, json, os, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import strata_tokenizer as ST  # noqa: E402
 
 QUESTIONS = [
@@ -76,8 +77,14 @@ class Engine:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", required=True)
-    ap.add_argument("--config", required=True)
+    ap.add_argument("--exe", default="", help="the engine binary (not used with --dry-run)")
+    ap.add_argument("--config", default="", help="strata-<model>.json (not used with --dry-run)")
+    ap.add_argument("--shared-prefix", type=int, default=0,
+                    help="identical filler of about this many tokens at the start of every prompt; the batch arm "
+                         "pins the part the prefix trie matches, the solo arm does not, and the tokens must still match")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="no engine: a second synthetic prompt must match the first for --shared-prefix tokens "
+                         "(64 when that is 0)")
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--n", type=int, default=4, help="prompts (<= --batch)")
     ap.add_argument("--max-new", type=int, default=64)
@@ -96,25 +103,67 @@ def main():
     ap.add_argument("--pad", type=int, default=0, help="PAR-H: every prompt gets about this many tokens of its own filler text first")
     ap.add_argument("--mt-min", default="1", help="STRATA_IQ_MT_MIN for the engine (1: exact; empty: the default)")
     a = ap.parse_args()
+    if a.dry_run:
+        from serve.prefix_trie import PrefixTrie
+        n_shared = a.shared_prefix or 64
+        prompts = [list(range(n_shared)) + [10_000 + i, 20_000 + i] for i in range(max(2, a.n))]
+        trie = PrefixTrie(ttl_s=None, idle_inserts=None)
+        trie.insert(prompts[0], 0)
+        before = list(prompts[1])
+        n, ref = trie.longest_match(prompts[1])
+        print(f"[batch] strata_prefix auto: matched {n} tokens of prompt 1 "
+              "(client did not set strata_prefix)", flush=True)
+        # The pin is an annotation. It must not change the prompt's ids, which is what the solo-vs-batch
+        # comparison checks on a real engine.
+        if n < n_shared or ref is None or prompts[1] != before:
+            print("dry-run: shared prefix was not found", flush=True)
+            return 2
+        print(f"dry-run: prompt 1 matches prompt 0 for {n} tokens; prompt ids unchanged", flush=True)
+        return 0
+    if not a.exe or not a.config:
+        ap.error("--exe and --config are required")
     cfg = json.loads(Path(a.config).read_text())
     tok = tokenizer(cfg["tokenizer"])
+    shared = ""
+    if a.shared_prefix:
+        para = ("The committee reviewed item %d of the long agenda, noting the budget, the schedule and the open "
+                "risks, and asked the staff to report back next quarter. ")
+        per = max(1, len(tok.encode(para % 100)))
+        shared = "".join(para % i for i in range(a.shared_prefix // per + 1))
     prompts = []
     for q in QUESTIONS[: a.n]:
-        text = f"<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        body = (shared + "\n\n" + q) if shared else q
+        text = f"<|im_start|>user\n{body}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         if a.long_tokens and q is QUESTIONS[a.n - 1]:
             para = ("The committee reviewed item %d of the long agenda, noting the budget, the schedule and the open "
                     "risks, and asked the staff to report back next quarter. ")
             per = max(1, len(tok.encode(para % 100)))
             filler = "".join(para % i for i in range(a.long_tokens // per + 1))
-            text = f"<|im_start|>user\n{filler}\n\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            text = f"<|im_start|>user\n{filler}\n\n{body}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         if a.pad:
             para = ("Note %d-%d: the survey team measured the northern ridge, logged the readings of station %d, and sent the "
                     "figures to the office, where a clerk filed the sheets under reference %d. ")
             qi = QUESTIONS.index(q)
             per = max(1, len(tok.encode(para % (qi, 100, 100, 100))))
             filler = "".join(para % (qi, i, (i * 7 + qi) % 97, i * 13 + qi) for i in range(a.pad // per + 1))
-            text = f"<|im_start|>user\n{filler}\n\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            text = f"<|im_start|>user\n{filler}\n\n{body}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         prompts.append(tok.encode(text, parse_special=True))
+    trie = None
+    if a.shared_prefix:
+        from serve.prefix_trie import PrefixTrie
+        trie = PrefixTrie(ttl_s=None, idle_inserts=None)
+
+    def batch_keys(i, ids):
+        """Solo reads with no pin. The batch arm pins a prefix the trie has already seen, and the tokens must still match."""
+        if trie is None:
+            return a.keys
+        n, _ref = trie.longest_match(ids)
+        trie.insert(list(ids), i)
+        if n >= 2 and n < len(ids) - 1:
+            print(f"[batch] strata_prefix auto: matched {n} tokens of prompt {i} "
+                  "(client did not set strata_prefix)", flush=True)
+            return (a.keys + f" pin={n}").strip()
+        return a.keys
     env = {"STRATA_DECODE_TIMING": "1", **({"STRATA_VERIFY_PROFILE": "1"} if os.environ.get("PROF") else {})}
     if a.mt_min:
         env["STRATA_IQ_MT_MIN"] = a.mt_min
@@ -144,7 +193,7 @@ def main():
             if i >= 1:
                 eng.send(f"BCO {i} " + ",".join(map(str, ids)))
     for i, ids in enumerate(prompts):
-        eng.send(" ".join(x for x in ("BGEN", str(i), str(a.max_new), a.keys, ",".join(map(str, ids))) if x))
+        eng.send(" ".join(x for x in ("BGEN", str(i), str(a.max_new), batch_keys(i, ids), ",".join(map(str, ids))) if x))
         for line in out:
             if line.startswith("T "):
                 got[i].append(int(line.split()[1]))
