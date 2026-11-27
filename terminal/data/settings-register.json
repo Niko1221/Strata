@@ -3484,6 +3484,12 @@
      "line": 788,
      "backend": "cuda-hip",
      "fn": "getenv"
+    },
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 516,
+     "backend": "cuda-hip",
+     "fn": "getenv"
     }
    ],
    "parse": "flag",
@@ -51171,6 +51177,41 @@
    "status": "default",
    "owner": "program",
    "note": "[auto] on unless set to 0 (src/program/generate.cpp:4077)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SPILL_STREAM",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 511,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:870"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "",
+   "note": "Conversation cache: stream a snapshot the RAM tier cannot take to the SSD tier instead of dropping it, and keep an SSD entry the RAM cannot take yet; off unless set. [docs/DETAILS.md:870]",
    "retire_after": "",
    "retired_in": ""
   },

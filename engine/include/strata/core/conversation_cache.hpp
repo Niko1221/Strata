@@ -446,6 +446,7 @@ public:
     void guard(uint64_t serial) { guarded_ = serial; guard_blocked_ = false; }
     void unguard() { guarded_ = 0; }
     bool guard_blocked() const { return guard_blocked_; }
+    bool guarding() const { return guarded_ != 0; }
     size_t borrowed() const { return borrowed_; }
     void count_borrow() { ++borrowed_; }
 
