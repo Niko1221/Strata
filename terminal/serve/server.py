@@ -656,7 +656,13 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    which is the log): read on from where it was last read, from the start of the engine's current run.
+    The Inkling engine (strata-inkling) reports the same facts in its own format: "conversation cache: parked N
+    tokens (X MiB; P parked, Y MiB, cap C MiB / S slots)", "conversation cache: restored parked conversation N tokens
+    (P parked, Y MiB)", "conversation cache: skipped N tokens (est X MiB; budget left Y MiB)" and — supersede-on-
+    append, the copies of one conversation a longer snapshot replaced — "conversation cache: dropped N superseded
+    copies of this conversation; P parked, Y MiB" — and, when the budget or the slots force it out,
+    "conversation cache: evicted N tokens (E evictions total; P parked, Y MiB)"."""
     # #879: these two completed recovery messages follow ConversationCache::clear(), which removes every parked
     # entry and its retained K/V.  Keep history counters: the clear is not a cache park or restore event.
     CLEARED = re.compile(
@@ -665,6 +671,11 @@ class ConvCacheLog:
         r"\(\d+ running slots? not kept after their reply\); reading this prompt from token 0)$")
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
+    INK_PARKED = re.compile(r"conversation cache: parked (\d+) tokens \(([\d.]+) MiB; (\d+) parked, (\d+) MiB, cap (\d+) MiB / (\d+) slots\)")
+    INK_RESTORED = re.compile(r"conversation cache: restored parked conversation (\d+) tokens \((\d+) parked, (\d+) MiB\)")
+    INK_SKIPPED = re.compile(r"conversation cache: skipped (\d+) tokens \(est ([\d.]+) MiB; budget left ([\d.]+) MiB\)")
+    INK_DROPPED = re.compile(r"conversation cache: dropped (\d+) superseded .*?(\d+) parked, (\d+) MiB")
+    INK_EVICTED = re.compile(r"conversation cache: evicted (\d+) tokens \((\d+) evictions total; (\d+) parked, (\d+) MiB\)")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     # #6081: a park the cache refused, by reason (the engine's "skip parking (...)" / "allocation failed" lines; a
     # "skipped N tokens" line is put()'s refusal).  The first match names the reason; any other text is the size
@@ -722,6 +733,36 @@ class ConvCacheLog:
             if "conversation cache:" not in line:
                 if self.CLEARED.fullmatch(line):
                     self.state["parked"] = self.state["bytes"] = 0
+                continue
+            m = self.INK_PARKED.search(line)
+            if m:
+                st = self.state
+                st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4)) * 1024 * 1024
+                st["parks"] += 1
+                st["last_event"], st["last_tokens"], st["last_at"] = "parked", int(m.group(1)), now
+                continue
+            m = self.INK_RESTORED.search(line)
+            if m:
+                st = self.state
+                st["parked"], st["bytes"] = int(m.group(2)), int(m.group(3)) * 1024 * 1024
+                st["restores"] += 1
+                st["last_event"], st["last_tokens"], st["last_at"] = "restored", int(m.group(1)), now
+                continue
+            m = self.INK_SKIPPED.search(line)
+            if m:
+                self._refused("put")
+                continue
+            m = self.INK_DROPPED.search(line)
+            if m:                                   # supersede-on-append: the copy a longer one replaces; a park follows on the next line
+                st = self.state
+                st["parked"], st["bytes"] = int(m.group(2)), int(m.group(3)) * 1024 * 1024
+                continue
+            m = self.INK_EVICTED.search(line)
+            if m:                                   # the budget or the slots forced the oldest copy out; the eviction line
+                # is followed by the parked line, which sets the state for the next event
+                st = self.state
+                st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4)) * 1024 * 1024
+                st["evictions"] = int(m.group(2))
                 continue
             m = self.EVENT.search(line)
             if m:
@@ -1410,6 +1451,64 @@ class StrataEngine:
                 return out
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
+
+    STATS_THROTTLE_S = 3.0     # the monitor must not make the engine answer STATS more than this often
+    STATS_WAIT_S = 0.1         # wait at most this long for the control lines: a busy engine skips the scrape
+
+    def inkling_stats(self, timeout: float = 2.0) -> dict | None:
+        """Inkling: the resident-expert figures the Monitor's Experts in VRAM bar reads (vram_experts,
+        expert_cache_bytes).  The engine answers `STATS` with one line; the scrape is throttled and never waits on a
+        request, so the bar reads the previous figures while the engine is busy.  -> the figures it read (or None)."""
+        if not getattr(self, "inkling_engine", False) or not self.alive():
+            return None
+        now = time.monotonic()
+        if now - getattr(self, "_inkling_stats_at", 0.0) < self.STATS_THROTTLE_S:
+            return None
+        self._inkling_stats_at = now
+        ctl = self.__dict__.get("ctl")
+        if ctl is not None and not ctl.acquire(timeout=self.STATS_WAIT_S):
+            return None
+        try:
+            self.proc.stdin.write("STATS\n")
+            self.proc.stdin.flush()
+            deadline = time.time() + timeout
+            while True:
+                left = deadline - time.time()
+                if left <= 0.0:
+                    return None
+                try:
+                    line = self.lines.get(timeout=min(0.2, left))
+                except queue.Empty:
+                    continue
+                if line is None:                               # the engine ended
+                    return None
+                line = line.strip()
+                if line.startswith("STATS "):
+                    out = {}
+                    for tok in line.split()[1:]:
+                        k, eq, v = tok.partition("=")
+                        if not eq:
+                            continue
+                        if k in ("active_slots", "max_slots", "vram_experts", "ram_experts", "total_experts",
+                                 "expert_selections", "expert_misses", "vram_used_bytes", "vram_total_bytes",
+                                 "expert_cache_bytes"):
+                            try:
+                                out[k] = int(v)
+                            except ValueError:
+                                pass
+                    if "vram_experts" in out:
+                        self.info["expert_slots"] = out["vram_experts"]
+                    used = out.get("expert_cache_bytes")
+                    if used:
+                        self.info["expert_cache_mib"] = used // (1024 * 1024)
+                    return out
+                if line.startswith("ERR "):
+                    return None
+        except (OSError, ValueError, AttributeError):
+            return None
+        finally:
+            if ctl is not None:
+                ctl.release()
 
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
@@ -5493,6 +5592,10 @@ class Service:
             live["replicas"] = self.engine.replica_view()
         if hasattr(self.engine, "split_view"):          # opt-in split serving: the hand-overs so far (serve/split.py)
             live["split_serve"] = self.engine.split_view()
+        # Inkling: the Experts in VRAM bar reads expert_slots / expert_cache_mib, which the engine answers as STATS
+        # (the INFO line carries no expert facts); the scrape is throttled and skips while a request holds the lines
+        if getattr(self.engine, "inkling_engine", False):
+            self.engine.inkling_stats()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.has_vision(),
                   # #4636: the engine process generation; a history record from an earlier one is from before a restart, so its
                   # KV cache is gone and the Context gauge must not show it as cached

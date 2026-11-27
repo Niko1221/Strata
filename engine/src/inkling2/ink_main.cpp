@@ -1038,6 +1038,12 @@ int main(int argc, char** argv) {
             cfg.bopts.spec_adapt = true;
         } else if (a == "--draft-plain") {
             cfg.bopts.spec_plain = std::atof(next().c_str());
+        } else if (a == "--conversation-cache-mib") {
+            cfg.conversation_cache_mib = std::atoi(next().c_str());
+        } else if (a == "--conversation-cache-slots") {
+            cfg.conversation_cache_slots = std::atoi(next().c_str());
+        } else if (a == "--conversation-cache-min-tokens") {
+            cfg.conversation_cache_min_tokens = std::atoi(next().c_str());
         } else if (a == "--dspark") {
             cfg.bopts.dspark_path = next();
         } else if (a == "--vram-experts-gb") {
@@ -1115,7 +1121,7 @@ int main(int argc, char** argv) {
                    "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
                    "  --turbo | --turbo-max   opt-in router tail skip presets (answers differ slightly; CUDA and HIP; see docs/INKLING_TURBO.md)\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--vision-reader auto|gpu|cpu] [--vision-idle-s N] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--vision-reader auto|gpu|cpu] [--vision-idle-s N] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off] [--conversation-cache-mib N] [--conversation-cache-slots N] [--conversation-cache-min-tokens N]\n",
                    INKLING_VERSION);
             return 0;
         } else {

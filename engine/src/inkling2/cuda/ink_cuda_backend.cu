@@ -406,6 +406,7 @@ public:
             for (bool a : slot_alloc_) if (a) ++act;
             st.active_slots = act;
             st.kv_dtype = kv_dtype_;
+            st.expert_cache_bytes = model_.hybrid.tier_pool_bytes ? model_.hybrid.tier_pool_bytes : model_.sec4_bytes;
             model_.hybrid.stats_total(&st.expert_selections, &st.expert_misses);   // M = 1 (device counters) + batched path
         }
         return st;
@@ -803,6 +804,174 @@ public:
     bool restore_prompt_checkpoint(int slot, int seq_len) override {
         return restore_checkpoint(slot, seq_len, false);
     }
+    // # Conversation parking: capture the slot's prompt-end checkpoint into host RAM, then install it back later!
+    //   The checkpoint alone is not honestly restorable across intervening conversations (global KV is per-slot,
+    //   append-only, and overwritten by later prefills), so this also captures the global KV for positions
+    //   [0..seq_len-1] — the exact bytes a later restore re-installs.
+    bool save_parked_checkpoint(int slot, HostCkpt& out) const override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || slot >= (int)prompt_ckpts_.size()) return false;
+        const auto& ck = prompt_ckpts_[slot];
+        if (!ck.valid) return false;
+        out = HostCkpt{};
+        out.valid = ck.valid;
+        out.has_dspark = ck.has_dspark;
+        out.seq_len = ck.seq_len;
+        out.swa_start = ck.swa_start;
+        out.swa_len = ck.swa_len;
+        out.sconv.assign(ck.sconv.begin(), ck.sconv.end());
+        out.swa_k.assign(ck.swa_k.begin(), ck.swa_k.end());
+        out.swa_v.assign(ck.swa_v.begin(), ck.swa_v.end());
+        out.swa_ksc.assign(ck.swa_ksc.begin(), ck.swa_ksc.end());
+        out.swa_vsc.assign(ck.swa_vsc.begin(), ck.swa_vsc.end());
+        out.dspark_k.assign(ck.dspark_k.begin(), ck.dspark_k.end());
+        out.dspark_v.assign(ck.dspark_v.begin(), ck.dspark_v.end());
+        out.dspark_frnn.assign(ck.dspark_frnn.begin(), ck.dspark_frnn.end());
+        const int pos = ck.seq_len;
+        const size_t heads = (size_t)strata::ink::kInkKVHeads;
+        const size_t dim = (size_t)strata::ink::kInkHeadDim;
+        const size_t k_elems = heads * dim;
+        const size_t sc_row = heads * sizeof(float);
+        for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+            const auto& kv = runner_->kv_desc[v];
+            if (kv.is_swa) continue;
+            const bool fp16 = (kv.kv_fmt == 0);
+            const size_t v_elems = (kv.kv_fmt == 3) ? (heads * (dim / 2u)) : k_elems;
+            const size_t k_row = fp16 ? (k_elems * sizeof(__half)) : k_elems;
+            const size_t v_row = fp16 ? (v_elems * sizeof(__half)) : v_elems;
+            const int dev_pos = std::min(pos, kv.dev_cap);
+            const int host_pos = pos - dev_pos;
+            const size_t slot_base_v = (size_t)slot * (kv.host_cap > 0 ? kv.dev_cap : kv.cap_pos);
+            const size_t slot_base_h = (size_t)slot * kv.host_cap;
+            const size_t k_off = out.g_k.size();
+            out.g_k.resize(k_off + (size_t)pos * k_row);
+            if (dev_pos > 0) {
+                const uint8_t* src = fp16 ? reinterpret_cast<const uint8_t*>(kv.k_f16) : kv.k_f8;
+                INK_CK(cudaMemcpyAsync(out.g_k.data() + k_off, src + slot_base_v * k_row,
+                                       (size_t)dev_pos * k_row, cudaMemcpyDeviceToHost, visit_stream(v)));
+            }
+            if (host_pos > 0) {
+                const uint8_t* src = fp16 ? reinterpret_cast<const uint8_t*>(kv.h_k_f16) : kv.h_k_f8;
+                std::memcpy(out.g_k.data() + k_off + (size_t)dev_pos * k_row, src + slot_base_h * k_row,
+                            (size_t)host_pos * k_row);
+            }
+            const size_t v_off = out.g_v.size();
+            out.g_v.resize(v_off + (size_t)pos * v_row);
+            if (dev_pos > 0) {
+                const uint8_t* src = fp16 ? reinterpret_cast<const uint8_t*>(kv.v_f16) : kv.v_f8;
+                INK_CK(cudaMemcpyAsync(out.g_v.data() + v_off, src + slot_base_v * v_row,
+                                       (size_t)dev_pos * v_row, cudaMemcpyDeviceToHost, visit_stream(v)));
+            }
+            if (host_pos > 0) {
+                const uint8_t* src = fp16 ? reinterpret_cast<const uint8_t*>(kv.h_v_f16) : kv.h_v_f8;
+                std::memcpy(out.g_v.data() + v_off + (size_t)dev_pos * v_row, src + slot_base_h * v_row,
+                            (size_t)host_pos * v_row);
+            }
+            if (!fp16) {
+                const size_t ksc_off = out.g_ksc.size();
+                out.g_ksc.resize(ksc_off + (size_t)pos * sc_row);
+                if (dev_pos > 0)
+                    INK_CK(cudaMemcpyAsync(out.g_ksc.data() + ksc_off, (uint8_t*)kv.k_sc + slot_base_v * sc_row,
+                                           (size_t)dev_pos * sc_row, cudaMemcpyDeviceToHost, visit_stream(v)));
+                if (host_pos > 0)
+                    std::memcpy(out.g_ksc.data() + ksc_off + (size_t)dev_pos * sc_row, (uint8_t*)kv.h_k_sc + slot_base_h * sc_row,
+                                (size_t)host_pos * sc_row);
+                const size_t vsc_off = out.g_vsc.size();
+                out.g_vsc.resize(vsc_off + (size_t)pos * sc_row);
+                if (dev_pos > 0)
+                    INK_CK(cudaMemcpyAsync(out.g_vsc.data() + vsc_off, (uint8_t*)kv.v_sc + slot_base_v * sc_row,
+                                           (size_t)dev_pos * sc_row, cudaMemcpyDeviceToHost, visit_stream(v)));
+                if (host_pos > 0)
+                    std::memcpy(out.g_vsc.data() + vsc_off + (size_t)dev_pos * sc_row, (uint8_t*)kv.h_v_sc + slot_base_h * sc_row,
+                                (size_t)host_pos * sc_row);
+            }
+        }
+        ckpt_sync();
+        return true;
+    }
+    bool restore_parked_checkpoint(int slot, const HostCkpt& cpk) override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || !cpk.valid || cpk.seq_len <= 0) return false;
+        if (slot >= (int)prompt_ckpts_.size()) return false;
+        auto& ck = prompt_ckpts_[slot];
+        ck.valid = cpk.valid;
+        ck.has_dspark = cpk.has_dspark;
+        ck.seq_len = cpk.seq_len;
+        ck.swa_start = cpk.swa_start;
+        ck.swa_len = cpk.swa_len;
+        ck.sconv.assign(cpk.sconv.begin(), cpk.sconv.end());
+        ck.swa_k.assign(cpk.swa_k.begin(), cpk.swa_k.end());
+        ck.swa_v.assign(cpk.swa_v.begin(), cpk.swa_v.end());
+        ck.swa_ksc.assign(cpk.swa_ksc.begin(), cpk.swa_ksc.end());
+        ck.swa_vsc.assign(cpk.swa_vsc.begin(), cpk.swa_vsc.end());
+        ck.dspark_k.assign(cpk.dspark_k.begin(), cpk.dspark_k.end());
+        ck.dspark_v.assign(cpk.dspark_v.begin(), cpk.dspark_v.end());
+        ck.dspark_frnn.assign(cpk.dspark_frnn.begin(), cpk.dspark_frnn.end());
+        if (!restore_checkpoint(slot, cpk.seq_len, false)) {
+            ck.valid = false;   // the restore failed: nothing but the bytes should be left behind
+            return false;
+        }
+        const int pos = cpk.seq_len;
+        const size_t heads = (size_t)strata::ink::kInkKVHeads;
+        const size_t dim = (size_t)strata::ink::kInkHeadDim;
+        const size_t k_elems = heads * dim;
+        const size_t sc_row = heads * sizeof(float);
+        size_t off_k = 0, off_v = 0, off_ksc = 0, off_vsc = 0;
+        for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+            const auto& kv = runner_->kv_desc[v];
+            if (kv.is_swa) continue;
+            const bool fp16 = (kv.kv_fmt == 0);
+            const size_t v_elems = (kv.kv_fmt == 3) ? (heads * (dim / 2u)) : k_elems;
+            const size_t k_row = fp16 ? (k_elems * sizeof(__half)) : k_elems;
+            const size_t v_row = fp16 ? (v_elems * sizeof(__half)) : v_elems;
+            const int dev_pos = std::min(pos, kv.dev_cap);
+            const int host_pos = pos - dev_pos;
+            const size_t slot_base_v = (size_t)slot * (kv.host_cap > 0 ? kv.dev_cap : kv.cap_pos);
+            const size_t slot_base_h = (size_t)slot * kv.host_cap;
+            // K (VRAM part H2D + host tail memcpy)
+            const uint8_t* k_src = cpk.g_k.data() + off_k;
+            if (dev_pos > 0) {
+                uint8_t* dst = fp16 ? reinterpret_cast<uint8_t*>(kv.k_f16) : kv.k_f8;
+                INK_CK(cudaMemcpyAsync(dst + slot_base_v * k_row, k_src, (size_t)dev_pos * k_row,
+                                       cudaMemcpyHostToDevice, visit_stream(v)));
+            }
+            if (host_pos > 0) {
+                uint8_t* dst = fp16 ? reinterpret_cast<uint8_t*>(kv.h_k_f16) : kv.h_k_f8;
+                std::memcpy(dst + slot_base_h * k_row, k_src + (size_t)dev_pos * k_row, (size_t)host_pos * k_row);
+            }
+            // V
+            const uint8_t* v_src = cpk.g_v.data() + off_v;
+            if (dev_pos > 0) {
+                uint8_t* dst = fp16 ? reinterpret_cast<uint8_t*>(kv.v_f16) : kv.v_f8;
+                INK_CK(cudaMemcpyAsync(dst + slot_base_v * v_row, v_src, (size_t)dev_pos * v_row,
+                                       cudaMemcpyHostToDevice, visit_stream(v)));
+            }
+            if (host_pos > 0) {
+                uint8_t* dst = fp16 ? reinterpret_cast<uint8_t*>(kv.h_v_f16) : kv.h_v_f8;
+                std::memcpy(dst + slot_base_h * v_row, v_src + (size_t)dev_pos * v_row, (size_t)host_pos * v_row);
+            }
+            // scales (quantized formats only)
+            if (!fp16) {
+                const uint8_t* ksc_src = cpk.g_ksc.data() + off_ksc;
+                const uint8_t* vsc_src = cpk.g_vsc.data() + off_vsc;
+                if (dev_pos > 0) {
+                    INK_CK(cudaMemcpyAsync((uint8_t*)kv.k_sc + slot_base_v * sc_row, ksc_src, (size_t)dev_pos * sc_row,
+                                           cudaMemcpyHostToDevice, visit_stream(v)));
+                    INK_CK(cudaMemcpyAsync((uint8_t*)kv.v_sc + slot_base_v * sc_row, vsc_src, (size_t)dev_pos * sc_row,
+                                           cudaMemcpyHostToDevice, visit_stream(v)));
+                }
+                if (host_pos > 0) {
+                    std::memcpy((uint8_t*)kv.h_k_sc + slot_base_h * sc_row, ksc_src + (size_t)dev_pos * sc_row,
+                                (size_t)host_pos * sc_row);
+                    std::memcpy((uint8_t*)kv.h_v_sc + slot_base_h * sc_row, vsc_src + (size_t)dev_pos * sc_row,
+                                (size_t)host_pos * sc_row);
+                }
+            }
+            off_k += (size_t)pos * k_row;
+            off_v += (size_t)pos * v_row;
+            if (!fp16) { off_ksc += (size_t)pos * sc_row; off_vsc += (size_t)pos * sc_row; }
+        }
+        ckpt_sync();
+        return true;
+    }
     bool supports_shared_checkpoint() const override {
         return initialized_ && (model_.ls_active || d_sconv_snap_ != nullptr) && max_slots_ <= 8;   // (a layer split: the per-stage copies of save_checkpoint)
     }
@@ -817,13 +986,13 @@ public:
     // checkpoint copies run per visit on that stage's device and stream (the one-kernel gather of the single-GPU path would read other
     // cards' memory).  `visit_stream(v)` selects them (single GPU: the runner's stream, nothing else changes); `ckpt_sync()` waits for
     // every stream the copies used and returns to the device the runner works on.
-    cudaStream_t visit_stream(int v) {
+    cudaStream_t visit_stream(int v) const {
         if (!model_.ls_active) return runner_->st;
         const int s = model_.layer_owner[strata::ink::ink_visit_phys(v)];
         INK_CK(cudaSetDevice(model_.stage_gpu[s]));
         return runner_->ls_stages[s].st;
     }
-    void ckpt_sync() {
+    void ckpt_sync() const {
         if (!model_.ls_active) { INK_CK(cudaStreamSynchronize(runner_->st)); return; }
         for (int s = 0; s < model_.n_stages; ++s) {
             INK_CK(cudaSetDevice(model_.stage_gpu[s]));
