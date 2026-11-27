@@ -1708,6 +1708,121 @@ def coerce_value(value: str, declared, notes: list | None = None):
     return v
 
 
+def _tool_params(schema):
+    """#6285: the (properties, required) a tool's schema declares; ({}, []) when it declares none."""
+    params = schema.get("parameters") if isinstance(schema, dict) else None
+    if not isinstance(params, dict):
+        return {}, []
+    props = params.get("properties")
+    required = params.get("required")
+    return (props if isinstance(props, dict) else {}), (required if isinstance(required, list) else [])
+
+
+def without_plural(name):
+    """#6285: the parameter name a model writes when it drops the plural of a declared one (`commands` -> `command`,
+    `queries` -> `query`); None when `name` carries no plural to drop."""
+    if not isinstance(name, str) or len(name) < 2 or name.endswith("ss"):
+        return None
+    if name.endswith("ies") and len(name) > 3:
+        return name[:-3] + "y"
+    if name.endswith("s"):
+        return name[:-1]
+    return None
+
+
+def is_string_array(prop):
+    """#6285: a parameter declared `array` whose items are strings."""
+    if not isinstance(prop, dict) or declared_type(prop) != "array":
+        return False
+    items = prop.get("items")
+    return isinstance(items, dict) and _declares(declared_type(items), "string")
+
+
+def borrowed_parameter(written, props, required):
+    """#6285: the declared parameter a `<parameter=WRITTEN>` opener means when the model wrote its name without the
+    plural `s`: only when the tool declares exactly one required parameter, that parameter is an array of strings, and
+    WRITTEN is its name minus the `s` (`command` for `commands`, `file` for `files`).  Any other write is left alone: a
+    tool that declares `command` itself has no slip to guess, and neither has one with two required parameters."""
+    if not isinstance(written, str) or not written or written in props or len(required) != 1:
+        return None
+    name = required[0]
+    if not isinstance(name, str) or not is_string_array(props.get(name)) or without_plural(name) != written:
+        return None
+    return name
+
+
+def string_items(value, name):
+    """#6285: an array of strings a model wrote as an array of objects: the object's field named the parameter's
+    singular (`{"query": "x", ...}` for `queries`), or the one string field it carries (`{"cmd": "ls",
+    "is_background": false}`); a string member stays itself.  None when a member leaves the reading open (no such field,
+    or more than one string field)."""
+    singular = without_plural(name)
+    out = []
+    for item in value:
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            return None
+        if singular is not None and isinstance(item.get(singular), str):
+            out.append(item[singular])
+            continue
+        strings = [v for v in item.values() if isinstance(v, str)]
+        if len(strings) != 1:
+            return None
+        out.append(strings[0])
+    return out
+
+
+def repair_arguments(args, schema=None, notes=None):
+    """#6285: the arguments a call wrote in a shape the tool's schema does not declare, read as the call it meant.
+    Three slips, each only when the schema settles the reading:
+      * the call's parameters inside one JSON object under an undeclared `arguments` (the OpenAI call shape),
+      * a parameter named without its plural `s` (borrowed_parameter), its text read as the array of one string,
+      * an array of strings written as an array of objects (string_items).
+    Anything the schema does not settle stays as written; each repair is noted in `notes` (the server's repaired-line,
+    #4427)."""
+    props, required = _tool_params(schema)
+    if not props or not isinstance(args, dict) or not args:
+        return args
+    out = dict(args)
+    inner = out.get("arguments")
+    if isinstance(inner, dict) and inner and "arguments" not in props and all(k in props for k in inner):
+        del out["arguments"]
+        for k, v in inner.items():
+            declared = declared_type(props.get(k))
+            if isinstance(v, str) and declared is not None and not _declares(declared, "string"):
+                v = coerce_value(v, declared, notes)
+                if v is _SKIP:
+                    continue
+            out[k] = v
+        if notes is not None:
+            notes.append("an `arguments` object was read as the call's own parameters")
+    borrowed = False
+    for k in [k for k in out if k not in props]:
+        name = borrowed_parameter(k, props, required)
+        if name is None:
+            continue
+        v = out.pop(k)
+        if isinstance(v, str):
+            v = [v]                    # the text is the one-string array the parameter was declared to be
+        if name not in out:            # a call that also wrote the declared name keeps its own write
+            out[name] = v
+            borrowed = True
+    if borrowed and notes is not None:
+        notes.append("a parameter named without its plural `s` was read as the declared one")
+    flattened = 0
+    for k, v in out.items():
+        if isinstance(v, list) and v and any(not isinstance(x, str) for x in v) and is_string_array(props.get(k)):
+            flat = string_items(v, k)
+            if flat is not None:
+                out[k] = flat
+                flattened += 1
+    if flattened and notes is not None:
+        notes.append("an array of objects was read as the strings it carries")
+    return out
+
+
 def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = None, recover: bool = False) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -1775,7 +1890,7 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
         raise ValueError("malformed tool call: no readable parameter: " + body[:80])
     if recover and unwrap_arguments(args, props):
         args = args["arguments"]
-    return ToolCall(name=name, arguments=args)
+    return ToolCall(name=name, arguments=repair_arguments(args, schema, notes))
 
 
 def unwrap_arguments(args: dict, props: dict) -> bool:
@@ -2456,6 +2571,9 @@ class OutputParser:
         held = self.sheld
         if self.recover and self.sfirst and unwrap_arguments(held, self.sdeclared):   # #5804: a lone `<parameter=arguments>` object is the call's arguments
             held = held["arguments"]
+        # #6285: the held parameters are the ones a repair can change (a plain string streams as it is), so the call
+        # streamed to the client is the call the final event carries
+        held = repair_arguments(held, self.schemas.get(self.scall.name))
         for k, v in held.items():               # #5493: the non-string parameters, each once, the later write
             tail += ("" if self.sfirst else ",") + json.dumps(k) + ":" + json.dumps(v, ensure_ascii=False)
             self.sfirst = False
