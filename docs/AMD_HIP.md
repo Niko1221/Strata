@@ -480,8 +480,9 @@ is not the default. A newer `linux-firmware` is the likely cure and is a host ch
 
 ## Community-validated cards
 
-Run by their owners, not on the maintainers' machines. Setup accepts them like gfx1100 and gfx1201. A hipBLASLt table ships
-for gfx1200; gfx1101 has none (make one with [Tuning table](#tuning-table) and compare the prompt speed).
+Run by their owners, not on the maintainers' machines. Setup accepts them like gfx1100 and gfx1201. hipBLASLt tables
+ship in `terminal/tools/hip` for gfx1200 (`100202`) and gfx1101 (`100401`, hipBLASLt 1.4.1); other hipBLASLt versions
+have none (make one with [Tuning table](#tuning-table) and compare the prompt speed).
 
 > **Measured on:** the machine in each row, Coder IQ1_M, MTP, owner-calibrated tables.
 
@@ -652,6 +653,7 @@ Tables in `terminal/tools/hip`:
 | `gfx1100-hipblaslt-100100.txt`, `-100200.txt`, `-100202.txt` | RX 7900 XTX | 100202 is for system ROCm 7.2.4 |
 | `gfx1100-hipblaslt-100401.txt` | RX 7900 XTX, ROCm 10.0.0 | 43 rows; setup uses it only with hipBLASLt 1.4.1 |
 | `gfx1100-hipblaslt-100500.txt` | RX 7900 XTX, ROCm 10.2.0a20261003 nightly | 32 rows |
+| `gfx1101-hipblaslt-100401.txt` | RX 7800 XT, ROCm 7.14.1 (`gfx110X-all`) | 63 rows; covers the 43 `gfx1100-hipblaslt-100401.txt` shapes plus `T=4096/8192/20736` buckets; setup uses it only with hipBLASLt 1.4.1 |
 | `gfx1201-hipblaslt-100202.txt` | R9700, for hipBLASLt 1.2.2 | 24 of the gfx1100 table's 26 shapes |
 | `gfx1201-hipblaslt-100500.txt` | R9700, ROCm 10.2.0a20260914 (`gfx120X-all` nightly) | 32 rows. The engine can check only the version number, so recalibrate for a different 1.5.0 build. |
 | `gfx1200-hipblaslt-100202.txt` | RX 9060 XT | See [Community-validated cards](#community-validated-cards) |
@@ -666,6 +668,7 @@ Tables in `terminal/tools/hip`:
 | `gfx1100-hipblaslt-100401.txt` | RX 7900 XTX, Swift 1.5 IQ3_XXS, 262144 ctx, hipBLASLt 1.4.1, medians of 3 | 1.7K tokens 682 -> 1,038 tok/s; 6.5K tokens 857 -> 1,524 tok/s |
 | 43-row revision | RX 7900 XTX, Qwen3.8-Flash-Next GSQ-RCO IQ2_XS, 3,151-token prompt | 711 -> 938 tok/s (+31.9%) |
 | `gfx1100-hipblaslt-100500.txt` | RX 7900 XTX, engine 0.1.38 lineage | 131,071-token prompt 926 -> 1,687 tok/s |
+| `gfx1101-hipblaslt-100401.txt` | RX 7800 XT, Qwen3.8-Flash-Next GSQ-RCO IQ3_S, 262144 ctx, hipBLASLt 1.4.1, 3 interleaved pairs | 5.6K tokens 931 -> 1,129 tok/s (+21.4%); 23.4K 1,295 -> 1,701 (+31.3%); 48.9K 1,415 -> 1,911 (+35.0%) |
 | `gfx1201-hipblaslt-100202.txt` | R9700, full IQ3_XXS, `--kv int8 --kv-resident 32768` | 32K prompt 638 -> 1,177 tok/s; 7K prompt 656 -> 1,164 tok/s |
 | `gfx1201-hipblaslt-100500.txt` | One R9700, 4,210-token prompts | 1,531 -> 1,590 tok/s (+3.9%) |
 | `gfx1151-hipblaslt-100400.txt` | Strix Halo | 3.1x to 14.1x faster per GEMM (median 6.2x); whole-model prompt speed not measured |
