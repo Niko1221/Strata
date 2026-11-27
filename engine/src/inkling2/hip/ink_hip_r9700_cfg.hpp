@@ -51,8 +51,17 @@ inline int parse_env_int(const char* name, int default_val) noexcept {
     return std::atoi(v);
 }
 
+// The FAST set is on by default for a verified R9700 (gfx1201, >= 28 GiB, name R9700; every other card refuses silently); STRATA_INK_R9700=0 turns it off, STRATA_INK_R9700_EXACT=1 asks
+// for the exact form. What the default set contains (all measured with DFlash 2 on p620, owner review 11-27): the FP8 trunk and FP8 MoE for prompt rows only (the layers the drafter taps and
+// the drafter's window before the prompt's end stay exact), the fused RelPos attention and prefill chunk 8192. Everything else (FIXED_SWA, NT_MALL, ASYNC_CKPT, FP8 decode rows) is opt-in.
+inline constexpr bool kDefaultOn = true;
+
+inline bool master_explicit() noexcept {
+    return env_set("STRATA_INK_R9700");
+}
+
 inline bool master_env_on() noexcept {
-    static const bool on = parse_env_truthy("STRATA_INK_R9700", false);
+    static const bool on = parse_env_truthy("STRATA_INK_R9700", kDefaultOn);
     return on;
 }
 
@@ -91,7 +100,7 @@ inline bool device_is_verified_r9700(int dev) noexcept {
     if (hipGetDeviceProperties(&dp, dev) != hipSuccess) {
         (void)hipGetLastError();
         detail::ordinal_state(dev).store(-1, std::memory_order_release);
-        if (detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
+        if (detail::master_explicit() && detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
             std::fprintf(stderr, "[ink-hip] STRATA_INK_R9700=1 ignored on GPU %d: hipGetDeviceProperties failed; running baseline\n", dev);
         }
         return false;
@@ -107,7 +116,7 @@ inline bool device_is_verified_r9700(int dev) noexcept {
 
     const bool ok = arch_ok && discrete_ok && cu_ok && mem_ok && name_ok;
     detail::ordinal_state(dev).store(ok ? 1 : -1, std::memory_order_release);
-    if (!ok && detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
+    if (!ok && detail::master_explicit() && detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
         std::fprintf(stderr,
                      "[ink-hip] STRATA_INK_R9700=1 ignored on GPU %d (%s, arch=%s, mp=%d, mem=%.1f GiB): "
                      "requires AMD Radeon AI PRO R9700 (gfx1201, discrete, >=28 WGPs/CUs, >=28 GiB); running baseline\n",
@@ -122,7 +131,7 @@ inline Config resolve_config(int dev, bool ep2_active, int peer_dev) noexcept {
     if (!detail::master_env_on()) return cfg;
     if (!device_is_verified_r9700(dev)) return cfg;
     if (ep2_active && !device_is_verified_r9700(peer_dev)) {
-        if (detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
+        if (detail::master_explicit() && detail::ordinal_warned(dev).exchange(1, std::memory_order_acq_rel) == 0) {
             std::fprintf(stderr, "[ink-hip] STRATA_INK_R9700=1 ignored under heterogeneous EP2 (GPU %d + GPU %d); running baseline\n",
                          dev, peer_dev);
         }
