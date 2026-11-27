@@ -2,7 +2,7 @@
 import {missingFilesError,missingNames} from './missing-files.mjs';
 import { createJobStore } from './native-job-store.mjs';
 import { isHy4, isHy4Family, hy4VisionShard, withoutHy4Vision } from './hy4.mjs';
-import { isInkling, isInklingFamily, inklingVisionShard, withoutInklingVision } from './inkling.mjs';
+import { isInkling, isInklingFamily, inklingVisionShard, withoutInklingVision, resolveInklingExpertCacheDir, sc117RunContext, withInklingContext } from './inkling.mjs';
 import { metricsPowerW, noteEnginePower } from './energy-meter.mjs';
 import { spawn } from 'node:child_process';
 import {chooseParallel,applyParallel,withoutParallel,FALLBACK_NOTE} from './native-parallel.mjs';
@@ -73,7 +73,7 @@ function savedKv(config,model,catalog){
 
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
 export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → About.';
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeUpdate=async()=>{},afterUpdate=async()=>{},beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,lockWaitMs=60000,lockPollMs=2000,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeUpdate=async()=>{},afterUpdate=async()=>{},beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,lockWaitMs=60000,lockPollMs=2000,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata'),resolveInklingScratch=resolveInklingExpertCacheDir}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});
@@ -414,6 +414,17 @@ return {summary:result.summary??(customRow?'Removed from Strata. Your model file
   else   if(args.gpus!==undefined&&!(args.gpusFromRecommendation&&namedInFile)){const detected=new Set((snapshot.hardware?.gpus??[]).map(g=>g.index));if(!Array.isArray(args.gpus)||!args.gpus.length||new Set(args.gpus).size!==args.gpus.length||args.gpus.some(g=>!Number.isInteger(g)||!detected.has(g)))throw new Error('Choose distinct detected GPUs. CPU-only text inference is not supported by this native adapter.');cfg.gpu=args.gpus.length===1?args.gpus[0]:args.gpus;for(const k of ['gpu_roles','gpu_cards','gpu_none'])delete cfg[k];delete cfg.hip_ordinal;if(nativeEp){delete cfg.layer_split;}else{cfg.layer_split=args.gpus.length>1?validateNativeSettings({layer_split:args.layerSplit??'auto'}).layer_split:'auto';if(cfg.layer_split!=='auto'&&cfg.layer_split.split(',').length!==args.gpus.length-1)throw new Error('Choose one layer split point between each pair of GPUs.');}}
   if(!isHy4(cfg)&&!isInkling(cfg)&&cfg.vram_reserve_mib!==undefined&&cfg.vram_reserve_mib!==null){cfg.args=[...(cfg.args??[])];const at=cfg.args.indexOf('--vram-reserve-mib');if(at>=0)cfg.args.splice(at,2);cfg.args.push('--vram-reserve-mib',String(cfg.vram_reserve_mib));}
   if(mine.length){cfg.args=mergeUserArgs(cfg.args??[],mine);cfg[USER_KEY]=mine;}else delete cfg[USER_KEY];
+  let inklingNote=null;
+  if(isInkling(cfg)&&Array.isArray(cfg.args)&&cfg.args.includes('--expert-cache-dir')){
+   const scratch=resolveInklingScratch(cfg.args,cfg,args.model);
+   cfg.args=scratch.args;
+   if(scratch.note)inklingNote=scratch.note;
+  }
+  const inklingContext=sc117RunContext(args.model,isInkling(cfg)?'inkling2_loop':cfg.arch,args.context,{custom:args.custom===true||config.custom===true});
+  if(inklingContext!==undefined){
+   cfg.args=withInklingContext(cfg.args,inklingContext);
+   cfg.context=inklingContext;
+  }
   if(cfg.vision){if(cfg.vision_tokens!=null)cfg.vision={...cfg.vision,max_tokens:cfg.vision_tokens};if(cfg.vision_min_tokens!=null)cfg.vision={...cfg.vision,min_tokens:cfg.vision_min_tokens};}cfg.mcp={...(cfg.mcp??{}),...(cfg.mcp_timeout_s!=null?{timeout_s:cfg.mcp_timeout_s}:{}),...(cfg.mcp_max_rounds!=null?{max_rounds:cfg.mcp_max_rounds}:{}),...(cfg.mcp_max_result_chars!=null?{max_result_chars:cfg.mcp_max_result_chars}:{})};
   /* The model's own choices win over what setup wrote into the arguments: "Draft layer (MTP)" off leaves --mtp out of every start, and a picture reading that is off leaves --vision out (setup writes both again whenever it runs; the saved settings are applied here, on every load). */
   if((cfg.mtp===false||cfg.drafting==='off')&&Array.isArray(cfg.args))cfg.args=withoutDraftLayer(cfg.args);
@@ -438,7 +449,7 @@ return {summary:result.summary??(customRow?'Removed from Strata. Your model file
    if(spread)launch.args=withPromptCacheSpread(launch.args);
    else if(launch.prompt_cache_spread===false)launch.args=withoutPromptCacheSpread(launch.args);
   }
-  return {cfg:launch,resources,visionPreferences,parallelChoice,parallelNote};
+  return {cfg:launch,resources,visionPreferences,parallelChoice,parallelNote,inklingNote,inklingContext};
  }
  /* One drafter per run. Control (strata_control/drafting.py) says which one this load runs and whether its file is on this computer: the plan of the saved model file with the choice the Load carries. */
  /* The engines this Load is about to unload (the load below unloads every instance unless it adds one beside them): their graphics memory is given back before the new engine starts, so Control must not count it as busy memory when it asks whether the all-cards split engine fits (`--engines-unloading`; the Terminal does the same, Runner.card_probe). A model added beside the others (`multiple`) keeps their memory busy. */
@@ -616,7 +627,7 @@ return {summary:result.summary??(customRow?'Removed from Strata. Your model file
    if(drafts?.split===true&&drafts.mtp_needed===true){noSplit=true;job.drafterNote=job.drafterNote??'The MTP drafter could not be downloaded.';job.summary='Loading the model…';emit();drafts=await draftPlan(args,configFile,{noSplit:true});}}
   /* A plain load (the Models screen's own Load carries its choice and fetches below): Auto on a set that has the tuned drafter fetches it now, so the start uses it. Not on this computer and not reachable: the MTP or the stock drafter runs as before. */
   if(args.values?.drafting===undefined&&drafts?.needed===true){const got=await fetchAutoDrafter(job,args,configFile,drafts,{noSplit,after:'Loading the model…'});if(job.state!=='running')return;if(got){drafts=await draftPlan(args,configFile,{noSplit});if(job.drafterNote===MTP_OFFLINE_NOTE){job.drafterNote=undefined;emit();}}}
-  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote}=buildConfig(args,config,drafts?.choice==='dflash2'&&drafts.needed===true&&args.values?.drafting===undefined?'mtp':drafts?.choice??null);/* (a drafter that is not here and will not be fetched by this load: the MTP runs, and the request slots stay) */
+  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,inklingNote,inklingContext}=buildConfig({...args,custom:entry.custom===true},config,drafts?.choice==='dflash2'&&drafts.needed===true&&args.values?.drafting===undefined?'mtp':drafts?.choice??null);/* (a drafter that is not here and will not be fetched by this load: the MTP runs, and the request slots stay) */
   let parallelNote=chosenNote;
   await prepareDrafter(job,args,cfg,configFile,drafts,{noSplit});if(job.state!=='running')return;
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
@@ -633,7 +644,7 @@ return {summary:result.summary??(customRow?'Removed from Strata. Your model file
   if(!args.multiple){if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel native requests before switching models.');for(const id of [...instances.keys()])await unload(id);}else if(matching)await unload(matching.id);
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
-  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],arch:isHy4(cfg)?'hy4flash':isInkling(cfg)?'inkling2_loop':(cfg.arch??null),vision:isHy4(cfg)?!!hy4VisionShard(cfg):isInkling(cfg)?!!inklingVisionShard(cfg):!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,...(entry.custom===true?{custom:true}:{}),label:((entry.custom===true&&(entry.display_name||entry.model_name))||friendlyModelName(snapshot.catalog,args.model))??entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},mcpTimeoutS:cfg.mcp_timeout_s??null,key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null,...(picturesNote?{picturesNote}:{})};
+  const instance={id,apiModelId,fingerprint,context:inklingContext??entry.context??0,aliases:cfg.aliases??[],arch:isHy4(cfg)?'hy4flash':isInkling(cfg)?'inkling2_loop':(cfg.arch??null),vision:isHy4(cfg)?!!hy4VisionShard(cfg):isInkling(cfg)?!!inklingVisionShard(cfg):!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,...(entry.custom===true?{custom:true}:{}),label:((entry.custom===true&&(entry.display_name||entry.model_name))||friendlyModelName(snapshot.catalog,args.model))??entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},mcpTimeoutS:cfg.mcp_timeout_s??null,key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null,...(picturesNote?{picturesNote}:{})};
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
@@ -650,6 +661,7 @@ return {summary:result.summary??(customRow?'Removed from Strata. Your model file
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
+   if(inklingNote)append(id,inklingNote);
    /* The all-cards split engine: where the plan says it takes this start, Control turns the run config into the split engine's (the step `strata launch` does itself: the rule, the engine package and the draft layer are checked on this computer) and says so in one line. Any "no" leaves the layer split config as it is. The second try after a failed start is never split. */
    const splitStart=async value=>{
     if(noSplit||drafts?.split!==true||typeof control.splitEngine!=='function')return value;
