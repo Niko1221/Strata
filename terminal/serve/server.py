@@ -199,6 +199,7 @@ from serve.server_parts.engines import (  # noqa: F401  (moved unchanged, file s
     btrace,
     card_note,
     card_roles_lines,
+    check_placement,
     conversation_cache_view,
     conversation_slots,
     cpu_isa_words,
@@ -216,6 +217,7 @@ from serve.server_parts.engines import (  # noqa: F401  (moved unchanged, file s
     gpu_list,
     gpu_roles_active,
     gpu_speed_scores,
+    helper_cache_of,
     hip_no_card_message,
     hip_speed_scores,
     hook_echo,
@@ -3869,6 +3871,7 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             note += " and --vram-reserve-mib 700"
         print(f'[strata] the config has a "vision" section but no --vision in its args: {note} (run setup again with '
               "--vision to write them)", flush=True)
+    check_placement(cfg)
     if layer_split_of(cfg) and "--layer-split" not in args:
         args += ["--layer-split", layer_split_value(cfg)]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
@@ -4063,8 +4066,8 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None, archs=None) -> list[int]:
     if len(gl) < 2 or cfg.get("gpu_order") == "as_given" or gpu_roles_active(cfg):
         return gl
     args = cfg.get("args") or []
-    if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
-        return gl
+    if helper_cache_of(cfg) or "--layer-split" in args or layer_split_value(cfg) != "auto":
+        return gl   # helper tiers are not split stages: the config's visible order is the placement (primary first)
     hip = cfg.get("backend") == "hip"
     if cfg.get("backend") == "sycl" and scores is None:
         return gl
@@ -9700,8 +9703,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
         elif len(gpu_list(cfg)) > 1:
-            print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
-                  flush=True)
+            if "--peer-device" in cfg.get("args", []):
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
+                      flush=True)
+            else:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as helper expert caches "
+                      "(--expert-cache-deviceN); no layer split", flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
