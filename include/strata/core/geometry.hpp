@@ -59,8 +59,16 @@ struct ModelGeometry {
     ModelFamily family = ModelFamily::Qwen4Exp;
     int64_t n_mtp_layers = 0;       ///< MTP blocks inside the model file, after the trunk (qwen35moe: blk.40)
 
+    // recurrent-depth loop, generic path, QSA-only (issue #7295). `loop_num_passes = 1` is "off" -
+    // the default for every model, so a file with no loop.* keys is read exactly as before.
+    int64_t loop_core_start = 0;    ///< loop.core_start: first repeated layer (inclusive); meaningless while off
+    int64_t loop_core_end = 0;      ///< loop.core_end: one past the last repeated layer (exclusive)
+    int64_t loop_num_passes = 1;    ///< loop.num_passes: > 1 enables the loop over [core_start, core_end)
+    int64_t loop_gate_rank = 0;     ///< loop.gate_rank: the gate kernel's rank (wired up in a later step, unused while off)
+
     constexpr bool has_indexer() const { return idx_q_heads > 0; }              ///< false: dense attention only
     constexpr bool has_hyper_connections() const { return hc > 0; }             ///< false: plain pre-norm residual
+    constexpr bool has_loop() const { return loop_num_passes > 1; }             ///< false: today's single-pass trunk
     constexpr int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     constexpr int64_t n_qsa_layers() const { return n_layers / qsa_interval; }

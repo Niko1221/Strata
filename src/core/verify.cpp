@@ -1339,6 +1339,15 @@ const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) 
 bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
+    // Recurrent-depth loop, QSA-only (issue #7295): this window verifies that a draft's T tokens are what
+    // greedy decode (session_loop/session_token) would have produced - and v1 of the loop only touches
+    // those two, not this one. Running a looped model through MTP verification would silently check drafts
+    // against the WRONG reference (greedy decode without the extra passes), so refuse rather than do that.
+    if (g.has_loop()) {
+        err = "record_window: loop.num_passes > 1 is not supported with speculative decoding (MTP) in v1 - "
+              "disable drafting for this model (--drafting off)";
+        return false;
+    }
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;

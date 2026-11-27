@@ -20288,7 +20288,7 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                     return 1;
                 }
-            } else if (!strata::core::session_loop(g, pos, /*pos_base=*/0, ss, gr, pool_fn, hit_fn, pool_user, /*overlap=*/true, main_cs,
+            } else if (!strata::core::session_loop(g, pos, /*pos_base=*/0, ss, gr, wt, pool_fn, hit_fn, pool_user, /*overlap=*/true, main_cs,
                                         err, layer_stage, &loop_scratch)) {
                 std::fprintf(stderr, "strata generate: session_loop: %s\n", err.c_str());
                 return 1;

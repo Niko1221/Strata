@@ -230,6 +230,13 @@ inline std::vector<TensorWant> global_tensors(const ModelGeometry& g) {
     } else {
         t.push_back({"output_norm.weight", {g.n_embd}});
     }
+    if (g.has_loop() && g.loop_gate_rank > 0) {
+        // #7295 M5's pass-boundary gate - see include/strata/kernels/loop_gate.hpp. Required only when the
+        // loop is on AND a gate rank was given; `loop_gate_rank == 0` is the "no gate" fallback and needs
+        // neither tensor.
+        t.push_back({"loop_gate_down.weight", {g.n_embd, g.loop_gate_rank}});
+        t.push_back({"loop_gate_up.weight", {g.loop_gate_rank, g.n_embd}});
+    }
     return t;
 }
 

@@ -292,6 +292,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_geometry_test tests/core/gguf_geometry_test.cpp)
   target_link_libraries(gguf_geometry_test PRIVATE strata_artifact)
   add_test(NAME gguf_geometry_test COMMAND gguf_geometry_test)
+  # #7295 M6: the recurrent-depth loop's layer-stepping decision (loop_next_layer) - pure arithmetic over
+  # ModelGeometry, no CUDA, no model (session_capture/session_loop have no dedicated test of their own)
+  add_executable(loop_step_test tests/core/loop_step_test.cpp)
+  target_include_directories(loop_step_test PRIVATE include)
+  add_test(NAME loop_step_test COMMAND loop_step_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)

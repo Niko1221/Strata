@@ -278,6 +278,54 @@ int main(int argc, char** argv) {
         const Result none = run(d.path, with(dense, "general.architecture", nullptr));
         check(none.read_err == "missing general.architecture", "a file without general.architecture says so");
     }
+    {
+        // recurrent-depth loop (issue #7295): optional keys, off by default, QSA-only when on
+        const Result off = run(d.path, full_keys());
+        check(off.read_err.empty() && off.g.loop_num_passes == 1 && !off.g.has_loop(),
+              "no loop.* keys: loop_num_passes defaults to 1 (off), exactly as before M2");
+
+        const fixture::Kv ns = fixture::u32(p + "loop.num_passes", 3);
+        const fixture::Kv cs = fixture::u32(p + "loop.core_start", 3);
+        const fixture::Kv ce = fixture::u32(p + "loop.core_end", 4);
+        const fixture::Kv gr = fixture::u32(p + "loop.gate_rank", 64);
+        const auto loop_keys = with(with(with(with(full_keys(), ns.key, &ns), cs.key, &cs), ce.key, &ce), gr.key, &gr);
+        const Result on = run(d.path, loop_keys);
+        check(on.read_err.empty() && on.g.has_loop() && on.g.loop_core_start == 3 && on.g.loop_core_end == 4 &&
+                  on.g.loop_num_passes == 3 && on.g.loop_gate_rank == 64,
+              "loop.core_start=3..core_end=4 (layer 3 is QSA under interval 4), num_passes=3: reads");
+
+        const fixture::Kv cs0 = fixture::u32(p + "loop.core_start", 0);
+        const fixture::Kv ce_gdn = fixture::u32(p + "loop.core_end", 2);   // [0,2): layers 0,1, both GDN
+        const auto gdn_range = with(with(with(full_keys(), ns.key, &ns), cs0.key, &cs0), ce_gdn.key, &ce_gdn);
+        check(has(run(d.path, gdn_range).read_err, "is a GDN layer"),
+              "a loop range over GDN layers (0..2) is refused, naming the layer");
+
+        const fixture::Kv ce_bad = fixture::u32(p + "loop.core_end", 3);   // core_end == core_start
+        const auto empty_range = with(with(with(full_keys(), ns.key, &ns), cs.key, &cs), ce_bad.key, &ce_bad);
+        check(has(run(d.path, empty_range).read_err, "not a valid sub-range"),
+              "loop.core_end == loop.core_start is refused");
+
+        const fixture::Kv ce_over = fixture::u32(p + "loop.core_end", 49);  // > n_layers (48)
+        const auto over_range = with(with(with(full_keys(), ns.key, &ns), cs.key, &cs), ce_over.key, &ce_over);
+        check(has(run(d.path, over_range).read_err, "not a valid sub-range"),
+              "loop.core_end beyond n_layers is refused");
+
+        // num_passes = 1 (off) skips range validation entirely - a converter leaving a stale core_start/
+        // core_end behind while the loop is off must not break loading (the #2396 placeholder philosophy)
+        const fixture::Kv ns_off = fixture::u32(p + "loop.num_passes", 1);
+        const auto stale_off = with(with(with(full_keys(), ns_off.key, &ns_off), cs.key, &cs), ce_bad.key, &ce_bad);
+        check(run(d.path, stale_off).read_err.empty(),
+              "an invalid range with loop.num_passes=1 (off) is not validated and reads fine");
+
+        // loop.core_start = 0 is accepted - unlike every other loop.*/geometry key, 0 is a valid layer index
+        const fixture::Kv interval1 = fixture::u32(p + "full_attention_interval", 1);
+        const fixture::Kv cr1 = fixture::u32s(p + "attention.compress_ratios", ratios(48, 1, 4));
+        const fixture::Kv ce1 = fixture::u32(p + "loop.core_end", 1);
+        const auto zero_start = with(
+            with(with(with(with(full_keys(), interval1.key, &interval1), cr1.key, &cr1), ns.key, &ns), cs0.key, &cs0),
+            ce1.key, &ce1);
+        check(run(d.path, zero_start).read_err.empty(), "loop.core_start = 0 is accepted when layer 0 is QSA");
+    }
     std::printf(g_fail ? "gguf_geometry_test: %d FAILED\n" : "gguf_geometry_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

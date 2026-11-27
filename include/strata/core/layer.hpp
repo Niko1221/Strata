@@ -398,9 +398,12 @@ uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base,
 /// THE THREE ACTIVATION FORMATS FOLLOW `docs/activation-contract.md`, and they are not interchangeable:
 /// `attn_q` is Q2_0 (Q8_0 activation), `attn_k`/`attn_v`/`attn_output` are K-quants (Q8_K), and the two
 /// indexer projections are BF16 (bf16).
+/// `write_kv` (issue #7295, recurrent-depth loop, QSA-only): false on pass > 0 of a looped layer - this
+/// token's K/V and the indexer's append are made ONCE, on pass 0, and later passes read that same entry
+/// with a fresh query. Every existing caller passes nothing and keeps today's write-every-call behavior.
 bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
                const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,
-               std::string& err, float* dump = nullptr);
+               std::string& err, float* dump = nullptr, bool write_kv = true);
 
 // ================================ THE DOORBELL ================================
 
@@ -603,7 +606,7 @@ uint64_t ple_run_scratch_bytes();
 bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
                  const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,
                  int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,
-                 const Doorbell* db = nullptr, const PleRun* ple = nullptr);
+                 const Doorbell* db = nullptr, const PleRun* ple = nullptr, bool write_kv = true);
 
 /// **THE BLOCK, SPLIT AT THE ROUTER, SO A HOST LOOP CAN PUT THE CPU POOL IN THE MIDDLE.**
 ///
@@ -633,11 +636,12 @@ bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t laye
 /// **A half is not a free-standing call.**  `2` reads what `1` left in `bb.mixed`/`bb.inject`, exactly as
 /// `block_layer_post` does; the two are only meaningful replayed in order on one stream, which is what
 /// `session_replay_stages` does.
+/// `write_kv` (issue #7295): forwarded to `qsa_layer` unchanged; see its doc comment.
 bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos,
                      int32_t pos_base, const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb,
                      const MoEBuffers& mb, int64_t k, const BlockBuffers& bb, void* stream, std::string& err,
                      const Doorbell* db = nullptr, const PleRun* ple = nullptr, int half = 0,
-                     int stage_prefix = 0);
+                     int stage_prefix = 0, bool write_kv = true);
 
 bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,
                       const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,

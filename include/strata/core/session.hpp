@@ -45,6 +45,13 @@ struct SessionState {
     void* block_arena = nullptr;
 
     float* R = nullptr;             ///< alias of `block.R`, named for what it means at this level
+    // Recurrent-depth loop, QSA-only (issue #7295, M5): the pass-boundary gate's state. Carved only when
+    // `g.has_loop() && g.loop_gate_rank > 0` (the "no gate" fallback needs neither buffer); null otherwise,
+    // and `session_loop` never reads them when that condition is false. `loop_R0` is `R`'s shape (hc, n_embd)
+    // - the residual the core range READ on pass 0, snapshotted once per token and reused at every later pass
+    // boundary; `loop_gate_ws` is `loop_gate_workspace_bytes`'s scratch for the low-rank intermediate.
+    float* loop_R0 = nullptr;
+    float* loop_gate_ws = nullptr;
     int64_t k = 10;                 ///< experts per token
 
     // **THE LAYER-RANGE CARVE (multi-GPU).**  A split stage's session used to carve state for ALL 48 layers
@@ -137,6 +144,14 @@ bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t po
 struct SessionGraphs {
     cudaGraphExec_t* execs = nullptr;   ///< one per layer, in layer order
     int64_t n = 0;
+    /// **RECURRENT-DEPTH LOOP, QSA-ONLY (issue #7295): THE SECOND `pre[l]` A CAPTURED GRAPH CANNOT AVOID.**
+    /// A graph bakes in which kernels it runs AT CAPTURE TIME, not at replay time - so one captured `execs[l]`
+    /// cannot write this token's K/V on pass 0 and skip that write on pass > 0 of the same layer. Non-null only
+    /// for layers inside `g.loop_core_start..loop_core_end` when `g.has_loop()`; `session_loop` launches this
+    /// instead of `execs[l]` for every pass after the first. Captured with `write_kv = false`, otherwise
+    /// identical to `execs[l]`. Null (the whole array, or every entry outside the loop range) when the loop is
+    /// off, exactly like `preA`/`preB` are null without `split`.
+    cudaGraphExec_t* execs_noKV = nullptr;
     /// **THE SECOND GRAPH PER LAYER: `moe_finish` + `gr_write`, launched AFTER the host has run the pool.**
     ///
     /// Without it the loop has to hand layer `l`'s expert vectors to layer `l+1`, which multiplies them by
@@ -379,9 +394,13 @@ struct SessionLoopScratch {
     void free();
 };
 
+// `tables` is read ONLY for the recurrent-depth loop's pass-boundary gate (`loop_gate_down.weight`/
+// `loop_gate_up.weight`, issue #7295 M5) - every other weight this loop touches is already baked into the
+// captured graphs in `gr`. Unused, and safe to pass a table that lacks those two tensors, whenever
+// `!g.has_loop() || g.loop_gate_rank <= 0`.
 bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
-                  PoolFn pool, HitFn hits, void* user, bool overlap, void* stream, std::string& err,
-                  float* dump_layers = nullptr, SessionLoopScratch* scratch = nullptr);
+                  const WeightTable& tables, PoolFn pool, HitFn hits, void* user, bool overlap, void* stream,
+                  std::string& err, float* dump_layers = nullptr, SessionLoopScratch* scratch = nullptr);
 
 // ================================ plan v0.3 P3: THE WHOLE TOKEN AS ONE GRAPH ================================
 //

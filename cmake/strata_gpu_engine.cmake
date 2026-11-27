@@ -62,6 +62,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/kernels/cuda/s2_expert_grouped.cu
                           src/kernels/cuda/shared_expert.cu
                           src/kernels/cuda/gr.cu
+                          src/kernels/cuda/loop_gate.cu
                           src/kernels/cuda/gdn.cu
                           src/kernels/cuda/qsa.cu
                           src/kernels/cuda/elementwise.cu
@@ -1106,6 +1107,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(gr_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
+
+  # #7295 M5: the recurrent-depth loop's pass-boundary gate, against its own from-scratch double-precision
+  # reference (loop_gate.hpp/cu are new code - there is no prior implementation to be bit-exact against).
+  add_executable(loop_gate_parity src/kernels/loop_gate_parity.cpp)
+  target_include_directories(loop_gate_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(loop_gate_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME loop_gate_parity COMMAND loop_gate_parity)
 
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
