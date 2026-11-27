@@ -27,6 +27,16 @@ namespace strata::kernels {
 void mrope_table_set(const int32_t* device_table);
 const int32_t* mrope_table();
 
+/// Select a request's table while recording kernels; restore the caller's table on every exit.
+/// Kernels capture the pointer as an argument, so restoring it does not change an existing graph.
+struct MropeScope {
+    const int32_t* previous;
+    explicit MropeScope(const int32_t* table) : previous(mrope_table()) { mrope_table_set(table); }
+    ~MropeScope() { mrope_table_set(previous); }
+    MropeScope(const MropeScope&) = delete;
+    MropeScope& operator=(const MropeScope&) = delete;
+};
+
 /// #280, opt-in (STRATA_ROPE_TABLE=1): the rotation angles, 32 pairs of a 64-wide rotary slice, from the session's
 /// float64 table (build_rope_table, [max_pos][32] cos and sin in VRAM, the rope scaling inside) of the CURRENT
 /// device.  With it the rope kernels rotate by the table's exact angles; without it they compute pos * powf(...) with cosf/sinf, which under

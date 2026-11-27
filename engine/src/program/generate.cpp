@@ -126,6 +126,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/adapt_decay.hpp"
 #include "strata/program/batch_read.hpp"
+#include "strata/program/vision_records.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
@@ -7788,6 +7789,9 @@ int main(int argc, char** argv) {
                      last ? " and the head" : "", (double) fb / 1073741824.0);
     }
 
+    // Separate from the foreground admission table. Slot graphs keep these addresses across reuse.
+    std::vector<std::vector<std::shared_ptr<int32_t>>> bslot_mrope;
+
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per
     // slot of the batch windows.  Before the expert cache is sized, so `--expert-cache auto` leaves them room.
     // Recommend, never force: a count the engine cannot run is said and adjusted (or batching left off) - the
@@ -7999,6 +8003,7 @@ int main(int argc, char** argv) {
     }
     if (o.batch > 0) {
         bslot_ss.resize(1 + stages.size());
+        bslot_mrope.resize(bslot_ss.size());
         int fit = o.batch;   // the slots every stage could carve
         // The slots' host side.  With KV streaming every session keeps its whole K/V in pinned RAM (11 GiB a
         // conversation over both stages at a 1M context), and nothing checked that the slots' copies fit: --batch 4 at
@@ -8071,6 +8076,26 @@ int main(int argc, char** argv) {
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
+                std::shared_ptr<int32_t> positions_owner;
+                if (o.vision) {
+                    int32_t* positions = nullptr;
+                    if (cudaMalloc(&positions, mrope_host.size() * sizeof(int32_t)) != cudaSuccess) {
+                        std::fprintf(stderr, "strata generate: --batch: slot %d's image positions do not fit on CUDA%d\n", b, dev);
+                        cudaGetLastError();
+                        fit = b;
+                        break;
+                    }
+                    positions_owner = std::shared_ptr<int32_t>(positions, [dev](int32_t* p) {
+                        const strata::core::OnDevice on(dev);
+                        cudaFree(p);
+                    });
+                    if (cudaMemcpy(positions, mrope_host.data(), mrope_host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+                        std::fprintf(stderr, "strata generate: --batch: slot %d's image position initialization failed on CUDA%d\n", b, dev);
+                        cudaGetLastError();
+                        fit = b;
+                        break;
+                    }
+                }
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
                 if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
@@ -8084,6 +8109,10 @@ int main(int argc, char** argv) {
                     fit = b;
                     break;
                 }
+                if (positions_owner) {
+                    u->mrope = positions_owner.get();
+                    bslot_mrope[k].push_back(std::move(positions_owner));
+                }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
                 bslot_ss[k].push_back(std::move(u));
             }
@@ -8093,11 +8122,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
+        for (auto& v : bslot_mrope) if ((int) v.size() > fit) v.resize((size_t) fit);
         for (auto& v : bslot_ss) if ((int) v.size() > fit) v.resize((size_t) fit);   // the same count on every stage
         if (fit < 2) {
             std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (a smaller "
                                  "--max-context or KV streaming, --kv-resident, makes them smaller)\n");
             bslot_ss.clear();
+            bslot_mrope.clear();
             o.batch = 0;
         } else {
             const int n = slots_in_windows(fit);   // (the slots that fit are held to kVerifyMaxT rows per group too)
@@ -16222,7 +16253,9 @@ int main(int argc, char** argv) {
                         (long long) strata::prefill::Prefill::stream_all_min_tokens(),
                         strata::prefill::Prefill::pipe_setting(),
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
-                                       " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
+                                       // Pipeline completion invalidates the slot cache because pad rows can overwrite
+                                       // it. Do not let the server resume that slot on GEN as if its state were retained.
+                                       " slot_cache=" + std::to_string(o.prompt_cache > 0 && o.batch_groups == 1 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
                                        " slot_read=" + std::to_string(slot_read_cap ? 1 : 0)).c_str() : "");
             if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
@@ -16907,6 +16940,19 @@ int main(int argc, char** argv) {
             // the running state and the K/V of the Metal window, not the session's device buffers
             return strata::metal_engine::window_slot_copy_main(true, b, upto, false, e);
 #endif
+            // The slot keeps this request's image positions on every stage, whichever way its state is copied
+            // (the direct copy is the default on some cards: arch_defaults).
+            for (size_t k = 0; k < bslot_ss.size(); ++k) {
+                const strata::core::SessionState& to = *bslot_ss[k][(size_t) b];
+                if (to.mrope == nullptr) continue;
+                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess ||
+                    cudaMemcpy(const_cast<int32_t*>(to.mrope), k == 0 ? d_mrope : stages[k - 1]->mrope,
+                               mrope_host.size() * sizeof(int32_t), cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                    e = "batch admission: image position copy failed";
+                    return false;
+                }
+            }
             if (slot_copy_direct) {
                 if (!direct_slot_copy(true, b, ids, e)) return false;
             } else
@@ -19033,33 +19079,14 @@ int main(int argc, char** argv) {
                 if (!geni) {
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                 } else {
-                    struct Img { int64_t n, nx, ny; size_t off; };
-                    std::vector<Img> imgs;
-                    img_rows.clear();
-                    std::FILE* f = std::fopen(emb_path.c_str(), "rb");
-                    if (!f) ve = "cannot open " + emb_path;
-                    while (f && ve.empty()) {
-                        int32_t hdr[5];
-                        const size_t got = std::fread(hdr, sizeof(int32_t), 5, f);
-                        if (got == 0) break;
-                        if (got != 5 || hdr[0] != 0x31455653 || hdr[1] < 1 || hdr[2] < 1 || hdr[3] < 1 ||
-                            (int64_t) hdr[2] * hdr[3] != hdr[1] || hdr[4] != (int32_t) g.n_embd) {
-                            ve = "bad embeddings file (expected strata-vision records of width " +
-                                 std::to_string((long long) g.n_embd) + ")";
-                            break;
-                        }
-                        const size_t off = img_rows.size(), cnt = (size_t) hdr[1] * (size_t) hdr[4];
-                        img_rows.resize(off + cnt);
-                        if (std::fread(img_rows.data() + off, sizeof(float), cnt, f) != cnt) { ve = "short embeddings file"; break; }
-                        imgs.push_back({hdr[1], hdr[2], hdr[3], off});
-                    }
-                    if (f) std::fclose(f);
+                    std::vector<strata::program::VisionRecord> imgs;
+                    strata::program::read_vision_records(emb_path, g.n_embd, n, img_rows, imgs, ve);
                     int64_t p = 0, i = 0;
                     size_t k = 0;
                     while (ve.empty() && i < n) {
                         if (ids[(size_t) i] != kImagePad) { put(i, p, p, p); ++p; ++i; continue; }
                         if (k >= imgs.size()) { ve = "the prompt has more images than the embeddings file"; break; }
-                        const Img& im = imgs[k++];
+                        const strata::program::VisionRecord& im = imgs[k++];
                         {   // what the conversation cache compares: a picture is its grid and its embeddings
                             const int64_t grid[3] = {im.n, im.nx, im.ny};
                             uint64_t h = fnv1a(grid, sizeof grid);

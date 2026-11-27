@@ -30,6 +30,10 @@ namespace strata::core {
 /// handoff between the GPU and the CPU expert pool.
 struct SessionState {
     int64_t max_cells = 0;
+    /// Borrowed, device-local [max_cells][3] image positions for a batch slot. The address remains
+    /// stable for the slot's lifetime: captured graphs use it even when another prompt is admitted.
+    /// Null leaves the solo/device-wide position table unchanged.
+    const int32_t* mrope = nullptr;
 
     GdnBuffers gdn;                 ///< the 36 GDN layers share one set of scratch; their STATE is per layer
     float* gdn_state = nullptr;     ///< (n_gdn_layers, gdn_state_floats)

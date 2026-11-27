@@ -23,6 +23,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -1185,6 +1186,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
 
 bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    // A batch drafter owns one slot; its captured kernels must keep that slot's positions.
+    MropeScope positions(ss_->mrope != nullptr ? ss_->mrope : mrope_table());
     const ModelGeometry& g = *g_;
     const int64_t N = g.n_embd, HC = g.hc, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const QsaShapes s = shapes_of(g);
@@ -1309,6 +1312,8 @@ void MtpDrafter::norm_rope(float* data, const float* gamma, int rows, int cols, 
 bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
     if (!decode_ready(err)) return false;   // this is the 512 experts' only reader
+    // A batch drafter owns one slot; its captured kernels must keep that slot's positions.
+    MropeScope positions(ss_->mrope != nullptr ? ss_->mrope : mrope_table());
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     const int T = 1;
