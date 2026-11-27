@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <unordered_map>
 
 #ifdef _WIN32
@@ -133,6 +134,8 @@ public:
 
     bool ready() const noexcept { return ready_; }
     bool is_rocblas() const noexcept { return rb_handle_ != nullptr; }
+    double host_ms = 0.0;   // CPU time inside rocblas_gemm_ex (profiling)
+    long host_calls = 0;
 
     // One-time warmup inside backend init(): pays the ~600ms lazy Tensile library load at startup
     // instead of the user's first prompt TTFT, and pre-caches common trunk (M, N, K) shapes!
@@ -174,8 +177,11 @@ public:
                     strata::hip_uma::free_gpu_buffer(rb_tmp_);
                     if (strata::hip_uma::alloc_gpu_buffer(rb_tmp_, n * 2, false) != hipSuccess) return false;
                 }
+                const auto h0 = std::chrono::steady_clock::now();
                 if (fn_rb_gemm_ex_(rb_handle_, kOpT, kOpN, N, M, K, &alpha, W_nk, t, K, X_mk, t, K, &beta,
                                    rb_tmp_.dev_ptr, 150, N, rb_tmp_.dev_ptr, 150, N, 151, 0, 0, 0) != 0) return false;
+                host_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - h0).count();
+                ++host_calls;
                 k_rb_f16_to_f32<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
                     reinterpret_cast<const _Float16*>(rb_tmp_.dev_ptr), static_cast<float*>(Y_mn), n);
                 return true;
@@ -215,6 +221,16 @@ public:
     bool gemm_bf16_f32(const uint16_t* W_nk, const uint16_t* X_mk, float* Y_mn,
                        int M, int N, int K, hipStream_t stream, float alpha = 1.0f) noexcept {
         return gemm_tn(kTypeBF16, kTypeF32, W_nk, X_mk, Y_mn, M, N, K, stream, alpha);
+    }
+
+    // rocBLAS only: FP16 out straight into the caller's buffer (no widening pass)
+    bool gemm_f16_f16(const void* W_nk, const void* X_mk, void* Y_mn,
+                      int M, int N, int K, hipStream_t stream, float alpha = 1.0f) noexcept {
+        if (!rb_handle_ || M <= 0 || N <= 0 || K <= 0) return false;
+        const float beta = 0.0f;
+        if (fn_rb_set_stream_(rb_handle_, stream) != 0) return false;
+        return fn_rb_gemm_ex_(rb_handle_, kOpT, kOpN, N, M, K, &alpha, W_nk, 150, K, X_mk, 150, K, &beta,
+                              Y_mn, 150, N, Y_mn, 150, N, 151, 0, 0, 0) == 0;
     }
 
     bool gemm_f16_f32(const void* W_nk, const void* X_mk, float* Y_mn,

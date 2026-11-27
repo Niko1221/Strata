@@ -4288,6 +4288,50 @@ __global__ void __launch_bounds__(256) k_moe_reduce_buckets(
     moe_out[static_cast<size_t>(b) * D + d] = acc;
 }
 
+// k_moe_reduce_buckets over FP16 bucket outputs (the RDNA2 rocBLAS prompt route writes FP16 directly)
+__global__ void __launch_bounds__(256) k_moe_reduce_buckets_h(
+    const half_t* __restrict__ bucket_y, const int32_t* __restrict__ slotk_to_bidx, const float* __restrict__ topk_weights,
+    float* __restrict__ moe_out, int B, int top_k, int D) {
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    const int b = blockIdx.y;
+    if (d >= D || b >= B) return;
+    float acc = 0.0f;
+    for (int k = 0; k < top_k; ++k) {
+        const int sk = b * top_k + k;
+        acc = fmaf(static_cast<float>(bucket_y[static_cast<size_t>(slotk_to_bidx[sk]) * D + d]), topk_weights[sk], acc);
+    }
+    moe_out[static_cast<size_t>(b) * D + d] = acc;
+}
+
+// RDNA2 rocBLAS prompt route: the layer's descriptor table with only the VRAM experts that got 1..min_rows-1 rows
+// (the grouped native kernels run those in one launch; null descriptors are skipped). Block: 128.
+__global__ void __launch_bounds__(128) k_moe_small_descs(
+    const GpuExpertDesc* __restrict__ all, const int32_t* __restrict__ exp_off, GpuExpertDesc* __restrict__ small, int min_rows) {
+    const int e = threadIdx.x;
+    const int m = exp_off[e + 1] - exp_off[e];
+    GpuExpertDesc d = all[e];
+    if (!(m > 0 && m < min_rows)) d.body = nullptr;
+    small[e] = d;
+}
+
+// Bucket reduce over the two outputs of that route: FP32 rows of the grouped small experts, FP16 rows of the rest.
+__global__ void __launch_bounds__(256) k_moe_reduce_buckets_mixed(
+    const half_t* __restrict__ y16, const float* __restrict__ y32, const GpuExpertDesc* __restrict__ small,
+    const int32_t* __restrict__ topk_ids, const int32_t* __restrict__ slotk_to_bidx, const float* __restrict__ topk_weights,
+    float* __restrict__ moe_out, int B, int top_k, int D) {
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    const int b = blockIdx.y;
+    if (d >= D || b >= B) return;
+    float acc = 0.0f;
+    for (int k = 0; k < top_k; ++k) {
+        const int sk = b * top_k + k;
+        const size_t at = static_cast<size_t>(slotk_to_bidx[sk]) * D + d;
+        const float y = small[topk_ids[sk]].body ? y32[at] : static_cast<float>(y16[at]);
+        acc = fmaf(y, topk_weights[sk], acc);
+    }
+    moe_out[static_cast<size_t>(b) * D + d] = acc;
+}
+
 // Masked deterministic reduction across top_k=8 bucket outputs for Dual-GPU EP (skips experts with null body!)
 // Grid: ((D + 255) / 256, B), Block: 256
 __global__ void __launch_bounds__(256) k_moe_reduce_buckets_masked(
@@ -7584,15 +7628,16 @@ __global__ void __launch_bounds__(256) k_unpack_sk_paired2_f16(
 }
 
 // Fused SITU + optional sq_xd_dn divide directly on hipBLASLt FP32 gu[m_e, 2*inter] -> act[m_e, inter] FP16!
+template <typename GU>
 __global__ void __launch_bounds__(256) k_situ_interleaved_sq(
-    const float* __restrict__ gu,
+    const GU* __restrict__ gu,
     const half_t* __restrict__ sq_xd_dn,  // nullptr for SF4/MX8, or [inter] FP16 for S_K
     half_t* __restrict__ act_out,
     int m_e, int inter, float beta, float lb) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= m_e * inter) return;
-    const float g = gu[static_cast<size_t>(idx) * 2];
-    const float u = gu[static_cast<size_t>(idx) * 2 + 1];
+    const float g = static_cast<float>(gu[static_cast<size_t>(idx) * 2]);
+    const float u = static_cast<float>(gu[static_cast<size_t>(idx) * 2 + 1]);
     float v = situ_f32(g, u, beta, lb);
     if (sq_xd_dn) v /= static_cast<float>(sq_xd_dn[idx % inter]);
     act_out[idx] = static_cast<half_t>(v);
