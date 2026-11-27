@@ -9,6 +9,7 @@
 // Needs a CUDA device for the arena (exits 77 without one).
 #include "gguf_fixture.hpp"
 
+#include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/weights.hpp"
 
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -94,12 +96,13 @@ void write_pack(const fs::path& dir) {
 
 struct Stage {
     bool ok = false;
+    bool readback_matches = false;
     std::string err;
     uint64_t priced = 0, loaded = 0, weights = 0;
 };
 
 // generate.cpp's order for a later stage: the price from the headers and the table, then the load of its layers
-Stage run(const fs::path& pack, const std::string& shard, int64_t lb, int64_t le) {
+Stage run(const fs::path& pack, const std::string& shard, int64_t lb, int64_t le, bool full_load = false) {
     Stage s;
     const std::vector<std::string> shards{shard};
     std::set<std::string> skip;
@@ -112,10 +115,25 @@ Stage run(const fs::path& pack, const std::string& shard, int64_t lb, int64_t le
     NativeDense dense;
     if (wt.load(pack.string(), arena, pool ? pool : 256, s.err, &skip) &&
         NativeDense::weight_bytes_for(shards, wt, true, lb, le, s.priced, s.err)) {
-        NativeDense::set_layer_range((int) lb, (int) le);
+        if (!full_load) NativeDense::set_layer_range((int) lb, (int) le);
         s.ok = dense.load(shards, wt, s.err, true);
         s.loaded = dense.allocated_bytes();
         s.weights = dense.weight_bytes();
+        if (s.ok && full_load) {
+            const strata::GgufFile gguf(shard);
+            std::vector<uint8_t> copied(Q8_BYTES);
+            s.readback_matches = dense.tensor_count() == gguf.tensors().size();
+            for (const auto& tensor : gguf.tensors()) {
+                const auto* ref = wt.find(tensor.name);
+                if (!ref) { s.readback_matches = false; break; }
+                const void* data = is_hc_row(tensor.name) ? ref->hc_q8 : ref->native_data;
+                if (!data || cudaMemcpy(copied.data(), data, copied.size(), cudaMemcpyDeviceToHost) != cudaSuccess ||
+                    std::memcmp(copied.data(), gguf.tensor_data(tensor), copied.size()) != 0) {
+                    s.readback_matches = false;
+                    break;
+                }
+            }
+        }
     }
     dense.release();
     NativeDense::set_layer_range(-1, -1);
@@ -132,8 +150,12 @@ int main() {
     }
 #if defined(_WIN32)
     _putenv_s("STRATA_HC_Q8", "1");
+    _putenv_s("STRATA_Q8_PACKED", "0");
+    _putenv_s("STRATA_Q8_INPLACE", "0");
 #else
     setenv("STRATA_HC_Q8", "1", 1);
+    setenv("STRATA_Q8_PACKED", "0", 1);
+    setenv("STRATA_Q8_INPLACE", "0", 1);
 #endif
     TempDir tmp;
     const fs::path pack = tmp.path / "pack";
@@ -157,6 +179,33 @@ int main() {
     check(s1.priced == s1.loaded, "layers [1, 2): priced == allocated by load (" + std::to_string(s1.priced) + " / " + std::to_string(s1.loaded) + ")");
     check(s01.priced == s01.loaded, "layers [0, 2): priced == allocated by load (" + std::to_string(s01.priced) + " / " + std::to_string(s01.loaded) + ")");
     check(s0.weights == s0.loaded && s1.weights == s1.loaded, "weight_bytes() counts the hc rows too");
+
+#if !defined(STRATA_USE_HIP)
+    if (devices == 1) {
+        std::printf("2. The projection arena and ordinary loader preserve dense and HC_Q8 bytes\n");
+#if defined(_WIN32)
+        _putenv_s("STRATA_NATIVE_DENSE_ARENA", "0");
+#else
+        setenv("STRATA_NATIVE_DENSE_ARENA", "0", 1);
+#endif
+        const auto separate = run(pack, shard, 0, 2, true);
+#if defined(_WIN32)
+        _putenv_s("STRATA_NATIVE_DENSE_ARENA", "1");
+#else
+        setenv("STRATA_NATIVE_DENSE_ARENA", "1", 1);
+#endif
+        const auto arena = run(pack, shard, 0, 2, true);
+        check(separate.ok && separate.readback_matches, "separate allocations match the GGUF " + separate.err);
+        check(arena.ok && arena.readback_matches, "arena projections and separate HC_Q8 rows match the GGUF " + arena.err);
+        check(separate.weights == names().size() * Q8_BYTES && arena.weights == separate.weights,
+              "weight_bytes() reports the same logical bytes");
+        constexpr uint64_t rounded_projection = (Q8_BYTES + 511) / 512 * 512;
+        check(arena.loaded == 3 * rounded_projection + 6 * Q8_BYTES,
+              "allocation accounting includes projection arena padding and the ordinary HC_Q8 rows");
+    } else {
+        std::printf("Projection arena check needs one visible CUDA device\n");
+    }
+#endif
 
     std::printf(g_fail ? "native_dense_price_test: %d FAILED\n" : "native_dense_price_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

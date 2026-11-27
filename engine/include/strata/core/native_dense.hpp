@@ -67,12 +67,15 @@ public:
     uint64_t weight_bytes() const { return bytes_; }
     /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
     uint64_t allocated_bytes() const { return allocated_; }
-    size_t tensor_count() const { return weights_.size() - packed_keys_.size(); }
+    size_t tensor_count() const { return weights_.size() - packed_keys_.size() + arena_tensor_adjustment_; }
 
 private:
+    static bool measure_weights(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                int64_t lb, int64_t le, uint64_t& out, std::string& err, uint64_t* arena_bytes);
     std::vector<void*> weights_;
     std::vector<const void*> packed_keys_;   // GGUF-layout pointers registered with STRATA_Q8_PACKED=1
     void* scratch_ = nullptr;
+    size_t arena_tensor_adjustment_ = 0;   // one owned allocation represents multiple tensors
     uint64_t bytes_ = 0;
     uint64_t allocated_ = 0;
     std::vector<uint64_t> layer_bytes_;   ///< uploaded bytes per layer
