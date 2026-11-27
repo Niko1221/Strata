@@ -461,7 +461,8 @@ __global__ void __launch_bounds__(128) k_attend_rdna2(const __half* __restrict__
             *reinterpret_cast<uint4*>(&sQ[r * QP + c]) = *reinterpret_cast<const uint4*>(qsrc + (size_t)r * MLA_ROW + c);
         }
     }
-    const int pos = a.p0 + t;
+    const int p0_use = a.p0_dev ? *a.p0_dev : a.p0;
+    const int pos = mla_query_pos(a, t, p0_use);
     const int mode = a.mode;
     int lo = 0, lo_al = 0, nk;
     if (mode == MLA_CAUSAL) nk = pos + 1;
@@ -471,7 +472,8 @@ __global__ void __launch_bounds__(128) k_attend_rdna2(const __half* __restrict__
         nk = pos - lo_al + 1;
     } else nk = a.nkeys[t];
     const int ntiles = (nk + FBK - 1) / FBK;
-    const int tb = sp * tps, te = min(ntiles, tb + tps);
+    const int tps_use = (mode == MLA_CAUSAL && (a.p0_dev || a.M <= 16)) ? (ntiles + S - 1) / S : tps;
+    const int tb = sp * tps_use, te = min(ntiles, tb + tps_use);
     const int32_t* klist = a.keys + (size_t)t * a.kmax;
     const _Float16* rows = reinterpret_cast<const _Float16*>(cache);
 
@@ -502,7 +504,7 @@ __global__ void __launch_bounds__(128) k_attend_rdna2(const __half* __restrict__
             bool v = ie < nk;
             if (mode == MLA_WINDOW) v = v && (lo_al + ie >= lo);
             int sl = 0;
-            if (ie < nk) sl = mode == MLA_CAUSAL ? (a.ring > 0 ? ie % a.ring : ie) : (mode == MLA_WINDOW ? (lo_al + ie) % a.ring : klist[ie]);
+            if (ie < nk) sl = mla_tree_slot(a, t, mode == MLA_CAUSAL ? ie : (mode == MLA_WINDOW ? lo_al + ie : klist[ie]));
             s_slot[tid] = sl;
             s_valid[tid] = v ? 1 : 0;
         }
