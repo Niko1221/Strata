@@ -317,8 +317,14 @@ def fit_start(cfg: dict, args: list, vram_mib: float | None, backend: str | None
             out[out.index("--kv-resident") + 1] = str(fr.kv_resident)
         else:
             out += ["--kv-resident", str(fr.kv_resident)]
-    if fr.prefill is not None and "--prefill" in out:
-        out[out.index("--prefill") + 1] = fr.prefill
+    if fr.prefill is not None:
+        # A start with no --prefill runs the engine's own chunk, so the plan's chunk had nowhere to go: it was written
+        # only when the flag was already there, while the note said the chunk had been lowered (and the reserve floor
+        # the plan chose was sized for that chunk).  Same shape as --kv-resident above.
+        if "--prefill" in out:
+            out[out.index("--prefill") + 1] = fr.prefill
+        else:
+            out += ["--prefill", fr.prefill]
     if fr.reserve_mib != reserve and vendor not in SINGLE_MEASURED_VENDORS:
         if "--vram-reserve-mib" in out:
             out[out.index("--vram-reserve-mib") + 1] = str(fr.reserve_mib)
