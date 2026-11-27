@@ -2464,6 +2464,26 @@ struct InkMetalRunner {
             if (nb % 16 == 0)
                 std::fprintf(stderr, "[ink TRACE-B] verify-batch expert usage: distinct/(8M)=%.3f (n=%ld batches; 1.0=全部独立 0.5=半重复)\n",
                              sum_ratio / sum_n, nb);
+            // EcoSpec feasibility: same-position-pair expert overlap across tree slots.
+            // For consecutive draft positions (adjacent tree depth) measure how many of the
+            // 8 experts are shared per layer - high overlap means cost-aware pruning has
+            // little to gain; low overlap means big savings available.
+            {
+                static double ov_acc = 0; static long ov_n = 0;
+                for (int v = 6; v < 42; ++v) {
+                    for (int a = 0; a + 1 < step.M; ++a) {
+                        int cnt = 0;
+                        for (int x = 0; x < 8; ++x)
+                            for (int y = 0; y < 8; ++y)
+                                if (tr[v * stride + a * c.top_k + x] == tr[v * stride + (a + 1) * c.top_k + y]) ++cnt;
+                        ov_acc += cnt / 8.0;
+                        ++ov_n;
+                    }
+                }
+                if (nb % 16 == 0 && ov_n > 0)
+                    std::fprintf(stderr, "[ink TRACE-C] adjacent-token expert overlap: %.2f/8 (random=0.5; n=%ld pairs)\n",
+                                 ov_acc / ov_n, ov_n);
+            }
         }
         if (trace_experts && step.M == 1 && step.compute_logits) {
             // Loop passes: visit v = 6 + p_idx*12 + (ip-6) for ip in [6,17], pass p_idx in 0..2.

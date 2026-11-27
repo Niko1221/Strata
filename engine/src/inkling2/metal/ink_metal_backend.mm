@@ -490,9 +490,23 @@ public:
         const double t_step0 = mtl::now_s();
         const bool is_bf16_trunk = (mod_.man.get("model.llm.layers.0.attn.wq_du.weight").fmt == ink_metal::FMT_BF16);
         const bool is_sq10 = (mod_.man.build.find("10") != std::string::npos);
-        const double t_plain_ms = runner_.is_apple10 ? (is_bf16_trunk ? 17.2 : (is_sq10 ? 13.5 : 14.8)) : 41.0;
+        // Calibrated on M6 24GB SQ-10 locked: plain M1 pass = 27.1ms (was 13.5 - half the truth,
+        // which doubled apparent speculative gain and kept drafting on content where it loses).
+        static const double t_plain_override = [] { const char* e = std::getenv("INK_TPLAIN"); return e ? atof(e) : -1.0; }();
+        const double t_plain_ms = (t_plain_override > 0) ? t_plain_override
+            : (runner_.is_apple10 ? (is_bf16_trunk ? 17.2 : (is_sq10 ? 27.1 : 14.8)) : 41.0);
 
         auto update_gain = [&](int n_emit) {
+            static const bool acc_log = std::getenv("INK_ACCLOG") != nullptr;
+            if (acc_log) {
+                static long hist[16] = {}, nlog = 0;
+                ++hist[std::min(15, n_emit)];
+                if (++nlog % 64 == 0) {
+                    std::fprintf(stderr, "[ink ACC] emit-len hist:");
+                    for (int i = 1; i <= 9; ++i) std::fprintf(stderr, " %d:%ld", i, hist[i]);
+                    std::fprintf(stderr, " (n=%ld)\n", nlog);
+                }
+            }
             const double step_ms = std::max(1.0, (mtl::now_s() - t_step0) * 1e3);
             const double step_gain = (double)n_emit * t_plain_ms / step_ms;
             slot_ema_gain_[slot] = 0.72 * slot_ema_gain_[slot] + 0.28 * step_gain;
