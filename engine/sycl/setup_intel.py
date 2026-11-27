@@ -55,7 +55,8 @@ INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e222": ("Arc Pro B65", 32.0), "e221
 # Alchemist (DG2, the A-series) has no FP64 hardware and carries the driver's FP64 emulation. On i915 (the A750) a
 # single sycl::malloc_host past ~3 GiB also fails, so the experts load into a CPU-computed RAM arena instead of the
 # pinned mirror (--mmap-experts + STRATA_VERIFY_NO_HOST=0 - docs/INTEL.md, "Arc A750"). On xe (the A770) the mirror is
-# built in chunks past that limit and the A-series uses the ordinary streamed path; see to_sycl().
+# built in chunks past that limit; on Windows an A-series card now takes the same arena + stepped window as i915 when
+# the RAM holds the experts (it used to keep the mirror, because setup reads its driver as "unknown") - see to_sycl().
 ALCHEMIST_IDS = frozenset({"56a0", "56a1", "56a2", "56a5", "56a6", "5690"})
 
 
@@ -514,15 +515,21 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     if kv != "k8v4" and ctx >= 65536 and ram >= kv_ram + 6:
         args += ["--kv-resident", "32768"]
     alchemist = driver == "i915" or devid in ALCHEMIST_IDS
+    # On Windows setup reads the driver as "unknown" (there is no sysfs), so an A-series card fell through the mirror rule
+    # below and never reached the arena it already uses on i915.  Two A770 reports on PR #3607 (shenef's stepped window,
+    # hansong80's two-card run) show the arena + STRATA_VERIFY_STEPPED path is the faster one there, so a Windows
+    # Alchemist is treated as one: the arena when the RAM holds the experts, the mirror when it does not.
+    win_alchemist = native and driver != "i915" and devid in ALCHEMIST_IDS
     streamed = driver != "i915"                         # the pinned host mirror (xe); i915 has the RAM arena instead
     arena_gb = float(S.MODELS.get(model, {}).get("arena_gb", 0) or 0)
     ram_need = float(S.MODELS.get(model, {}).get("ram_gb", 0) or 0)
     arena_ram = max(ram_need, arena_gb + 6.0) if arena_gb else 0.0   # the arena is locked in RAM; 6 GiB stay for Windows, the dense weights and the KV
-    if streamed and native and not alchemist and arena_gb and vram_gb:
-        # Windows, B-series, and only when the experts do not fit: a pinned mirror read over PCIe on most tokens also
-        # starves the draft layer.  Measured on an Arc Pro B60 24 GB (Coder IQ1_M, 8K; report on PR #3607): mirror 14.88
-        # tok/s, the RAM arena 36.29 (+88%), and --spec 4 cost 18% on that path.  Linux and the A-series keep their
-        # tested path.
+    if streamed and native and (not alchemist or win_alchemist) and arena_gb and vram_gb:
+        # Windows, B-series (and an A-series card, where setup sees no driver name), and only when the experts do not fit:
+        # a pinned mirror read over PCIe on most tokens also starves the draft layer.  Measured on an Arc Pro B60 24 GB
+        # (Coder IQ1_M, 8K; report on PR #3607): mirror 14.88 tok/s, the RAM arena 36.29 (+88%), and --spec 4 cost 18% on
+        # that path.  Linux and the A-series' i915 path have their own rules; the arena here needs STRATA_VERIFY_STEPPED
+        # on an A-series card (set below).
         pf_now = flag(args, "--prefill") or recommended_prefill(vram_gb, ctx, driver, devid)[0]
         kv_in_vram = 32768 if "--kv-resident" in args else ctx
         room = vram_fit.experts_fit_mib(model, vram_gb, ctx, kv, int(reserve), pf_now, "intel", kv_in_vram)
@@ -548,6 +555,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         gyro = "gyro" in (flag(args, "--native") or "").lower()
         if "--ple-io" not in args and not gyro:
             args += ["--ple-io", "ram"]
+        args += ["--vram-reserve-mib", reserve]
+    elif win_alchemist and not streamed:
+        # the arena: the CPU computes the experts the cache does not hold, and the window is served between segments.
+        # --ple-io stays at its default here: this PC's probe measured `direct` as fine, and `ram` is the i915 A750's rule.
         args += ["--vram-reserve-mib", reserve]
     elif streamed:
         args += ["--stream-experts", "--vram-reserve-mib", reserve]
@@ -601,6 +612,13 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
             # The same card does not advertise ext_oneapi_graph but does run command graphs: pass the engine's
             # opt-in, which is inert on a card that advertises the aspect.
             env["STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT"] = "1"
+            if not streamed:
+                # A-series arena with host-served experts (the i915 A750, and a Windows A770): a kernel inside a captured
+                # command graph never sees the host's writes, so the window must be recorded as segments instead of the
+                # doorbell (shenef's fix, in the branch since 0.1.69 - verified on an A770 by two reporters, #3607).
+                # Fewer, larger segments read fastest, and a 16 GB card cannot hold the arena's wholesale device import.
+                env.update({"STRATA_VERIFY_STEPPED": "1", "STRATA_VERIFY_SPLIT": "0",
+                            "STRATA_ARENA_COPY_REGISTER": "0"})
         env.update(cfg.get("env", {}))
     elif exe != ROOT / "build-sycl-aot" / "strata":
         env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()

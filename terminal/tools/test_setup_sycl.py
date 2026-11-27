@@ -300,6 +300,29 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1024")
         self.assertNotIn("STRATA_VERIFY_NO_HOST", c.get("env", {}))
 
+    def test_windows_a_series_takes_the_arena_with_the_stepped_window(self):
+        # Setup reads a Windows A-series card's driver as "unknown", so it kept the mirror; two A770 reports on #3607
+        # (shenef's stepped window, hansong80's runs) show the arena + stepped path is the faster one when the RAM holds
+        # the experts, so the A-series arena rule now covers it.
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m, ["--spec", "4"]), m.ROOT / "build-sycl-win" / "strata.exe", 96.0, {},
+                      vram_gb=16.0, driver="unknown", devid="56a0", model="IQ2_XS")
+        a, env = c["args"], c.get("env", {})
+        self.assertNotIn("--stream-experts", a)
+        self.assertEqual(m.flag(a, "--spec"), "2")          # 4 costs 18% on the arena path
+        self.assertEqual(env.get("STRATA_VERIFY_NO_HOST"), "0")
+        self.assertEqual(env.get("STRATA_VERIFY_STEPPED"), "1")
+        self.assertEqual(env.get("STRATA_VERIFY_SPLIT"), "0")
+        self.assertEqual(env.get("STRATA_ARENA_COPY_REGISTER"), "0")
+
+    def test_windows_a_series_keeps_the_mirror_when_the_arena_cannot_fit(self):
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-win" / "strata.exe", 24.0, {},
+                      vram_gb=16.0, driver="unknown", devid="56a0", model="IQ2_XS")
+        self.assertIn("--stream-experts", c["args"])
+        self.assertEqual((c.get("env") or {}).get("STRATA_VERIFY_NO_HOST"), "1")
+        self.assertNotIn("STRATA_VERIFY_STEPPED", c.get("env") or {})
+
     def test_xe_ranks_the_experts_with_the_sycl_profile_and_i915_keeps_the_shipped_one(self):
         m = self.mod()
         shipped = str(m.MOUNT / "data" / "expert-profile.bin")

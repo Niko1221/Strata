@@ -527,6 +527,14 @@ The shrink message's page-file advice does not apply to this failure: the reques
 free, and the limit reproduces with no model loaded. What the limit is worth depends on the bottleneck: on a Linux
 A770 bound by the PLE table it moved the expert-cache hit rate from 60% to 80% with decode unchanged (#5578).
 
+**A Windows A-series card now starts on the arena + stepped path**, not the pinned mirror. Setup cannot see an
+A-series driver name on Windows (it reads `unknown`), so the card fell through the B-series rule's A-series exclusion
+and kept the mirror. The rule now covers it: when the RAM holds the experts, the config takes the RAM arena,
+`STRATA_VERIFY_NO_HOST=0`, `STRATA_VERIFY_STEPPED=1`, `STRATA_VERIFY_SPLIT=0`, `STRATA_ARENA_COPY_REGISTER=0`, and
+`--spec 2` instead of 4; when the PC cannot hold the arena, it keeps the mirror exactly as before. The basis is the two
+A770 runs on #3607 above (with MTP: 21.4-23.6 tok/s for the arena against 19.1-19.5 for the mirror on one box;
+22.0 against 11.72 on shenef's). Linux is unchanged.
+
 Three things to expect on this card.
 
 - **Host-served experts (`STRATA_VERIFY_NO_HOST=0`) need segmented windows, not the doorbell.**
