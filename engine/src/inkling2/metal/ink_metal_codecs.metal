@@ -2906,6 +2906,137 @@ template [[host_name("ink_moe_dn_sk5")]] kernel decltype(ink_moe_dn_sk_t<5>) ink
 
 // ---- Ultra-Lean SQ-10 Mixed {S2_K, S3_K, SF4} MoE Shaders (minimal registers -> max M4 occupancy!) ----
 // w13: 8 rows/TG (grid.x=144), 32 lanes/row -> LUT-accelerated S3_K/S2_K + SF4 fallback!
+// ============================================================================
+// Threadgroup-staged MoE gate/up decoder: the 8 rows a threadgroup handles are
+// CONTIGUOUS in memory (rows 2*r0..2*r0+15 of the w13 block). Stage them with
+// dense aligned wide loads into threadgroup memory, then decode on-chip.
+// Rationale: device-memory strided uchar2 LUT reads expose DRAM inefficiency;
+// the staging copy is a dense streaming read at full bandwidth. Math identical.
+// ============================================================================
+
+// Decode gate+up for one row pair from a threadgroup-staged byte region.
+// Layout in `sw`: row-pair-major, row stride rowb = 9*sb_bytes, same byte layout as device.
+template <int F>
+static inline void sk_w13_chunk_stg(
+    threadgroup const uchar* sw, int lr, threadgroup const float* xs_in,
+    thread const uint* tk, int mm, int lane, thread float* ag, thread float* au,
+    device const float* x_in) {
+    constexpr int SB = sk_sb_bytes(F);
+    const int rowb = 9 * SB;
+    threadgroup const uchar* rg = sw + (size_t)(2 * lr) * rowb;
+    threadgroup const uchar* ru = sw + (size_t)(2 * lr + 1) * rowb;
+    const int u = lane, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+    for (int unit = lane; unit < 288; unit += 32) {
+        const int sbi = unit >> 5;
+        threadgroup const uchar* bg = rg + sbi * SB;
+        threadgroup const uchar* bu = ru + sbi * SB;
+        const ushort hg0 = ushort(bg[0]) | (ushort(bg[1]) << 8);
+        const ushort hu0 = ushort(bu[0]) | (ushort(bu[1]) << 8);
+        const float effg = float(as_type<half>(hg0)) * (float(bg[2 + g]) * (1.0f / 255.0f));
+        const float effu = float(as_type<half>(hu0)) * (float(bu[2 + g]) * (1.0f / 255.0f));
+        float4 wg0, wg1, wu0, wu1;
+        if (F == 2) {
+            threadgroup const uchar* pgg = bg + 6 + (j >> 2);
+            threadgroup const uchar* pgu = bu + 6 + (j >> 2);
+            wg0 = float4(kS2Lut[pgg[0]]);
+            wg1 = float4(kS2Lut[pgg[1]]);
+            wu0 = float4(kS2Lut[pgu[0]]);
+            wu1 = float4(kS2Lut[pgu[1]]);
+        } else {
+            threadgroup const uchar* pgg = bg + 6 + (j >> 2);
+            threadgroup const uchar* pgu = bu + 6 + (j >> 2);
+            const uint hg = uint(bg[6 + 64 + (j >> 3)]);
+            const uint hu = uint(bu[6 + 64 + (j >> 3)]);
+            wg0 = float4(kS2Lut[pgg[0]] + kS3Hi[hg & 15u]);
+            wg1 = float4(kS2Lut[pgg[1]] + kS3Hi[hg >> 4]);
+            wu0 = float4(kS2Lut[pgu[0]] + kS3Hi[hu & 15u]);
+            wu1 = float4(kS2Lut[pgu[1]] + kS3Hi[hu >> 4]);
+        }
+        for (int i = 0; i < mm; ++i) {
+            device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
+            const float4 x0 = xp[0], x1 = xp[1];
+            ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+            au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+        }
+    }
+}
+
+// Staged-weight variant of ink_moe_gu_sk23. Same grid/args/outputs.
+kernel void ink_moe_gu_sk23_stg(
+    device const uchar* sec4        [[buffer(0)]],
+    device const InkExpertDev* ex   [[buffer(1)]],
+    device const float* x_in        [[buffer(2)]],
+    device const int* uexp          [[buffer(3)]],
+    device const int* uoff          [[buffer(4)]],
+    device const int* ucnt          [[buffer(5)]],
+    device const int* pair_list     [[buffer(6)]],
+    device const uint* meta         [[buffer(7)]],
+    device float* h_act             [[buffer(8)]],
+    device const uchar* sec4_1      [[buffer(9)]],
+    device const uchar* sec4_2      [[buffer(10)]],
+    device const uchar* sec4_3      [[buffer(11)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]]) {
+    const int y = int(tgp.y);
+    if (y >= int(meta[0])) return;
+    const uint sg = tid >> 5, lane = tid & 31;
+    const int r = int(tgp.x) * 8 + int(sg);
+    if (r >= 1152) return;
+    const int e = uexp[y], off = uoff[y], n = ucnt[y];
+    const InkExpertDev ed = ex[e];
+    device const uchar* body = ink_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16 && ed.dn_code != 20);
+    const float inv_sq = is_sk_dn ? (1.0f / float(as_type<half>(ld16(body + 2 * r)))) : 1.0f;
+
+    // Only handle sk2/sk3 gate/up here; sf4 experts fall back to per-expert row groups
+    // in practice uniform layers use sk23 path only (dispatch-time guard keeps sf4 out).
+    const int sb_gu = (ed.gu_code == 3) ? 102 : 70;
+    const int rowb = 9 * sb_gu;
+    const int r0 = int(tgp.x) * 8;                       // first row of this threadgroup
+    const int rows = min(8, 1152 - r0);
+    // Stage rows 2*r0 .. 2*r0+15 contiguous region: base + 16*r0*rowb, length 16*rows*rowb/rows
+    // careful: rows 2r..2r+1 for r in [r0, r0+rows) => byte range [2*r0*rowb, (2*(r0+rows))*rowb)
+    threadgroup uchar stage[8 * 2 * 9 * 102 + 64];   // worst case F=3: 14688 + slack
+    {
+        device const uchar* src = body + 2304 + (size_t)(2 * r0) * rowb;
+        const int total = 2 * rows * rowb;
+        for (int i = int(tid) * 2; i < total; i += 512) {
+            stage[i] = src[i];
+            stage[i + 1] = src[i + 1];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (n == 1) {
+        const uint pid0 = uint(pair_list[off]), tk0 = pid0 >> 3u;
+        float ag0 = 0.0f, au0 = 0.0f;
+        const int lr = r - r0;
+        if (ed.gu_code == 3)      sk_w13_chunk_stg<3>(stage, lr, nullptr, &tk0, 1, int(lane), &ag0, &au0, x_in);
+        else if (ed.gu_code == 2) sk_w13_chunk_stg<2>(stage, lr, nullptr, &tk0, 1, int(lane), &ag0, &au0, x_in);
+        else {
+            // sf4 fallback: direct device decode
+            sf4_w13_chunk_s<32>(body, r, x_in, &tk0, 1, int(lane), &ag0, &au0);
+        }
+        const float g2 = simd_sum(ag0), u2 = simd_sum(au0);
+        if (lane == 0) h_act[ulong(pid0) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        return;
+    }
+    for (int t0 = 0; t0 < n; t0 += 4) {
+        const int mm = min(4, n - t0);
+        uint pid[4], tk[4];
+        for (int i = 0; i < mm; ++i) { pid[i] = uint(pair_list[off + t0 + i]); tk[i] = pid[i] >> 3u; }
+        float ag[4] = {0,0,0,0}, au[4] = {0,0,0,0};
+        const int lr = r - r0;
+        if (ed.gu_code == 3)      sk_w13_chunk_stg<3>(stage, lr, nullptr, tk, mm, int(lane), ag, au, x_in);
+        else if (ed.gu_code == 2) sk_w13_chunk_stg<2>(stage, lr, nullptr, tk, mm, int(lane), ag, au, x_in);
+        else                      sf4_w13_chunk_s<32>(body, r, x_in, tk, mm, int(lane), ag, au);
+        for (int i = 0; i < mm; ++i) {
+            const float g2 = simd_sum(ag[i]), u2 = simd_sum(au[i]);
+            if (lane == 0) h_act[ulong(pid[i]) * 1152ul + uint(r)] = situ_act(g2, u2) * inv_sq;
+        }
+    }
+}
+
 kernel void ink_moe_gu_sk23(
     device const uchar* sec4        [[buffer(0)]],
     device const InkExpertDev* ex   [[buffer(1)]],
