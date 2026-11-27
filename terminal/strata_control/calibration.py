@@ -389,6 +389,7 @@ def _smoke(cfg: dict, source_path: Path) -> int:
     """Start the candidate and require at least one generated token before writing it."""
     import strata_tokenizer as st
     from serve.server import StrataEngine, child_env, engine_args
+    from serve import inkling_kind
     cal = _full_folder("tools.calibrate")
     tokdir = _resolved(cfg["tokenizer"], cfg, source_path)
     vocab = json.loads((tokdir / "vocab.json").read_text(encoding="utf-8"))
@@ -398,7 +399,8 @@ def _smoke(cfg: dict, source_path: Path) -> int:
     tok = st.Tokenizer(tokens, (tokdir / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tokdir / "token_type.json").read_text(encoding="utf-8")))
     engine = StrataEngine(str(_resolved(cfg["exe"], cfg, source_path)), engine_args(cfg),
-                          cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
+                          cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg),
+                          inkling=inkling_kind.is_inkling(cfg))
     try:
         ids = cal.chat_ids(tok, "Say OK.")
         count = sum(token is not None for token in engine.generate(ids, 16, {"temperature": 0}, threading.Event()))
