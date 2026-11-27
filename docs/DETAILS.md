@@ -471,6 +471,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | API | Endpoint |
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
+| OpenAI text completions (stream and non-stream, raw prompt) | `POST /v1/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list and health | `GET /v1/models`, `GET /v1/models/{id}`, `GET /models`, `GET /health` |
@@ -482,6 +483,17 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | Request totals in llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 | API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests` |
+
+`POST /v1/completions` takes a string `prompt` verbatim, including special tokens, and returns the raw generated
+continuation in `choices[].text` (also when streaming). Thinking tags, whitespace and tool-call text are not
+stripped or interpreted as chat output. Thinking-off options do not append a template tail: raw-prompt clients
+must put any desired no-think prefix in their own prompt. This route does not apply the automatic answer-room
+budget or reasoning recovery. An explicit request `reasoning_budget_tokens` is still supported when the prompt's
+last `<think>` is unclosed; reasoning budgets inherited from Chat settings or sampling defaults are not applied.
+`stop`, `echo`, `max_tokens`, usage and the engine's end-of-turn tokens still work normally.
+`prompt` may also be a list of token ids (or one such list in a batch, `[[...]]`): the engine reads exactly those
+ids, so a client that renders its own prompt and tokenizes message text without special tokens
+(`POST /tokenize` with `"parse_special": false`) keeps that text from opening a turn.
 
 ```python
 from openai import OpenAI

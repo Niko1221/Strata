@@ -4335,6 +4335,37 @@ INKLING_REWRAP_BUDGET = 512
 INKLING_ANSWER_OPENER = "<|message_model|><|content_text|>"     # what opens the model's text turn (finish_prompt's, the empty-reply retry's)
 
 
+
+class RawCompletionParser:
+    """Preserve generated text; track only the end of reasoning for an explicit budget."""
+
+    def __init__(self, thinking):
+        self.state = "reasoning" if thinking else "content"
+        self.buf = ""
+        self.pending = []
+        self.rescued = self.refused = self.unread = 0
+
+    @property
+    def clean(self):
+        return not self.buf
+
+    def feed(self, delta):
+        if self.state == "reasoning":
+            text = self.buf + delta
+            if THINK_END in text:
+                self.state, self.buf = "content", ""
+            else:
+                # Hold only a possible split closing tag for budget boundary checks, not output.
+                self.buf = ""
+                for size in range(1, len(THINK_END)):
+                    if text.endswith(THINK_END[:size]):
+                        self.buf = THINK_END[:size]
+        return [Event("content", delta)] if delta else []
+
+    def finish(self, reason=None):
+        return []
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -5588,7 +5619,7 @@ class Service:
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
-            "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
+            "dialects": ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + running,
@@ -6063,7 +6094,7 @@ class Service:
         return now
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-            declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
+            declared_only=False, deferred=False, *, raw=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
@@ -6079,7 +6110,7 @@ class Service:
                 gate.acquire(getattr(cancel, "_strata_key", None), cancel=cancel,
                              deadline=None if self.queue_timeout_s is None else time.monotonic() + self.queue_timeout_s)
                 counted = True
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred, raw=raw)
         finally:
             if counted:
                 gate.release(getattr(cancel, "_strata_key", None))
@@ -6087,11 +6118,14 @@ class Service:
                 ka.release()
 
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-             declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
+             declared_only=False, deferred=False, *, raw=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
+        # raw completions use only a budget the caller supplied, read before the shared settings are merged
+        raw_budget = (self.reasoning_budget(sampling)
+                      if raw and thinking and (sampling or {}).get("reasoning_budget_tokens") is not None else None)
         # #3354: when MTP drafting is active (has_mtp) and the request does not explicitly ask for sampling, a family whose engine drafts only
         # greedy requests (Qwen3.6, http_api.GREEDY_FOR_DRAFTS) stays greedy, so the MTP drafts are not silently disabled by the model card.
         # Every other family keeps the card (#7070: Flash-Next / Gyro drafts sampled requests fine).
@@ -6112,9 +6146,12 @@ class Service:
         # #6734: Inkling-2-Mini writes hidden thinking whatever the request asks for (even with its effort at "none"), so its budget
         # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
         think_budget = thinking or self.inkling
-        budget = self.reasoning_budget(sampling, announce=True) if think_budget else None
+        if raw:
+            budget = raw_budget
+        else:
+            budget = self.reasoning_budget(sampling, announce=True) if think_budget else None
         room_cap = INKLING_ROOM_MIN_CAP if self.inkling else ANSWER_ROOM_MIN_CAP     # Inkling: whatever max_tokens, the answer keeps its share
-        if think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
+        if think_budget and not raw and not budget and self.answer_room and max_new and max_new >= room_cap:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
@@ -6133,7 +6170,7 @@ class Service:
                     print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                           f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
+        parser = RawCompletionParser(thinking) if raw else self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
         inkling_special_ids = None
@@ -6404,7 +6441,7 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
+                                if (not raw and self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
@@ -6501,7 +6538,7 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
-                        if (self.inkling and finish == "stop" and not close_retried and not answered and not wrap and not opens
+                        if (not raw and self.inkling and finish == "stop" and not close_retried and not answered and not wrap and not opens
                                 and not repeated and not looped and (stops is None or stops.hit is None) and not cancel.is_set()
                                 and max_new - n > 8):
                             # #6612 / #6620: the reply ended (its stop token) with no text and no call: the model wrote its hidden thinking and
@@ -6524,7 +6561,7 @@ class Service:
                                 prompt = prompt + seg + extra
                                 finish = "length"
                                 continue
-                        if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
+                        if (not raw and self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
@@ -6734,7 +6771,7 @@ class Service:
                             rate_txt = f"{rate:.1f} tok/s" if rate is not None else "no speed"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate_txt}) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
+                            if not raw and finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -8078,7 +8115,7 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"):
                     check_model = getattr(svc, "check_model", None)
                     if callable(check_model):
                         model_err = check_model(req)
@@ -8101,6 +8138,8 @@ def make_handler(svc: Service):
                     self._json(code, body)
                 elif path == "/v1/chat/completions":
                     self._openai(req)
+                elif path == "/v1/completions":
+                    self._completions(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
@@ -8115,7 +8154,7 @@ def make_handler(svc: Service):
                            else {"error": {"type": "server_error", "message": str(e)}})
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
-                if path == "/v1/responses":
+                if path in ("/v1/responses", "/v1/completions"):
                     self._json(400, responses_error_body(str(e)))
                 else:
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
@@ -8146,9 +8185,19 @@ def make_handler(svc: Service):
                                   "message": f"the request is malformed ({type(e).__name__}: {e})"}}
                 self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
             except EngineDied as e:                          # before the answer started (not streamed)
-                self._json(503, {"error": {"type": "server_error", "message": died_note(e)}})
+                body = {"error": {"type": "server_error", "message": died_note(e)}}
+                if getattr(self, "answer_started", False):
+                    self._note(error=body["error"])
+                    self.wfile.write(b"data: " + json.dumps(body).encode() + b"\n\ndata: [DONE]\n\n")
+                else:
+                    self._json(503, body)
             except EngineStuck as e:                         # an unload or restart that could not end the engine
-                self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                body = {"error": {"type": "server_error", "message": str(e)}}
+                if getattr(self, "answer_started", False):
+                    self._note(error=body["error"])
+                    self.wfile.write(b"data: " + json.dumps(body).encode() + b"\n\ndata: [DONE]\n\n")
+                else:
+                    self._json(503, body)
 
             except ClientGone:                               # #1999: the client left while the request was prepared
                 self._note(outcome="disconnected")
@@ -8397,6 +8446,9 @@ def make_handler(svc: Service):
                             delta = item["choices"][0]["delta"]
                             content, reasoning = delta.get("content", ""), delta.get("reasoning_content", "")
                             usage, timings = item.get("usage"), item.get("timings")
+                        elif api == "completions":
+                            content, reasoning = item["choices"][0]["text"], ""
+                            usage, timings = item.get("usage"), None
                         elif api == "responses":
                             kind = item["type"]
                             content = item["delta"] if kind == "response.output_text.delta" else ""
@@ -8542,6 +8594,150 @@ def make_handler(svc: Service):
                 self.wfile.flush()
             except OSError:
                 self._note(outcome="disconnected")
+
+        def _completions(self, req):
+            """OpenAI legacy text completions over a caller-tokenized prompt (no chat template)."""
+            req = svc.with_shared(req, "openai")
+            prompt, ids = req.get("prompt"), None
+            if isinstance(prompt, list) and len(prompt) == 1 and isinstance(prompt[0], list):
+                prompt = prompt[0]                      # one prompt in the batch form, [[ids]]
+            if isinstance(prompt, list):
+                # token ids, as OpenAI, vLLM and llama.cpp take them: a client that renders and tokenizes its own
+                # prompt sends exactly the ids the engine reads, so message text it tokenized as plain text stays text
+                if not prompt or not all(type(t) is int and t >= 0 for t in prompt):
+                    raise ValueError("prompt must be a string or a non-empty list of token ids")
+                n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+                bad = [t for t in prompt if n_vocab and t >= n_vocab]
+                if bad:
+                    raise ValueError(f"prompt: token id {bad[0]} is outside the vocabulary (0..{n_vocab - 1})")
+                ids = list(prompt)
+                try:
+                    prompt = svc.tok.decode(ids)        # for echo and the open-thinking check below
+                except (IndexError, ValueError) as e:
+                    raise ValueError(f"prompt: a token id this tokenizer does not have ({e})") from None
+            elif not isinstance(prompt, str):
+                raise ValueError("prompt must be a string or a non-empty list of token ids")
+            for key in ("n", "best_of"):
+                value = req.get(key, 1)
+                if value != 1:
+                    raise ValueError(f"{key} must be 1 (the server generates one sequence at a time)")
+            if req.get("suffix") not in (None, ""):
+                raise ValueError("suffix is not supported")
+            if req.get("logprobs") is not None:
+                raise ValueError("logprobs are not supported")
+            stream_options = req.get("stream_options")
+            if stream_options is not None:
+                if not isinstance(stream_options, dict) or set(stream_options) - {"include_usage"}:
+                    raise ValueError("stream_options supports only include_usage")
+                if not req.get("stream"):
+                    raise ValueError("stream_options are only supported with stream: true")
+            _, _, template_kwargs = openai_to_messages({**req, "messages": []})
+            thinking = template_kwargs.get("enable_thinking", True) is not False
+            if req.get("enable_thinking") is False or req.get("thinking") is False:
+                thinking = False
+            thinking_cfg = req.get("thinking")
+            if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "disabled":
+                thinking = False
+            # Raw clients may be resuming content after an already closed reasoning block.
+            thinking = thinking and prompt.rfind("<think>") > prompt.rfind(THINK_END)
+            bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
+            if ids is None:
+                ids = svc.tok.encode(prompt, parse_special=True)
+            try:
+                max_new = int(req.get("max_tokens") or 0)
+            except (TypeError, ValueError):
+                raise ValueError("max_tokens must be a whole number")
+            bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            svc.reasoning_budget(req)
+            stop_strings(req)
+            check_request_sampling(req)
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            svc.load()
+            model = svc.model_for(req)
+            cid, created = "cmpl-" + uuid.uuid4().hex[:24], int(time.time())
+            max_new = max_new if max_new > 0 else None
+            ctx = svc.engine.max_context
+            if ctx <= 0:
+                ctx = getattr(svc.engine, "known_ctx", 0)
+            if ctx <= 0:
+                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if room < 1:
+                raise ValueError("request exceeds the context window: prompt leaves no room to answer")
+            if max_new is None:
+                max_new = room
+            elif max_new > room:
+                if not svc.fit_max_tokens:
+                    raise ValueError(f"request exceeds the context window: prompt + max_tokens exceeds context "
+                                     f"(at most {room} tokens here)")
+                max_new = room
+
+            def chunks():
+                try:
+                    if req.get("echo"):
+                        yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                               "choices": [{"text": prompt, "index": 0, "logprobs": None, "finish_reason": None}]}
+                    for kind, value in svc.run(ids, thinking, None, max_new, req, cancel, raw=True):
+                        if kind == "ping":
+                            yield None
+                        elif kind == "event":
+                            if value.kind in ("content", "reasoning") and value.text:
+                                yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                       "choices": [{"text": value.text, "index": 0, "logprobs": None,
+                                                    "finish_reason": None}]}
+                        elif kind == "done":
+                            completion_tokens = value["completion_tokens"]
+                            yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                   "choices": [{"text": "", "index": 0, "logprobs": None,
+                                                "finish_reason": {"cancel": "stop"}.get(value["finish"], value["finish"])}],
+                                   "usage": {"prompt_tokens": len(ids), "completion_tokens": completion_tokens,
+                                             "total_tokens": len(ids) + completion_tokens}}
+                finally:
+                    cancel.set() if self.watch_done is None else None
+
+            stream_chunks = self._capture(chunks(), "completions")
+            stream = bool(req.get("stream"))
+            if not stream:
+                text = []
+                last = None
+                for item in stream_chunks:
+                    if item is not None:
+                        if "usage" in item:
+                            last = item
+                        else:
+                            text.append(item["choices"][0]["text"])
+                result = last or {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                  "choices": [{"index": 0, "text": "", "logprobs": None, "finish_reason": "length"}],
+                                  "usage": {"prompt_tokens": len(ids), "completion_tokens": 0, "total_tokens": len(ids)}}
+                result["choices"][0]["text"] = "".join(text)
+                self._json(200, result)
+                return
+            self._sse()
+            try:
+                for item in stream_chunks:
+                    if item is None:
+                        self.wfile.write(b": keep-alive\n\n")
+                    else:
+                        self.wfile.write(b"data: " + json.dumps(item, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+            except OSError:
+                self._note(outcome="disconnected")
+                svc.note_client_disconnect(cancel)           # client went away: stop the engine
+                stream_chunks.close()
+            except EngineDied as e:                          # mid-stream: say so, then end the stream properly
+                self._chat_failed(died_note(e))
+            except QueueWaitExpired as e:
+                self._chat_failed(str(e), "rate_limit_error", "queue_wait_timeout")
+            except ValueError as e:                          # the engine's ERR after the stream started
+                self._chat_failed(str(e))
+            except (GpuBusy, EngineStarting, EngineStuck, ModelBusy) as e:
+                self._chat_failed(str(e))
+            except ClientGone:
+                raise
+            except Exception:                                # no silent end: the client would take it for a whole answer
+                self._chat_failed(self._stream_crashed())
 
         def _responses_ready(self, req, events):
             """Send a finished Responses result that did not run on the engine."""
