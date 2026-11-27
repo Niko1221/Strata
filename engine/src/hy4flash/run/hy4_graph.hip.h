@@ -1556,6 +1556,7 @@ public:
                 HCK(hipSetDevice(g.primary_gpu));
             }
             if (!peer_runs.empty()) {
+                (void)skd::moe_dec_max_m();  // its default reads the current device: fix the primary's value before peers_launch runs first
                 skd::moe_has_cpu() = 1;  // zero w.y on every GPU so partial sums add cleanly
                 fprintf(stderr, "[runner] multi-GPU expert-parallel active across %zu GPUs (p2p=%d/%zu, bounce=%zu)\n",
                         1 + peer_runs.size(), p2p_cnt, peer_runs.size(), peer_runs.size() - (size_t)p2p_cnt);
