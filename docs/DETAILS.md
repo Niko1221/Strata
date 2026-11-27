@@ -741,7 +741,9 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   `queue_timeout` before that 429. `GET /status` counts a key's requests once they are admitted, not while they
   wait, and the gate's own expiries are not in the `queue_timeouts` metric. The reservation is checked against the
   `"parallel"` the server starts with; if the engine's slots shrink below the reservations later (VRAM fit), keys
-  without a reservation can lose their reach and their requests queue-time out until the next start.
+  without a reservation can lose their reach and their requests queue-time out until the next start. The web page's
+  Monitor tab shows the same figures live (names only): what each named key holds, the ceiling that holds it, and
+  the bucket the unnamed keys share.
 - **Browser pages (CORS):** off by default. `"cors_origins": ["https://chat.example.com"]` lets those origins call `/v1/*`;
   `["*"]` lets any page and is only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools. It
   belongs to the engine's own server; the desktop app answers browser pages on its own API address and already allows

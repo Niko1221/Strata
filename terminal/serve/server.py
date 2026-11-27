@@ -5504,6 +5504,9 @@ class Service:
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                # #5004: the Monitor tab shows what each "api_keys" entry holds right now (names, never keys);
+                # without the block it is None and the card stays hidden, as the conversation-cache card does
+                "api_keys": self.key_limits.snapshot() if self.key_limits is not None else None,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
