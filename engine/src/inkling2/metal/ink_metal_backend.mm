@@ -30,6 +30,7 @@ inline bool InkMetalRunner::compile_shaders(const std::string& kernel_dir, std::
     if (lib_codecs < 0) { err = "codecs MSL: " + why; return false; }
     lib_ops = cx->compile_try({}, kInkMetalOpsSrc, false, &why);
     if (lib_ops < 0) { err = "ops MSL: " + why; return false; }
+    ops_src_text = kInkMetalOpsSrc;
     lib_dspark = cx->compile_try({}, kInkMetalDsparkSrc, false, &why);
     if (lib_dspark < 0) { err = "dspark MSL: " + why; return false; }
     lib_vis = cx->compile_try({}, kInkMetalVisionSrc, false, &why);
@@ -52,6 +53,10 @@ inline bool InkMetalRunner::compile_shaders(const std::string& kernel_dir, std::
     if (lib_codecs < 0) { err = "codecs MSL: " + why; return false; }
     lib_ops = cx->compile_try({kernel_dir + "/ink_metal_ops.metal"}, "", false, &why);
     if (lib_ops < 0) { err = "ops MSL: " + why; return false; }
+    {
+        FILE* fo = std::fopen((kernel_dir + "/ink_metal_ops.metal").c_str(), "rb");
+        if (fo) { char b[65536]; size_t n; while ((n = std::fread(b, 1, sizeof b, fo)) > 0) ops_src_text.append(b, n); std::fclose(fo); }
+    }
     lib_dspark = cx->compile_try({kernel_dir + "/ink_metal_dspark.metal"}, "", false, &why);
     if (lib_dspark < 0) { err = "dspark MSL: " + why; return false; }
     lib_vis = cx->compile_try({kernel_dir + "/ink_metal_vision.metal"}, "", false, &why);

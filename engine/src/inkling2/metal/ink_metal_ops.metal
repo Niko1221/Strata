@@ -59,13 +59,19 @@ static inline float ops_fp8_e4m3_to_f32(uint c) {
     return (c & 0x80u) ? -v : v;
 }
 
+// The FP8 KV read exists only in the library the runner compiles with INK_KV_FP8_PATH defined (the M5 Max fast mode); every other pipeline
+// reads the half cache exactly as before (a run-time branch in these decode attention kernels cost the default path about 7% at 8K context).
 static inline float4 ops_load_kv4(device const half* cache_h, size_t off, uint lane, int kv_fp8) {
-    if (kv_fp8 == 0) {
-        return float4(((device const half4*)(cache_h + off))[lane]);
+#ifdef INK_KV_FP8_PATH
+    if (kv_fp8 != 0) {
+        device const uchar* cp = ((device const uchar*)cache_h) + off + (size_t)lane * 4ul;
+        return float4(ops_fp8_e4m3_to_f32(cp[0]), ops_fp8_e4m3_to_f32(cp[1]),
+                      ops_fp8_e4m3_to_f32(cp[2]), ops_fp8_e4m3_to_f32(cp[3]));
     }
-    device const uchar* cp = ((device const uchar*)cache_h) + off + (size_t)lane * 4ul;
-    return float4(ops_fp8_e4m3_to_f32(cp[0]), ops_fp8_e4m3_to_f32(cp[1]),
-                  ops_fp8_e4m3_to_f32(cp[2]), ops_fp8_e4m3_to_f32(cp[3]));
+#else
+    (void)kv_fp8;
+#endif
+    return float4(((device const half4*)(cache_h + off))[lane]);
 }
 
 static inline float ops_tg_sum(float v, threadgroup float* sh, uint tid, uint nthr) {

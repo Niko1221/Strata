@@ -157,6 +157,10 @@ struct InkMetalRunner {
     mtl::Pipeline p_sconv4_tree, p_sconv4_attn_res_tree, p_sconv4_mlp_add_tree, p_sconv4_tree_commit;
     mtl::Pipeline p_qr_clip_tau, p_kv_store_f16, p_kv_store_tree_f16, p_kv_tree_commit_f16;
     mtl::Pipeline p_relpos_gqa, p_relpos_gqa_splitk, p_relpos_gqa_splitk_red, p_relpos_tree_gqa_splitk;
+    // the same three decode attention kernels with the FP8 KV read (M5 Max fast mode only; built from lib_ops_fp8, see ops_load_kv4)
+    mtl::Pipeline p_relpos_gqa_fp8, p_relpos_gqa_splitk_fp8, p_relpos_tree_gqa_splitk_fp8;
+    int lib_ops_fp8 = -1;
+    std::string ops_src_text;
     mtl::Pipeline p_router_topk8, p_router_topk8_plan_m1, p_softcap, p_argmax_rows;
 
     mtl::Pipeline p_dsp_mix, p_dsp_ctx_kv, p_dsp_ctx_kv_tree, p_dsp_ctx_kv_tree_commit, p_dsp_init_bf16, p_dsp_init_q8;
@@ -419,6 +423,14 @@ struct InkMetalRunner {
         p_relpos_gqa_splitk   = cx->pipeline(lib_ops, "ink_relpos_gqa_splitk");
         p_relpos_gqa_splitk_red = cx->pipeline(lib_ops, "ink_relpos_gqa_splitk_reduce");
         p_relpos_tree_gqa_splitk = cx->pipeline(lib_ops, "ink_relpos_tree_gqa_splitk");
+        if (kv_is_fp8) {
+            std::string why;
+            lib_ops_fp8 = cx->compile_try({}, std::string("#define INK_KV_FP8_PATH 1\n") + ops_src_text, false, &why);
+            if (lib_ops_fp8 < 0) { err = "ops MSL (fp8 kv): " + why; return false; }
+            p_relpos_gqa_fp8             = cx->pipeline(lib_ops_fp8, "ink_relpos_sink_gqa");
+            p_relpos_gqa_splitk_fp8      = cx->pipeline(lib_ops_fp8, "ink_relpos_gqa_splitk");
+            p_relpos_tree_gqa_splitk_fp8 = cx->pipeline(lib_ops_fp8, "ink_relpos_tree_gqa_splitk");
+        }
         p_router_topk8        = cx->pipeline(lib_ops, "ink_router_topk8");
         p_router_topk8_plan_m1 = cx->pipeline(lib_ops, "ink_router_topk8_plan_m1");
         p_softcap             = cx->pipeline(lib_ops, "ink_softcap_f32");
@@ -1827,7 +1839,7 @@ struct InkMetalRunner {
                     ta.kv_fp8 = kv_is_fp8 ? 1 : 0;
                     ta.scale = 1.0f / std::sqrt((float)c.head_dim);
                     mtl::Dispatch d1;
-                    d1.p = &p_relpos_tree_gqa_splitk;
+                    d1.p = kv_is_fp8 ? &p_relpos_tree_gqa_splitk_fp8 : &p_relpos_tree_gqa_splitk;
                     d1.grid[0] = (uint32_t)M; d1.grid[1] = (uint32_t)c.n_kv; d1.grid[2] = 8u; d1.tg[0] = 128;
                     d1.args = {mtl::Arg::B(b_q), mtl::Arg::B(b_r),
                                mtl::Arg::B(mod->rel_proj_t_f16_buf, (size_t)ip * 1025 * 16 * 2),
@@ -1925,7 +1937,7 @@ struct InkMetalRunner {
                         const int splitk_min_p = is_apple10 ? 64 : 256;
                         if (M <= 32 && max_p >= splitk_min_p) {
                             mtl::Dispatch d1;
-                            d1.p = &p_relpos_gqa_splitk;
+                            d1.p = kv_is_fp8 ? &p_relpos_gqa_splitk_fp8 : &p_relpos_gqa_splitk;
                             d1.grid[0] = (uint32_t)M; d1.grid[1] = (uint32_t)c.n_kv; d1.grid[2] = 8u; d1.tg[0] = 128;
                             d1.args = {mtl::Arg::B(b_q), mtl::Arg::B(b_r),
                                        mtl::Arg::B(mod->rel_proj_t_f16_buf, (size_t)ip * 1025 * 16 * 2),
@@ -1941,7 +1953,7 @@ struct InkMetalRunner {
                             ds.push_back(std::move(d2));
                         } else {
                             mtl::Dispatch da;
-                            da.p = &p_relpos_gqa;
+                            da.p = kv_is_fp8 ? &p_relpos_gqa_fp8 : &p_relpos_gqa;
                             da.grid[0] = (uint32_t)M; da.grid[1] = (uint32_t)c.n_head; da.tg[0] = 128;
                             da.args = {mtl::Arg::B(b_q), mtl::Arg::B(b_r),
                                        mtl::Arg::B(mod->rel_proj_t_f16_buf, (size_t)ip * 1025 * 16 * 2),
