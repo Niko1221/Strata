@@ -989,6 +989,27 @@ kernel void ink_linear_q8row_mv(
         return;
     }
 
+    if (M == 8 && has1) {
+        float a0[8] = {0,0,0,0,0,0,0,0}, a1[8] = {0,0,0,0,0,0,0,0};
+        for (int k = int(lane); k < K4; k += 32) {
+            const float4 w0 = float4(q0p[k]);
+            const float4 w1 = float4(q1p[k]);
+            for (int i = 0; i < 8; ++i) {
+                const float4 xv = ((device const float4*)(X + (size_t)i * K))[k];
+                a0[i] += dot(w0, xv);
+                a1[i] += dot(w1, xv);
+            }
+        }
+        for (int i = 0; i < 8; ++i) {
+            const float v0 = simd_sum(a0[i]) * sc0;
+            if (lane == 0) Y[(size_t)i * N + row0] = v0;
+            {
+                const float v1 = simd_sum(a1[i]) * sc1;
+                if (lane == 0) Y[(size_t)i * N + row0 + 1] = v1;
+            }
+        }
+        return;
+    }
     if (M <= 8) {
         float a0[8] = {0,0,0,0,0,0,0,0}, a1[8] = {0,0,0,0,0,0,0,0};
         for (int k = int(lane); k < K4; k += 32) {
