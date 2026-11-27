@@ -1,6 +1,6 @@
 // include/strata/kernels/sampler.hpp - the sampler chain, host-callable (P2.S2).
 //
-//     penalties -> top_k -> top_p -> min_p -> temperature -> pick
+//     penalties -> top_k -> top_a -> tfs -> typical -> top_p -> min_p -> temperature -> xtc -> pick
 //
 // llama.cpp's default chain (issue #53): ONE penalties stage, first, and temperature AFTER the truncation filters;
 // top_p cuts before min_p.  `src/kernels/cuda/sampler.cu` has the details and `sampler_parity` pins them.
@@ -27,6 +27,17 @@ struct SamplerParams {
     bool greedy = false;
     const float* logit_bias = nullptr; // optional device array [n_vocab], added BEFORE penalties/filters; -inf bans
     bool gumbel = false;         // STRATA_SPEC_GUMBEL=1: Gumbel-max pick keyed by (seed, counter, token id) - see sampler.cu
+    // Opt-in list filters and temperature transforms; appended to preserve positional aggregate initializers.
+    float tfs_z = 0.0f;
+    float typical_p = 0.0f;
+    float top_a = 0.0f;
+    float xtc_prob = 0.0f;
+    float xtc_thresh = 0.1f;
+    float dyna_low = 0.0f;
+    float dyna_high = 0.0f;
+    float dyna_exp = 1.0f;
+    float smooth_factor = 0.0f;
+    float smooth_curve = 1.0f;
 };
 
 // logits (n_tokens, n_vocab) -> one sampled token id per row in `out`.
@@ -43,6 +54,12 @@ struct SamplerParams {
 // A verify window's rows need DIFFERENT histories: row t follows the window's drafts 1..t (`penalty_rows`).
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream);
+
+// Parity probe: sample as above and, on the sampled path, scatter the final distribution into qprob as
+// [n_tokens, n_vocab]. The caller must zero qprob first; filtered tokens remain zero. qprob is a device pointer.
+// The greedy path leaves qprob untouched.
+void sample_tokens_probe(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                         const SamplerParams& p, int* out, float* qprob, void* stream);
 
 // The greedy pick (no penalties) on a thread-block cluster of 8 CTAs per row (sm_90+, CUDA; S19): the same token as
 // sample_tokens' one-block argmax, which takes it unless STRATA_ARGMAX_MULTI=0.  False (nothing launched) where it

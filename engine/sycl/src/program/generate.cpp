@@ -868,6 +868,7 @@ void usage() {
                  "  --greedy             argmax (the default)\n"
                  "  --seed S             enable sampling with this Philox seed\n"
                  "  --top-k N --top-p F --temperature F\n"
+                 "  --more-samplers on|off  --serve: extra samplers are not available on SYCL\n"
                  "  --dump-logits PATH   write one line of raw logits per position\n"
                  "  --logits-stride N    store every Nth row plus final input (default 1); N>1 requires --max-new 1\n"
                  "  --dump-residual PATH write the final R (hc x n_embd, f32) for head bisection\n"
@@ -1922,6 +1923,14 @@ int main(int argc, char **argv) try {
         else if (a == "--top-k") o.top_k = std::atoi(next("--top-k"));
         else if (a == "--top-p") o.top_p = (float) std::atof(next("--top-p"));
         else if (a == "--temperature") o.temperature = (float) std::atof(next("--temperature"));
+        else if (a == "--more-samplers") {
+            const std::string value = next("--more-samplers");
+            if (value == "on") {
+                std::fprintf(stderr, "strata generate: --more-samplers is supported only by the CUDA sampler\n");
+                return 2;
+            }
+            if (value != "off") { std::fprintf(stderr, "strata generate: --more-samplers must be on or off\n"); return 2; }
+        }
         else if (a == "--dump-logits") o.dump_logits = next("--dump-logits");
         else if (a == "--logits-stride") {
             if (have_logits_stride) { std::fprintf(stderr, "--logits-stride must be supplied only once\n"); return 2; }
@@ -10537,6 +10546,10 @@ int main(int argc, char **argv) try {
             // only).  Absent keys keep today's behavior: greedy, no penalties.
             float req_temperature = 0.0f, req_top_p = 1.0f;
             int req_top_k = 20;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
+            float req_tfs = 0.0f, req_typical = 0.0f, req_top_a = 0.0f, req_xtc_prob = 0.0f, req_xtc_thresh = 0.1f;
+            float req_dyna_low = 0.0f, req_dyna_high = 0.0f, req_dyna_exp = 1.0f, req_smooth_factor = 0.0f;
+            bool req_more_sampler_bad = false;
+            std::string req_more_sampler_error;
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
@@ -10560,6 +10573,17 @@ int main(int argc, char **argv) try {
             // prompt order; the conversation cache matches a picture by it and its grid instead of its embedding floats
             std::vector<uint64_t> req_img_keys;
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
+            auto parse_more_float = [&](const std::string& token, float& out, const std::string& key) {
+                const char* value = token.c_str() + token.find('=') + 1;
+                char* parsed_end = nullptr;
+                out = std::strtof(value, &parsed_end);
+                if (parsed_end == value || parsed_end == nullptr || *parsed_end != '\0' || !std::isfinite(out)) {
+                    req_more_sampler_error = key + ": expected a finite number";
+                    req_more_sampler_bad = true;
+                    return false;
+                }
+                return true;
+            };
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -10578,6 +10602,16 @@ int main(int argc, char **argv) try {
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "min_p") req_min_p = fv;
+                    else if (key == "tfs") parse_more_float(tok, req_tfs, key);
+                    else if (key == "typ") parse_more_float(tok, req_typical, key);
+                    else if (key == "top_a") parse_more_float(tok, req_top_a, key);
+                    else if (key == "xtc_p") parse_more_float(tok, req_xtc_prob, key);
+                    else if (key == "xtc_t") parse_more_float(tok, req_xtc_thresh, key);
+                    else if (key == "dyna_lo") parse_more_float(tok, req_dyna_low, key);
+                    else if (key == "dyna_hi") parse_more_float(tok, req_dyna_high, key);
+                    else if (key == "dyna_exp") parse_more_float(tok, req_dyna_exp, key);
+                    else if (key == "sm_f") parse_more_float(tok, req_smooth_factor, key);
+                    else if (key == "sm_c") { float ignored = 0.0f; parse_more_float(tok, ignored, key); }
                     else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "penalty_repeat") req_penalty_repeat = fv;
@@ -10612,6 +10646,24 @@ int main(int argc, char **argv) try {
                     }
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
+            }
+            if (req_more_sampler_bad) {
+                std::printf("ERR %s\n", req_more_sampler_error.c_str());
+                continue;
+            }
+            if (req_tfs < 0.0f || req_tfs > 1.0f || req_typical < 0.0f || req_typical > 1.0f ||
+                req_top_a < 0.0f || req_top_a > 1.0f || req_xtc_prob < 0.0f || req_xtc_prob > 1.0f ||
+                req_xtc_thresh < 0.0f || req_xtc_thresh > 0.5f || req_dyna_low < 0.0f || req_dyna_high < 0.0f ||
+                req_dyna_exp < 0.0f || req_smooth_factor < 0.0f) {
+                std::printf("ERR more samplers: value out of range\n");
+                continue;
+            }
+            const bool req_more_samplers_active =
+                (req_tfs > 0.0f && req_tfs < 1.0f) || (req_typical > 0.0f && req_typical < 1.0f) ||
+                req_top_a > 0.0f || req_xtc_prob > 0.0f || req_dyna_low != req_dyna_high || req_smooth_factor > 0.0f;
+            if (req_more_samplers_active) {
+                std::printf("ERR extra samplers are unsupported by the SYCL engine\n");
+                continue;
             }
             std::string emb_path;
             if (geni && endp != nullptr) {

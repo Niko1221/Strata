@@ -279,6 +279,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     arm_faulthandler,
     asks_greedy,
     check_request_sampling,
+    more_sampler_fields_on,
     clean_shared_defaults,
     default_model_name,
     desktop_vram_note,
@@ -1456,6 +1457,36 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        # Extended Horde samplers are accepted only with the server's explicit opt-in. Inactive values
+        # are omitted, preserving the existing GEN line for ordinary requests.
+        tfs = sampling.get("tfs")
+        if isinstance(tfs, (int, float)) and 0.0 < float(tfs) < 1.0:
+            keys += f" tfs={float(tfs)!r}"
+        typical = sampling.get("typical")
+        if isinstance(typical, (int, float)) and 0.0 < float(typical) < 1.0:
+            keys += f" typ={float(typical)!r}"
+        top_a = sampling.get("top_a")
+        if isinstance(top_a, (int, float)) and float(top_a) > 0.0:
+            keys += f" top_a={float(top_a)!r}"
+        xtc_p = sampling.get("xtc_probability")
+        if isinstance(xtc_p, (int, float)) and float(xtc_p) > 0.0:
+            keys += f" xtc_p={float(xtc_p)!r}"
+            xtc_t = sampling.get("xtc_threshold")
+            if isinstance(xtc_t, (int, float)):
+                keys += f" xtc_t={float(xtc_t)!r}"
+        dyna_min, dyna_max = sampling.get("dynatemp_min"), sampling.get("dynatemp_max")
+        if (isinstance(dyna_min, (int, float)) and isinstance(dyna_max, (int, float))
+                and float(dyna_min) != float(dyna_max)):
+            keys += f" dyna_lo={float(dyna_min)!r} dyna_hi={float(dyna_max)!r}"
+            dyna_exp = sampling.get("dynatemp_exponent")
+            if isinstance(dyna_exp, (int, float)):
+                keys += f" dyna_exp={float(dyna_exp)!r}"
+        smooth = sampling.get("smoothing_factor")
+        if isinstance(smooth, (int, float)) and float(smooth) > 0.0:
+            keys += f" sm_f={float(smooth)!r}"
+            curve = sampling.get("smoothing_curve")
+            if isinstance(curve, (int, float)):
+                keys += f" sm_c={float(curve)!r}"
         if hy4 or inkling:
             # Hy4-Flash & Inkling-2-Mini: strip Flash-Next-only keys; pass image=<path> keys cleanly
             for p in sampling.get("strata_hy4_images") or []:
@@ -3881,6 +3912,15 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         seg = cfg.get("vram_segment_mib")
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
+    if cfg.get("_more_samplers") is True:
+        if "--more-samplers" in args:
+            i = args.index("--more-samplers")
+            if i + 1 < len(args):
+                args[i + 1] = "on"
+            else:
+                args.append("on")
+        else:
+            args += ["--more-samplers", "on"]
     args += parallel_args(cfg, args)
     args += pool_cores_args(cfg, args)
     # Older engines and the SYCL engine can use the prompt cache but do not understand this checkpoint policy.
@@ -4338,7 +4378,8 @@ INKLING_ANSWER_OPENER = "<|message_model|><|content_text|>"     # what opens the
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = True):
+                 fit_max_tokens: bool = True, more_samplers_enabled: bool = False,
+                 more_samplers_supported: bool = False):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
@@ -4361,6 +4402,8 @@ class Service:
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
+        self.more_samplers_enabled = bool(more_samplers_enabled)
+        self.more_samplers_supported = bool(more_samplers_supported)
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
@@ -4481,6 +4524,12 @@ class Service:
             slots = conversation_slots(engine)
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
+
+    def check_more_samplers(self, sampling: dict) -> None:
+        """Refuse active extra samplers when this server cannot run their CUDA implementation."""
+        active = more_sampler_fields_on(sampling or {})
+        if active and not self.more_samplers_supported:
+            raise ValueError(f"{', '.join(active)} requires --more-samplers on a CUDA Strata engine")
 
     def set_family(self, family: str | None) -> None:
         """The model family (None: the Qwen form this server was written for)."""
@@ -8471,7 +8520,8 @@ def make_handler(svc: Service):
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
-            check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            check_request_sampling(req, more_samplers_enabled=svc.more_samplers_enabled)
+            svc.check_more_samplers(req)  # active stages must reach their native CUDA path
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -8713,7 +8763,8 @@ def make_handler(svc: Service):
             except ValueError as e:
                 raise ResponsesError(str(e), "stop") from None
             try:
-                check_request_sampling(req)                   # the request is also the sampling dict (see below)
+                check_request_sampling(req, more_samplers_enabled=svc.more_samplers_enabled)
+                svc.check_more_samplers(req)  # active stages must reach their native CUDA path
             except ValueError as e:                           # its message starts with the field's name: the param
                 raise ResponsesError(str(e), str(e).partition(":")[0]) from None
             svc.load()
@@ -8758,7 +8809,8 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             stop_strings(req)                                 # the same 400 as the request itself would get
-            check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
+            check_request_sampling(req, more_samplers_enabled=svc.more_samplers_enabled)
+            svc.check_more_samplers(req)  # active stages must reach their native CUDA path
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
 
         def _anthropic(self, req):
@@ -8773,7 +8825,8 @@ def make_handler(svc: Service):
             max_new = token_limit(req.get("max_tokens"), "max_tokens") or 0   # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
-            check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            check_request_sampling(req, more_samplers_enabled=svc.more_samplers_enabled)
+            svc.check_more_samplers(req)  # active stages must reach their native CUDA path
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
@@ -9431,6 +9484,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     ap.add_argument("--script", action="append",
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
+    ap.add_argument("--more-samplers", nargs="?", choices=("on", "off"), const="on", default=None,
+                    help="enable the CUDA-only Horde sampling fields in API requests (tfs, typical, top_a, xtc, "
+                         "dynamic temperature and smoothing); their top_k must be 1..64")
     ap.add_argument("--port", type=int, default=8095)
     ap.add_argument("--ready-file", help="write a JSON instance record once the API is bound and model state is known")
     ap.add_argument("--owner-fd", type=int, help=argparse.SUPPRESS)
@@ -9647,6 +9703,22 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = apply_vision_defaults(with_component_engine(cfg))
+        engine_more_samplers = False
+        native_args = user_args.merge(cfg.get("args", []), user_args.capture(cfg))
+        if "--more-samplers" in native_args:
+            i = native_args.index("--more-samplers")
+            if i + 1 >= len(native_args) or native_args[i + 1] not in ("on", "off"):
+                ap.error('the engine config "--more-samplers" option must be followed by on or off')
+            engine_more_samplers = native_args[i + 1] == "on"
+        more_samplers_on = (a.more_samplers == "on" if a.more_samplers is not None else engine_more_samplers)
+        if a.more_samplers == "off" and "--more-samplers" in native_args:
+            cfg["user_args"] = user_args.merge(user_args.capture(cfg), ["--more-samplers", "off"])
+            cfg["args"] = user_args.merge(cfg.get("args", []), cfg["user_args"])
+        if more_samplers_on:
+            if (cfg.get("backend") != "cuda" or cfg.get("arch") == "qwen35moe"
+                    or hy4_kind.is_hy4(cfg) or inkling_kind.is_inkling(cfg)):
+                ap.error("--more-samplers on requires a CUDA Strata engine; this backend or model dialect is unsupported")
+            cfg["_more_samplers"] = True
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
@@ -9742,6 +9814,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if note:                                        # #560 #516: before --open starts a browser on that card
             print(note, flush=True)
     else:
+        more_samplers_on = a.more_samplers == "on"
+        if more_samplers_on:
+            ap.error("--more-samplers on requires a CUDA Strata engine")
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."],
@@ -9752,7 +9827,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+                  fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False),
+                  more_samplers_enabled=more_samplers_on,
+                  more_samplers_supported=(a.engine == "strata" and cfg.get("backend") == "cuda"
+                                           and cfg.get("arch") != "qwen35moe"
+                                           and not hy4_kind.is_hy4(cfg) and not inkling_kind.is_inkling(cfg)))
     svc.launch_attestation = launch_attestation
     svc.offline = a.offline
     svc.max_queue = max_queue

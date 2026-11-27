@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import re
 import socket
@@ -482,6 +483,35 @@ def lift_reasoning_effort_arg(cfg: dict) -> None:
 # same settings as repetition_penalty / penalty_last_n (the /props answer already reports them under those names)
 SAMPLING_ALIASES = {"repeat_penalty": "repetition_penalty", "repeat_last_n": "penalty_last_n"}
 
+# The request names exposed by the OpenAI/Anthropic endpoints. Values that leave a stage off are
+# valid without the opt-in; only values that activate a stage require --more-samplers.
+MORE_SAMPLER_FIELDS = {
+    "tfs": (0.0, 1.0), "typical": (0.0, 1.0), "top_a": (0.0, 1.0),
+    "xtc_probability": (0.0, 1.0), "xtc_threshold": (0.0, 0.5),
+    "dynatemp_min": (0.0, None), "dynatemp_max": (0.0, None),
+    "dynatemp_exponent": (0.0, None), "smoothing_factor": (0.0, None),
+    "smoothing_curve": (None, None),
+}
+
+
+def more_sampler_fields_on(req: dict) -> list[str]:
+    """The extra sampling stages a request actually switches on."""
+    active = []
+    for key in ("tfs", "typical"):
+        value = req.get(key)
+        if value is not None and 0.0 < float(value) < 1.0:
+            active.append(key)
+    if req.get("top_a") is not None and float(req["top_a"]) > 0.0:
+        active.append("top_a")
+    if req.get("xtc_probability") is not None and float(req["xtc_probability"]) > 0.0:
+        active.append("xtc_probability")
+    lo, hi = req.get("dynatemp_min"), req.get("dynatemp_max")
+    if lo is not None and hi is not None and float(lo) != float(hi):
+        active.append("dynatemp_min")
+    if req.get("smoothing_factor") is not None and float(req["smoothing_factor"]) > 0.0:
+        active.append("smoothing_factor")
+    return active
+
 
 def apply_saved_tuning(cfg: dict, *, say=None) -> dict:
     """The run config with the active saved tuning for its choices put on top (strata_control/presets.py), with no measurement.
@@ -586,7 +616,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
 SPLIT_KEYS = ("split_fallback", "split_engine_note")
 
 
-def check_request_sampling(req) -> None:
+def check_request_sampling(req, *, more_samplers_enabled: bool = False) -> None:
     """A request's sampling field of the wrong JSON type ("temperature": "0.7", "top_k": 40.0, "seed": true) is a 400
     that names the field, as the same value is through POST /settings or the run config.  Unchecked, the value
     replaced the configured default in run()'s merge and sampling_keys dropped it, so the reply was greedy.  Only
@@ -620,6 +650,40 @@ def check_request_sampling(req) -> None:
             req[key] = value = num
         if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
             raise ValueError(f"{key}: {'an integer' if integer else 'a number'}")
+    for key, (low, high) in MORE_SAMPLER_FIELDS.items():
+        value = (req or {}).get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip():
+            try:
+                value = float(value)
+            except (ValueError, OverflowError):
+                raise ValueError(f"{key}: a finite number") from None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{key}: a finite number")
+        try:
+            value = float(value)
+        except (OverflowError, ValueError):
+            raise ValueError(f"{key}: a finite float32 number") from None
+        if not math.isfinite(value) or abs(value) > 3.4028234663852886e38:
+            raise ValueError(f"{key}: a finite float32 number")
+        if isinstance(req, dict):
+            req[key] = value
+        if low is not None and value < low or high is not None and value > high:
+            expected = (f"{low}..{high}" if low is not None and high is not None else
+                        f">={low}" if low is not None else "a finite number")
+            raise ValueError(f"{key}: expected {expected}, not {value!r}")
+    if isinstance(req, dict):
+        lo, hi = req.get("dynatemp_min"), req.get("dynatemp_max")
+        if (lo is None) != (hi is None):
+            raise ValueError("dynatemp_min and dynatemp_max must be sent together")
+        active = more_sampler_fields_on(req)
+        if active:
+            if not more_samplers_enabled:
+                raise ValueError(f"{', '.join(active)} requires starting the server with --more-samplers")
+            top_k = req.get("top_k")
+            if top_k is not None and (not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 64):
+                raise ValueError(f"{', '.join(active)} requires top_k in 1..64")
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none

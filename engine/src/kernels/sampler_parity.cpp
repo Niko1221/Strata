@@ -463,13 +463,80 @@ void bench_sampled() {
 
 }  // namespace
 
+// `--dist` is the machine-readable half of engine/tests/cuda/koboldcpp_sampler_reference.py. Each case is one
+// logits row; sample_tokens_probe scatters its final distribution into a single [1, n_vocab] output row.
+int dist_loop() {
+    for (long case_no = 1;; ++case_no) {
+        int nv = 0, top_k = 0;
+        strata::kernels::SamplerParams p;
+        const int read = std::scanf("%d %d %f %f %f %f %f %f %f %f %f %f %f %f %f", &nv, &top_k, &p.top_p,
+                                    &p.min_p, &p.temperature, &p.tfs_z, &p.typical_p, &p.top_a, &p.xtc_prob,
+                                    &p.xtc_thresh, &p.dyna_low, &p.dyna_high, &p.dyna_exp, &p.smooth_factor,
+                                    &p.smooth_curve);
+        if (read == EOF) break;
+        // The split merge supports at most 64 blocks of 4,096 logits. Keep the full range available here so
+        // the reference can exercise a vocabulary that necessarily spans several merge blocks.
+        if (read != 15 || nv < 2 || nv > 262144) {
+            std::fprintf(stderr, "--dist: case %ld malformed (%d fields, n_vocab %d)\n", case_no, read, nv);
+            return 2;
+        }
+        p.top_k = top_k;
+        p.min_keep = 1;
+        std::vector<float> one((size_t) nv);
+        for (int v = 0; v < nv; ++v) {
+            if (std::scanf("%f", &one[(size_t) v]) != 1) {
+                std::fprintf(stderr, "--dist: case %ld: %d logits expected, fewer read\n", case_no, nv);
+                return 2;
+            }
+        }
+
+        std::vector<float> prob((size_t) nv, 0.0f);
+        if (p.temperature <= 0.0f || p.greedy) {
+            float* dl = nullptr;
+            int* dout = nullptr;
+            check(cudaMalloc(&dl, one.size() * sizeof(float)), "dist logits");
+            check(cudaMalloc(&dout, sizeof(int)), "dist out");
+            check(cudaMemcpy(dl, one.data(), one.size() * sizeof(float), cudaMemcpyHostToDevice), "dist upload logits");
+            strata::kernels::sample_tokens(dl, 1, nv, nullptr, 0, p, dout, nullptr);
+            int picked = 0;
+            check(cudaMemcpy(&picked, dout, sizeof(int), cudaMemcpyDeviceToHost), "dist back pick");
+            if (picked >= 0 && picked < nv) prob[(size_t) picked] = 1.0f;
+            cudaFree(dl);
+            cudaFree(dout);
+        } else {
+            std::vector<int> out(1);
+            float *dl = nullptr, *dp = nullptr;
+            int* dout = nullptr;
+            check(cudaMalloc(&dl, one.size() * sizeof(float)), "dist logits");
+            check(cudaMalloc(&dp, prob.size() * sizeof(float)), "dist probs");
+            check(cudaMalloc(&dout, out.size() * sizeof(int)), "dist out");
+            check(cudaMemcpy(dl, one.data(), one.size() * sizeof(float), cudaMemcpyHostToDevice), "dist upload logits");
+            check(cudaMemset(dp, 0, prob.size() * sizeof(float)), "dist zero probs");
+            // One row is essential: a large n_tokens makes the sampler select its one-block fallback rather than
+            // launching and merging the n_vocab / 4096 partial lists.
+            strata::kernels::sample_tokens_probe(dl, 1, nv, nullptr, 0, p, dout, dp, nullptr);
+            check(cudaDeviceSynchronize(), "dist run");
+            check(cudaMemcpy(prob.data(), dp, prob.size() * sizeof(float), cudaMemcpyDeviceToHost), "dist back probs");
+            cudaFree(dl);
+            cudaFree(dp);
+            cudaFree(dout);
+        }
+        for (int v = 0; v < nv; ++v) std::printf(v ? " %.9g" : "%.9g", prob[(size_t) v]);
+        std::printf("\n");
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
-    bool selftest = false, bench = false;
+    bool selftest = false, bench = false, dist = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--selftest") selftest = true;
         else if (std::string(argv[i]) == "--bench") bench = true;
-        else { std::fprintf(stderr, "usage: sampler_parity [--selftest] [--bench]\n"); return 2; }
+        else if (std::string(argv[i]) == "--dist") dist = true;
+        else { std::fprintf(stderr, "usage: sampler_parity [--selftest] [--bench] [--dist]\n"); return 2; }
     }
+    if (dist) return dist_loop();
     {
         // the sampled path under test; ctest runs this binary once per path
         auto on = [](const char* n) { const char* e = std::getenv(n); return e && *e && std::strcmp(e, "0") != 0; };
