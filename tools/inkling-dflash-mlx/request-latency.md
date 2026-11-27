@@ -25,3 +25,9 @@ Two fresh launches added `madvise(base, fsize, MADV_RANDOM)` immediately after m
 | Advice removed | 8.45 | 12.06 | 61.67 | 20/20 |
 
 With the advice enabled, a decode buffer still waited 9.89 s before 86 ms of GPU execution. The target read 2.27 GB and the host swapped in 4.36 GB over that wait. Removing the hint gave the shortest maximum and highest aggregate decode rate of these three runs. The withdrawal control gives no basis for enabling this hint by default.
+
+## Coverage and latency of frequently selected experts
+
+Following the trace-guided caching idea in [MoE-Infinity](https://arxiv.org/abs/2401.14361), we counted expert selections across the three passes through the 12 recurrent physical layers on seven greedy tagging prompts. Each fold ranked experts per physical layer using the other six prompts. Across 55,296 selections, keeping the most frequent 16, 32 or 64 of 128 experts per layer covered 58.63%, 81.49% or 96.57% respectively. A simulated per-layer LRU starting empty on each request covered 62.28%, 76.71% or 88.47% at the same capacities. These counts measure selections, independent of expert size.
+
+For a separate directory extraction replay, we ranked experts on all seven tagging prompts, then locked the 32 highest-ranked expert bodies per recurrent layer on the target's file mapping before `READY`. The 384 lock calls requested 1,145,102,336 bytes in total. The draft used the same wired limit as the withdrawal control above. All 20 outputs matched the reference token sequences. Median request latency was 7.04 s, P95 was 40.15 s, and the slowest request took 48.06 s. Aggregate decode rate was 31.14 tokens/s. The combined sampled peak footprint was 3.978 GB. During a 30.75 s wait to start an 83 ms command buffer, the target read 5.20 GB and the system swapped in 17.96 GB. High selection coverage on the calibration workload still left long submission stalls on this replay. Retain the default target mapping.
