@@ -1814,7 +1814,11 @@ struct InkMetalRunner {
                         ds.push_back(std::move(d));
                     }
                 }
-                const bool use_moe_mm = (M >= 48);
+                static const int moe_mm_min_override = [] {
+                    const char* e = std::getenv("INK_MOE_MM_MIN_M");
+                    return e ? atoi(e) : 48;
+                }();
+                const bool use_moe_mm = (M >= moe_mm_min_override);
                 if (use_moe_mm) {
                     {
                         mtl::Dispatch d;
@@ -2263,6 +2267,16 @@ struct InkMetalRunner {
             }
         } else {
             last_gpu_ms = cx->run_graph(ds) * 1e3;
+        }
+        if (const char* pl = std::getenv("INK_PASSLOG")) {
+            static FILE* fp = nullptr;
+            if (!fp) fp = std::fopen(pl, "w");
+            if (fp) {
+                static long seq = 0;
+                std::fprintf(fp, "%ld,%d,%d,%d,%.3f\n", ++seq, M, is_tree ? 1 : 0,
+                             step.compute_logits ? 1 : 0, last_gpu_ms);
+                std::fflush(fp);
+            }
         }
         if (tprof) {
             const double tp_t2 = mtl::now_s();
