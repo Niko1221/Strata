@@ -20,6 +20,7 @@
 #include "ple_conv_kw.h"
 #include "stream.h"
 #include "geo.h"
+#include "qsa_tail.h"
 #include "msl_libs.h"
 #include "../../tests/coop_probe.h"
 
@@ -478,6 +479,7 @@ private:
         std::vector<float> ple_hist;
         std::vector<float> last_norm;
         int hp = 0, pend_fold = 0, last_T = 0;
+        uint32_t last_pos = 0;
         bool last_head = true;
         int32_t last_tokens[MAXT] = {};
         strata::core::SessionState* ss = nullptr;
@@ -562,6 +564,7 @@ private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
     bool ple_on_ = false;
     int last_T_ = 0;
+    uint32_t last_pos_ = 0;        // first cell of the pending single-sequence verify window
     int head_rows_ = 0;              // rows of lm_ the last window's head wrote (logits_row)
     double last_gpu_ms_ = 0;
     int last_n_disp_ = 0;
@@ -806,7 +809,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     ids_ = A(4 * MAXT * TOPK); wts_ = A(4 * MAXT * TOPK); plan_ = A(4 * P_INTS); h_ = A(4 * MAXT * TOPK * NFF);
     ye_ = A(4 * MAXT * TOPK * N); gsh_ = A(4 * MAXT * NFF); ush_ = A(4 * MAXT * NFF); ysh_ = A(4 * MAXT * N);
     sg_ = A(4 * MAXT * 4); qfull_ = A(4 * MAXT * G_QFULL); kcur_ = A(4 * MAXT * G_KV); vcur_ = A(4 * MAXT * G_KV);
-    iqr_ = A(4 * MAXT * G_IQR); ikr_ = A(4 * MAXT * G_ID); qcur_ = A(4 * MAXT * G_QOUT); qidx_ = A(4 * MAXT * G_IH * G_ID);
+    iqr_ = A(4 * MAXT * G_IQR); ikr_ = A(4 * MAXT * G_ID * geo::NQSA);
+    qcur_ = A(4 * MAXT * G_QOUT); qidx_ = A(4 * MAXT * G_IH * G_ID);
     scores_ = A(4 * (size_t) MAXT * MB); qids_ = A(4 * MAXT * G_BUD); part_ = A(4 * (size_t) MAXT * G_QCHUNKS2 * G_QH * (G_QD + 2));
     cs_ = A(8 * (size_t) (MAXC + 16) * 32); lm_ = A(4 * (size_t) MAXT * n_vocab_); apv_ = A(4 * MAXT * 120);
     api_ = A(4 * MAXT * 120); tokout_ = A(4 * MAXT); emb_ = A(4 * MAXT * N); pkey_ = A(4 * MAXT * G_HCD);
@@ -1203,6 +1207,8 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         }
     } else {
         const int qi = l / G_QI;
+        const bool defer_tail = !rows_ && ntok > 1;
+        const size_t key_offset = defer_tail ? (size_t) qi * MAXT * G_ID * sizeof(float) : 0;
         gemv(ds, T(b + "attn_q.weight"), XA_, qfull_, G_QFULL, ntok);
         nb_ = true;
         gemv(ds, T(b + "attn_k.weight"), XA_, kcur_, G_KV, ntok);
@@ -1211,7 +1217,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         nb_ = true;
         gemv(ds, T(b + "indexer.q_proj.weight"), XA_, iqr_, G_IQR, ntok);
         nb_ = true;
-        gemv(ds, T(b + "indexer.k_proj.weight"), XA_, ikr_, G_ID, ntok);
+        gemv(ds, T(b + "indexer.k_proj.weight"), XA_, ikr_, G_ID, ntok, key_offset);
         QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) ntok, eps_};
         mtl::Dispatch d;
         const bool rw = rows_;   // (batch slots: pos0 is the highest row's cell, the rows have their own in rinfo_)
@@ -1226,8 +1232,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // (pictures in batch slots: each row reads its own slot's M-RoPE table in mropeBig_)
         const mtl::Constants rcm = mrope_on() ? mtl::Constants().b(30, true).b(24, true) : rc;
         d.p = rw ? P(lqsa_, "qsa_prep", rcm, mrope_on() ? "qsa_prep#rows#mrope" : "qsa_prep#rows")
-                 : P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
-        d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(iqr_), mtl::Arg::B(ikr_),
+                 : defer_tail ? P(lqsa_, "qsa_prep", qsa_c().b(27, true), std::string(qsa_k()) + "#defer_tail")
+                              : P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
+        d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(iqr_), mtl::Arg::B(ikr_, key_offset),
                   mtl::Arg::B(W_, T(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(b + "attn_k_norm.weight").offset),
                   mtl::Arg::B(W_, T(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(b + "indexer.k_norm.weight").offset),
                   mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(KQ),
@@ -2106,6 +2113,7 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
     last_head_ = head;
     for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
+    last_pos_ = (uint32_t) pos0;
     head_rows_ = head ? Tn : 0;
     for (int t = 0; t < Tn; ++t) last_tokens_[t] = tokens[t];
     static const bool trace = std::getenv("STRATA_METAL_TRACE") != nullptr;
@@ -2161,6 +2169,7 @@ void Window::swap_state(SeqSet& o) {
     ple_hist_.swap(o.ple_hist);
     last_norm_.swap(o.last_norm);
     std::swap(hp_, o.hp); std::swap(pend_fold_, o.pend_fold); std::swap(last_T_, o.last_T); std::swap(last_head_, o.last_head);
+    std::swap(last_pos_, o.last_pos);
     for (int t = 0; t < MAXT; ++t) std::swap(last_tokens_[t], o.last_tokens[t]);
     std::swap(ss_, o.ss);
 }
@@ -2460,6 +2469,10 @@ bool Window::commit(int n_keep, std::string& err) {
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
     if (last_T_ > 1) {
+        // run() has completed. Keep the accepted raw keys in each layer's ring.
+        // K/V and pooled keys use absolute cells and are overwritten on replay.
+        for (size_t qi = 0; qi < tail_.size(); ++qi)
+            strata_metal::commit_qsa_tail(tail_[qi].as<float>(), ikr_.as<float>() + qi * MAXT * G_ID, last_pos_, n_keep);
         // the GDN layers: the kept prefix folded into the state (gdn_step over n_keep tokens from the window's own
         // inputs, with commit; bitwise the window's trajectory).  K/V and indexer cells past the prefix are rewritten
         // when those positions run again, before anything reads them.
