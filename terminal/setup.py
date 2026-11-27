@@ -10109,6 +10109,27 @@ def hy4_pc(gpu, ram) -> tuple:
     return effective_vram_gb(g), float(ram), False
 
 
+def hy4_expert_flags(placed, ram_free_gib=None, backend=None) -> list:
+    """--vram-experts-gb / --ram-experts-gb for a Hy4-Flash placement, the rule `inkling_expert_flags` applies to Inkling-2-Mini (#6792): the planner
+    counts GB (10^9 bytes), strata-hy4 reads the two flags as GiB (2^30 bytes) — written as placed['ram_gb'] was, the engine's RAM cap sat 7.4% above the
+    plan, and still the coldest experts fell to the SSD tier, for the engine holds more of them in RAM than the plan does (SQ-128 on 2x MI50 + 128 GB RAM:
+    the flag said 82.72, 88.80 GB of room, the engine wanted 89.69 GB — 219 experts / 0.88 GB read from the SSD on every use although the plan held every
+    one of them in memory).  Both caps are rounded UP to the 0.01 GiB the flag carries, and a HIP card+RAM plan with no SSD tier gets the RAM cap the same
+    room `inkling_expert_flags` gives it (RAM_TIER_SLACK_GIB / RAM_TIER_SLACK_FRAC, bounded by the free RAM)."""
+    up = lambda gb, extra=0.0: math.ceil((gb / hy4_fit.GIB_TO_GB + extra) * 100 - 1e-6) / 100          # noqa: E731
+    flags = ["--vram-experts-gb", f"{up(placed['vram_gb']):.2f}"]
+    if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
+        ram_slack = 0.0
+        if backend == "hip" and placed["ram_gb"] > 0.05 and placed.get("ssd_gb", 0.0) <= 0.05:
+            total_gib = (placed["vram_gb"] + placed["ram_gb"]) / hy4_fit.GIB_TO_GB
+            ram_slack = max(RAM_TIER_SLACK_GIB, RAM_TIER_SLACK_FRAC * total_gib)
+            if ram_free_gib is not None:
+                room = float(ram_free_gib) - placed["ram_gb"] / hy4_fit.GIB_TO_GB - inkling_fit.FREE_RAM_MARGIN_GB / hy4_fit.GIB_TO_GB
+                ram_slack = max(0.0, min(ram_slack, room))
+        flags += ["--ram-experts-gb", f"{up(placed['ram_gb'], ram_slack):.2f}"]
+    return flags
+
+
 def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION, extra_vram_gib=0.0) -> list:
     """One line per build for the size menu, best first, with the fit words (at this context, with the image reader's memory when images are on) and the recommended mark."""
     rec = hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)["build"]
@@ -10400,7 +10421,7 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     if use_layer_split:
         args += ["--layer-split", "auto"]
     if not unified:                                    # a card: the rank-cut plan (hy4_fit) as the engine's caps; one pool: the engine puts everything in it
-        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
+        args += hy4_expert_flags(placed, ram_free_gib=ram_free_gb(), backend=("hip" if hip else None))
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(tokdir), "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port, "drafting": hy4_family.DEFAULT_DRAFTER}
     if use_layer_split:
