@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 // SPDX-License-Identifier: MIT
 //
-// src/kernels/cuda/rdna_gr.cu - RDNA3/RDNA3.5 (gfx1100..gfx1151) Wave32 DPP hyper-connection read:
-// split-K down + partial-folding up (opt-in via STRATA_GR_RDNA=1 or STRATA_HIP_FAST_DEC=1 on gfx11).
+// src/kernels/cuda/rdna_gr.cu - RDNA3/RDNA3.5/RDNA4 (gfx1100..gfx1151, gfx1200/gfx1201) Wave32 DPP hyper-connection read:
+// split-K down + partial-folding up (BF16 / s_down+s_up via STRATA_GR_RDNA=1 or STRATA_HIP_FAST_DEC=1; native GGML Q8_0
+// q8_up via v_dot2_f32_f16 opt-in via STRATA_GR_RDNA_Q8=1, paired with exact-FP32 gr_down_q8_fast_kernel in fused_gr.cu).
 // Ported from MIT Strata-rdna3 with CU-count-safe persistent fusion gating and WDDM-safe wall_clock64() spin guards
-// (rdna3_wddm_guard.hpp), operating directly on 0.2.18 FusedGrArgs (BF16 and s_down/s_up per-32 FP32-scale int8).
+// (rdna3_wddm_guard.hpp), operating directly on FusedGrArgs (BF16, s_down/s_up, and GGML Q8_0 up).
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
@@ -19,8 +20,10 @@
 namespace strata::kernels {
 
 bool rdna_gr_enabled();
+bool rdna_gr_q8_enabled();
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb = nullptr, int si = 0);
+void rdna_gr_up_q8_multi(const FusedGrArgs* a, int n_tok, float* part, float* ssg, void* stream);
 void rdna_gr_init();
 
 #if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
@@ -35,6 +38,7 @@ constexpr int UB = N / UC;
 
 unsigned* g_gr_bar[64] = {};
 int g_gr_can_fuse[64] = {};   // 0 unknown, 1 no, 2 yes
+constexpr int Q80B = 34;
 
 struct RdnaGr {
     FusedGrArgs a[kFusedGrMaxT];
@@ -45,6 +49,7 @@ struct RdnaGr {
 
 typedef unsigned int u32x4 __attribute__((ext_vector_type(4)));
 typedef unsigned int u32x2 __attribute__((ext_vector_type(2)));
+typedef _Float16 f16x2 __attribute__((ext_vector_type(2)));
 
 __device__ __forceinline__ uint4 ntload(const uint4* p) {
     const u32x4 v = __builtin_nontemporal_load(reinterpret_cast<const u32x4*>(p));
@@ -53,6 +58,16 @@ __device__ __forceinline__ uint4 ntload(const uint4* p) {
 __device__ __forceinline__ uint2 ntload2(const uint2* p) {
     const u32x2 v = __builtin_nontemporal_load(reinterpret_cast<const u32x2*>(p));
     return make_uint2(v.x, v.y);
+}
+__device__ __forceinline__ float ld_q80_scale(const uint8_t* blk) {
+    uint16_t bits;
+    __builtin_memcpy(&bits, blk, sizeof(bits));
+    return __half2float(__ushort_as_half(bits));
+}
+__device__ __forceinline__ uint2 ld_q80_q8(const uint8_t* p) {
+    uint2 v;
+    __builtin_memcpy(&v, p, sizeof(v));
+    return v;
 }
 __device__ __forceinline__ float sigm(float x) { return 1.0f / (1.0f + __expf(-x)); }
 
@@ -91,6 +106,15 @@ __device__ __forceinline__ int dot8i(uint2 w, uint2 a) {
                                    __builtin_amdgcn_sudot4(true, (int) w.x, true, (int) a.x, 0, false), false);
 #else
     return __builtin_amdgcn_sdot4((int) w.y, (int) a.y, __builtin_amdgcn_sdot4((int) w.x, (int) a.x, 0, false), false);
+#endif
+}
+
+__device__ __forceinline__ float dot2h(f16x2 w, f16x2 x, float acc) {
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1200__) || defined(__gfx1201__)
+    return __builtin_amdgcn_fdot2(w, x, acc, false);
+#else
+    return fmaf((float) w[1], (float) x[1], fmaf((float) w[0], (float) x[0], acc));
 #endif
 }
 
@@ -365,11 +389,13 @@ __device__ __forceinline__ void q8_tail(const RdnaGr& m, int d0) {
     if (lane == 0) y->ds = q8_1_ds(d, sum);
 }
 
-template <int T, bool Q8 = false, bool A8 = false>
+template <int T, bool Q8 = false, bool A8 = false, bool GGML_Q8 = false, int CPS = 2>
 __device__ __forceinline__ void up_body(const RdnaGr& m, const int bx) {
+    constexpr bool F16A = GGML_Q8 && !A8;
     __shared__ __align__(16) uint32_t loq[A8 ? T : 1][LR / 4];
     __shared__ float lod[A8 ? T : 1][LR / 32];
-    __shared__ __align__(16) float lo[T][LR];
+    __shared__ __align__(16) _Float16 lo16[F16A ? T : 1][LR];
+    __shared__ __align__(16) float lo[F16A ? 1 : T][LR];
     __shared__ float rs[T][HC];
     __shared__ float g[T][HC][UC];
     const int t = threadIdx.x;
@@ -378,7 +404,15 @@ __device__ __forceinline__ void up_body(const RdnaGr& m, const int bx) {
     uint4 w[10];
     uint2 w8[10];
     float d8[10];
-    if constexpr (Q8) {
+    if constexpr (GGML_Q8) {
+        const uint8_t* rb = m.a[0].q8_up + (size_t) i * (LR / 32) * Q80B;
+#pragma unroll
+        for (int u = 0; u < 10; ++u) {
+            const uint8_t* blk = rb + (size_t) u * Q80B;
+            d8[u] = ld_q80_scale(blk);
+            w8[u] = ld_q80_q8(blk + 2 + q * 8);
+        }
+    } else if constexpr (Q8) {
         const int8_t* qu = reinterpret_cast<const int8_t*>(m.a[0].w_up);
         const float* su = m.a[0].s_up;
         const uint2* w2 = reinterpret_cast<const uint2*>(qu + (size_t) i * LR);
@@ -397,22 +431,31 @@ __device__ __forceinline__ void up_body(const RdnaGr& m, const int bx) {
     for (int k = 0; k < T; ++k) rv[k] = m.a[k].R[i];
     if (t < T * HC) {
         const int k = t / HC, cs = t - k * HC;
-        const float s = m.ss[k * 2 * HC + 2 * cs] + m.ss[k * 2 * HC + 2 * cs + 1];
+        float s = 0.0f;
+#pragma unroll
+        for (int sl = 0; sl < CPS; ++sl) s += m.ss[k * (CPS * HC) + CPS * cs + sl];
         rs[k][cs] = rsqrtf(s / (float) N + m.a[k].eps);
         if (bx == 0) m.a[k].rs[cs] = rs[k][cs];
     }
     __syncthreads();
     for (int idx = t; idx < T * PR; idx += TH) {
         const int k = idx / PR, j = idx - k * PR;
-        const float* p = m.part + (size_t) k * 2 * HC * PR + j;
+        const float* p = m.part + (size_t) k * (CPS * HC) * PR + j;
         float s = 0.0f;
 #pragma unroll
-        for (int cc = 0; cc < HC; ++cc) s = fmaf(rs[k][cc], p[(2 * cc) * PR] + p[(2 * cc + 1) * PR], s);
+        for (int cc = 0; cc < HC; ++cc) {
+            float ps = 0.0f;
+#pragma unroll
+            for (int sl = 0; sl < CPS; ++sl) ps += p[(CPS * cc + sl) * PR];
+            s = fmaf(rs[k][cc], ps, s);
+        }
         if (j < LR) {
             const float x = s / (float) HC;
-            lo[k][j] = x / (1.0f + __expf(-x));
-            if (bx == 0) m.a[k].lo[j] = lo[k][j];
-        } else if (bx == 0 && m.a[0].w_inject != nullptr) {
+            const float l = x / (1.0f + __expf(-x));
+            if constexpr (F16A) lo16[k][j] = (_Float16) fminf(fmaxf(l, -65504.0f), 65504.0f);
+            else lo[k][j] = l;
+            if (bx == 0) m.a[k].lo[j] = l;
+        } else if (bx == 0 && (m.a[0].w_inject != nullptr || m.a[0].q8_inject != nullptr)) {
             m.a[k].inject_out[j - LR] = s;
         }
     }
@@ -426,19 +469,53 @@ __device__ __forceinline__ void up_body(const RdnaGr& m, const int bx) {
         __syncthreads();
     }
     float acc[T];
+    if constexpr (F16A) {
 #pragma unroll
-    for (int k = 0; k < T; ++k) {
-        float a = 0.0f;
+        for (int k = 0; k < T; ++k) acc[k] = 0.0f;
 #pragma unroll
         for (int u = 0; u < 10; ++u) {
             const int j = (q + 4 * u) * 8;
-            if constexpr (A8) a = fmaf(d8[u] * lod[k][j >> 5], (float) dot8i(w8[u], *reinterpret_cast<const uint2*>(&loq[k][j >> 2])), a);
-            else if constexpr (Q8) a = dot8q(w8[u], d8[u], *reinterpret_cast<const float4*>(&lo[k][j]), *reinterpret_cast<const float4*>(&lo[k][j + 4]), a);
-            else a = dot8(w[u], *reinterpret_cast<const float4*>(&lo[k][j]), *reinterpret_cast<const float4*>(&lo[k][j + 4]), a);
+            const uint32_t wx = w8[u].x, wy = w8[u].y;
+            const f16x2 w0 = {(_Float16) (int8_t) (wx),       (_Float16) (int8_t) (wx >> 8)};
+            const f16x2 w1 = {(_Float16) (int8_t) (wx >> 16), (_Float16) (int8_t) (wx >> 24)};
+            const f16x2 w2 = {(_Float16) (int8_t) (wy),       (_Float16) (int8_t) (wy >> 8)};
+            const f16x2 w3 = {(_Float16) (int8_t) (wy >> 16), (_Float16) (int8_t) (wy >> 24)};
+            const float du = d8[u];
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+                const uint4 xv = *reinterpret_cast<const uint4*>(&lo16[k][j]);
+                f16x2 x0, x1, x2, x3;
+                __builtin_memcpy(&x0, &xv.x, 4);
+                __builtin_memcpy(&x1, &xv.y, 4);
+                __builtin_memcpy(&x2, &xv.z, 4);
+                __builtin_memcpy(&x3, &xv.w, 4);
+                float s = dot2h(w0, x0, 0.0f);
+                s = dot2h(w1, x1, s);
+                s = dot2h(w2, x2, s);
+                s = dot2h(w3, x3, s);
+                acc[k] = fmaf(du, s, acc[k]);
+            }
         }
-        a += __shfl_xor_sync(0xffffffffu, a, 1);
-        a += __shfl_xor_sync(0xffffffffu, a, 2);
-        acc[k] = a;
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            acc[k] += __shfl_xor_sync(0xffffffffu, acc[k], 1);
+            acc[k] += __shfl_xor_sync(0xffffffffu, acc[k], 2);
+        }
+    } else {
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            float a = 0.0f;
+#pragma unroll
+            for (int u = 0; u < 10; ++u) {
+                const int j = (q + 4 * u) * 8;
+                if constexpr (A8) a = fmaf(d8[u] * lod[k][j >> 5], (float) dot8i(w8[u], *reinterpret_cast<const uint2*>(&loq[k][j >> 2])), a);
+                else if constexpr (Q8) a = dot8q(w8[u], d8[u], *reinterpret_cast<const float4*>(&lo[k][j]), *reinterpret_cast<const float4*>(&lo[k][j + 4]), a);
+                else a = dot8(w[u], *reinterpret_cast<const float4*>(&lo[k][j]), *reinterpret_cast<const float4*>(&lo[k][j + 4]), a);
+            }
+            a += __shfl_xor_sync(0xffffffffu, a, 1);
+            a += __shfl_xor_sync(0xffffffffu, a, 2);
+            acc[k] = a;
+        }
     }
     if (q == 0) {
 #pragma unroll
@@ -463,9 +540,9 @@ __device__ __forceinline__ void up_body(const RdnaGr& m, const int bx) {
     if (m.a[0].q8_mixed != nullptr) q8_tail<T>(m, bx * UC);
 }
 
-template <int T, bool Q8 = false, bool A8 = false>
+template <int T, bool Q8 = false, bool A8 = false, bool GGML_Q8 = false, int CPS = 2>
 __global__ void __launch_bounds__(TH) rdna_gr_up(RdnaGr m) {
-    up_body<T, Q8, A8>(m, blockIdx.x);
+    up_body<T, Q8, A8, GGML_Q8, CPS>(m, blockIdx.x);
 }
 
 __device__ __forceinline__ bool grid_barrier_bounded(unsigned* bar, unsigned nblocks, uint64_t t0) {
@@ -550,16 +627,16 @@ void launch_gr(const RdnaGr& m, cudaStream_t st, unsigned long long* sb, int si,
     rdna_gr_up<T><<<UB, TH, 0, st>>>(m);
 }
 
-}  // namespace
-
-bool rdna_gr_enabled() {
+int gr_rdna_env() {
     static const int env = [] {
-        if (const char* v = std::getenv("STRATA_GR_RDNA")) return v[0] == '1' ? 1 : 0;
+        if (const char* v = std::getenv("STRATA_GR_RDNA")) return v[0] == '1' ? 1 : -1;
         if (const char* f = std::getenv("STRATA_HIP_FAST_DEC")) return f[0] == '1' ? 2 : 0;
         return 0;
     }();
-    if (env == 0) return false;
-    if (env == 1) return true;
+    return env;
+}
+
+bool rdna_gr_arch_ok() {
     static int arch_ok[64] = {};
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
@@ -569,6 +646,23 @@ bool rdna_gr_enabled() {
                         (gfx_arch_is_gfx11_wmma(p.gcnArchName) || gfx_arch_is_gfx12(p.gcnArchName))) ? 2 : 1;
     }
     return arch_ok[dev] == 2;
+}
+
+}  // namespace
+
+bool rdna_gr_enabled() {
+    const int env = gr_rdna_env();
+    if (env <= 0) return false;
+    if (env == 1) return true;
+    return rdna_gr_arch_ok();
+}
+
+bool rdna_gr_q8_enabled() {
+    static const bool env = [] {
+        const char* v = std::getenv("STRATA_GR_RDNA_Q8");
+        return v != nullptr && v[0] == '1';
+    }();
+    return env && gr_rdna_env() >= 0 && rdna_gr_arch_ok();
 }
 
 // Once per card, from the verifier's init (fused_gr_check), outside any stream capture: the fused read's grid barrier word.
@@ -608,10 +702,30 @@ void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* s
     }
 }
 
+void rdna_gr_up_q8_multi(const FusedGrArgs* a, int n_tok, float* part, float* ssg, void* stream) {
+    RdnaGr m;
+    for (int t = 0; t < n_tok; ++t) m.a[t] = a[t];
+    m.part = part;
+    m.ss = ssg;
+    cudaStream_t st = (cudaStream_t) stream;
+    switch (n_tok) {
+        case 1: rdna_gr_up<1, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 2: rdna_gr_up<2, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 3: rdna_gr_up<3, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 4: rdna_gr_up<4, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 5: rdna_gr_up<5, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 6: rdna_gr_up<6, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        case 7: rdna_gr_up<7, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+        default: rdna_gr_up<8, true, false, true, 4><<<UB, TH, 0, st>>>(m); break;
+    }
+}
+
 #else
 
 bool rdna_gr_enabled() { return false; }
+bool rdna_gr_q8_enabled() { return false; }
 void rdna_gr_read_multi(const FusedGrArgs*, int, float*, void*, unsigned long long*, int) {}
+void rdna_gr_up_q8_multi(const FusedGrArgs*, int, float*, float*, void*) {}
 void rdna_gr_init() {}
 
 #endif
