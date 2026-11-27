@@ -2,6 +2,7 @@
 // (src/models/qwen4exp.cpp) operation by operation.
 #include "kernels.hpp"
 #include "env.hpp"
+#include "collectives.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -119,6 +120,9 @@ template <GgmlType type> __device__ __forceinline__ float vdot(const void* v, co
     else if constexpr (type == T_Q4_K) return vec_dot_q4_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == T_Q5_K) return vec_dot_q5_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == T_Q5_1) return vec_dot_q5_1_q8_1(v, y, kbx, iqs);
+#if defined(FNX_DISTRIBUTED)
+    else if constexpr (type == T_Q5_0) return vec_dot_q5_0_q8_1(v, y, kbx, iqs);
+#endif
     else if constexpr (type == T_Q4_0) return vec_dot_q4_0_q8_1(v, y, kbx, iqs);
     else if constexpr (type == T_Q6_K) return vec_dot_q6_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == T_IQ4_NL) return vec_dot_iq4_nl_q8_1(v, y, kbx, iqs);
@@ -145,6 +149,9 @@ template <GgmlType type> constexpr int vdr_of() {
     else if constexpr (type == T_Q4_K) return VDR_Q4_K;
     else if constexpr (type == T_Q5_K) return VDR_Q5_K;
     else if constexpr (type == T_Q5_1) return VDR_Q5_1;
+#if defined(FNX_DISTRIBUTED)
+    else if constexpr (type == T_Q5_0) return VDR_Q5_0;
+#endif
     else if constexpr (type == T_Q4_0) return VDR_Q4_0;
     else if constexpr (type == T_Q6_K) return VDR_Q6_K;
     else if constexpr (type == T_IQ4_NL) return VDR_IQ4_NL;
@@ -512,7 +519,7 @@ struct AttPart {
 // positions <= p that card owns (block j on card kv_card(j)): its blocks before p's block whole, then p's up to p
 __device__ __forceinline__ int kv_owned(int p, int card) {
     const int b = p / 4;
-    const int blocks = (b + NCARD - 1 - card) / NCARD;   // blocks j < b with j % NCARD == card
+    const int blocks = (b + NCARD - 1 - card) / NCARD;   // blocks j < b owned by card
     return blocks * 4 + (kv_card(b) == card ? p % 4 + 1 : 0);
 }
 
@@ -634,6 +641,23 @@ __device__ __forceinline__ void att_merge(float& m, float& z, float& a, float m2
     z = w1 * z + w2 * z2;
     a = w1 * a + w2 * a2;
     m = mn;
+}
+
+template<int Ranks>
+__global__ void k_att_network_merge(const float* qg, const float* gathered, float* out, int T, int card) {
+    constexpr int owned = NQH / Ranks;
+    const int local_head = blockIdx.x, t = blockIdx.y, i = threadIdx.x;
+    const int head = card * owned + local_head;
+    constexpr int W = HD + 2;
+    const size_t stride = size_t(T) * NQH * W;
+    const size_t row = (size_t(t) * NQH + head) * W;
+    float m = -INFINITY, z = 0.f, a = 0.f;
+    for (int c = 0; c < Ranks; ++c) {
+        const float* p = gathered + c * stride + row;
+        att_merge(m, z, a, p[HD], p[HD + 1], p[i]);
+    }
+    out[(size_t(t) * owned + local_head) * HD + i] =
+        a / z * sigm(qg[(size_t(t) * NQH + head) * 2 * HD + HD + i]);
 }
 
 // the cards' partials reduced onto each head's card (chunk c: heads [ATT_OWN c, ATT_OWN (c + 1))) in NCARD - 1 hops on
@@ -879,6 +903,13 @@ __device__ __forceinline__ float2 ring_x2(const float* x, const RingMoe& m, int 
     return make_float2(ring_x(x, m, T, t, 2 * p), ring_x(x, m, T, t, 2 * p + 1));
 }
 
+#if defined(FNX_DISTRIBUTED)
+__global__ void k_network_addend(float* x, int T, RingMoe m) {
+    const int t = blockIdx.y, i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) x[size_t(t) * N + i] = ring_x(x, m, T, t, i);
+}
+#endif
+
 template <bool F32>
 __global__ void k_ring(Ring r, float* x, int T, const unsigned* tagp, int call, RingMoe m) {
     constexpr int W = F32 ? 2 : 1;   // words per pair
@@ -1095,6 +1126,9 @@ void mmvq(const DW& W, size_t w_stride, const Job* jobs, const int* njobs, int n
         case T_Q4_K: mmvq_t<T_Q4_K>(W, w_stride, jobs, njobs, njobs_max, y, out, out_stride, s); break;
         case T_Q5_K: mmvq_t<T_Q5_K>(W, w_stride, jobs, njobs, njobs_max, y, out, out_stride, s); break;
         case T_Q5_1: mmvq_t<T_Q5_1>(W, w_stride, jobs, njobs, njobs_max, y, out, out_stride, s); break;
+#if defined(FNX_DISTRIBUTED)
+        case T_Q5_0: mmvq_t<T_Q5_0>(W, w_stride, jobs, njobs, njobs_max, y, out, out_stride, s); break;
+#endif
         case T_Q6_K: mmvq_t<T_Q6_K>(W, w_stride, jobs, njobs, njobs_max, y, out, out_stride, s); break;
         default: throw std::runtime_error("mmvq: weight type " + std::to_string(W.type) + " not handled");
     }
@@ -1382,6 +1416,18 @@ size_t att_ring_words() { return (size_t) 2 * (NCARD - 1) * ATT_ROWS * ATT_OWN *
 int attn_rows() { return ATT_ROWS; }
 int kv_rows_per_card(int n_ctx) { return (n_ctx / 4 + NCARD - 1) / NCARD * 4 + 4; }
 
+size_t attn_network_floats(int T) {
+    if (T < 1 || T > ATT_ROWS) throw std::runtime_error("attention network rows outside scratch capacity");
+    return size_t(T) * NQH * (HD + 2);
+}
+
+void attn_network_merge(const float* qg, const float* gathered, float* out, int T, int card, void* st) {
+    attn_network_floats(T);
+    if (card < 0 || card >= NCARD) throw std::runtime_error("attention network rank outside shard count");
+    k_att_network_merge<NCARD><<<dim3(ATT_OWN, T), HD, 0, static_cast<cudaStream_t>(st)>>>(qg, gathered, out, T, card);
+    ck_launch("attention network merge");
+}
+
 void attn(const float* qg, const uint16_t* kc16, const uint16_t* vc16, const KvPages& g, float* out, const AttRing& ar, const unsigned* tag,
           int call, const int* pos0, int T, float* scratch, void* st, const int* cells, const int* n_cells) {
     ring_call_check(call, "attn");
@@ -1394,6 +1440,11 @@ void attn(const float* qg, const uint16_t* kc16, const uint16_t* vc16, const KvP
     cudaStream_t s = (cudaStream_t) st;
     k_attn_part<<<dim3(ATT_SPLITS, T, NKVH), HD, 0, s>>>(qg, kc, vc, g, acc, mz, NQH, 0, NKVH, 0, pos0, cells, n_cells, ar.card, LaneRows{});
     k_attn_local<<<dim3(NQH, T), HD, 0, s>>>(acc, mz, part);
+#if defined(FNX_DISTRIBUTED)
+    distributed::gather(part, ar.network, attn_network_floats(T), st);
+    attn_network_merge(qg, ar.network, out, T, ar.card, st);
+    return;
+#endif
     if (ar.onehop) k_att_merge_a2a<<<dim3(ATT_OWN, T), HD, 0, s>>>(ar, qg, part, out, T, tag, call);
     else k_att_merge<<<dim3(ATT_OWN, T), HD, 0, s>>>(ar, qg, part, out, T, tag, call);
     ck_launch("attn");
@@ -1416,6 +1467,11 @@ void attn_finish(const float* qg, float* out, const AttRing& ar, const unsigned*
     float* part = scratch + (size_t) ATT_ROWS * NQH * ATT_SPLITS * (HD + 2);
     cudaStream_t s = (cudaStream_t) st;
     k_attn_local<<<dim3(NQH, T), HD, 0, s>>>(scratch, mz, part);
+#if defined(FNX_DISTRIBUTED)
+    distributed::gather(part, ar.network, attn_network_floats(T), st);
+    attn_network_merge(qg, ar.network, out, T, ar.card, st);
+    return;
+#endif
     if (ar.onehop) k_att_merge_a2a<<<dim3(ATT_OWN, T), HD, 0, s>>>(ar, qg, part, out, T, tag, call);
     else k_att_merge<<<dim3(ATT_OWN, T), HD, 0, s>>>(ar, qg, part, out, T, tag, call);
     ck_launch("attn finish");
@@ -1582,6 +1638,11 @@ size_t ring_ag_words(int rows) { return (size_t) 2 * rows * N * 2; }
 void ring_sum(const Ring& r, float* x, int T, const unsigned* tag, int call, void* st, const RingMoe& m) {
     ring_call_check(call, "ring_sum");
     if (T > r.rows) throw std::runtime_error("ring_sum: more rows than the ring's buffers hold");
+#if defined(FNX_DISTRIBUTED)
+    if (m.part) k_network_addend<<<dim3((N + 255) / 256, T), 256, 0, (cudaStream_t) st>>>(x, T, m);
+    distributed::sum(x, size_t(T) * N, st);
+    return;
+#endif
     if (r.flags && T > MAXT) {
         if (r.f32) throw std::runtime_error("ring_sum: the chunk ring carries fp16 only");
         const int grid = std::min(RB_BLOCKS, std::max(4, (T * NP / NCARD + 255) / 256));
@@ -2169,6 +2230,9 @@ void moe_mm(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs
             break;
         case T_Q5_K: moe_launch<T_Q5_K>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_Q5_1: moe_launch<T_Q5_1>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+#if defined(FNX_DISTRIBUTED)
+        case T_Q5_0: moe_launch<T_Q5_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+#endif
         case T_Q4_0: moe_launch<T_Q4_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_Q8_0: moe_launch<T_Q8_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_IQ4_NL: moe_launch<T_IQ4_NL>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
@@ -2217,6 +2281,9 @@ void moe_gate_up(const DW& A, size_t sa, const Job* jobs, const int* njobs, int 
         case T_Q4_K: gu_q4k_launch(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q5_K: gu_sd_launch<T_Q5_K>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q5_1: gu_sd_launch<T_Q5_1>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+#if defined(FNX_DISTRIBUTED)
+        case T_Q5_0: gu_sd_launch<T_Q5_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+#endif
         case T_Q4_0: gu_sd_launch<T_Q4_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q8_0: gu_sd_launch<T_Q8_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_IQ4_NL: gu_sd_launch<T_IQ4_NL>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
@@ -2244,6 +2311,9 @@ void moe_mm_big(bool down, const DW& A, size_t sa, const BigJob* jobs, const int
             break;
         case T_Q5_K: moe_launch_big<T_Q5_K>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_Q5_1: moe_launch_big<T_Q5_1>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
+#if defined(FNX_DISTRIBUTED)
+        case T_Q5_0: moe_launch_big<T_Q5_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
+#endif
         case T_Q4_0: moe_launch_big<T_Q4_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_Q8_0: moe_launch_big<T_Q8_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_IQ4_NL: moe_launch_big<T_IQ4_NL>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;

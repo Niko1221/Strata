@@ -687,7 +687,7 @@ class HipArchSources(unittest.TestCase):
 
     def test_the_self_test_runs_before_the_model_loads_on_a_card_nobody_has_run(self):
         model = self.text("src/model.cpp")
-        i = model.index("void check_cards()")
+        i = model.index("void check_cards(")
         j = model.index("selftest_decide(", i)
         self.assertLess(j, model.index("float f16_to_f32", i))           # inside check_cards, which Model::Model calls first
         self.assertIn("FNX_SELFTEST_FAIL", self.text("src/hip/selftest_policy.hpp"))

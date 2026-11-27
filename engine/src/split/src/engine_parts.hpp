@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "engine.hpp"
+#include "control.hpp"
 #if FNX_27B
 #include "s27_impl.hpp"
 #else

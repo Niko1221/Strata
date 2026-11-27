@@ -29,7 +29,7 @@ class HcSplit(unittest.TestCase):
         # the split runs on every card or on none, and only with the calibrated algorithm on every card (either mode)
         self.assertRegex(s, r"all = all && pf_\[c\]->hcs && pf_\[c\]->down_lt;")
         # mode 1 (exact): a pass is split only when every chunk is a whole 4096 rows, the sizes the algorithm was calibrated at
-        self.assertRegex(s, r"hcs_mode == 1 && \(!pf_\[0\]->down_lt \|\| \(int\) ck\.tokens\.size\(\) != 4096\)")
+        self.assertRegex(s, r"hcs_mode == 1 && \(!pf_\[distributed::first_card\(\)\]->down_lt \|\| \(int\) ck\.tokens\.size\(\) != 4096\)")
         self.assertIn("if (n != 4096 && n != 2048) return false;", s)
         self.assertRegex(s, r'env_int\("FNX_PF_HCSPLIT_MIN", 3\)')   # fewer than 3 chunks in a pass: not split
 

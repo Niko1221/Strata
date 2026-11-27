@@ -14,6 +14,7 @@
 #include "df2_bridge.hpp"
 #include "kernels.hpp"
 #include "model.hpp"
+#include "collectives.hpp"
 
 namespace fnx {
 
@@ -71,7 +72,12 @@ public:
     std::function<void(int)> on_prefill_chunk;   // after each chunk of prefill(): the rows read so far
     // at most `rows` prompt rows to a pass (0: the engine's own, FNX_PF_PASS chunks). The server asks for 8192 while other requests decode: they run a window between
     // two passes, so a pass is how long they wait
-    void set_pass_rows(int rows) { pass_rows_ = rows; }   // 0: no limit
+    void set_pass_rows(int rows) {
+#if defined(FNX_DISTRIBUTED)
+        distributed::pass_rows(rows);
+#endif
+        pass_rows_ = rows;
+    }   // 0: no limit
     // images. Token ids at or above IMAGE_TOK are image cells: the caller gives each picture's cells ids made from its
     // hash, so a prefix match tells pictures apart. The PLE n-grams read them as the model's image token
     static constexpr int IMAGE_TOK = 1 << 30;
@@ -199,6 +205,9 @@ public:
         std::vector<int> tokens;
         std::vector<Image> images;    // its images (rows null)
         bool kv = false;
+#if defined(FNX_DISTRIBUTED)
+        uint64_t distributed_id = 0;
+#endif
         std::vector<void*> host;      // per card
         std::vector<size_t> bytes;    // per card
         size_t total() const;

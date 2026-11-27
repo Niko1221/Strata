@@ -94,6 +94,7 @@ static __device__ __forceinline__ int qd_vsubss4(const int a, const int b) {
 // ---------------------------------------------------------------- the formats' block constants (ggml common.cuh ggml_cuda_type_traits)
 template <GgmlType T> struct qtraits;
 template <> struct qtraits<T_Q4_0>    { static constexpr int qk = QK4_0;  static constexpr int qi = QI4_0; };
+template <> struct qtraits<T_Q5_0>    { static constexpr int qk = QK5_0;  static constexpr int qi = QI5_0; };
 template <> struct qtraits<T_Q5_1>    { static constexpr int qk = QK5_1;  static constexpr int qi = QI5_1; };
 template <> struct qtraits<T_Q8_0>    { static constexpr int qk = QK8_0;  static constexpr int qi = QI8_0; };
 template <> struct qtraits<T_Q4_K>    { static constexpr int qk = QK_K;   static constexpr int qi = QI4_K; };
@@ -106,6 +107,7 @@ template <> struct qtraits<T_IQ3_XXS> { static constexpr int qk = QK_K;   static
 template <> struct qtraits<T_IQ2_S>   { static constexpr int qk = QK_K;   static constexpr int qi = QI2_S; };
 
 // VDR = vec dot ratio: contiguous ints one thread handles per call in the decode (MMVQ) kernels
+constexpr int VDR_Q5_0 = 2;
 constexpr int VDR_Q4_0 = 2, VDR_Q5_1 = 2, VDR_Q8_0 = 2, VDR_Q4_K = 2, VDR_Q5_K = 2, VDR_Q6_K = 1, VDR_IQ4_NL = 2, VDR_IQ4_XS = 4,
               VDR_IQ3_S = 2, VDR_IQ3_XXS = 2, VDR_IQ2_S = 2;
 
@@ -188,6 +190,34 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_0_q8_1_imp
 
     // second part effectively subtracts 8 from each quant value
     return d4 * (sumi * ds8f.x - (8*vdr/QI4_0) * ds8f.y);
+}
+
+template <int vdr> static __device__ __forceinline__ float vec_dot_q5_0_q8_1_impl(
+    const int * vl, const int * vh, const int * u, const float & d5, const half2 & ds8) {
+
+    int sumi = 0;
+
+#pragma unroll
+    for (int i = 0; i < vdr; ++i) {
+        int vi0 = (vl[i] >>  0) & 0x0F0F0F0F; // lower 4 qs bits, still need qh as 5th bits
+        vi0    |= (vh[i] <<  4) & 0x00000010; // 0 ->  4
+        vi0    |= (vh[i] << 11) & 0x00001000; // 1 -> 12
+        vi0    |= (vh[i] << 18) & 0x00100000; // 2 -> 20
+        vi0    |= (vh[i] << 25) & 0x10000000; // 3 -> 28
+        sumi = qd_dp4a(vi0, u[2*i+0], sumi); // SIMD dot product of quantized values
+
+        int vi1 = (vl[i] >>  4) & 0x0F0F0F0F; // upper 4 qs bits, still need qh as 5th bits
+        vi1    |= (vh[i] >> 12) & 0x00000010; // 16 ->  4
+        vi1    |= (vh[i] >>  5) & 0x00001000; // 17 -> 12
+        vi1    |= (vh[i] <<  2) & 0x00100000; // 18 -> 20
+        vi1    |= (vh[i] <<  9) & 0x10000000; // 19 -> 28
+        sumi = qd_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
+    }
+
+    const float2 ds8f = __half22float2(ds8);
+
+    // second part effectively subtracts 16 from each quant value
+    return d5 * (sumi * ds8f.x - (16*vdr/QI5_0) * ds8f.y);
 }
 
 template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_impl(
@@ -334,6 +364,26 @@ static __device__ __forceinline__ float vec_dot_q4_0_q8_1(
     }
 
     return fnx::vec_dot_q4_0_q8_1_impl<VDR_Q4_0>(v, u, bq4_0->d, bq8_1->ds);
+}
+
+static __device__ __forceinline__ float vec_dot_q5_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q5_0 * bq5_0 = (const block_q5_0 *) vbq + kbx;
+
+    int vl[VDR_Q5_0];
+    int vh[VDR_Q5_0];
+    int  u[2*VDR_Q5_0];
+
+#pragma unroll
+    for (int i = 0; i < VDR_Q5_0; ++i) {
+        vl[i]    = get_int_b2(bq5_0->qs, iqs + i);
+        vh[i]    = get_int_b2(bq5_0->qh, 0) >> (4 * (iqs + i));
+        u[2*i+0] = get_int_b4(bq8_1->qs, iqs + i);
+        u[2*i+1] = get_int_b4(bq8_1->qs, iqs + i + QI5_0);
+    }
+
+    return fnx::vec_dot_q5_0_q8_1_impl<VDR_Q5_0>(vl, vh, u, bq5_0->d, bq8_1->ds);
 }
 
 static __device__ __forceinline__ float vec_dot_q5_1_q8_1(
