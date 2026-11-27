@@ -106,6 +106,7 @@ struct InkMetalRunner {
 
     int lib_codecs = -1, lib_ops = -1, lib_dspark = -1, lib_vis = -1, lib_mpp = -1;
     bool is_apple10 = false;
+    bool trace_experts = std::getenv("INK_TRACE_EXPERTS") != nullptr;
     bool use_mpp = false, use_mpp_trunk_f16 = false, use_dspark_f16 = false;
     int mpp_decomp_cap = 0;
 
@@ -205,6 +206,7 @@ struct InkMetalRunner {
     mtl::Buffer b_q, b_k_raw, b_v_raw, b_k, b_v, b_r, b_kd_taps, b_vd_taps;
     mtl::Buffer b_sinks, b_gate_attn, b_attn_out, b_attn_part_o, b_attn_part_ml, b_wo_raw, b_wo;
     mtl::Buffer b_mlp_in, b_r_logits, b_topk_idx, b_topk_w;
+    mtl::Buffer b_topk_trace;            // [48, MB, top_k] per-visit expert ids when INK_TRACE_EXPERTS is set
     mtl::Buffer b_moe_uexp, b_moe_uoff, b_moe_ucnt, b_moe_pairs, b_moe_meta, b_moe_tiles;
     mtl::Buffer b_moe_h, b_moe_yp, b_moe_raw, b_moe_out;
     mtl::Buffer b_h_out, b_h_norm, b_h_gather, b_logits, b_argmax;
@@ -510,6 +512,7 @@ struct InkMetalRunner {
         b_r_logits  = cx->alloc(MB * c.n_experts * 4);
         b_topk_idx  = cx->alloc(MB * c.top_k * 4);
         b_topk_w    = cx->alloc(MB * c.top_k * 4);
+        b_topk_trace = cx->alloc(48 * MB * c.top_k * 4);   // INK_TRACE_EXPERTS: per-visit topk capture
         b_moe_uexp  = cx->alloc(c.n_experts * 4);
         b_moe_uoff  = cx->alloc(c.n_experts * 4);
         b_moe_ucnt  = cx->alloc(c.n_experts * 4);
@@ -1778,6 +1781,13 @@ struct InkMetalRunner {
                               mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
                               mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::V(c.route_scale)};
                     ds.push_back(std::move(d));
+                    if (trace_experts) {
+                        mtl::Dispatch tc;
+                        tc.p = &p_copy_f32;
+                        tc.grid[0] = 1; tc.tg[0] = 256;
+                        tc.args = {mtl::Arg::B(b_topk_idx), mtl::Arg::B(b_topk_trace, (size_t)visit * c.top_k * 4), mtl::Arg::V(c.top_k)};
+                        ds.push_back(std::move(tc));
+                    }
                 } else {
                     {
                         mtl::Dispatch d;
@@ -2167,6 +2177,31 @@ struct InkMetalRunner {
             if (argmax_out) {
                 std::memcpy(argmax_out, b_argmax.ptr, (size_t)n_lg * sizeof(int32_t));
             }
+        }
+        if (trace_experts && step.M == 1 && step.compute_logits) {
+            // Loop passes: visit v = 6 + p_idx*12 + (ip-6) for ip in [6,17], pass p_idx in 0..2.
+            // Measure same-(token,physical-layer) expert overlap across passes.
+            static long stepn = 0;
+            static double acc[3] = {};   // overlap counts for pass pairs (0,1),(0,2),(1,2)
+            static double tot = 0;
+            ++stepn;
+            const int32_t* tr = b_topk_trace.as<int32_t>();
+            for (int li = 0; li < 12; ++li) {
+                int v0 = 6 + li, v1 = 18 + li, v2 = 30 + li;
+                int cnt[3] = {};
+                for (int a = 0; a < 8; ++a) {
+                    for (int b = 0; b < 8; ++b) {
+                        if (tr[v0 * 8 + a] == tr[v1 * 8 + b]) ++cnt[0];
+                        if (tr[v0 * 8 + a] == tr[v2 * 8 + b]) ++cnt[1];
+                        if (tr[v1 * 8 + a] == tr[v2 * 8 + b]) ++cnt[2];
+                    }
+                }
+                for (int q = 0; q < 3; ++q) acc[q] += cnt[q];
+                tot += 8;
+            }
+            if (stepn % 32 == 0)
+                std::fprintf(stderr, "[ink TRACE] expert overlap/pass-pair: p01=%.2f/8 p02=%.2f/8 p12=%.2f/8 (n=%ld steps, random=0.5)\n",
+                             acc[0] / tot, acc[1] / tot, acc[2] / tot, stepn);
         }
         return true;
     }
