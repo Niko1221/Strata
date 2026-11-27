@@ -3456,7 +3456,7 @@ struct InkMetalRunner {
         // The previous constants were for an M5 Max and underestimated cost by ~2x,
         // causing systematically oversized trees. INK_TVER_BASE/INK_TVER_MARG/INK_TDRAFT override.
         static const double tv_base = [] { const char* e = std::getenv("INK_TVER_BASE"); return e ? atof(e) : 25.0; }();
-        static const double tv_marg = [] { const char* e = std::getenv("INK_TVER_MARG"); return e ? atof(e) : 10.5; }();
+        static const double tv_marg = [] { const char* e = std::getenv("INK_TVER_MARG"); return e ? atof(e) : 12.0; }();
         static const double tdraft  = [] { const char* e = std::getenv("INK_TDRAFT");  return e ? atof(e) : 9.0; }();
         auto t_ver_ms = [&](int M) -> double {
             if (is_apple10) {
