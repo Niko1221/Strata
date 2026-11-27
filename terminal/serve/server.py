@@ -6328,7 +6328,13 @@ class Service:
         if deadline is not None:
             setattr(cancel, "_strata_queue_deadline", deadline)
         def queue_started():
+            nonlocal queued_counted
             with self.status_lock:
+                if queued_counted:
+                    # the request is handed to the engine: the queued count ends here (a parallel request stays
+                    # counted through the batch admission, waiting for the control lines and a free slot)
+                    self.status["queued"] = max(0, self.status["queued"] - 1)
+                    queued_counted = False
                 row = self.terminal_requests.get(request_id)
                 if row is not None and row["state"] != "reading":
                     row["state"] = "reading"
@@ -6395,8 +6401,10 @@ class Service:
                             self.ensure_loaded()
                     with self.status_lock:
                         if par:
-                            self.status["queued"] -= 1
-                            queued_counted = False
+                            # a parallel request stays counted as queued until the engine takes it: the batch
+                            # admission waits for the control lines and for a free slot, and the pill and the
+                            # queued metric then reflect that wait (queue_started() clears the count when the
+                            # request is handed to the engine, as the solo path decrements it here)
                             self.terminal_requests[request_id].update(state="waiting", admitted_at=time.time())
                             self._terminal_event_locked(request_id, "admitted")
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
