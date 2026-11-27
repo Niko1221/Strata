@@ -34,8 +34,8 @@ SUITE = "legacy-decode-v1"
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 MAX_APPLICATION_BYTES = 8 * 1024
 MAX_AGE_SECONDS = 30 * 24 * 3600
-ALLOWED_SETTINGS = {"--pcie-frac", "--spec-min-p", "--pool-workers",
-                    "--adapt-every", "--adapt-swaps", "--adapt-decay"}
+ALLOWED_SETTINGS = {"--pcie-frac", "--spec-min-p", "--pool-workers", "--prefill-pipe",
+                    "--adapt-every", "--adapt-swaps", "--adapt-decay"}                # tools/calibrate.py's own set (#7170)
 
 
 def _full_folder(name: str):
