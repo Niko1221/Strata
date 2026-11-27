@@ -1912,8 +1912,8 @@ __global__ void __launch_bounds__(256) k3_flash_swa_gqa_qtile(
             float a0 = 0.f, a1 = 0.f;
 #pragma unroll 8
             for (int d2 = 0; d2 < HD / 2; d2 += 2) {
-                a0 = __builtin_amdgcn_fdot2(__builtin_bit_cast(hv2, sQ[wave][d2]), __builtin_bit_cast(hv2, kr[d2]), a0, false);
-                a1 = __builtin_amdgcn_fdot2(__builtin_bit_cast(hv2, sQ[wave][d2 + 1]), __builtin_bit_cast(hv2, kr[d2 + 1]), a1, false);
+                a0 = fdot2_f32(sQ[wave][d2], kr[d2], a0);
+                a1 = fdot2_f32(sQ[wave][d2 + 1], kr[d2 + 1], a1);
             }
             sc = a0 + a1;
             const int dist = cur_pos - kp;
