@@ -4118,9 +4118,16 @@ bool FileExpertSource::pin_cache_complement(
                 cudaDeviceProp prop{};
                 uint64_t seg_budget = 0, seg_usage = 0;
                 std::string seg_why;
+#if defined(STRATA_HIP_GFX906) && defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR < 6
+                // strata-mi50 (2026-10-23): HIP 5.x (the Windows gfx906 build) has no luid in hipDeviceProp_t: no shared segment check
+                (void) prop; (void) seg_why;
+                if (false) {
+#else
                 if (cudaGetDeviceProperties(&prop, d) == cudaSuccess &&
-                    strata::platform::gpu_shared_memory_budget(prop.luid, seg_budget, seg_usage, seg_why))
+                    strata::platform::gpu_shared_memory_budget(prop.luid, seg_budget, seg_usage, seg_why)) {
+#endif
                     left = std::min(left, seg_budget > seg_usage ? seg_budget - seg_usage : 0);
+                }
             }
             (void) cudaGetLastError();
             if (left != std::numeric_limits<uint64_t>::max()) {

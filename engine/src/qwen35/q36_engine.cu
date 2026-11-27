@@ -71,6 +71,15 @@
 #include <tuple>
 #include <type_traits>
 #include <vector>
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_version.h>
+#if HIP_VERSION_MAJOR < 7   // strata-mi50 (2026-10-23): HIP 6.x headers have __ldg only for __half / __half2 (mrope reads int32)
+#define STRATA_LDG_I32(p) (*(p))
+#endif
+#endif
+#ifndef STRATA_LDG_I32
+#define STRATA_LDG_I32(p) __ldg(p)
+#endif
 
 namespace {
 
@@ -341,7 +350,7 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
-        const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+        const int rp = mtab ? STRATA_LDG_I32(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
         const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);
@@ -385,7 +394,7 @@ __global__ void k_attn_prep_h(const float* qg, const float* kx, const float* vx,
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
-        const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+        const int rp = mtab ? STRATA_LDG_I32(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
         const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);
@@ -432,7 +441,7 @@ __global__ void k_attn_prep_q8(const float* qg, const float* kx, const float* vx
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
-        const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+        const int rp = mtab ? STRATA_LDG_I32(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
         const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);
@@ -489,7 +498,7 @@ __global__ void k_attn_prep_q4(const float* qg, const float* kx, const float* vx
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
-        const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+        const int rp = mtab ? STRATA_LDG_I32(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
         const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);

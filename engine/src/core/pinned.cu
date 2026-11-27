@@ -643,8 +643,15 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
     std::string err = "no CUDA device properties";
+#if defined(STRATA_HIP_GFX906) && defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR < 6
+    // strata-mi50 (2026-10-23): HIP 5.x (the Windows gfx906 build) has no luid in hipDeviceProp_t, so the shared-memory budget
+    // cannot be matched to the adapter: take the RAM fallback below. Other builds keep the check as it was.
+    (void) dev; (void) p;
+    if (false) {
+#else
     if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
         strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
+#endif
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
         std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
                       (double) budget / GiB, (double) usage / GiB);
