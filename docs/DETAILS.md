@@ -1234,8 +1234,10 @@ Windows by default, which is a little faster). Use it when sharing the machine m
 
 A missed expert (one that is not on the card) that every token of a verify window routes at rank 7 or lower is neither copied nor
 computed: its weight is dropped. It applies on CUDA and on HIP gfx1200/gfx1201, with one GPU or a layer split. It does not apply
-when every expert is in VRAM, with `--batch` slots, with a peer tier or helper GPU, on other HIP and SYCL, or when 90% or more of
-the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). Answers differ
+when every expert is in VRAM, with `--batch` slots, with a peer tier, on other HIP and SYCL, or when 90% or more of
+the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). With a helper
+GPU attached (a remote tier), only file-tier misses are skipped: an expert the helper holds, or one already in the host copy, is
+still computed. Answers differ
 slightly from a run without it.
 
 - **Default.** Off, in every mode. Setup writes `STRATA_ROUTE_TAIL_SKIP=0` into the Unsloth run configs, and Strata sets the same

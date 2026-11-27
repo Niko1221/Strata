@@ -14936,7 +14936,15 @@ int main(int argc, char** argv) {
         // lower is neither copied nor computed; STRATA_ROUTE_TAIL_SKIP=7 turns it on (KL 0.0126 against exact routing, decode x1.24 to x1.29 on UD-Q4_K_XL, RTX
         // 5090; docs/DETAILS.md), 1 to 9 pick a rank.  An unset value is rank 0 (strata/core/tail_skip_default.hpp), so this start-up sets nothing.
         // Nothing to say when every expert is in VRAM.
-        if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
+        // With no helper, a missed tail is skipped even when its bytes are in a host copy.  With a helper
+        // (remote tiers), a file-tier miss is skipped; a row the helper holds, or one already in the host
+        // copy, is still computed.  A layer split is fine: each stage skips by itself.
+        if (strata::core::tail_skip_rank() > 0 && !all_experts_resident && drive.d.remote_count > 0)
+            std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON: a file-tier miss that every token of a verify window routes at rank %d or "
+                                 "lower is skipped. An expert a helper holds, or one already in the host copy, is still computed; "
+                                 "it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
+                         strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
+        else if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
             std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON: a missed expert that every token of a verify window routes at rank %d or "
                                  "lower is skipped (answers differ slightly); it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
                          strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
