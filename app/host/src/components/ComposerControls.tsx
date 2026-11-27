@@ -27,7 +27,15 @@ const hy4Efforts = ['Off', 'High', 'Max'];
 /** The most tokens a reply may spend thinking (the server's reasoning_budget_tokens); 0 = no limit. */
 const THINKING_BUDGETS: [number, string][] = [[0, 'No limit'], [2048, '2K'], [8192, '8K'], [32768, '32K']];
 const textTypes = /\.(txt|md|markdown|csv|tsx?|jsx?|py|json|css|rs|go|sh|html?|ya?ml|toml|xml|log)$/i;
-const photoTypes = /\.(png|jpe?g|webp|gif|svg)$/i;
+const photoTypes = /\.(png|jpe?g|webp|gif|svg|bmp)$/i;
+const isPhoto = (file: File) => file.type.startsWith('image/') || photoTypes.test(file.name);
+const photoErrors = new Set([
+    'Attach a PNG, JPEG or WebP picture. Other images can be opened in preview.',
+    'Attach up to three pictures per message.',
+    'Choose a picture smaller than 2 MB.',
+    'Could not store this picture. Check browser storage.',
+    'This picture could not be saved.',
+]);
 export function ComposerControls({ session, onPreview, onAttach, onError, onSlash, streaming, draft, onDraft }: {
     draft: string;
     onDraft: (text: string) => void;
@@ -89,7 +97,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
             onError('Choose a file smaller than 20 MB.');
             return;
         }
-        const isPdf = /\.pdf$/i.test(selected.name), isImage = photoTypes.test(selected.name), isTable = /\.csv$/i.test(selected.name), isCode = /\.(tsx?|jsx?|py|json|css|rs|go|sh)$/i.test(selected.name), isHtml = /\.html?$/i.test(selected.name);
+        const isPdf = /\.pdf$/i.test(selected.name), isImage = isPhoto(selected), isTable = /\.csv$/i.test(selected.name), isCode = /\.(tsx?|jsx?|py|json|css|rs|go|sh)$/i.test(selected.name), isHtml = /\.html?$/i.test(selected.name);
         try {
             onPreview({ id: crypto.randomUUID(), kind: isPdf ? 'pdf' : isImage ? 'image' : isTable ? 'table' : isCode ? 'code' : isHtml ? 'website' : 'markdown', title: selected.name, ...(isPdf || isImage ? { url: URL.createObjectURL(selected) } : { content: await selected.text() }) });
         }
@@ -103,6 +111,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
         setReading(true);
         onError('');
         const texts: string[] = [];
+        const notices = new Set<string>();
         let bytes = 0;
         let skipped = 0;
         try {
@@ -112,8 +121,13 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                     skipped++;
                     continue;
                 }
-                if (!directory && photoTypes.test(file.name) && pictures.ok) {
-                    await attachChatPhoto(file, session?.id);
+                if (!directory && isPhoto(file) && pictures.ok) {
+                    try {
+                        await attachChatPhoto(file, session?.id);
+                    } catch (error) {
+                        const message = error instanceof Error && photoErrors.has(error.message) ? error.message : 'Some files could not be read. Try adding them separately.';
+                        notices.add(tr(message));
+                    }
                     continue;
                 }
                 if (!directory && session?.id && /\.pdf$/i.test(file.name) && file.size <= 12 * 1024 * 1024) {
@@ -122,9 +136,9 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                     pushToast('success', 'PDF added', `${saved.name} is in this chat. Ask about it in your next message.`);
                     continue;
                 }
-                if (!directory && (photoTypes.test(file.name) || /\.pdf$/i.test(file.name))) {
+                if (!directory && (isPhoto(file) || /\.pdf$/i.test(file.name))) {
                     await openFile(file);
-                    if (photoTypes.test(file.name))
+                    if (isPhoto(file))
                         onError(`${pictures.ok ? '' : tr(pictures.message)} ${tr('It is open in preview.')}`);
                     continue;
                 }
@@ -144,7 +158,9 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                 attachLatest.current(directory ? (selected[0].webkitRelativePath.split('/')[0] || 'Folder') : selected.filter(f => textTypes.test(f.name)).map(f => f.name).join(', '), texts.join('\n\n'));
             skipped += Math.max(0, selected.length - 64);
             if (skipped)
-                onError(`${skipped} file${skipped === 1 ? ' was' : 's were'} skipped. Add up to 64 text files, with 256 KB of text in total. Photos and PDFs can be opened separately.`);
+                notices.add(`${skipped} file${skipped === 1 ? ' was' : 's were'} skipped. Add up to 64 text files, with 256 KB of text in total. Photos and PDFs can be opened separately.`);
+            if (notices.size)
+                onError([...notices].join(' '));
         }
         catch {
             onError('Some files could not be read. Try adding them separately.');
