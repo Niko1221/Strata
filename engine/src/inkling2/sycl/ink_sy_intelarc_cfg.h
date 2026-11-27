@@ -77,6 +77,30 @@ inline bool intelarc_exact_env_requested() noexcept {
     return env_truthy_arc("STRATA_INK_INTELARC_EXACT");
 }
 
+// Is this device a Battlemage-generation (Xe2) Intel GPU? By the device's own architecture id (the oneAPI architecture extension), not by its name. -1: the runtime cannot say.
+inline int intelarc_arch_is_battlemage(const sycl::device& dev) {
+#if defined(SYCL_EXT_ONEAPI_DEVICE_ARCHITECTURE)
+    namespace exp = sycl::ext::oneapi::experimental;
+    try {
+        const auto a = dev.get_info<exp::info::device::architecture>();
+        if (a == exp::architecture::intel_gpu_bmg_g21 || a == exp::architecture::intel_gpu_bmg_g31 || a == exp::architecture::intel_gpu_lnl_m) return 1;
+        if (a == exp::architecture::unknown) return -1;
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+#else
+    (void)dev;
+    return -1;
+#endif
+}
+
+// The fast Intel Arc set (STRATA_INK_INTELARC=1 without _EXACT) is refused on Battlemage in 0.2.23: on a real Arc Pro B70 it lost the GPU (UR_RESULT_ERROR_DEVICE_LOST) on the GGUF files and in the
+// 32-slot run and returned garbage text from the server; only the exact set is verified there. Alchemist keeps the fast set as measured.
+inline bool intelarc_fast_refused(bool battlemage, bool exact_requested) noexcept {
+    return battlemage && !exact_requested;
+}
+
 inline std::string to_lower_ascii(const std::string& s) {
     std::string out = s;
     for (char& ch : out) ch = (char)std::tolower((unsigned char)ch);
@@ -152,6 +176,18 @@ inline IntelArcCfg probe_intelarc_card(const sycl::device& dev, int ordinal) {
 
     cfg.active = true;
     cfg.exact = intelarc_exact_env_requested();
+    {   // Battlemage by the device's architecture (the name list above is only the fallback when the runtime cannot say)
+        const int arch_bmg = intelarc_arch_is_battlemage(dev);
+        const bool battlemage = (arch_bmg >= 0) ? (arch_bmg == 1) : cfg.is_bmg;
+        if (intelarc_fast_refused(battlemage, cfg.exact)) {
+            static bool said = false;
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "[ink_sycl] the fast Intel Arc set is not available on Battlemage in this release; running the exact set\n");
+            }
+            cfg.exact = true;
+        }
+    }
     cfg.fast = !cfg.exact;
 
     // Effective prefill chunk sized by real VRAM (with intra-chunk SWA pos&1023 fix!)
