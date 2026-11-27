@@ -48,6 +48,16 @@ class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
     client gets a 400 with the template's message instead of a dropped connection (#365)."""
 
 
+_BROKEN_PRESERVE_THINKING = "preserve_thinking is defined and preserve_thinking is true"
+_FIXED_PRESERVE_THINKING = "preserve_thinking is undefined or preserve_thinking is true"
+
+
+def normalize_baked_chat_template(source: str) -> str:
+    if _BROKEN_PRESERVE_THINKING not in source:
+        return source
+    return source.replace(_BROKEN_PRESERVE_THINKING, _FIXED_PRESERVE_THINKING)
+
+
 class ChatTemplate:
     """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template."""
 
@@ -62,7 +72,7 @@ class ChatTemplate:
                                             extensions=["jinja2.ext.loopcontrols", _GenerationExtension])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
-        self.source = Path(path).read_text(encoding="utf-8")
+        self.source = normalize_baked_chat_template(Path(path).read_text(encoding="utf-8"))
         self._is_hy4 = "<tool_calls{}>" in self.source or "<\uff5creasoning_mode" in self.source
         self._is_inkling2 = "<|content_invoke_tool_json|>" in self.source or "tool_declare<|content_xml|>" in self.source
         self.template = env.from_string(self.source)
