@@ -302,6 +302,10 @@ public:
     }
     bool persistent() const { std::lock_guard<std::mutex> lk(mu_); return ns_.persistent(); }
     bool enabled() const { std::lock_guard<std::mutex> lk(mu_); return enabled_locked(); }
+    bool admits_size(uint64_t bytes) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return enabled_locked() && admits_size_locked(bytes);
+    }
     size_t size() const { std::lock_guard<std::mutex> lk(mu_); return entries_.size(); }
     uint64_t bytes() const { std::lock_guard<std::mutex> lk(mu_); return budget_.used; }
     SpillBudget budget() const { std::lock_guard<std::mutex> lk(mu_); return budget_; }
@@ -318,13 +322,15 @@ public:
     /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
     /// lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
-        const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
+        const uint64_t bytes = (uint64_t) image.bytes();
+        uint64_t need = 0;
         uint64_t serial = 0;
         std::filesystem::path f;
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
-            if (need > budget_.cap) { error = "larger than the whole SSD tier"; return false; }
+            if (!admits_size_locked(bytes)) { error = "larger than the whole SSD tier"; return false; }
+            need = bytes + table_allowance;
             while (!budget_.reserve(need)) {
                 if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
                 size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
@@ -466,6 +472,10 @@ public:
     }
 
 private:
+    static constexpr uint64_t table_allowance = uint64_t(1) << 20;  // the file's own tables, beside the payload
+    bool admits_size_locked(uint64_t bytes) const {
+        return budget_.cap >= table_allowance && bytes <= budget_.cap - table_allowance;
+    }
     bool enabled_locked() const { return ns_.is_open() && budget_.cap > 0; }
     size_t index_locked(uint64_t serial) const {
         for (size_t i = 0; i < entries_.size(); ++i)
