@@ -88,7 +88,8 @@ strata launch --show-key
 | --- | --- |
 | `--preset NAME` | Start a saved preset. Other flags change that start only; add `--save-preset` to keep them. |
 | `--family`, `--model` | The model family and size, for example `qwen`, `q2_0`. Any case. |
-| `--model-path PATH` | Use model files you already have: a folder of shards or one `.gguf`. |
+| `--model-path PATH` | Use model files you already have: a folder of shards, or one `.gguf` or `.strata` file. Your own fine-tunes, merges and other quantizations of a model Strata runs work too: they are used where they are, listed as a custom build next to the official one, and never copied. |
+| `--custom-label NAME` | The name of your custom build in the lists (default: the file name). It gets its own settings file; the official install of that model is not changed. `strata models remove ID` takes it out of the list and leaves your files. |
 | `--data-dir DIR`, `--move-data` | Where new downloads go. `--move-data` also moves the models you already have. |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens. |
 | `--kv FORMAT` | Conversation memory format: `int8` (default), `q4_0` (half the memory), `k8v4`, `fp16`. |
