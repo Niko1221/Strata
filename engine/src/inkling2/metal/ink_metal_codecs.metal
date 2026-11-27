@@ -2043,6 +2043,60 @@ static inline void sk_w13_chunk(
     device const uchar* gu = body + 2304;
     device const uchar* rg = gu + (size_t)(2 * r) * rowb;
     device const uchar* ru = gu + (size_t)(2 * r + 1) * rowb;
+    if (F == 2 || F == 3) {
+        // Software-pipelined: preload the next unit's weight bytes while the current unit's dots execute,
+        // breaking the load->decode->fma serial latency chain (MLP=2 per lane instead of 1).
+        const int u = lane, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
+        auto ld_unit = [&](int unit, thread uchar2& pg, thread uchar2& pu, thread uint& hg, thread uint& hu,
+                           device const uchar*& bgp, device const uchar*& bup) {
+            const int sbi = unit >> 5;
+            bgp = rg + (size_t)sbi * SB + 6;
+            bup = ru + (size_t)sbi * SB + 6;
+            pg = uchar2(bgp[j >> 2], bgp[(j >> 2) + 1]);
+            pu = uchar2(bup[j >> 2], bup[(j >> 2) + 1]);
+            if (F == 3) {
+                hg = uint(bgp[64 + (j >> 3)]);
+                hu = uint(bup[64 + (j >> 3)]);
+            }
+        };
+        uchar2 pg0, pu0; uint hg0 = 0, hu0 = 0;
+        device const uchar *bgc, *buc;
+        ld_unit(lane, pg0, pu0, hg0, hu0, bgc, buc);
+        for (int unit = lane; unit < 288; unit += 32) {
+            const int sbi = unit >> 5;
+            device const uchar* bg = rg + (size_t)sbi * SB;
+            device const uchar* bu = ru + (size_t)sbi * SB;
+            const float effg = float(as_type<half>(ld16(bg))) * (float(bg[2 + g]) * (1.0f / 255.0f));
+            const float effu = float(as_type<half>(ld16(bu))) * (float(bu[2 + g]) * (1.0f / 255.0f));
+            const uchar2 pg = pg0, pu = pu0;
+            const uint hg = hg0, hu = hu0;
+            if (unit + 32 < 288) ld_unit(unit + 32, pg0, pu0, hg0, hu0, bgc, buc);
+            float4 wg0, wg1, wu0, wu1;
+            if (F == 2) {
+                wg0 = float4(kS2Lut[pg.x]);
+                wg1 = float4(kS2Lut[pg.y]);
+                wu0 = float4(kS2Lut[pu.x]);
+                wu1 = float4(kS2Lut[pu.y]);
+            } else {
+                wg0 = float4(kS2Lut[pg.x] + kS3Hi[hg & 15u]);
+                wg1 = float4(kS2Lut[pg.y] + kS3Hi[hg >> 4]);
+                wu0 = float4(kS2Lut[pu.x] + kS3Hi[hu & 15u]);
+                wu1 = float4(kS2Lut[pu.y] + kS3Hi[hu >> 4]);
+            }
+#ifdef INK_MOE_WONLY
+            ag[0] += effg * (wg0.x + wg1.y);
+            au[0] += effu * (wu0.x + wu1.y);
+#else
+            for (int i = 0; i < mm; ++i) {
+                device const float4* xp = (device const float4*)(x_in + ulong(tk[i]) * 2304ul + uint(sbi * 256 + j));
+                const float4 x0 = xp[0], x1 = xp[1];
+                ag[i] = fma(effg, dot(wg0, x0) + dot(wg1, x1), ag[i]);
+                au[i] = fma(effu, dot(wu0, x0) + dot(wu1, x1), au[i]);
+            }
+#endif
+        }
+        return;
+    }
     for (int unit = lane; unit < 288; unit += 32) {
         const int sbi = unit >> 5, u = unit & 31, g = u >> 3, j = (g << 6) + ((u & 7) << 3);
         device const uchar* bg = rg + (size_t)sbi * SB;
