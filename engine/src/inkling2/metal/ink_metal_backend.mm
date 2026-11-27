@@ -83,7 +83,14 @@ static inline double m5_u01(uint64_t& state) noexcept {
 }
 
 // Compute normalized target probabilities on Top-K candidate row under temperature / top_k / top_p / min_p
-static void m5_cand_probs(const int32_t* ids, const float* vals, int K, const SampleOpts& s,
+struct M5SampleOpts {
+    float temperature = 0.0f;
+    int top_k = 64;
+    float top_p = 1.0f;
+    float min_p = 0.0f;
+};
+
+static void m5_cand_probs(const int32_t* ids, const float* vals, int K, const M5SampleOpts& s,
                           std::vector<int32_t>& out_ids, std::vector<float>& out_p) {
     out_ids.clear();
     out_p.clear();
@@ -154,7 +161,7 @@ public:
         return supports_candidates();
     }
 
-    bool supports_post_step_prompt_checkpoint() const noexcept override {
+    bool prefers_async_prompt_ckpt() const noexcept override {
         return runner_.m5.active && runner_.m5.use_post_step_ckpt;
     }
 
@@ -691,31 +698,29 @@ public:
         int32_t anchor_tok,
         int anchor_pos,
         int max_emit,
-        const SampleOpts& sopts,
-        uint64_t step_seed,
-        const int32_t* hist_ids,
-        int hist_len,
+        float temperature,
+        int top_k,
+        float top_p,
+        float min_p,
+        uint64_t rng_seed,
+        uint64_t rng_offset,
         int32_t* out_emitted,
         int* out_drafted,
         std::string& err) override {
+        // The shared hook of the integration tip passes the sampling knobs one by one and a (seed, offset) pair; M5SampleOpts / step_seed rebuild what the sampler below uses.
+        M5SampleOpts sopts;
+        sopts.temperature = temperature; sopts.top_k = top_k; sopts.top_p = top_p; sopts.min_p = min_p;
+        uint64_t step_seed = rng_seed ^ (rng_offset * 0x9e3779b97f4a7c15ull);
         if (!supports_sampled_spec() || slot < 0 || slot >= runner_.max_slots ||
             max_emit < 2 || anchor_pos <= 0 || anchor_pos + 12 >= runner_.max_ctx) {
             return 0;
         }
 
-        // Draft with DFlash 2 (or PLD suffix fallback when confidence is very low)
+        // Draft with DFlash 2 only (DFlash 2 is the one drafter; the n-gram suffix fallback of the owner's first version is not used)
         int32_t draft_ids[7]{};
         float draft_conf[7]{};
         int n_avail = runner_.df2.draft_block8(slot, anchor_tok, anchor_pos, draft_ids, draft_conf);
         int n_draft = choose_df2_draft_len(draft_conf, std::min(n_avail, max_emit - 1));
-        if (n_draft == 0 && hist_ids && hist_len >= 4) {
-            int32_t pld[7]{};
-            const int np = ink_metal::InkMetalDFlash2::pld_match(hist_ids, hist_len, anchor_tok, std::min(4, max_emit - 1), pld);
-            if (np >= 2) {
-                for (int i = 0; i < np; ++i) { draft_ids[i] = pld[i]; draft_conf[i] = 0.65f; }
-                n_draft = np;
-            }
-        }
 
         const int tm = 1 + n_draft;
         ink_metal::InkBatchStep st;

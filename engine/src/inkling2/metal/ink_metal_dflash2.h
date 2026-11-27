@@ -647,23 +647,6 @@ struct InkMetalDFlash2 {
         }
         return best_d;
     }
-
-    // Fast host-side Prompt Lookup Decoding (PLD) 3-gram suffix matcher
-    static int pld_match(const int32_t* hist, int hist_len, int32_t anchor_tok, int max_d, int32_t* out_ids) {
-        if (!hist || hist_len < 4 || max_d <= 0) return 0;
-        const int32_t a = hist[hist_len - 2];
-        const int32_t b = hist[hist_len - 1];
-        const int32_t c = anchor_tok;
-        const int search_start = std::max(0, hist_len - 2048);
-        for (int i = hist_len - 4; i >= search_start; --i) {
-            if (hist[i] == a && hist[i + 1] == b && hist[i + 2] == c) {
-                int n = 0;
-                for (int j = i + 3; j < hist_len && n < max_d; ++j) out_ids[n++] = hist[j];
-                if (n >= 2) return n;
-            }
-        }
-        return 0;
-    }
 };
 
 }  // namespace ink_metal
