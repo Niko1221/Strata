@@ -34,7 +34,11 @@ fi
 I64=$(seq -s, 101 164)
 env UR_LOADER_USE_LEVEL_ZERO_V2=0 STRATA_INK_INTELARC=0 STRATA_INK_INTELARC_EXACT=0 \
   timeout 1800 "$EXE" --native "$MODEL" --gpus 1 --max-context 4096 --draft off --prompt-ids "$I64" --gen 16 --dump-ref "$O/ref-off.bin" > "$O/p64-off.log" 2>&1
-rc_off=$?; ids_off=$(tail -n 1 "$O/p64-off.log"); sha_off=$(sha256sum "$O/ref-off.bin" 2>/dev/null | cut -c1-16)
+rc_off=$?; sha_off=$(sha256sum "$O/ref-off.bin" 2>/dev/null | cut -c1-16)
+# --dump-ref only writes the logits file; the greedy ids of the OFF run come from a second, generating run (the first B70 run compared the dump-ref message with the EXACT ids)
+env UR_LOADER_USE_LEVEL_ZERO_V2=0 STRATA_INK_INTELARC=0 STRATA_INK_INTELARC_EXACT=0 \
+  timeout 1800 "$EXE" --native "$MODEL" --gpus 1 --max-context 4096 --draft off --prompt-ids "$I64" --gen 16 > "$O/p64-off-gen.log" 2>&1
+ids_off=$(tail -n 1 "$O/p64-off-gen.log")
 echo "p64[off]   rc=$rc_off ids=$(echo "$ids_off" | cut -c1-70) sha=$sha_off"; [ $rc_off -eq 0 ] || bad=1
 
 env -u UR_LOADER_USE_LEVEL_ZERO_V2 STRATA_INK_INTELARC=1 STRATA_INK_INTELARC_EXACT=1 \
