@@ -1,0 +1,8 @@
+{
+  "id": "T2-nullable",
+  "title": "Nullable reference types a validacia",
+  "files": ["app/Text.cs"],
+  "buildArgs": ["-warnaserror"],
+  "timeoutSec": 60,
+  "prompt": "Oprav triedu Eval.Text tak, aby build presiel BEZ warningov s -warnaserror a spravanie bolo:\n1) Normalize(input): vstup oreze a prevedie na male pismena; ak je null, prazdny alebo len medzery, hodi ArgumentNullException.\n2) FindByName(list, name): ak je name null/prazdny/medzery, vrati null; inak najde zakaznika s rovnakym menom bez ohladu na velkost pismen a medzery okolo; ak nenajde, vrati null.\nNepouzivaj potlacanie warningov ani '!' (null-forgiving) — spravanie musi byt spravne, nie len ticho.\nZachovaj namespace Eval, nazvy typov a podpisy metod."
+}

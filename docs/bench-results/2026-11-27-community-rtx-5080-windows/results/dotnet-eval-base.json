@@ -1,0 +1,186 @@
+﻿{
+    "run_id":  "base",
+    "model":  "qwen3.8-flash-next-iq3_xxs",
+    "engine_line":  "[strata] 2026-11-27 17:25:42 engine started: <strata-home>\\components\\engine\\0.1.62-windows-x86_64-cuda-cuda13\\strata.exe --serve --pack <data-dir>\\packs\\iq3_xxs --native <data-dir>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf <data-dir>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --expert-profile <strata-home>\\components\\control\\0.1.62\\data\\expert-profile.bin --expert-cache auto --prefill auto --max-context 262144 --kv q4_0 --kv-resident 32768 --vision --conversation-cache-mib 4096 --vram-reserve-mib 1536 --draft dflash2 --draft-model <data-dir>\\dflash2\\qwen3.8-flash-next-dflash2.q4_0-selq4.pack --draft-fallback none --mtp-draft-vocab <data-dir>\\mtp\\rt\\draft_vocab.bin --spec 6 --draft-conf 0.7",
+    "started_utc":  "2026-11-27T16:30:59Z",
+    "green_results":  6,
+    "total_results":  9,
+    "tasks":  3,
+    "tasks_all_green":  2,
+    "reps":  3,
+    "total_wall_s":  17.1,
+    "gen_tok_total":  2722,
+    "results":  [
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  1.63,
+                        "gen_tok":  221,
+                        "decode_tps":  177.7,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  948,
+                        "timed_out":  false,
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  1.01,
+                        "gen_tok":  180,
+                        "decode_tps":  197.5,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  832,
+                        "timed_out":  false,
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  2.52,
+                        "gen_tok":  386,
+                        "decode_tps":  198.1,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  1680,
+                        "timed_out":  false,
+                        "test_output":  "RESULT: 9/9",
+                        "rep":  1
+                    },
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  1.35,
+                        "gen_tok":  221,
+                        "decode_tps":  176.1,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  948,
+                        "timed_out":  false,
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  1,
+                        "gen_tok":  180,
+                        "decode_tps":  198.1,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  832,
+                        "timed_out":  false,
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  2.05,
+                        "gen_tok":  386,
+                        "decode_tps":  197.4,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  1680,
+                        "timed_out":  false,
+                        "test_output":  "RESULT: 9/9",
+                        "rep":  2
+                    },
+                    {
+                        "task":  "T1-async-timeout",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  4,
+                        "total":  5,
+                        "green":  false,
+                        "req_s":  4.08,
+                        "gen_tok":  569,
+                        "decode_tps":  142.9,
+                        "prompt_tok":  335,
+                        "files_written":  [
+                                              "app/Fetcher.cs"
+                                          ],
+                        "answer_chars":  2751,
+                        "timed_out":  false,
+                        "test_output":  "PASS timeout hodi TimeoutException | FAIL zruseny token -\u003e OperationCanceledException :: vratilo sa bez vynimky | RESULT: 4/5",
+                        "rep":  3
+                    },
+                    {
+                        "task":  "T2-nullable",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  1.18,
+                        "gen_tok":  178,
+                        "decode_tps":  164.2,
+                        "prompt_tok":  336,
+                        "files_written":  [
+                                              "app/Text.cs"
+                                          ],
+                        "answer_chars":  820,
+                        "timed_out":  false,
+                        "test_output":  "PASS Normalize(null) -\u003e ArgumentNullException | PASS Normalize(medzery) -\u003e ArgumentNullException | RESULT: 9/9",
+                        "rep":  3
+                    },
+                    {
+                        "task":  "T3-minimal-api",
+                        "variant":  "model",
+                        "build_ok":  true,
+                        "passed":  9,
+                        "total":  9,
+                        "green":  true,
+                        "req_s":  2.3,
+                        "gen_tok":  401,
+                        "decode_tps":  182.3,
+                        "prompt_tok":  415,
+                        "files_written":  [
+                                              "app/TodoApi.cs"
+                                          ],
+                        "answer_chars":  1685,
+                        "timed_out":  false,
+                        "test_output":  "RESULT: 9/9",
+                        "rep":  3
+                    }
+                ]
+}
