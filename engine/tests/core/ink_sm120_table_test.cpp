@@ -41,6 +41,8 @@ int main() {
     const Sm120Dev r5070ti = dev("NVIDIA GeForce RTX 5070 Ti", 12, 0, 70, 16);
     const Sm120Dev r5080 = dev("NVIDIA GeForce RTX 5080", 12, 0, 84, 16);
     const Sm120Dev pro6000 = dev("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 12, 0, 188, 96);
+    const Sm120Dev r4060ti16 = dev("NVIDIA GeForce RTX 4060 Ti", 8, 9, 34, 16);
+    const Sm120Dev r3060 = dev("NVIDIA GeForce RTX 3060", 8, 6, 28, 12);
     const Sm120Dev a4000 = dev("NVIDIA RTX A4000", 8, 6, 48, 16);
     const Sm120Dev rtx4090 = dev("NVIDIA GeForce RTX 4090", 8, 9, 128, 24);
     const Sm120Dev turing = dev("NVIDIA GeForce RTX 2080 Ti", 7, 5, 68, 11);
@@ -77,7 +79,7 @@ int main() {
         for (int i = 0; i < n; ++i) CHECK((rows[i].exact_parts & kNotInExact) == 0);
         // 11-27 (NV-ADA): no row of 15 GiB or more carries COMPACT_HYBRID (it lets COMPACT run at 2..15 slots; a 16 GB card then died at the start with 3 MiB free)
         for (int i = 0; i < n; ++i) if (rows[i].vram_gib_min >= 15) CHECK((rows[i].fast_parts & P_COMPACT_HYBRID) == 0);
-        CHECK(measured == 11);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26), DGX Spark GB10 (11-27)
+        CHECK(measured == 13);   // 5090, 5060 Ti 16, 5080, 5070 Ti, 5070, 5060, RTX PRO 6000 / 5000 / 4500 / 4000 (rows lane 11-26), DGX Spark GB10 (11-27), RTX 4060 Ti 16 GB and RTX 3060 12 GB (NV-ADA-AMPERE 11-27; both default_on = false)
         // the placeholders for the cards still to rent are in the table
         CHECK(ink_sm120_row_by_id("5070") && ink_sm120_row_by_id("5050"));
     }
@@ -196,6 +198,15 @@ int main() {
         CHECK(z.mode == Sm120Decision::Fast && (z.parts & P_COMPACT) && !(z.parts & P_TC_SMALLM) && !(z.parts & P_PREFILL) && !(z.parts & P_L2PF) && !(z.parts & P_FP8_TRUNK));
         const Sm120Decision w = decide(a4000, {{"STRATA_INK_SM120_FP8_TRUNK", "1"}, {"STRATA_INK_SM120_ROW", "a4000"}});   // an explicit FP8 trunk on sm_86 is ignored, with a note
         CHECK(!(w.parts & P_FP8_TRUNK) && !w.note.empty());
+        // NV-ADA-AMPERE 11-27: the 4060 Ti 16 GB and 3060 12 GB rows are measured but not default; their set has no PACK and no PF_ATTN; a 16 GB row has no COMPACT_HYBRID, a 12 GB row has it
+        CHECK(ink_sm120_match(r4060ti16) && std::string(ink_sm120_match(r4060ti16)->id) == "4060ti-16" && ink_sm120_match(r4060ti16)->measured && !ink_sm120_match(r4060ti16)->default_on);
+        CHECK(ink_sm120_match(r3060) && std::string(ink_sm120_match(r3060)->id) == "3060" && ink_sm120_match(r3060)->measured && !ink_sm120_match(r3060)->default_on);
+        CHECK(decide(r4060ti16, {}).mode == Sm120Decision::Off && decide(r3060, {}).mode == Sm120Decision::Off);   // not the default
+        const Sm120Decision f16 = decide(r4060ti16, {{"STRATA_INK_SM120", "1"}});    // one switch, no ROW needed (measured)
+        CHECK(f16.mode == Sm120Decision::Fast && (f16.parts & P_COMPACT) && (f16.parts & P_PLD) && (f16.parts & P_CORE_GRAPH) && (f16.parts & P_TC_ATTN)
+              && !(f16.parts & (P_PACK | P_PF_ATTN | P_COMPACT_HYBRID | P_DENSE_OPT | P_DSPARK_OPT | P_MOE_OPT | P_FP8_TRUNK)));
+        const Sm120Decision f12 = decide(r3060, {{"STRATA_INK_SM120", "1"}});
+        CHECK((f12.parts & P_COMPACT) && (f12.parts & P_COMPACT_HYBRID) && !(f12.parts & (P_PACK | P_PF_ATTN | P_FP8_TRUNK)));
         CHECK(ink_sm120_arch_parts(120) == kSm120AllPartsMask && !(ink_sm120_arch_parts(89) & P_TC_SMALLM) && (ink_sm120_arch_parts(89) & P_FP8_TRUNK) && !(ink_sm120_arch_parts(86) & P_FP8_TRUNK) && ink_sm120_arch_parts(70) == 0);
     }
     // ---- cc 12.0 cards without a measured row keep the old path, with a note; ROW forces a row at the user's risk ----
