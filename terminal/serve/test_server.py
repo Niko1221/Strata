@@ -5917,6 +5917,33 @@ class AmdTelemetry(unittest.TestCase):
             self.assertTrue(telemetry._Amd._bdf("0000:03:00.0"))
             self.assertFalse(telemetry._Amd._bdf("pci0000:00"))
 
+    def test_idle_cards_are_left_to_sleep(self):
+        """An idle amdgpu card suspends 5 s after its last sysfs access: a suspended card is not read at all, an awake
+        card nobody holds is read at most every IDLE_READ_S (the last reading reused), a held card every time."""
+        from serve import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            self.tree(d)
+            with mock.patch.object(telemetry, "SYSFS", d):
+                g = telemetry.gpu_reader(0, amd=True)
+                pw = Path(g.dev) / "power"
+                pw.mkdir()
+                busy = Path(g.dev) / "gpu_busy_percent"
+                (pw / "runtime_status").write_text("active\n")
+                (pw / "runtime_usage").write_text("0\n")
+                first = g.read()
+                busy.write_text("77\n")
+                self.assertEqual(g.read(), first)                       # unheld and read < IDLE_READ_S ago: cached
+                g._last_at -= telemetry._Amd.IDLE_READ_S + 1
+                self.assertEqual(g.read()["util"], 77)                  # the interval passed: read again
+                (pw / "runtime_usage").write_text("3\n")
+                busy.write_text("55\n")
+                self.assertEqual(g.read()["util"], 55)                  # held by an engine: every sample is read
+                (pw / "runtime_status").write_text("suspended\n")
+                with mock.patch.object(telemetry._Amd, "_read_all", side_effect=AssertionError("woke the card")):
+                    r = g.read()
+                self.assertEqual((r["util"], r["power"], r["temp"], r["mem_used"]), (0, None, None, None))
+                self.assertEqual(r["mem_total"], first["mem_total"])    # static values kept from the last reading
+
     def test_readings(self):
         from serve import telemetry
         with tempfile.TemporaryDirectory() as d:
