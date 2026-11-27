@@ -1368,7 +1368,17 @@ public:
         }
         size_t ram_bytes = 0;
 
-        for (uint16_t idx : model.vram_load_order) {
+        // STRATA_INK_PIN_CORE=1: all experts of the looped core layers first (they run num_passes times per token), then the
+        // rest in the pack's order. A layer with every expert in VRAM takes the zero-sync GPU decode path; the pack's
+        // order spreads the hottest experts over every layer, so with a partial budget every visit syncs with the host.
+        std::vector<uint16_t> load_order(model.vram_load_order.begin(), model.vram_load_order.end());
+        if (const char* e = std::getenv("STRATA_INK_PIN_CORE"); e && e[0] == '1') {
+            std::stable_partition(load_order.begin(), load_order.end(), [&](uint16_t idx) {
+                const int il = static_cast<int>(idx) / c_.n_experts;
+                return il >= c_.core_start && il < c_.core_end;
+            });
+        }
+        for (uint16_t idx : load_order) {
             if (idx >= n_dir) continue;
             const size_t sz = dir[idx].body_bytes;
             const size_t aligned = (sz + 63u) & ~size_t(63u);
@@ -1783,7 +1793,9 @@ public:
                     || (post_tot <= (17ULL << 30) && post_free < (4096ULL << 20))
 #endif
                     ;
-                if (tight_vram) {
+                // STRATA_INK_KEEP_CHUNK=1: keep the configured chunk on a tight card (the caller measured the peak with it)
+                const bool keep_chunk = [] { const char* e = std::getenv("STRATA_INK_KEEP_CHUNK"); return e && e[0] == '1'; }();
+                if (tight_vram && !keep_chunk) {
                     const int tight_chunk = (post_free < (1536ULL << 20)) ? 256 : 512;
                     if (guard_.max_prefill_chunk > tight_chunk) {
                         guard_.max_prefill_chunk = tight_chunk;
