@@ -12,6 +12,9 @@
 //
 // Budget: min(32 GiB, 25% of the free space), never below the free-space floor; a write reserves its estimate first and
 // the reservation counts until the write ends (temporary files included).
+//
+// A layer split's conversation is one file per stage (`conv-N.session`, then `conv-N.s1.session` ...); its index file (persistent
+// folder) counts them.
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
@@ -230,9 +233,9 @@ public:
     bool persistent() const { return persistent_; }
     bool is_open() const { return !dir_.empty(); }
     const std::filesystem::path& dir() const { return dir_; }
-    /// the file of parked conversation `serial` (a session file; written to a temporary name first by session_file_write)
-    std::filesystem::path file_for(uint64_t serial) const {
-        return dir_ / ("conv-" + std::to_string(serial) + ".session");
+    /// the file of parked conversation `serial`, stage `part` (a session file; written to a temporary name first by session_file_write)
+    std::filesystem::path file_for(uint64_t serial, size_t part = 0) const {
+        return dir_ / ("conv-" + std::to_string(serial) + (part ? ".s" + std::to_string(part) : std::string()) + ".session");
     }
 
     /// Removes the folders under `root` that are named like a namespace, are real folders (not links) and whose lock can be
@@ -273,7 +276,8 @@ class ConversationSpill {
 public:
     struct Entry {
         uint64_t serial = 0;
-        std::filesystem::path file;
+        std::filesystem::path file;                      // the first stage's
+        size_t parts = 1;                                // files: one per layer-split stage
         uint64_t bytes = 0;
         bool cvec = false;
         uint64_t used = 0;                               // last use (written, matched-and-read): the least recently used goes first
@@ -318,7 +322,8 @@ public:
     /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
     /// lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
-        const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
+        const size_t parts = 1 + image.stage_images.size();
+        const uint64_t need = (uint64_t) image.bytes() + (uint64_t(parts) << 20);   // the payload and the files' own tables
         uint64_t serial = 0;
         std::filesystem::path f;
         {
@@ -335,23 +340,26 @@ public:
             serial = next_serial_++;
             f = ns_.file_for(serial);
         }
-        size_t written = 0;
-        const bool ok = session_file_write(f.string(), image, id, written, error);
-        if (!ok) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
-        }
         Entry e;
-        if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
+        e.serial = serial; e.file = f; e.parts = parts;
+        bool ok = true;
+        uint64_t written = 0;
+        for (size_t k = 0; ok && k < parts; ++k) {   // (session_file_write writes the image it is given, not its stage images)
+            size_t n = 0;
+            ok = session_file_write(ns_.file_for(serial, k).string(), k ? image.stage_images[k - 1] : image, id, n, error);
+            written += n;
+        }
+        if (!ok) {
+            remove_files(e);
+        } else {
+            e.bytes = written; e.cvec = image.cvec;
             e.live = stub(image.live);
             for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
         }
         std::lock_guard<std::mutex> lk(mu_);
         budget_.finish(need, ok ? written : 0);
         if (ok && ns_.persistent() && !meta_write(f, e, id)) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
+            remove_files(e);
             budget_.drop(written);
             error = "the entry's index file could not be written";
             return false;
@@ -386,32 +394,41 @@ public:
         return m;
     }
 
-    /// Reads entry `serial` back into `out` (bounded by `limits`, the identity checked) and removes the entry.  False: `out` is
-    /// unchanged and the entry is gone (or was not there).  The file is read outside the lock: the entry leaves the list first.
+    /// Reads entry `serial` back into `out` (the identity checked; the first stage's file bounded by `limits`, a later stage's by
+    /// its RAM preflight only - the caller validates every stage image against its runtime) and removes the entry.  False: `out` is
+    /// unchanged and the entry is gone (or was not there).  The files are read outside the lock: the entry leaves the list first.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
                      std::string& error) {
-        std::filesystem::path f;
+        Entry e;
         {
             std::lock_guard<std::mutex> lk(mu_);
             const size_t i = index_locked(serial);
             if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
-            f = entries_[i].file;
+            e.serial = serial; e.file = entries_[i].file; e.parts = entries_[i].parts;
             if (ns_.persistent()) {   // kept: a restart finds it again; the next spill that extends it replaces it
                 entries_[i].used = ++tick_;
                 std::error_code ec;
-                std::filesystem::last_write_time(meta_path(f), std::filesystem::file_time_type::clock::now(), ec);
+                std::filesystem::last_write_time(meta_path(e.file), std::filesystem::file_time_type::clock::now(), ec);
             } else {
                 budget_.drop(entries_[i].bytes);
                 entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
             }
         }
         const bool keep = persistent_now();
+        SessionReadLimits stage_limits;
+        stage_limits.admit = limits.admit;
         SavedConversation image;
-        size_t read = 0;
-        const bool ok = session_file_read(f.string(), id, image, read, error, limits);
+        bool ok = true;
+        for (size_t k = 0; k < e.parts; ++k) {
+            SavedConversation part;
+            size_t read = 0;
+            ok = session_file_read(ns_.file_for(serial, k).string(), id, part, read, error, k ? stage_limits : limits);
+            if (!ok) break;
+            if (k == 0) image = std::move(part);
+            else image.stage_images.push_back(std::move(part));
+        }
         if (!keep) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
+            remove_files(e);
         } else if (!ok) {
             drop_serial(serial);   // (a file that does not read back is not tried again)
         }
@@ -504,7 +521,8 @@ private:
         for (const auto& k : c.imgs) { put_pod(b, k.start); put_pod(b, k.hash); }
     }
     static bool meta_write(const std::filesystem::path& f, const Entry& e, const SessionFileIdentity& id) {
-        std::string b = "SPM1";
+        std::string b = e.parts > 1 ? "SPM2" : "SPM1";   // SPM2: a layer split's entry, its file count next
+        if (e.parts > 1) put_pod(b, (uint32_t) e.parts);
         put_pod(b, id.model); put_pod(b, id.config);
         put_pod(b, (uint8_t) e.cvec); put_pod(b, e.bytes);
         put_ckpt(b, e.live);
@@ -550,10 +568,15 @@ private:
         std::vector<fs::path> all;
         for (fs::directory_iterator it(ns_.dir(), ec), end; !ec && it != end; it.increment(ec)) all.push_back(it->path());
         auto serial_of = [](const fs::path& p, uint64_t& out) {
-            const std::string n = p.stem().string();   // conv-<serial>
+            const std::string n = p.stem().string();   // conv-<serial>, or conv-<serial>.s<stage> (a layer split's later stage)
             if (n.size() < 6 || n.compare(0, 5, "conv-") != 0) return false;
             out = 0;
-            for (size_t i = 5; i < n.size(); ++i) { if (n[i] < '0' || n[i] > '9') return false; out = out * 10 + (uint64_t)(n[i] - '0'); }
+            size_t i = 5;
+            for (; i < n.size() && n[i] != '.'; ++i) { if (n[i] < '0' || n[i] > '9') return false; out = out * 10 + (uint64_t)(n[i] - '0'); }
+            if (i == 5) return false;
+            if (i == n.size()) return true;
+            if (n.size() < i + 3 || n[i + 1] != 's') return false;
+            for (size_t j = i + 2; j < n.size(); ++j) if (n[j] < '0' || n[j] > '9') return false;
             return true;
         };
         std::vector<uint64_t> seen;
@@ -562,7 +585,8 @@ private:
             uint64_t serial = 0;
             std::error_code e2;
             const fs::path sess = fs::path(p).replace_extension(".session");
-            bool good = serial_of(p, serial) && fs::is_regular_file(sess, e2) && fs::is_regular_file(p, e2);
+            bool good = p.stem().string().find('.') == std::string::npos && serial_of(p, serial) && fs::is_regular_file(sess, e2) &&
+                        fs::is_regular_file(p, e2);
             Found f;
             if (good) {
                 std::string b;
@@ -573,14 +597,21 @@ private:
                     std::fclose(fp);
                 } else good = false;
                 Rd r{b};
-                good = good && b.compare(0, 4, "SPM1") == 0;
+                const bool split = b.compare(0, 4, "SPM2") == 0;
+                good = good && (split || b.compare(0, 4, "SPM1") == 0);
                 if (good) {
                     r.at = 4;
+                    f.e.parts = split ? r.pod<uint32_t>() : 1;
                     const uint64_t model = r.pod<uint64_t>(), config = r.pod<uint64_t>();
                     f.e.cvec = r.pod<uint8_t>() != 0;
                     f.e.bytes = r.pod<uint64_t>();
-                    good = !r.bad && model == id.model && config == id.config && fs::file_size(sess, e2) == f.e.bytes && !e2 &&
-                           get_ckpt(r, f.e.live, f.e.bytes);
+                    good = !r.bad && f.e.parts >= 1 && f.e.parts <= 64 && model == id.model && config == id.config;
+                    uint64_t on_disk = 0;   // every stage's file is there and together they are the size written
+                    for (size_t k = 0; good && k < f.e.parts; ++k) {
+                        on_disk += fs::file_size(ns_.file_for(serial, k), e2);
+                        good = !e2;
+                    }
+                    good = good && on_disk == f.e.bytes && get_ckpt(r, f.e.live, f.e.bytes);
                     const uint64_t nc = good ? r.pod<uint64_t>() : 0;
                     for (uint64_t i = 0; good && i < nc; ++i) { ConversationCheckpoint c; good = get_ckpt(r, c, f.e.bytes); if (good) f.e.checkpoints.push_back(std::move(c)); }
                     good = good && !r.bad;
@@ -588,7 +619,7 @@ private:
                 if (good) { f.e.serial = serial; f.e.file = sess; f.t = fs::last_write_time(p, e2); good = !e2; }
             }
             if (good) { seen.push_back(serial); found.push_back(std::move(f)); }
-            else { fs::remove(p, e2); fs::remove(sess, e2); }
+            else { fs::remove(p, e2); fs::remove(sess, e2); }   // (a later stage's file no index lists goes in the loop below)
         }
         for (const auto& p : all) {   // whatever is not an adopted entry's file (a .session without index, a leftover temporary)
             if (p.filename() == ".lock") continue;
@@ -607,10 +638,14 @@ private:
         while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (the cap is now smaller than what was kept)
         return entries_.size();
     }
-    void drop_locked(size_t i) {
+    /// an entry's index (first: a removed entry is never adopted again) and files
+    void remove_files(const Entry& e) const {
         std::error_code ec;
-        std::filesystem::remove(meta_path(entries_.at(i).file), ec);
-        std::filesystem::remove(entries_.at(i).file, ec);
+        std::filesystem::remove(meta_path(e.file), ec);
+        for (size_t k = 0; k < e.parts; ++k) std::filesystem::remove(ns_.file_for(e.serial, k), ec);
+    }
+    void drop_locked(size_t i) {
+        remove_files(entries_.at(i));
         budget_.drop(entries_[i].bytes);
         entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
     }
