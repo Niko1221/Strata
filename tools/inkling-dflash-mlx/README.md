@@ -49,3 +49,5 @@ In the Strata server run configuration, set `exe` to the absolute path of `strat
 Use greedy text requests. On streamed responses, read `timings.draft_n` and `timings.draft_n_accepted` from the final JSON event. On a prompt checkpoint hit, the external drafter rebuilds its prefix cache from retained target feature rows. If generation has evicted required rows, the target decodes normally until a complete draft window is available.
 
 For structured directory extraction, set `INK_DFLASH_GREEDY_HEAD=1` in the worker environment to propose the highest-scoring token at each draft position. The target verifies every proposal. Leaving the variable unset uses the checkpoint's candidate selector.
+
+For a breakdown of multi-second GPU submission stalls and request-level measurements, see [Profiling long decode stalls on Metal](request-latency.md).
