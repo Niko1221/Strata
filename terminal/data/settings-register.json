@@ -13012,6 +13012,34 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_GR_RDNA_Q8",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/rdna_gr.cu",
+     "line": 662,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "kernels/cuda",
+   "note": "default off in engine/src/kernels/cuda/rdna_gr.cu:662; opt-in RDNA3/3.5/4 Wave32 DPP GGML Q8_0 hyper-connection up projection (v_dot2_f32_f16 on FP16 lo, paired with gr_down_q8_fast_kernel; STRATA_GR_RDNA=0 overrides it)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_GR_SPLIT",
    "backends": [
     "hip"

@@ -33,8 +33,10 @@
 
 namespace strata::kernels {
 bool rdna_gr_enabled();
+bool rdna_gr_q8_enabled();
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb = nullptr, int si = 0);
+void rdna_gr_up_q8_multi(const FusedGrArgs* a, int n_tok, float* part, float* ssg, void* stream);
 void rdna_gr_init();
 }  // namespace strata::kernels
 
@@ -3987,6 +3989,17 @@ template <int T> void launch_q8_t(const GrMulti& m, float* part, float* ssg, cud
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
         gr_up_q8_bf16tc_kernel<T><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         return;
+    }
+    // RDNA3/3.5/4 opt-in fast GGML Q8_0 up path (STRATA_GR_RDNA_Q8=1): exact FP32-activation gr_down_q8_fast_kernel
+    // + Wave32 DPP rdna_gr_up (v_dot2_f32_f16 on FP16 SiLU(lo) + bit-exact int8->fp16 weights + FP32 block scale).
+    if constexpr (N == 2560 && HC == 4 && LR == 320 && Q8_CPS == 4) {
+        if (rdna_gr_q8_enabled() && (m.a[0].q8_mixed == nullptr || m.a[0].q8_cnt != nullptr)) {
+            if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
+            gr_down_q8_fast_kernel<T, 4, true><<<dim3(LR / (WARPS * 4) + 1, Q8_NKC), THREADS, 0, st>>>(m, part, ssg);
+            if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
+            rdna_gr_up_q8_multi(m.a, T, part, ssg, (void*) st);
+            return;
+        }
     }
     // On CUDA sm_80+, default to the exact-FP32-activation gr_down_q8_fast_kernel<T, 4, true> + gr_up_q8_fast_kernel
     // (transposed butterfly + prefetched Q8_0 weights; beats BF16 HC across T=1..8 with 0 KLD loss on force_check.py).
