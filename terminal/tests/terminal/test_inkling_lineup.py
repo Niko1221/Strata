@@ -232,7 +232,7 @@ class Order(unittest.TestCase):
         self.assertEqual(by["GSQ-RCO-IQ3_S"]["id"], "inkling-2-mini-gsq-rco-iq3_s")
         self.assertEqual(by["SQ-20"]["id"], "inkling-2-mini-sq-20", "the model id of SQ-20 does not change with the new file")
         self.assertEqual(by["UD-Q4_K_XL"]["format"], "gguf")
-        for b in OFFERED:                                                      # every download counts the 0.99 GB DFlash 2 file
+        for b in OFFERED:                                                      # every download counts the 0.55 GB DFlash 2 file
             self.assertGreater(by[b]["download_gb"], T.BUILDS[b]["file_gb"], b)
 
     def test_an_installed_legacy_quant_is_listed_after_them_as_no_longer_offered(self):

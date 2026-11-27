@@ -339,7 +339,7 @@ card's numbers are the authors' own and have not been re-measured by Strata. Lic
 Basic support: Strata offers this one quant, from the refreshed upload of 2026-11-23 (the file named in the pin of
 `strata_control/inkling_family.py`). The other nine Unsloth quants that Strata 0.2.22 offered (UD-Q8\_K\_XL, UD-Q4\_K\_M, UD-IQ4\_XS, UD-Q3\_K\_XL, UD-IQ3\_XXS,
 UD-Q2\_K\_XL, UD-IQ2\_XXS, UD-IQ1\_M, UD-IQ1\_S) are no longer offered for download. A file you already have keeps working: the model stays in the list, marked
-as installed and *no longer offered*, and Strata never deletes it. Download size for any build: the model file, the Vision shard (0.64 GB) and the DFlash 2 file (0.99 GB).
+as installed and *no longer offered*, and Strata never deletes it. Download size for any build: the model file, the Vision shard (0.64 GB) and the DFlash 2 file (0.55 GB).
 
 ```sh
 strata launch --family inkling-2-mini --model SQ-15
@@ -348,7 +348,7 @@ strata launch --family inkling-2-mini --model SQ-15
 Inkling-2-Mini has its own engine package (`strata-inkling`), which Strata downloads the first time you choose the model. If you unpack a package by hand instead (for example after downloading it with a download manager), the right folder is `components\shapes\inkling2\engine\<package>\` (Windows: `%LOCALAPPDATA%\Strata\components\...`; Linux and Mac: `~/.local/share/strata/components/shapes/inkling2/engine/<package>/`), with `engine-component.json` directly inside the package folder; not in the Qwen engine's `engine` folder and not one folder deeper. When the install fails, the message now says why and names a wrongly placed package.
 
 **The drafter: DFlash 2, on every device.** Every Inkling-2-Mini build drafts with DFlash 2 and nothing else; DSpark is not offered and nothing for it is downloaded.
-DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.99 GB, pinned by commit and checksum) that setup and `setup --update` download beside the model
+DFlash 2 is a block-diffusion drafter, one file (`dflash2.safetensors`, 0.55 GB, pinned by commit and checksum) that setup and `setup --update` download beside the model
 (for the packs and for the GGUFs; a folder you pointed Strata at is never written to: put the file beside your model). Without the file the model runs with no
 drafter. Whether drafting is on is still decided by a measurement on your computer: at the first start of a placement Strata runs a short speed test with and
 without it and keeps it on only where it is at least 10 percent faster on a mix of code and chat (`strata launch ... --drafting dflash2` always turns it on,

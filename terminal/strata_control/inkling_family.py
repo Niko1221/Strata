@@ -161,8 +161,8 @@ DFLASH2_Q_PIN = (551_600_700, "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff
 DFLASH2_REPO = "strata-engine/Inkling-2-Mini-DFlash2"
 DFLASH2_Q_FILE = "Inkling-2-Mini-DFlash2-mix.safetensors"
 DFLASH2_MIRROR_FILE = "model.safetensors"
-DFLASH2_OWN_COMMIT = ""     # fill after the upload: the HF commit that holds the files above
-DFLASH2_OWN_COPY = ""       # fill with the owner's choice: "mix" (option A) or "original" (option B); empty = no copy of ours is used
+DFLASH2_OWN_COMMIT = "04ecd36faef74e696f0a7b6b3c119264442a6234"   # the HF commit that holds the files above (uploaded 2026-11-27: Inkling-2-Mini-DFlash2-mix.safetensors, 551,600,700 bytes)
+DFLASH2_OWN_COPY = "mix"       # the owner picked option A (2026-11-27): the pre-quantized mix; "original" = option B, empty = no copy of ours is used
 
 
 def _own_url(file: str, kind: str) -> str:

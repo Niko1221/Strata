@@ -26,7 +26,7 @@ class Dflash2PinTest(unittest.TestCase):
             self.assertGreater(size, 100_000_000)
             self.assertRegex(sha, r"^[0-9a-f]{64}$")
         self.assertIn((989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"), pins)     # the original checkpoint is always accepted
-        self.assertEqual(F.size_of(F.DFLASH2_FILE), pins[0][0])                                                   # the size shown is the first source's
+        self.assertEqual(F.size_of(F.DFLASH2_FILE), F.DFLASH2_Q_PIN[0])                                          # the size shown is the first source's: our mix
 
     def test_the_prequantized_copy_is_accepted_and_is_fetched_first_once_it_is_hosted(self):
         self.assertIn(F.DFLASH2_Q_PIN, F.pins_for(F.DFLASH2_FILE))
@@ -37,13 +37,22 @@ class Dflash2PinTest(unittest.TestCase):
             src = F.sources_for(F.DFLASH2_FILE, env={})
             self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0])[0], "https://example.org/q/dflash2.safetensors")
             self.assertTrue(F.urls_for(F.DFLASH2_FILE, src[-1])[0].startswith("https://huggingface.co/incoai/"))       # the original is the last resort
-        self.assertEqual(F.size_of(F.DFLASH2_FILE), F.pins_for(F.DFLASH2_FILE)[0][0])           # not hosted yet: the original is what is fetched
+        with mock.patch.object(F, "DFLASH2_Q_URL", ""):
+            self.assertEqual(F.size_of(F.DFLASH2_FILE), F.pins_for(F.DFLASH2_FILE)[0][0])       # not hosted: the original is what is fetched
 
-    def test_our_own_copies_are_planned_but_not_used_until_the_commit_is_filled_in(self):
-        self.assertEqual((F.DFLASH2_OWN_COMMIT, F.DFLASH2_OWN_COPY, F.DFLASH2_Q_URL, F.DFLASH2_MIRROR_URL), ("", "", "", ""))      # the placeholders the coordinator fills
-        self.assertEqual(len(F.sources_for(F.DFLASH2_FILE, env={})), 1)                                                         # only the third party's repository until then
+    def test_our_own_copy_is_pinned_to_the_uploaded_commit(self):
+        self.assertEqual((F.DFLASH2_OWN_COMMIT, F.DFLASH2_OWN_COPY), ("04ecd36faef74e696f0a7b6b3c119264442a6234", "mix"))       # uploaded 2026-11-27 (option A)
+        self.assertEqual(F.DFLASH2_Q_URL, "https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/04ecd36faef74e696f0a7b6b3c119264442a6234/Inkling-2-Mini-DFlash2-mix.safetensors")
+        self.assertEqual(F.DFLASH2_MIRROR_URL, "")
+        self.assertEqual(F.DFLASH2_Q_PIN, (551_600_700, "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387"))
+        src = F.sources_for(F.DFLASH2_FILE, env={})
+        self.assertEqual(len(src), 2)                                                                                           # ours, then the third party's repository
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0])[0], F.DFLASH2_Q_URL)
+
+    def test_our_own_copies_follow_the_choice_and_the_commit(self):
         with mock.patch.object(F, "DFLASH2_OWN_COMMIT", "c0ffee"):
-            self.assertEqual(F._own_url(F.DFLASH2_Q_FILE, "mix"), "")                                                          # no choice made: nothing
+            with mock.patch.object(F, "DFLASH2_OWN_COPY", ""):
+                self.assertEqual(F._own_url(F.DFLASH2_Q_FILE, "mix"), "")                                                      # no choice made: nothing
             with mock.patch.object(F, "DFLASH2_OWN_COPY", "mix"):
                 self.assertEqual(F._own_url(F.DFLASH2_Q_FILE, "mix"),
                                  "https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/c0ffee/Inkling-2-Mini-DFlash2-mix.safetensors")
@@ -51,7 +60,7 @@ class Dflash2PinTest(unittest.TestCase):
             with mock.patch.object(F, "DFLASH2_OWN_COPY", "original"):
                 self.assertEqual(F._own_url(F.DFLASH2_MIRROR_FILE, "original"),
                                  "https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/c0ffee/model.safetensors")
-        with mock.patch.object(F, "DFLASH2_MIRROR_URL", "https://example.org/m/model.safetensors"):
+        with mock.patch.object(F, "DFLASH2_MIRROR_URL", "https://example.org/m/model.safetensors"), mock.patch.object(F, "DFLASH2_Q_URL", ""):
             src = F.sources_for(F.DFLASH2_FILE, env={})
             self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0])[0], "https://example.org/m/model.safetensors")                  # ours before the third party's
             self.assertEqual(F.size_of(F.DFLASH2_FILE), F.pins_for(F.DFLASH2_FILE)[0][0])                                       # a mirror of the original: its size

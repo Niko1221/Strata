@@ -150,7 +150,7 @@ def _signals(a, want: dict) -> dict:
 
 
 HY4_DRAFTING_LINE = "Tencent Hy4-Flash has its DFly2 drafter built into the model file; no separate drafter download is needed."
-INKLING_DRAFTING_LINE = ("Inkling-2-Mini's drafter is DFlash 2: dflash2.safetensors (0.99 GB) beside the model file. Setup and update download it; without it the model runs "
+INKLING_DRAFTING_LINE = ("Inkling-2-Mini's drafter is DFlash 2: dflash2.safetensors (0.55 GB) beside the model file. Setup and update download it; without it the model runs "
                              "with no drafter. This command downloads nothing for Inkling-2-Mini.")
 
 

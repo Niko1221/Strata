@@ -6,7 +6,7 @@ Thinking Machines Inkling-2-Mini (26.4B-A3.4B / 5.4B looped-active, 24 physical 
   - SQ-10 (10.47 GB / 9.75 GiB): compact 12 GiB 100%-VRAM / 8 GiB GPU / 16 GiB Mac / 780M (gfx1103) & Strix Point (gfx1150) iGPU build
   - GSQ-RCO-IQ3_S (11.43 GB): the GSQ-RCO GGUF of ISTA-DASLab, 3.50 bits per weight
   - UD-Q4_K_XL (17.63 GB): Unsloth's Dynamic GGUF (basic support)
-every build with the DFlash 2 drafter (dflash2.safetensors beside the model, 0.99 GB), plus an on-demand lossless BF16 Vision shard (`Inkling-2-Mini-Vision-v2.strata`, 0.64 GB / 0.59 GiB, loaded
+every build with the DFlash 2 drafter (dflash2.safetensors beside the model, 0.55 GB), plus an on-demand lossless BF16 Vision shard (`Inkling-2-Mini-Vision-v2.strata`, 0.64 GB / 0.59 GiB, loaded
 when images are enabled/attached). The other nine Unsloth quants of 0.2.22 stay in BUILDS (an install that has one keeps working) but are not offered (LEGACY_ORDER).
 
 Hardware auto-selection (docs/10-GUI-TUI.md + Track 1E):
@@ -43,7 +43,7 @@ UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
 SSD_NEAR_RESIDENT_GB = 2.0
 VISION_GB = 0.637                # Inkling-2-Mini-Vision-v2.strata (636,551,168 B; 0.2.22's file is 636,526,592 B; CPU / on-demand on <=12 GiB GPUs)
 DSPARK_GGUF_GB = 0.636           # PLANNER memory term of a GGUF build's drafter weights, unchanged from 0.2.22 (no DSpark file is downloaded any more); the DFlash 2 reserve (about 0.44 GiB measured on an RTX 5060 Ti) is the DFLASH2 lane's to re-measure
-DFLASH2_GB = 0.990              # the DFlash 2 sidecar every build downloads beside the model: dflash2.safetensors (989,975,616 B, BF16)
+DFLASH2_GB = 0.552              # the DFlash 2 sidecar every build downloads beside the model: dflash2.safetensors (551,600,700 B: Strata's Q8 + SF4 mix; the original is 989,975,616 B)
 DEFAULT_CONTEXT = 32768          # docs/10-GUI-TUI.md default: 32K (up to 1M available)
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
 MAX_CONTEXT = 1048576

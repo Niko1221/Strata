@@ -100,7 +100,9 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(F.DRAFTER_FILES[F.DFLASH2_FILE], (989_975_616, "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee"))
         self.assertEqual(F.pins_for(F.DFLASH2_FILE), [F.DRAFTER_FILES[F.DFLASH2_FILE], F.DFLASH2_Q_PIN])     # the original, then Strata's pre-quantized copy
         src = F.sources_for(F.DFLASH2_FILE, env={})
-        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0]),
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[0]),      # ours first (the mix, pinned by commit), the original repository last
+                         ["https://huggingface.co/strata-engine/Inkling-2-Mini-DFlash2/resolve/04ecd36faef74e696f0a7b6b3c119264442a6234/Inkling-2-Mini-DFlash2-mix.safetensors"])
+        self.assertEqual(F.urls_for(F.DFLASH2_FILE, src[-1]),
                          ["https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/4f9088ea66c21f2b99ed657d1941c306b03e84d2/model.safetensors"])
         env = {F.DFLASH2_SOURCE_ENV: "https://example.org/d"}
         self.assertEqual(F.sources_for(F.DFLASH2_FILE, env=env)[0]["base"], "https://example.org/d")
