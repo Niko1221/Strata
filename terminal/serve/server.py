@@ -456,6 +456,7 @@ try:
 except ValueError:
     ADMIT_SHORT_FIRST = 0
 ADMIT_MAX_WAIT_S = _timeout_env("STRATA_ADMIT_MAX_WAIT_S", 30.0) or 0.0
+REQUEST_PRIORITY = os.environ.get("STRATA_REQUEST_PRIORITY") == "1"
 
 
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
@@ -1892,14 +1893,27 @@ class StrataEngine:
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
         `after_epoch`: a request whose read gave way lets the requests waiting then go first.
         `new`: the request's first admission (STRATA_ADMIT_SHORT_FIRST orders only these)."""
-        entry = [plen, time.monotonic(), new, prompt, cancel]           # (length, arrival, ordered: STRATA_ADMIT_SHORT_FIRST; the prompt and request, for STRATA_COALESCE_PREFILL)
+        entry = [plen, time.monotonic(), new, prompt, cancel, after_epoch]           # (length, arrival, ordered: STRATA_ADMIT_SHORT_FIRST; the prompt and request, for STRATA_COALESCE_PREFILL)
         with self.slot_cv:
             self.waiting += 1
             self.wait_lens.append(entry)
             self.arrivals.append(entry[1])
+            if REQUEST_PRIORITY:
+                self.slot_cv.notify_all()
+
+        def has_turn():
+            if REQUEST_PRIORITY:
+                if new and all(self.slot_busy):
+                    self._reap_orphan_slots()
+                return self._priority_next() is entry
+            turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+            return turn and (not new or ADMIT_SHORT_FIRST <= 0 or self._admit_next() is entry)
+
         beat = time.monotonic()
         try:
             while True:
+                if REQUEST_PRIORITY and cancel.is_set():
+                    return False
                 deadline = getattr(cancel, "_strata_queue_deadline", None)
                 if deadline is not None and time.monotonic() >= deadline:
                     raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
@@ -1909,14 +1923,12 @@ class StrataEngine:
                     # restart is under way it keeps waiting and goes on with the new engine.
                     raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
-                    turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
-                    if turn and new and ADMIT_SHORT_FIRST > 0:
-                        turn = self._admit_next() is entry
+                    turn = has_turn()
                 left = deadline - time.monotonic() if deadline is not None else 0.5
                 if turn and left > 0 and self.ctl.acquire(timeout=min(0.5, left)):
-                    if new and ADMIT_SHORT_FIRST > 0:
-                        with self.slot_cv:              # a shorter one came while this one waited in acquire()
-                            first = self._admit_next() is entry
+                    if REQUEST_PRIORITY or (new and ADMIT_SHORT_FIRST > 0):
+                        with self.slot_cv:              # a request may have arrived while we waited in acquire()
+                            first = has_turn()
                         if not first:
                             self.ctl.release()
                             with self.slot_cv:
@@ -1934,10 +1946,7 @@ class StrataEngine:
                         # #4738 (PR #4738's approach): the turn was read, and the lock given up, before this wait: a
                         # notification sent in between is gone.  Read it again under the lock and only wait when this
                         # request still has to.
-                        eligible = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
-                        if eligible and new and ADMIT_SHORT_FIRST > 0:
-                            eligible = self._admit_next() is entry
-                        if not eligible or not self.alive():
+                        if not has_turn() or not self.alive():
                             self.slot_cv.wait(timeout=min(0.5, max(0, left)))
                 if cancel.is_set():
                     return False
@@ -1950,7 +1959,7 @@ class StrataEngine:
                 self.waiting = max(0, self.waiting - 1)
                 if entry in self.wait_lens:
                     self.wait_lens.remove(entry)
-                if (previous_waiting > 1 and self.waiting <= 1) or (new and ADMIT_SHORT_FIRST > 0):
+                if REQUEST_PRIORITY or (previous_waiting > 1 and self.waiting <= 1) or (new and ADMIT_SHORT_FIRST > 0):
                     # a waiter that leaves (cancelled, closed) can make another one the next in turn: tell it
                     self.slot_cv.notify_all()
         with self.slot_cv:
@@ -2024,6 +2033,29 @@ class StrataEngine:
             return None
         return min(ordered, key=lambda e: (0 if e[0] <= ADMIT_SHORT_FIRST or now - e[1] >= ADMIT_MAX_WAIT_S else 1,
                                            e[1]))
+
+    @staticmethod
+    def _priority_waiting(cancel, now):
+        deadline = getattr(cancel, "_strata_queue_deadline", None)
+        return not cancel.is_set() and (deadline is None or now < deadline)
+
+    def _priority_next(self):
+        """Choose the next waiter that can use the control lines (under slot_cv)."""
+        has_slot = not all(self.slot_busy)
+        now = time.monotonic()
+        ready, suspended = [], []
+        for entry in self.wait_lens:
+            plen, arrival, new, _, cancel, epoch = entry
+            if not self._priority_waiting(cancel, now):
+                continue
+            if new and not has_slot:
+                continue
+            short = not new or not ADMIT_SHORT_FIRST or plen <= ADMIT_SHORT_FIRST or now - arrival >= ADMIT_MAX_WAIT_S
+            order = (getattr(cancel, "_strata_priority", 0), not short, arrival)
+            # A suspended prefill gives another waiter a turn, unless nobody else can proceed.
+            queue = suspended if epoch is not None and self.ctl_epoch <= epoch else ready
+            queue.append((order, entry))
+        return min(ready or suspended, key=lambda item: item[0], default=(None, None))[1]
 
     SOLO_AGAIN_MAX = 2      # how often a request left alone in a slot goes back to the solo path
     SOLO_AGAIN_MIN_LEFT = 32  # ... only with at least this many tokens still allowed (max_tokens)
@@ -2126,6 +2158,21 @@ class StrataEngine:
         with self.slot_cv:
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
+    def _should_yield(self, plen: int, cancel, *, solo: bool = False) -> bool:
+        if not REQUEST_PRIORITY:
+            return self._shorter_waiting(plen)
+        current = getattr(cancel, "_strata_priority", 0)
+        with self.slot_cv:
+            if self.slot_busy.count(False) < (2 if solo else 1):
+                return False
+            now = time.monotonic()
+            return any(
+                self._priority_waiting(waiting, now) and (
+                    getattr(waiting, "_strata_priority", 0) < current or
+                    (getattr(waiting, "_strata_priority", 0) == current and length * 2 <= plen))
+                for length, _, _, _, waiting, _ in self.wait_lens
+            )
+
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
         - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
@@ -2171,7 +2218,7 @@ class StrataEngine:
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
         yielded_legs = []    # prompt reads that gave way before producing output
         ok = yield from self._take_control(cancel, len(prompt), new=True,
-                                           prompt=prompt if (COALESCE_PREFILL > 1 and not embeddings) else None)
+                                           prompt=prompt if (COALESCE_PREFILL > 1 and not REQUEST_PRIORITY and not embeddings) else None)
         if not ok:
             self._release_preslot(cancel)
             return
@@ -2192,7 +2239,7 @@ class StrataEngine:
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
-                    ok = yield from self._take_control(cancel, len(prompt))
+                    ok = yield from self._take_control(cancel, len(prompt), new=REQUEST_PRIORITY)
                     if not ok:
                         return
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -2237,7 +2284,7 @@ class StrataEngine:
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                                self._should_yield(len(prompt), cancel, solo=True)):
                             with self.slot_cv:          # the slot the part read will wait in
                                 reserved = self.pick_slot(prompt)
                                 if reserved is not None:
@@ -2329,7 +2376,7 @@ class StrataEngine:
                             if cancel.is_set():
                                 return
                             if not holding:
-                                ok = yield from self._take_control(cancel, len(prompt))
+                                ok = yield from self._take_control(cancel, len(prompt), new=REQUEST_PRIORITY)
                                 if not ok:
                                     return
                                 holding, born = True, self.gen
@@ -2338,10 +2385,10 @@ class StrataEngine:
                         self.slot_held[slot] = list(prompt[:self._yielded[1]])
                         self._yielded = None
                         yields += 1
-                        self.ctl.release()
-                        holding = False
                         with self.slot_cv:
                             epoch = self.ctl_epoch
+                            self.ctl.release()
+                        holding = False
                         ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
                         if not ok:
                             return
@@ -2363,7 +2410,7 @@ class StrataEngine:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
-                    if COALESCE_PREFILL > 1 and not embeddings:
+                    if COALESCE_PREFILL > 1 and not REQUEST_PRIORITY and not embeddings:
                         self._coalesce(cancel, prompt)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
@@ -2384,7 +2431,7 @@ class StrataEngine:
                     def ask():        # as give_way above, for the slot this admission reads into
                         nonlocal asked
                         if (not asked and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                                self._should_yield(len(prompt), cancel)):
                             self._send_for(born, f"BYIELD {slot}")
                             asked = True
 
@@ -8087,6 +8134,16 @@ def make_handler(svc: Service):
                                                                  code="model_not_found")
                                        if path == "/v1/responses" else {"error": model_err})
                             return
+                    self.priority = 0
+                    if REQUEST_PRIORITY:
+                        values = self.headers.get_all("X-Strata-Priority", [])
+                        if values:
+                            value = values[0].strip()
+                            if len(values) != 1 or not re.fullmatch(r"-?[0-9]{1,10}", value):
+                                raise ValueError("X-Strata-Priority must be one signed 32-bit integer")
+                            self.priority = int(value)
+                            if not -(2**31) <= self.priority < 2**31:
+                                raise ValueError("X-Strata-Priority must be one signed 32-bit integer")
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -8182,6 +8239,12 @@ def make_handler(svc: Service):
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
                     svc.request_trace.record = None
+
+        def _inference_cancel(self):
+            cancel = threading.Event()
+            if REQUEST_PRIORITY:
+                cancel._strata_priority = self.priority
+            return cancel
 
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
@@ -8472,7 +8535,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
-            cancel = threading.Event()
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
@@ -8566,7 +8629,7 @@ def make_handler(svc: Service):
                 return self._json(e.status, e.body())
             if title is not None:
                 return self._responses_ready(req, title)
-            cancel = threading.Event()
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, tools, max_new, asm, validator, req, force = self._responses_prepare(req, cancel)
@@ -8774,7 +8837,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
-            cancel = threading.Event()
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
