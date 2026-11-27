@@ -182,6 +182,8 @@ inline StrixHaloCfg query_strixhalo_cfg(int dev, bool ep2_active = false, int pe
         cfg.default_set = true;
         cfg.wddm_flush_stride = -1;   // leave the shipped flush stride alone
         cfg.swa_fused = !cfg.exact_mode && detail::env_truthy("STRATA_INK_STRIXHALO_SWA_FUSED", true);
+        // chunk 8192 (lossless: KLD 0.000000 at width 2048, 0.0009 / 0.0006 at width 16 for prose / code, floor 0.004): the fused kernel needs the long chunks (prefill 4K: 1071 ppts with the shipped chunk, 1524 with 8192)
+        if (cfg.swa_fused) cfg.prefill_chunk = detail::env_int("STRATA_INK_STRIXHALO_CHUNK", 8192, 0, 16384);
         return cfg;
     }
 
