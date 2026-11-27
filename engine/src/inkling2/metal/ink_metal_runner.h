@@ -3416,12 +3416,20 @@ struct InkMetalRunner {
         const bool is_bf16_trunk = (mod->man.get("model.llm.layers.0.attn.wq_du.weight").fmt == FMT_BF16);
         const bool is_sq10 = (mod->man.build.find("10") != std::string::npos);
         // Hardware-calibrated verify latency T_ver(M) in ms (Apple M5 Max measured on real prompts!)
+        // Calibrated on THIS machine (M6 24GB, SQ-10 fp8, locked residency, 2026-11-27 passlog):
+        // linear verify cost(M) ~= 25 + 10.5*(M-1) ms; tree verify at M=8 ~76-87ms.
+        // The previous constants were for an M5 Max and underestimated cost by ~2x,
+        // causing systematically oversized trees. INK_TVER_BASE/INK_TVER_MARG/INK_TDRAFT override.
+        static const double tv_base = [] { const char* e = std::getenv("INK_TVER_BASE"); return e ? atof(e) : 25.0; }();
+        static const double tv_marg = [] { const char* e = std::getenv("INK_TVER_MARG"); return e ? atof(e) : 10.5; }();
+        static const double tdraft  = [] { const char* e = std::getenv("INK_TDRAFT");  return e ? atof(e) : 9.0; }();
         auto t_ver_ms = [&](int M) -> double {
             if (is_apple10) {
-                const double t1 = is_bf16_trunk ? 17.0 : (is_sq10 ? 13.0 : 14.4);
+                if (is_sq10) return tv_base + tv_marg * (M - 1);
+                const double t1 = is_bf16_trunk ? 17.0 : 14.4;
                 const double uexp = 128.0 * (1.0 - std::pow(15.0 / 16.0, (double)M));
-                const double base = is_bf16_trunk ? 12.6 : (is_sq10 ? 8.8 : 10.6);
-                const double moe_per_e = is_bf16_trunk ? 0.38 : (is_sq10 ? 0.44 : 0.43);
+                const double base = is_bf16_trunk ? 12.6 : 10.6;
+                const double moe_per_e = is_bf16_trunk ? 0.38 : 0.43;
                 const double trunk_extra = (M >= 5) ? (is_bf16_trunk ? 2.0 : 4.2)
                                          : (M >= 4 && is_bf16_trunk) ? 2.0
                                          : ((M - 1) * (is_bf16_trunk ? 0.75 : 1.35));
@@ -3432,7 +3440,7 @@ struct InkMetalRunner {
                 return 34.0 + 1.85 * uexp;
             }
         };
-        const double t_draft = is_apple10 ? (is_bf16_trunk ? 4.5 : 4.0) : 14.0;
+        const double t_draft = is_apple10 ? (is_sq10 ? tdraft : (is_bf16_trunk ? 4.5 : 4.0)) : 14.0;
         const double plain_tps = 1.0 / t_ver_ms(1);
 
         if (dynamic_bayes && (int)cand_tok.size() >= 2) {
