@@ -51,6 +51,38 @@ _CANON_CALL = re.compile(r'\s*\{\s*"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"args"
 _CANON_GIVE_UP = 512                 # a body this long that still is not that form is held whole (the older path)
 
 
+_AFTER_COMMA = '"{[-0123456789'
+
+
+def _quote_ends_string(text: str, i: int):
+    """Does the `"` before text[i] end its JSON string?  frontend.requote_json's rule, for text that is still arriving:
+    True where JSON can go on after a string (`:`, `}`, `]`, or a `,` the next member or element follows), False where
+    it cannot (the quote is text the model left unescaped), None while what has arrived does not say yet."""
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i == n:
+        return None
+    if text[i] in ":}]":
+        return True
+    if text[i] != ",":
+        return False
+    i += 1
+    while i < n and text[i].isspace():
+        i += 1
+    if i == n:
+        return None
+    if text[i] in _AFTER_COMMA:
+        return True
+    for word in ("true", "false", "null"):
+        if text.startswith(word, i):
+            j = i + len(word)
+            return None if j == n else not (text[j].isalnum() or text[j] == "_")
+        if word.startswith(text[i:]):
+            return None
+    return False
+
+
 def _safe_json_call(name: str, arguments) -> str:
     """Serialize a tool call as `<tool_call>\\n{...}\\n</tool_call>` with `</` escaped as `<\\/` so literal `</tool_call>` in args never breaks framing."""
     payload = json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False).replace("</", "<\\/")
@@ -175,17 +207,25 @@ class InklingDialect:
             self._s_mode, self._s_pos = "on", m.end()
             out.append(("tool_start", name))
         acc, i, n = self.tool_acc, self._s_pos, len(self.tool_acc)
-        start = i
+        start, pieces = i, []
         while i < n:
             ch = acc[i]
-            i += 1
             if self._s_str:
                 if self._s_esc:
                     self._s_esc = False
                 elif ch == "\\":
                     self._s_esc = True
                 elif ch == '"':
-                    self._s_str = False
+                    # a `"` the model left unescaped inside a string is sent escaped, as the whole call is read
+                    # (frontend.requote_json); what follows the quote decides, so it waits until that has arrived
+                    ends = _quote_ends_string(acc, i + 1)
+                    if ends is None:
+                        break
+                    if ends:
+                        self._s_str = False
+                    else:
+                        pieces.append(acc[start:i] + "\\")
+                        start = i
             elif ch == '"':
                 self._s_str = True
             elif ch == "{":
@@ -194,9 +234,13 @@ class InklingDialect:
                 self._s_depth -= 1
                 if self._s_depth == 0:
                     self._s_done = True
+                    i += 1
                     break
-        if i > start:
-            out.append(("tool_args", acc[start:i]))
+            i += 1
+        pieces.append(acc[start:i])
+        piece = "".join(pieces)
+        if piece:
+            out.append(("tool_args", piece))
         self._s_pos = i
 
     def _tags_for(self):

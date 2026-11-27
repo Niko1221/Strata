@@ -55,6 +55,35 @@ class TestInklingDialect(unittest.TestCase):
                 self.assertEqual([(c.name, c.arguments) for c in calls], [("send_message", {"message": msg})], raw[:60])
                 self.assertEqual("".join(ev.text or "" for ev in events if ev.kind == "content").strip(), "")
 
+    def test_unescaped_quotes_in_a_streamed_call_are_sent_escaped(self):
+        tools = [{"name": "send_message", "parameters": {"type": "object"}}]
+        for msg in ('My tools fail with repeated "aborted" errors, so I can\'t read "a.txt", or b. Paste them?',
+                    'one stray " quote',                         # an odd number: the scanner must not lose the string
+                    'it said "no", then "yes" , truly or "x",nullable',
+                    'a \\ backslash, a {brace} and "q"'):
+            args = {"message": msg, "urgent": True, "tags": ["a", "b"], "n": None}
+            good = json.dumps(args, separators=(",", ":"))
+            bad = good.replace(json.dumps(msg), '"' + msg.replace("\\", "\\\\") + '"')
+            self.assertRaises(ValueError, json.loads, bad)       # what the model wrote is not JSON
+            raw = ('<|message_model|>send_message<|content_invoke_tool_json|>{"name":"send_message","args":' + bad
+                   + "}<|end_message|><|content_model_end_sampling|>")
+            for step in (1, 5, len(raw)):
+                p = frontend.InklingOutputParser(tools=tools, stream_tools=True)
+                events = [ev for i in range(0, len(raw), step) for ev in p.feed(raw[i:i + step])] + p.finish("stop")
+                starts = [ev.call for ev in events if ev.kind == "tool_start"]
+                finals = [ev.call for ev in events if ev.kind == "tool_call"]
+                self.assertEqual([c.name for c in starts], ["send_message"], msg)   # the call was streamed, not held
+                pieces = "".join(ev.text for ev in events if ev.kind == "tool_args")
+                self.assertEqual(pieces, frontend.requote_json(bad), msg)           # the same repair as the whole call gets
+                self.assertEqual(json.loads(pieces), args, msg)
+                self.assertEqual([(c.id, c.arguments) for c in finals], [(starts[0].id, args)], msg)
+                self.assertEqual("".join(ev.text or "" for ev in events if ev.kind == "content").strip(), "")
+        # the output ends at a quote that nothing follows: it is not known to end the string, and the call is not completed
+        p = frontend.InklingOutputParser(tools=tools, stream_tools=True)
+        events = p.feed('<|message_model|>send_message<|content_invoke_tool_json|>{"name":"send_message","args":{"message":"a"') + p.finish("length")
+        self.assertEqual([ev.kind for ev in events if ev.kind.startswith("tool")], ["tool_start", "tool_args"])
+        self.assertEqual("".join(ev.text for ev in events if ev.kind == "tool_args"), '{"message":"a')
+
     def test_requote_json_leaves_what_it_cannot_read(self):
         self.assertEqual(json.loads(frontend.requote_json('{"a": "x "y" z", "b": [1, "p"]}')), {"a": 'x "y" z', "b": [1, "p"]})
         self.assertEqual(json.loads(frontend.requote_json('{"a": "say \\"hi\\" and "bye""}')), {"a": 'say "hi" and "bye"'})
