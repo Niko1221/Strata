@@ -59,6 +59,16 @@ public:
     }
     /// Whether the primary (device 0) and the peer can read each other's memory directly (NVLink / PCIe P2P).
     bool p2p() const { return p2p_; }
+    void set_in_graph(bool on) { in_graph_ = on; }
+    bool in_graph() const { return in_graph_; }
+    void sync_d_res();
+    void set_res_mirror0(int32_t* ptr, int dev) { d_res_mirror0_ = ptr; mirror0_dev_ = dev; sync_d_res(); }
+    const int32_t* d_res() const { return d_res_; }
+    const uint8_t* cache_base() const { return cache_.valid() ? cache_.device_slot(0) : nullptr; }
+    const unsigned long long* slot_off_d() const { return slot_off_d_; }
+    int64_t n_slots() const { return cache_.slots(); }
+    const float* d_sx() const { return d_sx_; }
+    const float* d_sh() const { return d_sh_; }
 
     /// Starts the peer's share of one layer: the entries i with kind[i] == 2 (x: n_tok rows of n_embd floats).
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
@@ -81,6 +91,7 @@ public:
     /// functions are used.
     volatile int32_t* set_overlap_gate(std::atomic<int32_t>* landed, std::vector<uint8_t>* has, int32_t* last,
                                        bool copy_signal);
+    int32_t* overlap_gate_dev() const { return d_gate_; }
     /// The pending swaps enter the residency table now, their copies still landing (the gate protects every read);
     /// apply_pending(true) after the window still waits for them and clears the list.
     void flip_pending();
@@ -125,6 +136,12 @@ private:
     void* d_scratch_ = nullptr;
     const float* d_sx_ = nullptr;                     // APR: device sign vectors (x: H, h: FF); nullptr = identity
     const float* d_sh_ = nullptr;
+    bool in_graph_ = false;
+    int32_t* d_res_ = nullptr;
+    int32_t* d_res_mirror0_ = nullptr;
+    int mirror0_dev_ = -1;
+    int32_t* d_gate_ = nullptr;
+    unsigned long long* slot_off_d_ = nullptr;
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;

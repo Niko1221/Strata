@@ -172,12 +172,17 @@ void PeerExperts::close() {
         if (h_x_) cudaFreeHost(h_x_);
         if (h_out_) cudaFreeHost(h_out_);
         if (h_meta_) cudaFreeHost(h_meta_);
+        if (d_res_) cudaFree(d_res_);
+        if (slot_off_d_) cudaFree(slot_off_d_);
         if (d_gate_vals_) cudaFree(d_gate_vals_);
         if (h_gate_) cudaFreeHost((void*) h_gate_);
         if (refill_ev_) cudaEventDestroy(refill_ev_);
         if (stream_) cudaStreamDestroy(stream_);
         if (refill_) cudaStreamDestroy(refill_);
     }
+    d_res_ = nullptr;
+    slot_off_d_ = nullptr;
+    in_graph_ = false;
     d_x_ = d_out_ = h_x_ = h_out_ = nullptr;
     d_meta_ = h_meta_ = d_scratch_ = nullptr;
     d_q8_ = nullptr;
@@ -307,6 +312,19 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         err = "peer experts: " + err;
         close();
         return false;
+    }
+    if (!ck(cudaMalloc((void**) &d_res_, res_.size() * sizeof(int32_t)), "d_res alloc", err) ||
+        !ck(cudaMemcpy(d_res_, res_.data(), res_.size() * sizeof(int32_t), cudaMemcpyHostToDevice), "d_res init", err)) {
+        close();
+        return false;
+    }
+    static_assert(sizeof(unsigned long long) == sizeof(uint64_t), "u64 size mismatch");
+    if (cache_.slot_offsets() != nullptr && cache_.slots() > 0) {
+        if (!ck(cudaMalloc((void**) &slot_off_d_, (size_t) cache_.slots() * sizeof(unsigned long long)), "slot_off_d alloc", err) ||
+            !ck(cudaMemcpy(slot_off_d_, cache_.slot_offsets(), (size_t) cache_.slots() * sizeof(unsigned long long), cudaMemcpyHostToDevice), "slot_off_d init", err)) {
+            close();
+            return false;
+        }
     }
     resident_ = (int64_t) pick.size();
     return true;
@@ -439,31 +457,34 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
             swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
         }
     }
-    if (swaps.empty()) return true;
+    const bool gated = gate_landed_ != nullptr;
+    if (swaps.empty()) {
+        if (gated && h_gate_ != nullptr) *h_gate_ = (int32_t) n_layers_;
+        return true;
+    }
     std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
     if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
-    const bool gated = gate_landed_ != nullptr;
     if (gated) {   // the copies go in layer order and each layer's landing raises the gate's counter
         std::stable_sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.layer < b.layer; });
         gate_landed_->store(-1, std::memory_order_release);
-        if (h_gate_ != nullptr) *h_gate_ = -1;
         gate_has_->assign((size_t) n_layers_, 0);
         *gate_last_ = -1;
     }
     On on(device_);
     int32_t issued_layer = -1;   // the layer whose copies are on the stream and not yet ticked
-    auto tick = [&](int32_t layer) -> bool {
+    auto tick = [&](int32_t done_layer, int32_t next_ready) -> bool {
         if ((h_gate_ != nullptr
-                 ? cudaMemcpyAsync((void*) h_gate_, d_gate_vals_ + layer, 4, cudaMemcpyDeviceToHost, refill_)
+                 ? cudaMemcpyAsync((void*) h_gate_, d_gate_vals_ + next_ready, 4, cudaMemcpyDeviceToHost, refill_)
                  : cudaLaunchHostFunc(refill_, [](void* p) {
                 auto* t = (Tick*) p;
                 int32_t cur = t->counter->load(std::memory_order_relaxed);
                 while (cur < t->layer && !t->counter->compare_exchange_weak(cur, t->layer, std::memory_order_release)) {}
-            }, &ticks_[(size_t) layer])) == cudaSuccess)
+            }, &ticks_[(size_t) done_layer])) == cudaSuccess)
             return true;
         (void) cudaGetLastError();
         cudaStreamSynchronize(refill_);   // no callback: wait here, the gate opens at once
         gate_landed_->store((int32_t) n_layers_, std::memory_order_release);
+        if (h_gate_ != nullptr) *h_gate_ = (int32_t) n_layers_;
         return false;
     };
     for (const Swap& s : swaps) {
@@ -471,7 +492,10 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
         const int32_t slot = res_[out];
         const uint8_t* b = src_->blob(s.layer, s.in);
         if (slot < 0 || b == nullptr) continue;
-        if (gated && issued_layer >= 0 && issued_layer != s.layer) tick(issued_layer);
+        if (gated) {
+            if (issued_layer < 0 && h_gate_ != nullptr) *h_gate_ = s.layer - 1;
+            else if (issued_layer >= 0 && issued_layer != s.layer) tick(issued_layer, s.layer - 1);
+        }
         if (!ck(cudaMemcpyAsync(cache_.device_slot(slot), b, (size_t) lay.blob_bytes(s.layer), cudaMemcpyHostToDevice,
                                 refill_), "refill", err))
             return false;
@@ -484,7 +508,11 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
         pending_.emplace_back((int32_t) in, slot);
         ++swaps_;
     }
-    if (gated && issued_layer >= 0) tick(issued_layer);
+    if (gated) {
+        if (issued_layer >= 0) tick(issued_layer, (int32_t) n_layers_);
+        else if (h_gate_ != nullptr) *h_gate_ = (int32_t) n_layers_;
+    }
+    if (in_graph_ && !swaps.empty()) sync_d_res();
     if (!ck(cudaEventRecord(refill_ev_, refill_), "refill event", err)) return false;
     // #2188: hand the copies and their landing signals to the GPU now (WDDM batches a stream's work until a driver
     // call flushes it, and the verify window only spins on the pinned int; Linux submits at once: a no-op)
@@ -501,26 +529,44 @@ volatile int32_t* PeerExperts::set_overlap_gate(std::atomic<int32_t>* landed, st
     for (int64_t l = 0; l < n_layers_; ++l) ticks_[(size_t) l] = {landed, (int32_t) l};
     if (copy_signal && h_gate_ == nullptr) {
         On on(device_);
-        std::vector<int32_t> iota((size_t) n_layers_);
+        std::vector<int32_t> iota((size_t) n_layers_ + 1);
         for (size_t i = 0; i < iota.size(); ++i) iota[i] = (int32_t) i;
         int32_t* vals = nullptr;
         void* hp = nullptr;
+        void* dp = nullptr;
         if (cudaMalloc((void**) &vals, iota.size() * 4) == cudaSuccess &&
             cudaMemcpy(vals, iota.data(), iota.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess &&
-            cudaHostAlloc(&hp, 64, cudaHostAllocPortable) == cudaSuccess) {
-            *(volatile int32_t*) hp = -1;
+            cudaHostAlloc(&hp, 64, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess &&
+            cudaHostGetDevicePointer(&dp, hp, 0) == cudaSuccess) {
+            *(volatile int32_t*) hp = (int32_t) n_layers_;
             d_gate_vals_ = vals;
             h_gate_ = (volatile int32_t*) hp;
+            d_gate_ = (int32_t*) dp;
         } else {   // host functions then
             (void) cudaGetLastError();
+            if (hp) cudaFreeHost(hp);
             if (vals) cudaFree(vals);
         }
     }
     return h_gate_;
 }
 
+void PeerExperts::sync_d_res() {
+    if (device_ < 0 || d_res_ == nullptr || res_.empty()) return;
+    {
+        On on(device_);
+        (void) cudaMemcpy(d_res_, res_.data(), res_.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+    }
+    if (d_res_mirror0_ != nullptr && mirror0_dev_ >= 0) {
+        On on0(mirror0_dev_);
+        (void) cudaMemcpy(d_res_mirror0_, res_.data(), res_.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+    }
+}
+
 void PeerExperts::flip_pending() {
+    if (pending_.empty()) return;
     for (const auto& [i, slot] : pending_) res_[(size_t) i] = slot;
+    sync_d_res();
 }
 
 void PeerExperts::apply_pending(bool wait) {
@@ -532,6 +578,8 @@ void PeerExperts::apply_pending(bool wait) {
     }
     for (const auto& [i, slot] : pending_) res_[(size_t) i] = slot;
     pending_.clear();
+    if (h_gate_ != nullptr) *h_gate_ = (int32_t) n_layers_;
+    sync_d_res();
 }
 
 }  // namespace strata::core

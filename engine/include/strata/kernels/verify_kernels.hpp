@@ -79,6 +79,7 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
 /// outstanding at once (the split verify window keeps two).
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
+void wait_flag_i32_ge(const int32_t* flag, int32_t value, void* stream);
 /// BW-5 (STRATA_L2_PF=1): device ranges to pull into the L2 cache.  `l2_prefetch_ranges` issues a prefetch hint for every
 /// byte of them (`cp.async.bulk.prefetch.L2` on sm_90+, `prefetch.global.L2` below); it reads and writes nothing, so every
 /// value the window computes is unchanged.  A no-op on HIP.

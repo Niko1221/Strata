@@ -5752,7 +5752,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
         if (!P.device_hits_only) {
             P.start2[fetches] = entries;
-            const bool peer_p2p_hit = d.peer != nullptr && d.peer->p2p() && P.hit_out_dev != nullptr && d.peer->direct_mode();
+            const bool peer_p2p_hit = d.peer != nullptr && !d.peer->in_graph() && d.peer->p2p() && P.hit_out_dev != nullptr && d.peer->direct_mode();
             if (peer_p2p_hit) {
                 for (int64_t i = 0; i < n; ++i)
                     if (kind[i] == 2) P.dst[entries++] = (int32_t) i;
@@ -5774,9 +5774,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2 : -1;
         }
     }
-    if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
+    if (d.peer != nullptr && !d.peer->in_graph()) {   // multi-GPU: start the second GPU's share before the CPU's own work
         std::string perr;
-        float* peer_out = (d.plan != nullptr && d.peer->p2p() && d.plan->hit_out_dev != nullptr && d.peer->direct_mode())
+        float* peer_out = (d.plan != nullptr && d.peer->p2p() && d.plan->hit_out_dev != nullptr && d.peer->direct_mode() &&
+                           !d.plan->device_hits_only)
                               ? d.plan->hit_out_dev
                               : out;
         if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, peer_out)) {
@@ -5797,12 +5798,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
     }
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
-    // the GPU's copy_rows_from_mapped zeroes the rows it computed itself (dec_batch); STRATA_VERIFY_DEVICE_PLAN /
-    // STRATA_VERIFY_DEVICE_HITS's copy_or_zero_from_mapped copies every row, so there the host still zeroes them
+    // the GPU's copy_rows_from_mapped zeroes the rows it computed itself (dec_batch), including under
+    // STRATA_VERIFY_DEVICE_HITS (dev_hits uses copy_rows_from_mapped[_after]); only STRATA_VERIFY_DEVICE_PLAN uses
+    // copy_or_zero_from_mapped over every row, so there the host still zeroes them
     static const bool device_plan = [] {
         const char* p = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
-        const char* h = std::getenv("STRATA_VERIFY_DEVICE_HITS");
-        return (p != nullptr && std::atoi(p) != 0) || (h != nullptr && std::atoi(h) != 0);
+        return p != nullptr && std::atoi(p) != 0;
     }();
     const bool gpu_zeroes_hits = (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap && dec_batch && !device_plan);
     bool any_cpu = false;
@@ -5900,9 +5901,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 if (kind[i] == 0) ++d.cache_hits;
                 else ++d.offload_entries;                       // #588: PCIe or another GPU
                 if (kind[i] == 2 && d.peer != nullptr) ++d.peer_entries;
-                // multi-GPU: a direct peer launch is writing this row right now - zeroing it would race it;
-                // dec_batch: copy_rows_from_mapped_kernel already zeroes kind 0/1 rows on the GPU
-                if (!((kind[i] == 2 && d.peer != nullptr && d.peer->launched_direct()) ||
+                // multi-GPU: a direct peer launch or in-graph peer GPU scatter writes this row directly on device;
+                // dec_batch: copy_rows_from_mapped_kernel zeroes kind 0/1 rows and skips kind 2 peer rows on GPU 0
+                if (!((kind[i] == 2 && d.peer != nullptr &&
+                       ((d.peer->in_graph() && gpu_zeroes_hits) || (!d.peer->in_graph() && d.peer->launched_direct()))) ||
                       (gpu_zeroes_hits && (kind[i] == 0 || kind[i] == 1))))
                     std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
@@ -6014,7 +6016,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
     }
-    if (d.peer != nullptr) {                 // multi-GPU: the second GPU's rows, into the same mapped rows
+    if (d.peer != nullptr && !d.peer->in_graph()) {   // multi-GPU: the second GPU's rows, into the same mapped rows
         std::string perr;
         if (!d.peer->finish(out, perr)) {
             std::fprintf(stderr, "strata: %s (layer %lld)\n", perr.c_str(), (long long) d.layers);
