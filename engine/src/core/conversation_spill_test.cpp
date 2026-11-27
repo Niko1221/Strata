@@ -1,6 +1,7 @@
 // The conversation cache's SSD tier: its folder per engine process and its budget (conversation_spill.hpp).  No GPU, no model.
 #include "strata/core/conversation_spill.hpp"
 
+#include <stdexcept>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -411,6 +412,143 @@ int main() {
             check(conversation_image_prefix(done[5].item, std::vector<int32_t>{5, 6, 7}, {}, false).first == 0, "other steering: none");
         }
         sp.close();
+    }
+    {   // SSD context swap (A): put_sources streams the K/V from its owner; the entry reads back as put() of the captured image
+        auto pattern = [](size_t n, uint8_t seed) {
+            ConversationBuffer b;
+            b.resize(n);
+            b.visit(0, n, [&](uint8_t* p, size_t c, size_t at) {
+                for (size_t i = 0; i < c; ++i) p[i] = uint8_t((at + i) * 131u + seed);
+                return true;
+            });
+            return b;
+        };
+        SavedConversation full;
+        for (size_t i = 0; i < full.geometry.size(); ++i) full.geometry[i] = int64_t(100 + i);
+        full.layer_lo = 0; full.layer_hi = 48;
+        full.cvec = true;
+        full.live.ids = {7, 8, 9, 10, 11};
+        full.live.gdn.assign(1 << 16, 3);
+        ConversationCheckpoint ck;
+        ck.ids = {7, 8, 9};
+        ck.gdn.assign(1 << 16, 4);
+        full.checkpoints.push_back(ck);
+        for (int layer = 0; layer < 2; ++layer) {
+            ConversationKv kv;
+            kv.format = 2; kv.cells = 1024; kv.heads = 2; kv.head_dim = 256; kv.page_size = 64; kv.pooled_rows = 0; kv.idx_dim = 128;
+            kv.k = pattern(layer == 0 ? (17u << 20) + 5 : 4096, uint8_t(layer));   // > 16 MiB: several staging-buffer rounds
+            kv.v = pattern(4096 + layer, uint8_t(layer + 10));
+            kv.k_scale = pattern(512, uint8_t(layer + 20));
+            kv.v_scale = pattern(512, uint8_t(layer + 30));
+            full.kv.push_back(std::move(kv));
+        }
+        SavedConversation meta = full;
+        meta.kv.clear();
+        std::vector<SessionKvSource> sources;
+        for (const auto& k : full.kv) {
+            SessionKvSource s;
+            s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+            s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+            const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
+            for (size_t i = 0; i < 5; ++i) s.sizes[i] = parts[i]->size();
+            s.read = [parts](size_t part, size_t offset, void* dst, size_t n) { return parts[part]->read(dst, offset, n); };
+            sources.push_back(std::move(s));
+        }
+        const fs::path sroot = fs::temp_directory_path() / ("strata-spill-stream-" + std::to_string(std::random_device{}()));
+        fs::remove_all(sroot, ec);
+        const SessionFileIdentity id{0x5a, 3};
+        std::string err;
+        ConversationSpill sp;
+        check(sp.open(sroot, uint64_t(256) << 20, err), "stream: open");
+        uint64_t s1 = 0, s2 = 0;
+        check(!sp.put_sources(full, sources, id, err, &s1), "stream: meta that still carries K/V is refused");
+        check(sp.put_sources(meta, sources, id, err, &s1) && s1 != 0 && sp.size() == 1, "stream: written from the sources");
+        const auto m = sp.best(std::vector<int32_t>{7, 8, 9, 10, 11, 12}, {}, true);
+        check(m.tokens == 5 && m.live && m.serial == s1, "stream: found by its live tokens");
+        check(sp.best(std::vector<int32_t>{7, 8, 9, 99}, {}, true).tokens == 3, "stream: its checkpoint is listed too");
+        const uint64_t streamed_bytes = sp.find(s1)->bytes;
+        SavedConversation back;
+        check(sp.take_serial(s1, id, {}, back, err), "stream: read back");
+        bool same_kv = back.kv.size() == full.kv.size();
+        for (size_t l = 0; same_kv && l < full.kv.size(); ++l) {
+            const auto& a = full.kv[l]; const auto& b2 = back.kv[l];
+            same_kv = a.k.size() == b2.k.size() && a.v.size() == b2.v.size() && a.cells == b2.cells;
+            std::vector<uint8_t> x(a.k.size()), y(b2.k.size());
+            same_kv = same_kv && a.k.read(x.data(), 0, x.size()) && b2.k.read(y.data(), 0, y.size()) && x == y;
+        }
+        check(same_kv && back.live.ids == full.live.ids && back.live.gdn == full.live.gdn &&
+              back.checkpoints.size() == 1 && back.checkpoints[0].ids == ck.ids, "stream: byte for byte what was streamed");
+        check(sp.put(full, id, err, &s2) && sp.find(s2)->bytes == streamed_bytes, "stream: the same file size as put() of the captured image");
+        auto broken = sources;
+        broken[1].read = [](size_t, size_t, void*, size_t) { return false; };
+        const size_t before = sp.size();
+        check(!sp.put_sources(meta, broken, id, err) && sp.size() == before, "stream: a failing source lists nothing");
+        auto files_in = [](const fs::path& d) {
+            size_t n = 0;
+            std::error_code e2;
+            for (fs::directory_iterator it(d, e2), end; !e2 && it != end; it.increment(e2)) ++n;
+            return n;
+        };
+        {   // a throw out of the write (not one session_file_write turns into false) hands the reservation back, leaves no file
+            auto throwing = sources;
+            throwing[0].read = [](size_t, size_t, void*, size_t) -> bool { throw std::runtime_error("source gone"); };
+            const uint64_t used_before = sp.bytes();
+            const size_t files_before = files_in(sp.dir());
+            bool threw = false;
+            try { (void) sp.put_sources(meta, throwing, id, err); } catch (const std::runtime_error&) { threw = true; }
+            check(threw && sp.budget().reserved == 0 && sp.bytes() == used_before && sp.size() == before &&
+                  files_in(sp.dir()) == files_before, "stream: a throw rolls the reservation and the file back");
+        }
+        {   // B: a read refused for RAM keeps the entry (keep_on_memory); without it the entry goes, as before
+            uint64_t s3 = 0;
+            check(sp.put_sources(meta, sources, id, err, &s3), "keep: written");
+            const uint64_t used = sp.bytes();
+            SessionReadLimits refuse;
+            refuse.admit = [](uint64_t, std::string& w) { w = "no RAM"; return false; };
+            SavedConversation b3;
+            check(!sp.take_serial(s3, id, refuse, b3, err, true) && sp.find(s3) && sp.bytes() == used &&
+                  sp.budget().reserved == 0 && fs::exists(sp.find(s3)->file),
+                  "keep: refused for RAM, still listed with its file and bytes, nothing left reserved");
+            check(sp.take_serial(s3, id, {}, b3, err, true) && b3.live.ids == full.live.ids && !sp.find(s3),
+                  "keep: read back on a later try");
+            uint64_t s4 = 0;
+            check(sp.put_sources(meta, sources, id, err, &s4), "keep: written again");
+            check(!sp.take_serial(s4, id, refuse, b3, err) && !sp.find(s4), "keep: without keep_on_memory the entry goes (old behaviour)");
+        }
+        sp.close();
+        fs::remove_all(sroot, ec);
+    }
+    {   // B: the entry a read makes room for is guarded - a put() that needs room evicts another one, or fails
+        auto image = [](int32_t first) {
+            SavedConversation s;
+            s.live.ids = {first, first + 1, first + 2};
+            s.live.gdn.assign(size_t(6) << 20, uint8_t(first));
+            s.cvec = true;
+            return s;
+        };
+        const fs::path groot = fs::temp_directory_path() / ("strata-spill-guard-" + std::to_string(std::random_device{}()));
+        fs::remove_all(groot, ec);
+        const SessionFileIdentity id{0x6b, 4};
+        std::string err;
+        ConversationSpill sp;
+        check(sp.open(groot, uint64_t(16) << 20, err), "guard: open (room for two entries)");
+        uint64_t g1 = 0, g2 = 0, g3 = 0;
+        check(sp.put(image(10), id, err, &g1) && sp.put(image(20), id, err, &g2) && sp.size() == 2, "guard: two entries");
+        sp.guard(g1);   // the least recently used one
+        check(sp.put(image(30), id, err, &g3) && sp.find(g1) && !sp.find(g2) && sp.find(g3), "guard: the other one is evicted");
+        sp.guard(0);
+        sp.close();
+        fs::remove_all(groot, ec);
+        ConversationSpill one;
+        check(one.open(groot, uint64_t(9) << 20, err), "guard: open (room for one)");
+        check(one.put(image(40), id, err, &g1) && one.size() == 1, "guard: one entry");
+        one.guard(g1);
+        check(!one.put(image(50), id, err, &g2) && one.find(g1) && one.size() == 1 && one.budget().reserved == 0,
+              "guard: no room but the guarded one: the put fails, the guarded entry stays");
+        one.guard(0);
+        check(one.put(image(50), id, err, &g2) && !one.find(g1) && one.find(g2), "guard: cleared, the put evicts it");
+        one.close();
+        fs::remove_all(groot, ec);
     }
     fs::remove_all(root, ec);
     std::printf("conversation_spill_test: %d checks, %d failed\n", checks, failures);

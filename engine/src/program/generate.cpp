@@ -505,6 +505,17 @@ bool park_async_env() {   // STRATA_PARK_ASYNC (strata/core/conversation_snapsho
     static const bool on = [] { const char* v = std::getenv("STRATA_PARK_ASYNC"); return v != nullptr && v[0] == '1'; }();
     return on;
 }
+// STRATA_SPILL_STREAM=1 (read once; off by default): the conversation cache streams a conversation its RAM tier cannot take to
+// the SSD tier instead of dropping it, and keeps an SSD entry a read cannot take yet (docs/DETAILS.md, conversation cache)
+static bool spill_stream_env() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_SPILL_STREAM"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_CKPT_ASYNC=1, as conversation_state.cpp reads it: a turn checkpoint's state may still be on its way to the host
+static bool ckpt_async_env() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_CKPT_ASYNC"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
 // STRATA_CKPT_POOL: unset = the engine's default (on in a single-stage serve with a conversation cache: park_pool_plan), 0 = off, any
 // other value = on.  -1 unset, 0 off, 1 on (read once)
 int ckpt_pool_env_state() {
@@ -14199,6 +14210,113 @@ int main(int argc, char** argv) {
             bool with_reuse;                              ///< the retained K/V describes this source (the main session's)
             std::string what;                             ///< the log's words after the token count ("", " from slot 1")
         };
+        // SSD context swap (A): a conversation the RAM tier cannot take - larger than its budget, or physical RAM short - is
+        // streamed to the SSD tier straight from where its K/V lives (VRAM and the pinned pool) instead of being dropped.  The
+        // session SAVE's writer does it (conversation_snapshot_sources + session_file_write with SessionKvSource), so the RAM
+        // it costs is the running state, the deepest checkpoint and a 16 MiB buffer, whatever the length, and the file is the
+        // one take() reads back.  One stage only; the session must not run until it returns (the serve loop is parked here).
+        // Opt-in: STRATA_SPILL_STREAM=1 (unset, the conversation is dropped as before).  True: it is on the SSD tier.
+        auto spill_stream = [&](const ParkSource& src, size_t estimate, const char* why) -> bool {
+            if (!spill_stream_env() || !spill.enabled() || !stages.empty() || !src.stage_sessions.empty() || src.ids.empty()) return false;
+            // the background checkpoint and park copies (opt-in) can still be filling a checkpoint or the running state's
+            // copy when its bytes would be serialized: no stream with them on, as conversation_snapshot_swap_prepare refuses
+            if (ckpt_async_env() || park_async_env()) {
+                static bool said = false;
+                if (!said) {
+                    said = true;
+                    std::fprintf(stderr, "strata serve: conversation cache: STRATA_SPILL_STREAM=1 stands down: STRATA_CKPT_ASYNC or "
+                                         "STRATA_PARK_ASYNC is on (their background copies may still be filling the state)\n");
+                }
+                return false;
+            }
+            const int64_t tokens = (int64_t) src.ids.size();
+            {
+                std::lock_guard<std::mutex> lk(spill_cost_mu);
+                if (!spill_cost.worth(tokens, estimate)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: not streaming %lld tokens to the SSD tier (%s): reading "
+                                         "them again (about %.0f ms here) costs less than the SSD round trip of %zu MiB (about %.0f ms)\n",
+                                 (long long) tokens, why, spill_cost.reread_ms(tokens), estimate >> 20, spill_cost.round_trip_ms(estimate));
+                    return false;
+                }
+            }
+            const auto t0 = Clock::now();
+            try {
+                if (!spill_id) {   // (the model's fingerprint, once, as spill_ready takes it)
+                    std::string e;
+                    strata::core::SessionFileIdentity id;
+                    if (!session_identity(id, e, {})) {   // (spill_ready closes the tier on this; here the caller drops, as before)
+                        std::fprintf(stderr, "strata serve: conversation cache: could not stream %lld tokens to the SSD tier (%s): "
+                                             "no model fingerprint (%s)\n", (long long) tokens, why, e.c_str());
+                        return false;
+                    }
+                    spill_id = id;
+                }
+                if (cudaDeviceSynchronize() != cudaSuccess) return false;
+                strata::core::SessionSaveLive sl;
+                {
+                    strata::core::ConversationStateSizes z;
+                    std::string zwhy;
+                    uint64_t state = UINT64_MAX;
+                    if (strata::core::conversation_session_sizes(g, src.session, z, zwhy)) {
+                        const uint64_t q = (uint64_t) std::max<int64_t>(src.session.qsa_alloc, 0);
+                        const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
+                        if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                    }
+                    sl.state_bytes = state;
+                    sl.tokens = src.ids.size();
+                    sl.images = src.imgs.size();
+                    sl.kv_layers = (uint64_t) std::max<int64_t>(src.session.qsa_alloc, 0) + (src.draft0 ? 1 : 0);
+                }
+                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                pools_budget.shrink((size_t) -1);
+                strata::core::release_free_heap();   // (what the pools gave back shows in the reading below)
+                auto admit = [&](uint64_t need, std::string& w) {
+                    const auto mem = strata::core::sample_host_memory();
+                    if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
+                                                                need, floor)) return true;
+                    w = "not enough RAM even to stream it (" + (need == UINT64_MAX ? std::string("unknown") : std::to_string(need >> 20)) +
+                        " MiB plus the " + std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB floor, " + ram_note(mem) + ")";
+                    return false;
+                };
+                std::vector<ConvCheckpoint> disk_checks;
+                std::string w;
+                if (!strata::core::session_save_checkpoints(src.checks, sl, admit, disk_checks, w)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: could not stream %lld tokens to the SSD tier (%s): %s\n",
+                                 (long long) tokens, why, w.c_str());
+                    return false;
+                }
+                const strata::core::ConversationView view{src.ids, src.imgs, disk_checks, src.cvec};
+                strata::core::SavedConversation meta;
+                std::vector<strata::core::SessionKvSource> sources;
+                std::string e;
+                if (!strata::core::conversation_snapshot_sources(meta, sources, view, src.session, g, src.draft0, e)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: could not stream %lld tokens to the SSD tier (%s): %s\n",
+                                 (long long) tokens, why, e.c_str());
+                    return false;
+                }
+                uint64_t serial = 0;
+                const bool ok = spill.put_sources(meta, sources, *spill_id, e, &serial);
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                if (!ok) {
+                    std::fprintf(stderr, "strata serve: conversation cache: could not stream %lld tokens to the SSD tier (%s): %s\n",
+                                 (long long) tokens, why, e.c_str());
+                    return false;
+                }
+                if (const auto en = spill.find(serial)) {
+                    std::lock_guard<std::mutex> lk(spill_cost_mu);
+                    spill_cost.saw_write(en->bytes, ms);
+                }
+                std::fprintf(stderr, "strata serve: conversation cache: streamed %lld tokens%s to the SSD tier (%s) in %.1f ms, "
+                                     "%zu of %zu checkpoints, no RAM copy of the K/V; on SSD %zu, %llu MiB\n",
+                             (long long) tokens, src.what.c_str(), why, ms, disk_checks.size(), src.checks.size(), spill.size(),
+                             (unsigned long long) (spill.bytes() >> 20));
+                return true;
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata serve: conversation cache: could not stream %lld tokens to the SSD tier (%s): out of memory\n",
+                             (long long) tokens, why);
+                return false;
+            }
+        };
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
         // STRATA_PARK_ASYNC: set by the request around its park - the live checkpoints it drops right after (they move
@@ -14364,7 +14482,22 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
+            // SSD context swap (A): a streamed park makes no RAM copy, so the retained K/V this park took for one (the
+            // buffers of the conversation restored last, as large as it is) goes back first - held through the stream it
+            // is RAM the stream's own admission is refused for (two 210K conversations: 3 GB held, the stream 220 MiB short)
+            auto stream_out = [&](const char* why) -> bool {
+                if (n_st != 0) return false;
+                // a borrow's park whose room the guarded donor blocked: the caller takes the donor and parks this
+                // conversation again (then without the guard) - streaming it here would write it twice
+                if (conversations.guarding() && conversations.guard_blocked()) return false;
+                if (spill_stream_env() && spill.enabled() && !reuse.kv.empty()) {
+                    reuse = {};
+                    strata::core::release_free_heap();
+                }
+                return spill_stream(src, estimate, why);
+            };
             if (!conversations.make_room(estimate, held)) {
+                if (stream_out("larger than the RAM budget")) return true;
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -14430,6 +14563,7 @@ int main(int argc, char** argv) {
                         cannot_help_note = note;
                     }
                 }
+                if (!fits && stream_out("physical RAM short for a RAM copy")) return true;
                 if (!fits) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s%s)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
@@ -19374,7 +19508,7 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            auto parked = conversations.best(ids, req_imgs, want_cvec);   // (B: found again if RAM entries go to make room for an SSD read)
             // STRATA_SLOT_READ (opt-in: =1, with STRATA_PIPED_MTP; asked for by the server with slot_read=1, which then
             // takes DONE and BADM without a token): the next turn of the conversation an idle slot holds is read IN
             // that slot - its new tokens as rows of the slot's own windows in the pipelined groups, all kept - instead
@@ -19559,7 +19693,82 @@ int main(int argc, char** argv) {
                     const uint64_t sp_bytes = sp_entry->bytes;
                     strata::core::SavedConversation image;
                     std::string why;
-                    try {
+                    // SSD context swap (B): the read needs the whole image in RAM for a moment.  take_serial() forgets the entry
+                    // before it reads, so a read the RAM check refuses would lose a good copy: ask first, and make room first -
+                    // the retained K/V and the park pools go back, then (only when that is enough) the RAM tier's parked
+                    // conversations go to the SSD tier, oldest first.  Not enough even then: the entry stays on the SSD tier for a
+                    // later turn and this prompt is read as before.  Opt-in with A (STRATA_SPILL_STREAM=1); unset, as before.
+                    const bool swap_b = spill_stream_env();
+                    // the entry stays put while room is made for it and while it is read: a RAM entry evicted below goes to the
+                    // SSD tier through the background writer, whose put() would otherwise be free to evict exactly this one
+                    struct SpillGuard {
+                        strata::core::ConversationSpill* s = nullptr;
+                        ~SpillGuard() { if (s) s->guard(0); }
+                    } spill_guard;
+                    bool keep_on_ssd = false;
+                    if (swap_b) {
+                        spill.guard(sp.serial);
+                        spill_guard.s = &spill;
+                        if (!spill.find(sp.serial)) {   // (a write in flight took it before the guard: nothing to read)
+                            keep_on_ssd = true;
+                            why = "it left the SSD tier meanwhile";
+                        }
+                    }
+                    bool ram_evicted = false;   // (the RAM tier changed: its best match is found again below, a throw or not)
+                    if (swap_b && !keep_on_ssd) try {
+                        // the read's own admission (inside session_file_read) runs with its 16 MiB staging buffer already
+                        // taken: this check asks for 32 MiB more, so a read it passes is not refused there
+                        const uint64_t peak = strata::core::session_read_peak_bytes(sp_bytes);
+                        const uint64_t need = peak > UINT64_MAX - (uint64_t(32) << 20) ? UINT64_MAX : peak + (uint64_t(32) << 20);
+                        const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        std::optional<strata::core::HostMemoryReading> mem;
+                        auto room = [&] {
+                            mem = strata::core::sample_host_memory();
+                            return strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
+                                                                           need, floor);
+                        };
+                        if (!room()) {
+                            size_t freed = 0;
+                            if (spill_writer) { spill_writer->wait_idle(); spill_reclaim(); }   // (images the writer still holds)
+                            pools_budget.shrink((size_t) -1);
+                            if (conversations.retained_bytes() > 0) freed += conversations.take_reuse().bytes();
+                            strata::core::release_free_heap();
+                            // then the parked ones, oldest first (each goes to the background writer, as an eviction always
+                            // does) - by the park gate's own rules (#5697, #2253): none when even an empty RAM tier would not be
+                            // enough (the reading taken after the release above), and no further than the memory that comes back
+                            strata::core::EvictForRam r;
+                            r.fits = room();
+                            if (!r.fits)
+                                r = strata::core::evict_for_ram(
+                                    room, [&] { return mem ? std::optional<uint64_t>(mem->available) : std::nullopt; },
+                                    [&]() -> size_t {
+                                        const size_t b = conversations.oldest_evictable_bytes();
+                                        if (b == 0 || !conversations.evict_oldest()) return 0;
+                                        ram_evicted = true;
+                                        if (spill_writer) { spill_writer->wait_idle(); spill_reclaim(); }
+                                        pools_budget.shrink((size_t) -1);
+                                        strata::core::release_free_heap();
+                                        return b;
+                                    },
+                                    conversations.slots(), need > UINT64_MAX - floor ? UINT64_MAX : need + floor,
+                                    (uint64_t) conversations.evictable_bytes());
+                            std::fprintf(stderr, "strata serve: conversation cache: made room to read %zu tokens back from the SSD tier "
+                                                 "(%llu MiB): %zu MiB of retained K/V released, %zu parked conversation%s evicted "
+                                                 "from RAM; %s\n", sp_tokens, (unsigned long long) (need >> 20), freed >> 20, r.evicted,
+                                         r.evicted == 1 ? "" : "s", r.fits ? "reading it" : ("still short, so it stays on the SSD tier (" +
+                                                                                            ram_note(mem) + ")").c_str());
+                            keep_on_ssd = !r.fits;
+                            if (keep_on_ssd) why = "not enough RAM to read it now; it stays on the SSD tier for a later turn";
+                        }
+                    } catch (const std::bad_alloc&) {
+                        keep_on_ssd = true;
+                        why = "out of memory while making room to read it; it stays on the SSD tier for a later turn";
+                    }
+                    if (ram_evicted) {
+                        parked = conversations.best(ids, req_imgs, want_cvec);
+                        taken = parked;
+                    }
+                    if (!keep_on_ssd) try {
                         strata::core::SessionReadLimits limits;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         pools_budget.shrink((size_t) -1);
@@ -19571,15 +19780,15 @@ int main(int argc, char** argv) {
                                 std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " + ram_note(mem) + ")";
                             return false;
                         };
-                        if (strata::core::conversation_session_read_limits(limits, ss, g, use_mtp ? &mtp.kv_state() : nullptr,
-                                (uint64_t) o.max_context, (uint64_t) std::max(o.prompt_cache, 1), why) &&
-                            spill.take_serial(sp.serial, *spill_id, limits, image, why))
-                            from_ssd = true;
-                        else
+                        if (!strata::core::conversation_session_read_limits(limits, ss, g, use_mtp ? &mtp.kv_state() : nullptr,
+                                (uint64_t) o.max_context, (uint64_t) std::max(o.prompt_cache, 1), why))
                             spill.drop_serial(sp.serial);   // (limits that cannot be formed: the entry cannot be read here either)
+                        else if (spill.take_serial(sp.serial, *spill_id, limits, image, why, /*keep_on_memory=*/swap_b))
+                            from_ssd = true;
+                        // (failed: take_serial dropped the entry, or - refused for RAM, with B - kept it for a later turn)
                     } catch (const std::bad_alloc&) {
                         why = "not enough RAM to read it";
-                        spill.drop_serial(sp.serial);
+                        if (!swap_b) spill.drop_serial(sp.serial);   // (B: whatever take_serial left listed is still a good copy)
                     }
                     if (from_ssd) {
                         std::lock_guard<std::mutex> lk(spill_cost_mu);

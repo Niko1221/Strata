@@ -292,6 +292,7 @@ public:
         budget_ = SpillBudget{cap, 0, 0};
         tick_ = 0;
         next_serial_ = 1;
+        guarded_ = 0;
         if (adopted) *adopted = 0;
         const bool ok = ns_.open(root, error, cleaned, persist ? &persist->model : nullptr);
         if (ok && ns_.persistent()) {
@@ -319,6 +320,33 @@ public:
     /// lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
         const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
+        return put_with(image, need, [&](const std::string& path, size_t& written, std::string& e) {
+            return session_file_write(path, image, id, written, e);
+        }, id, error, serial_out);
+    }
+
+    /// The same entry as put(), written without a host copy of the K/V: `meta` carries everything but the K/V (meta.kv is
+    /// empty) and `kv` streams each layer from where it lives (conversation_snapshot_sources), so the RAM this costs is the
+    /// running state and the checkpoints in `meta` plus the file's staging buffer, whatever the conversation's length.  The
+    /// file is byte-identical to put() of the captured image, so take() reads it back the same way.  The caller has
+    /// synchronized the device and does not run the session until this returns.
+    bool put_sources(const SavedConversation& meta, const std::vector<SessionKvSource>& kv, const SessionFileIdentity& id,
+                     std::string& error, uint64_t* serial_out = nullptr) {
+        if (!meta.kv.empty()) { error = "put_sources: the K/V comes from the sources, not from meta"; return false; }
+        uint64_t need = (uint64_t) meta.bytes() + (uint64_t(1) << 20);
+        for (const auto& s : kv)
+            for (const size_t n : s.sizes) need += (uint64_t) n + 64;   // (each part's payload and its small header)
+        return put_with(meta, need, [&](const std::string& path, size_t& written, std::string& e) {
+            return session_file_write(path, meta, kv, id, written, e);
+        }, id, error, serial_out);
+    }
+
+private:
+    /// put()'s body: reserve `need` (evicting what the budget needs), write with `write`, list the entry under `image`'s
+    /// tokens and checkpoints.
+    bool put_with(const SavedConversation& image, uint64_t need,
+                  const std::function<bool(const std::string&, size_t&, std::string&)>& write,
+                  const SessionFileIdentity& id, std::string& error, uint64_t* serial_out) {
         uint64_t serial = 0;
         std::filesystem::path f;
         {
@@ -326,46 +354,72 @@ public:
             if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
             if (need > budget_.cap) { error = "larger than the whole SSD tier"; return false; }
             while (!budget_.reserve(need)) {
-                if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
                 size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
                 for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
-                    if (superseded_by(entries_[i], image)) victim = i;
-                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
+                    if ((guarded_ == 0 || entries_[i].serial != guarded_) && superseded_by(entries_[i], image)) victim = i;
+                if (victim == SIZE_MAX) victim = lru_locked();
+                if (victim == SIZE_MAX) { error = "no room in the SSD tier"; return false; }   // (none, or only the guarded one)
+                drop_locked(victim);
             }
             serial = next_serial_++;
-            f = ns_.file_for(serial);
+            try { f = ns_.file_for(serial); } catch (...) { budget_.finish(need, 0); throw; }
         }
+        // From here the reservation is this call's: every exit, a throw included (an allocation in the write, the entry or
+        // its index file), hands it back and leaves no file of this call behind.
+        bool finished = false, listed = false;
         size_t written = 0;
-        const bool ok = session_file_write(f.string(), image, id, written, error);
-        if (!ok) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
+        try {
+            const bool ok = write(f.string(), written, error);
+            if (!ok) {
+                std::error_code ec;
+                std::filesystem::remove(f, ec);
+            }
+            Entry e;
+            if (ok) {
+                e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
+                e.live = stub(image.live);
+                for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
+            }
+            std::lock_guard<std::mutex> lk(mu_);
+            budget_.finish(need, ok ? written : 0);
+            finished = true;
+            if (ok && ns_.persistent() && !meta_write(f, e, id)) {
+                std::error_code ec;
+                std::filesystem::remove(f, ec);
+                budget_.drop(written);
+                listed = true;   // (nothing left to undo)
+                error = "the entry's index file could not be written";
+                return false;
+            }
+            if (!ok) { listed = true; return false; }
+            e.used = ++tick_;
+            entries_.reserve(entries_.size() + 1);   // (so the push below cannot throw once superseded entries are gone)
+            // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
+            for (size_t i = entries_.size(); i-- > 0;)
+                if ((guarded_ == 0 || entries_[i].serial != guarded_) && superseded_by(entries_[i], image)) drop_locked(i);
+            entries_.push_back(std::move(e));
+            listed = true;
+            while (budget_.over() && entries_.size() > 1) {   // (a file larger than its estimate; never this one)
+                const size_t v = lru_locked(serial);
+                if (v == SIZE_MAX) break;
+                drop_locked(v);
+            }
+        } catch (...) {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!finished) budget_.finish(need, 0);
+            else if (!listed) budget_.drop(written);
+            if (!listed) {
+                std::error_code ec;
+                std::filesystem::remove(f, ec);
+                try { std::filesystem::remove(meta_path(f), ec); } catch (...) {}   // (meta_path allocates)
+            }
+            throw;
         }
-        Entry e;
-        if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
-            e.live = stub(image.live);
-            for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
-        }
-        std::lock_guard<std::mutex> lk(mu_);
-        budget_.finish(need, ok ? written : 0);
-        if (ok && ns_.persistent() && !meta_write(f, e, id)) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
-            budget_.drop(written);
-            error = "the entry's index file could not be written";
-            return false;
-        }
-        if (!ok) return false;
-        e.used = ++tick_;
-        // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
-        for (size_t i = entries_.size(); i-- > 0;)
-            if (superseded_by(entries_[i], image)) drop_locked(i);
-        entries_.push_back(std::move(e));
-        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
         if (serial_out) *serial_out = serial;
         return true;
     }
+
+public:
 
     /// The entry and the prefix it gives `prompt`, by the RAM cache's rule (ConversationCache::best): its live state or a
     /// checkpoint, same pictures, same steering; ties prefer the newest.  Reach it by `serial` (find / take_serial).
@@ -388,9 +442,14 @@ public:
 
     /// Reads entry `serial` back into `out` (bounded by `limits`, the identity checked) and removes the entry.  False: `out` is
     /// unchanged and the entry is gone (or was not there).  The file is read outside the lock: the entry leaves the list first.
+    /// `keep_on_memory`: a read refused for RAM (SessionError::memory: the admission, or an allocation) keeps the entry
+    /// listed, its file in place, for a later turn - the RAM may be there then (SSD context swap B, with STRATA_SPILL_STREAM=1;
+    /// without it the caller passes false, the old behaviour).
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
-                     std::string& error) {
+                     std::string& error, bool keep_on_memory = false) {
         std::filesystem::path f;
+        std::optional<Entry> taken;
+        uint64_t held = 0;   // (keep_on_memory, per-process tier: the entry's bytes, reserved while it is read)
         {
             std::lock_guard<std::mutex> lk(mu_);
             const size_t i = index_locked(serial);
@@ -401,14 +460,44 @@ public:
                 std::error_code ec;
                 std::filesystem::last_write_time(meta_path(f), std::filesystem::file_time_type::clock::now(), ec);
             } else {
-                budget_.drop(entries_[i].bytes);
+                const uint64_t bytes = entries_[i].bytes;
+                if (keep_on_memory) {
+                    held = bytes;
+                    taken.emplace(std::move(entries_[i]));
+                }
+                budget_.drop(bytes);
+                budget_.reserved += held;
                 entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
             }
         }
         const bool keep = persistent_now();
         SavedConversation image;
         size_t read = 0;
-        const bool ok = session_file_read(f.string(), id, image, read, error, limits);
+        SessionStatus st;
+        bool ok = false;
+        try {
+            ok = session_file_read(f.string(), id, image, read, error, limits, &st);
+        } catch (...) {
+            if (taken) { std::lock_guard<std::mutex> lk(mu_); budget_.finish(held, 0); }
+            throw;
+        }
+        if (taken) {
+            std::lock_guard<std::mutex> lk(mu_);
+            budget_.finish(held, 0);   // (the hold goes in every case)
+            if (!ok && st.error == SessionError::memory) {
+                try {
+                    entries_.push_back(std::move(*taken));   // listed again, as the most recently used
+                } catch (...) {
+                    std::error_code ec;
+                    std::filesystem::remove(f, ec);
+                    throw;
+                }
+                entries_.back().used = ++tick_;
+                budget_.used += held;
+                return false;
+            }
+        }
+        if (!ok && keep_on_memory && st.error == SessionError::memory) return false;   // (a persistent entry: still listed)
         if (!keep) {
             std::error_code ec;
             std::filesystem::remove(f, ec);
@@ -429,6 +518,9 @@ public:
     }
 
     void drop(size_t i) { std::lock_guard<std::mutex> lk(mu_); drop_locked(i); }
+    /// SSD context swap (B): entry `serial` is about to be read back - no put() (a RAM entry the read's room-making sends
+    /// to this tier) evicts it meanwhile.  One entry at a time; 0 clears it.  drop/take/clear still remove it.
+    void guard(uint64_t serial) { std::lock_guard<std::mutex> lk(mu_); guarded_ = serial; }
     /// Drops entry `serial` and its file; false when it was not listed.
     bool drop_serial(uint64_t serial) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -448,7 +540,10 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         std::vector<size_t> out;
         for (size_t i = entries_.size(); i-- > 0;)
-            if (superseded_by(entries_[i], image_live)) { out.push_back(entries_[i].live.ids.size()); drop_locked(i); }
+            if ((guarded_ == 0 || entries_[i].serial != guarded_) && superseded_by(entries_[i], image_live)) {
+                out.push_back(entries_[i].live.ids.size());
+                drop_locked(i);
+            }
         return out;
     }
     /// Drops every entry and keeps the tier open (#879: after non-finite logits no parked conversation is kept).  Returns how many.
@@ -460,6 +555,7 @@ public:
     }
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
+        guarded_ = 0;
         if (!ns_.persistent()) while (!entries_.empty()) drop_locked(entries_.size() - 1);   // (a stable folder keeps its entries)
         entries_.clear();
         ns_.close();
@@ -474,10 +570,14 @@ private:
     }
     bool persistent_now() const { std::lock_guard<std::mutex> lk(mu_); return ns_.persistent(); }
     static std::filesystem::path meta_path(std::filesystem::path f) { return f.replace_extension(".meta"); }
-    size_t lru_locked() const {
-        size_t b = 0;
-        for (size_t i = 1; i < entries_.size(); ++i)
-            if (entries_[i].used < entries_[b].used) b = i;
+    /// the least recently used entry other than the guarded one and `skip` (SIZE_MAX: none)
+    size_t lru_locked(uint64_t skip = 0) const {
+        size_t b = SIZE_MAX;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            const uint64_t sn = entries_[i].serial;
+            if ((guarded_ != 0 && sn == guarded_) || (skip != 0 && sn == skip)) continue;
+            if (b == SIZE_MAX || entries_[i].used < entries_[b].used) b = i;
+        }
         return b;
     }
     /// `e` is a prefix (equal or shorter) of `image`'s live tokens, same steering and pictures: `image` serves every resume `e` could
@@ -604,7 +704,11 @@ private:
             budget_.used += f.e.bytes;
             entries_.push_back(std::move(f.e));
         }
-        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (the cap is now smaller than what was kept)
+        while (budget_.over() && entries_.size() > 1) {   // (the cap is now smaller than what was kept)
+            const size_t v = lru_locked();
+            if (v == SIZE_MAX) break;
+            drop_locked(v);
+        }
         return entries_.size();
     }
     void drop_locked(size_t i) {
@@ -625,6 +729,7 @@ private:
     SpillBudget budget_;
     std::vector<Entry> entries_;
     uint64_t next_serial_ = 1, tick_ = 0;
+    uint64_t guarded_ = 0;   // (guard: the entry a read is making room for)
 };
 
 /// The best prefix a parked image gives `prompt`, by the RAM cache's rule (its live state or a checkpoint, same pictures, same
