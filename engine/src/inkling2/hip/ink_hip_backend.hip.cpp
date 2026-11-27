@@ -31,6 +31,8 @@
 #include "strata/platform/numa_balancing.hpp"
 #endif
 
+#include <array>
+#include <type_traits>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -884,6 +886,8 @@ public:
         }
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         max_ctx_ = std::max(256, opts.max_ctx);
+        dec_splits_ = (mem_info_.gen == AmdGen::Rdna2 && max_ctx_ > 8192) ? 16 : 4;   // 16 measured on RDNA2 only
+        if (const char* e = std::getenv("STRATA_INK_DEC_SPLITS")) { const int v = std::atoi(e); if (v == 4 || v == 16 || v == 32) dec_splits_ = v; }
         // SWA KV ring. forward_batch_chunk stores K/V of all B batch tokens before attention reads the ring, so a
         // ring of exactly swa_win positions lets a later token of the same batch overwrite a key that an earlier
         // query of that batch still needs (ring slot (p - swa_win + j) % swa_win == (p + j) % swa_win).
@@ -939,10 +943,13 @@ public:
         if (const char* ev = std::getenv("STRATA_HIPBLASLT_MIN_M")) {
             const int v = std::atoi(ev);
             if (v >= 1) blaslt_min_m_ = v;
+        } else if (blaslt_.is_rocblas()) {
+            blaslt_min_m_ = 64;   // RDNA2 rocBLAS: prompt chunks only; decode and verify keep the graph-captured native kernels
         }
         // Fused zero-DRAM-write 2-launch INT8/FP16 WMMA Grouped-MoE beats unpack-once on both R9700 & Strix Halo
         // (10x less memory traffic, 300x fewer launches!). Keep unpack-once env-tunable via STRATA_HIPBLASLT_MOE_MIN_B.
-        blaslt_moe_min_b_ = 999999;
+        blaslt_moe_min_b_ = blaslt_.is_rocblas() ? 64 : 999999;
+        moe_y_f16_ = blaslt_.is_rocblas() && !ep2_active_ && !(std::getenv("STRATA_INK_ROCBLAS_F32OUT") && std::getenv("STRATA_INK_ROCBLAS_F32OUT")[0] == '1');   // RDNA2 has no grouped WMMA MoE: unpack-once + rocBLAS for prompt chunks
         if (const char* ev = std::getenv("STRATA_HIPBLASLT_MOE_MIN_B")) {
             const int v = std::atoi(ev);
             if (v >= 16) blaslt_moe_min_b_ = v;
@@ -1364,7 +1371,17 @@ public:
         }
         size_t ram_bytes = 0;
 
-        for (uint16_t idx : model.vram_load_order) {
+        // STRATA_INK_PIN_CORE=1: all experts of the looped core layers first (they run num_passes times per token), then the
+        // rest in the pack's order. A layer with every expert in VRAM takes the zero-sync GPU decode path; the pack's
+        // order spreads the hottest experts over every layer, so with a partial budget every visit syncs with the host.
+        std::vector<uint16_t> load_order(model.vram_load_order.begin(), model.vram_load_order.end());
+        if (const char* e = std::getenv("STRATA_INK_PIN_CORE"); e && e[0] == '1') {
+            std::stable_partition(load_order.begin(), load_order.end(), [&](uint16_t idx) {
+                const int il = static_cast<int>(idx) / c_.n_experts;
+                return il >= c_.core_start && il < c_.core_end;
+            });
+        }
+        for (uint16_t idx : load_order) {
             if (idx >= n_dir) continue;
             const size_t sz = dir[idx].body_bytes;
             const size_t aligned = (sz + 63u) & ~size_t(63u);
@@ -1779,7 +1796,9 @@ public:
                     || (post_tot <= (17ULL << 30) && post_free < (4096ULL << 20))
 #endif
                     ;
-                if (tight_vram) {
+                // STRATA_INK_KEEP_CHUNK=1: keep the configured chunk on a tight card (the caller measured the peak with it)
+                const bool keep_chunk = [] { const char* e = std::getenv("STRATA_INK_KEEP_CHUNK"); return e && e[0] == '1'; }();
+                if (tight_vram && !keep_chunk) {
                     const int tight_chunk = (post_free < (1536ULL << 20)) ? 256 : 512;
                     if (guard_.max_prefill_chunk > tight_chunk) {
                         guard_.max_prefill_chunk = tight_chunk;
@@ -4893,6 +4912,23 @@ private:
                 return;
             }
         }
+        // RDNA2 rocBLAS: BF16 GEMMs run ~6.7 TFLOPS there, FP16-in/FP16-out up to 40: widen W to FP16 per call (N*K*4 bytes of
+        // traffic), X straight from FP32 to FP16, one FP16 GEMM, widen Y (+ bias). STRATA_INK_ROCBLAS_DENSE=0 keeps BF16.
+        if (dense_f16_ && blaslt_.is_rocblas() && M >= blaslt_min_m_ && N >= 64 && K >= 64 && (static_cast<size_t>(N) * K) % 4 == 0) {
+            const size_t nw = static_cast<size_t>(N) * K, nx = static_cast<size_t>(M) * K, ny = static_cast<size_t>(M) * N;
+            auto grow = [&](GpuBuffer& b, size_t bytes) { if (b.bytes < bytes) { free_gpu_buffer(b); (void)alloc_gpu_buffer(b, bytes, mem_info_.is_uma); } return b.bytes >= bytes; };
+            if (grow(dense_w16_, nw * 2) && grow(dense_x16_, nx * 2) && grow(dense_y16_, ny * 2)) {
+                half_t* w16 = reinterpret_cast<half_t*>(dense_w16_.dev_ptr);
+                half_t* x16 = reinterpret_cast<half_t*>(dense_x16_.dev_ptr);
+                half_t* y16 = reinterpret_cast<half_t*>(dense_y16_.dev_ptr);
+                k_bf16_to_f16_vec4<<<static_cast<unsigned>((nw / 4 + 255) / 256), 256, 0, stream_>>>(W, w16, nw / 4);
+                k_f32_to_f16<<<static_cast<unsigned>((nx + 255) / 256), 256, 0, stream_>>>(X, x16, static_cast<int>(nx));
+                if (blaslt_.gemm_f16_f16(w16, x16, y16, M, N, K, stream_, 1.0f)) {
+                    k_f16_to_f32_bias<<<static_cast<unsigned>((ny + 255) / 256), 256, 0, stream_>>>(y16, bias, Y, M, N);
+                    return;
+                }
+            }
+        }
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
             if (sc_x_bf16_.bytes >= need) {
@@ -4939,13 +4975,18 @@ private:
         const uint8_t* body_dev, uint8_t gu_code, uint8_t dn_code, uint32_t dn_offset,
         float sf4_w13_outer, float sf4_w2_outer,
         const half_t* x_in_f16, float* gu_buf, half_t* act_buf, float* y_out_f32,
-        int m_e, int max_gu_rows, int D, int inter) {
+        int m_e, int max_gu_rows, int D, int inter, half_t* y_out_f16 = nullptr) {
+        // y_out_f16 != nullptr (RDNA2 rocBLAS route): both GEMMs write FP16, SITU and the bucket reduce read FP16.
         half_t* w13_f16 = reinterpret_cast<half_t*>(d_exp_w13_f16_.dev_ptr);
         half_t* w2_f16  = reinterpret_cast<half_t*>(d_exp_w2_f16_.dev_ptr);
         const int n13 = 2 * inter;
         const int chunk_cap = std::max(1, max_gu_rows);
 
         // 1. Unpack w13 [2*inter, D] ONCE -> L3/MALL-resident 11.8 MB FP16 buffer -> chunked hipBLASLt FP16 GEMM + SITU!
+        const bool mp = moe_prof_.armed;
+        if (mp) { ++moe_prof_.calls; moe_prof_.rows += m_e; }
+        size_t mp_a = mp ? moe_prof_.mark(stream_) : 0;
+        if (mp && moe_prof_.gap_open != static_cast<size_t>(-1)) { moe_prof_.seg(5, moe_prof_.gap_open, mp_a); moe_prof_.gap_open = static_cast<size_t>(-1); }
         float alpha13 = 1.0f;
         if (gu_code == CODE_SF4) {
             const uint8_t* p = body_dev + 16;
@@ -4962,6 +5003,7 @@ private:
             const uint8_t* gu_ptr = body_dev + static_cast<size_t>(inter) * 2;
             launch_unpack_sk_f16_dispatch(gu_ptr, gu_code, w13_f16, n13, D, stream_);
         }
+        if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(1, mp_a, b); mp_a = b; }
         const half_t* sq_dn = (dn_code != CODE_SF4 && dn_code != CODE_MX8 && dn_code != CODE_GGUF_RAW)
             ? reinterpret_cast<const half_t*>(body_dev) : nullptr;
         // Slice m_e by chunk_cap so gu_buf [max_gu_rows, 2*inter] NEVER overflows when m_e > B (#6580)!
@@ -4969,7 +5011,14 @@ private:
             const int cur_m = std::min(chunk_cap, m_e - off);
             const half_t* x_sub = x_in_f16 + static_cast<size_t>(off) * D;
             half_t* act_sub = act_buf + static_cast<size_t>(off) * inter;
-            if (!blaslt_.gemm_f16_f32(w13_f16, x_sub, gu_buf, cur_m, n13, D, stream_, alpha13)) {
+            if (y_out_f16 && blaslt_.gemm_f16_f16(w13_f16, x_sub, gu_buf, cur_m, n13, D, stream_, alpha13)) {
+                if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(2, mp_a, b); mp_a = b; }
+                k_situ_interleaved_sq<half_t><<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
+                    reinterpret_cast<const half_t*>(gu_buf), sq_dn, act_sub, cur_m, inter, c_.situ_beta, c_.situ_lb);
+                if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(3, mp_a, b); mp_a = b; }
+                continue;
+            }
+            if (y_out_f16 || !blaslt_.gemm_f16_f32(w13_f16, x_sub, gu_buf, cur_m, n13, D, stream_, alpha13)) {
                 if (gu_code == CODE_SF4) {
                     const uint8_t* p = body_dev + 16;
                     launch_sf4_linear(p, p + static_cast<size_t>(n13) * (D >> 1), sf4_w13_outer, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_, false);
@@ -4981,9 +5030,11 @@ private:
                     launch_sk_linear(body_dev + static_cast<size_t>(inter) * 2, gu_code, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_);
                 }
             }
+            if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(2, mp_a, b); mp_a = b; }
             // 2. Fused SITU + optional S_K sq_xd_dn divide directly on FP32 gu_buf -> FP16 act_sub!
-            k_situ_interleaved_sq<<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
+            k_situ_interleaved_sq<float><<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
                 gu_buf, sq_dn, act_sub, cur_m, inter, c_.situ_beta, c_.situ_lb);
+            if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(3, mp_a, b); mp_a = b; }
         }
 
         // 3. Unpack w2 [D, inter] ONCE -> L3/MALL-resident 5.9 MB FP16 buffer -> hipBLASLt FP16 GEMM!
@@ -5002,7 +5053,32 @@ private:
         } else {
             launch_unpack_sk_paired2_f16_dispatch(body_dev + dn_offset, dn_code, w2_f16, D, inter, stream_);
         }
-        if (!blaslt_.gemm_f16_f32(w2_f16, act_buf, y_out_f32, m_e, D, inter, stream_, alpha2)) {
+        if (mp) { const size_t b = moe_prof_.mark(stream_); moe_prof_.seg(1, mp_a, b); mp_a = b; }
+        if (y_out_f16) {
+            const bool ok16 = blaslt_.gemm_f16_f16(w2_f16, act_buf, y_out_f16, m_e, D, inter, stream_, alpha2);
+            if (mp) moe_prof_.seg(2, mp_a, moe_prof_.mark(stream_));
+            if (ok16) return;
+            // rocBLAS refused: native FP32 kernels into gu_buf (2*inter >= D columns), narrowed into the FP16 buckets
+            for (int off = 0; off < m_e; off += chunk_cap) {
+                const int cur_m = std::min(chunk_cap, m_e - off);
+                const half_t* a_sub = act_buf + static_cast<size_t>(off) * inter;
+                if (dn_code == CODE_SF4) {
+                    const uint8_t* p = body_dev + dn_offset;
+                    launch_sf4_linear(p, p + static_cast<size_t>(D) * (inter >> 1), sf4_w2_outer, a_sub, gu_buf, cur_m, D, inter, mem_info_.gen, stream_, false);
+                } else if (dn_code == CODE_MX8) {
+                    launch_mx8_linear(body_dev + dn_offset, body_dev + dn_offset + static_cast<size_t>(D) * inter, a_sub, gu_buf, cur_m, D, inter, mem_info_.gen, stream_);
+                } else if (dn_code == CODE_GGUF_RAW) {
+                    launch_gguf_linear(body_dev, dn_offset, 0, a_sub, gu_buf, cur_m, D, inter, inter, stream_);
+                } else {
+                    launch_sk_paired2_linear(body_dev + dn_offset, dn_code, reinterpret_cast<const half_t*>(body_dev), a_sub, gu_buf, cur_m, D, inter, stream_);
+                }
+                k_f32_to_f16<<<(cur_m * D + 255) / 256, 256, 0, stream_>>>(gu_buf, y_out_f16 + static_cast<size_t>(off) * D, cur_m * D);
+            }
+            return;
+        }
+        const bool mp_ok2 = blaslt_.gemm_f16_f32(w2_f16, act_buf, y_out_f32, m_e, D, inter, stream_, alpha2);
+        if (mp) moe_prof_.seg(2, mp_a, moe_prof_.mark(stream_));
+        if (!mp_ok2) {
             if (dn_code == CODE_SF4) {
                 const uint8_t* p = body_dev + dn_offset;
                 launch_sf4_linear(p, p + static_cast<size_t>(D) * (inter >> 1), sf4_w2_outer, act_buf, y_out_f32, m_e, D, inter, mem_info_.gen, stream_, false);
@@ -5014,6 +5090,87 @@ private:
                 launch_sk_paired2_linear(body_dev + dn_offset, dn_code, reinterpret_cast<const half_t*>(body_dev), act_buf, y_out_f32, m_e, D, inter, stream_);
             }
         }
+    }
+
+    // RDNA2 rocBLAS prompt route: run the VRAM experts with 1..min_rows-1 rows in two grouped native launches (FP32 rows into
+    // sc_bucket_y32_), before the per-expert rocBLAS loop. Returns whether expert e was done here (host view of the same rule).
+    std::array<bool, 128> run_small_experts_grouped(int ip, const int32_t* h_off, int32_t* d_off, const int32_t* d_btk,
+                                                    const float* mlpin, half_t* d_act, int B) {
+        std::array<bool, 128> done{};
+        const int D = c_.hidden;
+        bool any = false;
+        for (int e = 0; e < c_.n_experts && e < 128; ++e) {
+            const int m = h_off[e + 1] - h_off[e];
+            done[e] = m > 0 && m < rocblas_min_rows_ && h_layer_exps_[ip][e].body != nullptr;
+            any = any || done[e];
+        }
+        auto* d_small = reinterpret_cast<GpuExpertDesc*>(sc_small_exps_.dev_ptr);
+        k_moe_small_descs<<<1, 128, 0, stream_>>>(reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr), d_off, d_small, rocblas_min_rows_);
+        if (!any) return done;
+        half_t* mlpf16 = reinterpret_cast<half_t*>(sc_mlp_f16_.dev_ptr);
+        k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
+        k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
+            d_small, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+        k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
+            d_small, d_off, d_act, reinterpret_cast<float*>(sc_bucket_y32_.dev_ptr), D, c_.inter);
+        return done;
+    }
+
+    void reduce_buckets_f16_route(const float* d_by, const int32_t* d_s2b, const int32_t* tk_i, const float* tk_w, float* moeout, int B) {
+        const int D = c_.hidden;
+        k_moe_reduce_buckets_mixed<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
+            reinterpret_cast<const half_t*>(d_by), reinterpret_cast<const float*>(sc_bucket_y32_.dev_ptr),
+            reinterpret_cast<const GpuExpertDesc*>(sc_small_exps_.dev_ptr), tk_i, d_s2b, tk_w, moeout, B, c_.top_k, D);
+    }
+
+    // CSR expert buckets of a batch. B >= 16: the parallel count/prefix/scatter kernels; the serial single-block builder
+    // loops over all B * top_k pairs per thread. The order inside a bucket differs, the per-row results and the reduce do not.
+    void build_moe_buckets(const int32_t* tk_i, int32_t* d_off, int32_t* d_btk, int32_t* d_s2b, int B) {
+        const int tot_pairs = B * c_.top_k;
+        if (B >= 16) {
+            int32_t* d_cur = reinterpret_cast<int32_t*>(sc_exp_cur_.dev_ptr);
+            (void)hipMemsetAsync(d_off, 0, 129 * sizeof(int32_t), stream_);
+            k_moe_count_buckets<<<std::min(64, (tot_pairs + 255) / 256), 256, 0, stream_>>>(tk_i, d_off, tot_pairs);
+            k_moe_prefix_buckets<<<1, 128, 0, stream_>>>(d_off, d_off, d_cur);
+            k_moe_scatter_buckets<<<(tot_pairs + 255) / 256, 256, 0, stream_>>>(tk_i, d_cur, d_btk, d_s2b, tot_pairs, c_.top_k);
+        } else {
+            k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
+        }
+    }
+
+    // Per-expert native kernels (no FP16 unpack): the hybrid prompt route's path for experts with few rows. y_out is FP32 [m_e, D].
+    void run_single_expert_native(const uint8_t* body_dev, uint8_t gu_code, uint8_t dn_code, uint32_t dn_offset,
+                                  float sf4_w13, float sf4_w2, const half_t* x_slice, float* d_gu, half_t* d_act, float* y_slice, int m_e) {
+        const int D = c_.hidden;
+        // #6580: Chunk m_e by sc_moe_gu_cap_ so d_gu [sc_moe_gu_cap_, 2*inter] NEVER overflows when m_e > B!
+                        for (int off = 0; off < m_e; off += sc_moe_gu_cap_) {
+                            const int cur_m = std::min(sc_moe_gu_cap_, m_e - off);
+                            const half_t* x_sub = x_slice + static_cast<size_t>(off) * D;
+                            float* y_sub = y_slice + static_cast<size_t>(off) * D;
+                            if (gu_code == CODE_SF4) {
+                                const uint8_t* p = body_dev + 16;
+                                launch_sf4_linear(p, p + static_cast<size_t>(2 * c_.inter) * (D >> 1), sf4_w13, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_, false);
+                            } else if (gu_code == CODE_MX8) {
+                                launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
+                            } else if (gu_code == CODE_GGUF_RAW) {
+                                launch_gguf_linear(body_dev, 0, 1, x_sub, d_gu, cur_m, 2 * c_.inter, D, c_.inter, stream_);
+                            } else {
+                                launch_sk_linear(body_dev + static_cast<size_t>(c_.inter) * 2, gu_code, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
+                            }
+                            k_situ_interleaved<<<(cur_m * c_.inter + 255) / 256, 256, 0, stream_>>>(
+                                d_gu, d_act, cur_m, c_.inter, c_.situ_beta, c_.situ_lb);
+                            if (dn_code == CODE_SF4) {
+                                const uint8_t* p = body_dev + dn_offset;
+                                launch_sf4_linear(p, p + static_cast<size_t>(D) * (c_.inter >> 1), sf4_w2, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_, false);
+                            } else if (dn_code == CODE_MX8) {
+                                launch_mx8_linear(body_dev + dn_offset, body_dev + dn_offset + static_cast<size_t>(D) * c_.inter, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_);
+                            } else if (dn_code == CODE_GGUF_RAW) {
+                                launch_gguf_linear(body_dev, dn_offset, 0, d_act, y_sub, cur_m, D, c_.inter, c_.inter, stream_);
+                            } else {
+                                launch_sk_paired2_linear(body_dev + dn_offset, dn_code,
+                                                         reinterpret_cast<const half_t*>(body_dev), d_act, y_sub, cur_m, D, c_.inter, stream_);
+                            }
+                        }
     }
 
     void launch_trunk_linear(const std::string& key, const float* X, float* Y, int M, int N, int K) {
@@ -5256,7 +5413,7 @@ private:
             !re(sc_sinks_, static_cast<size_t>(B) * c_.n_head * 4) || !re(sc_gate_a_, static_cast<size_t>(B) * q_dim * 4) ||
             !re(sc_k_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) || !re(sc_v_dyn_, static_cast<size_t>(B) * c_.n_kv * 4 * 4) ||
             !re(sc_attn_out_, static_cast<size_t>(B) * q_dim * 4) ||
-            !re(sc_splitkv_part_, static_cast<size_t>(std::max(B, 4)) * c_.n_head * 4 * 130 * 4) ||
+            !re(sc_splitkv_part_, std::max(static_cast<size_t>(std::max(std::min(B, 64), 4)) * 32, static_cast<size_t>(std::max(B, 4)) * 4) * c_.n_head * 130 * 4) ||
             !re(sc_o_proj_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_a_sconv_, static_cast<size_t>(B) * D * 4) || !re(sc_mlp_in_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_mlp_f16_, static_cast<size_t>(moe_gu_cap) * D * sizeof(half_t)) ||
@@ -5275,6 +5432,8 @@ private:
             !re(sc_slotk_bidx_, static_cast<size_t>(B) * c_.top_k * 4) ||
             !re(sc_bucket_x_f16_, static_cast<size_t>(B) * c_.top_k * D * sizeof(half_t)) ||
             !re(sc_bucket_y_, static_cast<size_t>(B) * c_.top_k * D * 4) ||
+            (moe_y_f16_ && !re(sc_bucket_y32_, static_cast<size_t>(B) * c_.top_k * D * 4)) ||
+            (moe_y_f16_ && !re(sc_small_exps_, 128 * sizeof(GpuExpertDesc))) ||
             !re(sc_moe_out_, static_cast<size_t>(B) * D * 4) || !re(sc_m_sconv_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_exp_tok_idx_, static_cast<size_t>(moe_gu_cap) * 4) || !re(sc_exp_tok_w_, static_cast<size_t>(moe_gu_cap) * 4) ||
             !re(sc_h_norm_, static_cast<size_t>(B) * D * 4) ||
@@ -6422,25 +6581,50 @@ private:
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
                         aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
-            } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
-                // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
-                float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
+            } else if (is_contiguous_single_slot && B >= 64 && attn_qtile_ && mem_info_.gen == AmdGen::Rdna2) {
+                // RDNA2 prompt chunks: query-tiled kernel (K/V tiles shared by 8 queries in LDS)
+                const dim3 qgrid(c_.n_head, (B + 7) / 8);
                 if (is_fp8) {
-                    k3_flash_splitkv_part<true, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
-                        q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                    k3_flash_swa_gqa_qtile<true><<<qgrid, 256, 0, stream_>>>(
+                        q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
-                    k3_flash_splitkv_part<false, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
-                        q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                    k3_flash_swa_gqa_qtile<false><<<qgrid, 256, 0, stream_>>>(
+                        q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
-                k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(
-                    sp_part, gatea, aout, B, c_.n_head);
+            } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
+                // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
+                float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
+                // KV splits per head: fixed per engine (graph capture records the grid), more for long contexts so each
+                // walker covers fewer positions (the per-key reduce + exps are latency-bound)
+                auto launch_splitkv = [&](auto ks_tag) {
+                    constexpr int KS = decltype(ks_tag)::value;
+                    if (is_fp8) {
+                        k3_flash_splitkv_part<true, KS><<<dim3(c_.n_head, B, KS), 256, 0, stream_>>>(
+                            q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                            reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
+                            sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    } else {
+                        k3_flash_splitkv_part<false, KS><<<dim3(c_.n_head, B, KS), 256, 0, stream_>>>(
+                            q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
+                            sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    }
+                    k3_flash_splitkv_reduce<KS><<<dim3(c_.n_head, B), 32, 0, stream_>>>(sp_part, gatea, aout, B, c_.n_head);
+                };
+                if (B > 64) launch_splitkv(std::integral_constant<int, 4>{});   // the partials hold 32 splits for <= 64 rows only
+                else if (dec_splits_ == 32) launch_splitkv(std::integral_constant<int, 32>{});
+                else if (dec_splits_ == 16) launch_splitkv(std::integral_constant<int, 16>{});
+                else launch_splitkv(std::integral_constant<int, 4>{});
             } else if (B <= 8 || (halo_ && halo_->cfg.c64_opt && !halo_->cfg.exact_mode && all_distinct_slots && B <= 64)) {
                 if (is_fp8) {
                     k3_flash_swa_gqa_splitkv<true><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
@@ -6561,6 +6745,8 @@ private:
             // Fast Path B1 (Hybrid partial-VRAM, B <= 16): Strata Predictive CPU/RAM Hybrid (GPU VRAM+ElasticCache || Spin-Wait CPU Pool + 3x-Loop Async DMA Prefetch!)
             // Fast Path B2 (Hybrid partial-VRAM, B > 16): Chunked Double-Buffered GPU Matrix-Core Expert Streaming!
             bool fused_moe_post = false;
+            moe_prof_.armed = moe_prof_.on && B >= 64;
+            const size_t mp_span0 = moe_prof_.armed ? moe_prof_.mark(stream_) : 0;
             if (ep2_active_) {
                 // Dual-GPU Expert Parallelism: launch GPU 1 peer experts FIRST, then compute GPU 0 (+ optional hybrid RAM) in parallel!
                 if (!fused_router_f16) {
@@ -6676,16 +6862,22 @@ private:
                 half_t*  d_act = reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr);
                 float*   d_by  = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
 
-                k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
+                build_moe_buckets(tk_i, d_off, d_btk, d_s2b, B);
                 k_gather_rows_f16<<<(B * c_.top_k * D + 255) / 256, 256, 0, stream_>>>(
                     mlpin, d_btk, d_bx, B * c_.top_k, D);
 
                 int32_t h_off[129];
+                const auto mp_h0 = std::chrono::steady_clock::now();
+                const size_t mp_g0 = moe_prof_.armed ? moe_prof_.mark(stream_) : 0;
                 if (!hip_ok(hipMemcpyAsync(h_off, d_off, 129 * sizeof(int32_t), hipMemcpyDeviceToHost, stream_), "moe off D2H", err) ||
                     !hip_ok(hipStreamSynchronize(stream_), "moe off sync", err)) {
                     return false;
                 }
+                if (moe_prof_.armed) moe_prof_.host_sync_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mp_h0).count();
+                if (moe_prof_.armed) moe_prof_.gap_open = mp_g0;
                 const auto& dir = adj_dir_;
+                std::array<bool, 128> small_done{};
+                if (moe_y_f16_) small_done = run_small_experts_grouped(ip, h_off, d_off, d_btk, mlpin, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B);
                 for (int eid = 0; eid < c_.n_experts; ++eid) {
                     const int beg = h_off[eid];
                     const int m_e = h_off[eid + 1] - beg;
@@ -6702,16 +6894,22 @@ private:
                                                halo_->slab_arena.h_dev_ptrs[dir_idx] != nullptr)
                                                   ? halo_->slab_arena.h_dev_ptrs[dir_idx]
                                                   : (expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx]);
+                    if (small_done[eid]) continue;
                     run_single_expert_blaslt(
                         body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset,
                         expert_sf4_outer_[dir_idx].first, expert_sf4_outer_[dir_idx].second,
                         d_bx + static_cast<size_t>(beg) * D,
                         d_gu, d_act, d_by + static_cast<size_t>(beg) * D,
-                        m_e, sc_moe_gu_cap_, D, c_.inter);
+                        m_e, sc_moe_gu_cap_, D, c_.inter,
+                        moe_y_f16_ ? reinterpret_cast<half_t*>(d_by) + static_cast<size_t>(beg) * D : nullptr);
                 }
 
-                k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
-                    d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+                if (moe_y_f16_) {
+                    reduce_buckets_f16_route(d_by, d_s2b, tk_i, tk_w, moeout, B);
+                } else {
+                    k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
+                        d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+                }
             } else if (layer_all_gpu_[ip]) {
                 const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
                 int32_t* d_off = reinterpret_cast<int32_t*>(sc_exp_off_.dev_ptr);
@@ -7168,17 +7366,23 @@ private:
                 half_t*  d_act = reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr);
                 float*   d_by  = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
 
-                k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
+                build_moe_buckets(tk_i, d_off, d_btk, d_s2b, B);
                 k_gather_rows_f16<<<(B * c_.top_k * D + 255) / 256, 256, 0, stream_>>>(
                     mlpin, d_btk, d_bx, B * c_.top_k, D);
 
                 int32_t h_off[129];
+                const auto mp_h0 = std::chrono::steady_clock::now();
+                const size_t mp_g0 = moe_prof_.armed ? moe_prof_.mark(stream_) : 0;
                 if (!hip_ok(hipMemcpyAsync(h_off, d_off, 129 * sizeof(int32_t), hipMemcpyDeviceToHost, stream_), "moe off D2H", err) ||
                     !hip_ok(hipStreamSynchronize(stream_), "moe off sync", err)) {
                     return false;
                 }
+                if (moe_prof_.armed) moe_prof_.host_sync_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mp_h0).count();
+                if (moe_prof_.armed) moe_prof_.gap_open = mp_g0;
 
                 const auto& dir = adj_dir_;
+                std::array<bool, 128> small_done{};
+                if (moe_y_f16_) small_done = run_small_experts_grouped(ip, h_off, d_off, d_btk, mlpin, d_act, B);
                 struct ActiveExp {
                     int eid, dir_idx, beg, m_e;
                     const uint8_t* dev_ptr;
@@ -7241,39 +7445,21 @@ private:
                     }
                     const half_t* x_slice = d_bx + static_cast<size_t>(ae.beg) * D;
                     float* y_slice = d_by + static_cast<size_t>(ae.beg) * D;
-                    if (blaslt_.ready() && ae.m_e >= 8 && d_exp_w13_f16_.dev_ptr && d_exp_w2_f16_.dev_ptr) {
+                    if (blaslt_.ready() && ae.m_e >= (moe_y_f16_ ? rocblas_min_rows_ : 8) && d_exp_w13_f16_.dev_ptr && d_exp_w2_f16_.dev_ptr) {
                         run_single_expert_blaslt(body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset,
-                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, sc_moe_gu_cap_, D, c_.inter);
+                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, sc_moe_gu_cap_, D, c_.inter,
+                                                 moe_y_f16_ ? reinterpret_cast<half_t*>(d_by) + static_cast<size_t>(ae.beg) * D : nullptr);
+                    } else if (moe_y_f16_) {
+                        // few rows: the native kernels beat an FP16 unpack of the whole expert; FP32 into the unused upper half of
+                        // the FP16 bucket buffer, then narrowed into the expert's FP16 bucket rows
+                        float* scratch = d_by + static_cast<size_t>(B) * c_.top_k * D / 2;
+                        run_single_expert_native(body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset, sf4_w13, sf4_w2,
+                                                 x_slice, d_gu, d_act, scratch, ae.m_e);
+                        k_f32_to_f16<<<(ae.m_e * D + 255) / 256, 256, 0, stream_>>>(
+                            scratch, reinterpret_cast<half_t*>(d_by) + static_cast<size_t>(ae.beg) * D, ae.m_e * D);
                     } else {
-                        // #6580: Chunk m_e by sc_moe_gu_cap_ so d_gu [sc_moe_gu_cap_, 2*inter] NEVER overflows when m_e > B!
-                        for (int off = 0; off < ae.m_e; off += sc_moe_gu_cap_) {
-                            const int cur_m = std::min(sc_moe_gu_cap_, ae.m_e - off);
-                            const half_t* x_sub = x_slice + static_cast<size_t>(off) * D;
-                            float* y_sub = y_slice + static_cast<size_t>(off) * D;
-                            if (ent.gu_code_id == CODE_SF4) {
-                                const uint8_t* p = body_dev + 16;
-                                launch_sf4_linear(p, p + static_cast<size_t>(2 * c_.inter) * (D >> 1), sf4_w13, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_, false);
-                            } else if (ent.gu_code_id == CODE_MX8) {
-                                launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
-                            } else if (ent.gu_code_id == CODE_GGUF_RAW) {
-                                launch_gguf_linear(body_dev, 0, 1, x_sub, d_gu, cur_m, 2 * c_.inter, D, c_.inter, stream_);
-                            } else {
-                                launch_sk_linear(body_dev + static_cast<size_t>(c_.inter) * 2, ent.gu_code_id, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
-                            }
-                            k_situ_interleaved<<<(cur_m * c_.inter + 255) / 256, 256, 0, stream_>>>(
-                                d_gu, d_act, cur_m, c_.inter, c_.situ_beta, c_.situ_lb);
-                            if (ent.dn_code_id == CODE_SF4) {
-                                const uint8_t* p = body_dev + ent.dn_offset;
-                                launch_sf4_linear(p, p + static_cast<size_t>(D) * (c_.inter >> 1), sf4_w2, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_, false);
-                            } else if (ent.dn_code_id == CODE_MX8) {
-                                launch_mx8_linear(body_dev + ent.dn_offset, body_dev + ent.dn_offset + static_cast<size_t>(D) * c_.inter, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_);
-                            } else if (ent.dn_code_id == CODE_GGUF_RAW) {
-                                launch_gguf_linear(body_dev, ent.dn_offset, 0, d_act, y_sub, cur_m, D, c_.inter, c_.inter, stream_);
-                            } else {
-                                launch_sk_paired2_linear(body_dev + ent.dn_offset, ent.dn_code_id,
-                                                         reinterpret_cast<const half_t*>(body_dev), d_act, y_sub, cur_m, D, c_.inter, stream_);
-                            }
-                        }
+                        run_single_expert_native(body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset, sf4_w13, sf4_w2,
+                                                 x_slice, d_gu, d_act, y_slice, ae.m_e);
                     }
                     return true;
                 };
@@ -7288,6 +7474,7 @@ private:
                     (void)hipMemsetAsync(d_by, 0, static_cast<size_t>(B) * c_.top_k * D * sizeof(float), stream_);
                 }
                 for (const auto& ge : gpu_exps) {
+                    if (small_done[ge.eid]) continue;
                     if (!exec_one(ge, ge.dev_ptr)) return false;
                 }
 
@@ -7295,7 +7482,9 @@ private:
                     const auto& re = ram_exps[ri];
                     const uint8_t* body_dev = nullptr;
                     if (hybrid_.active()) {
+                        const size_t mp_w0 = moe_prof_.armed ? moe_prof_.mark(stream_) : 0;
                         body_dev = hybrid_.wait_prefill_stage(ri, stream_);
+                        if (moe_prof_.armed) moe_prof_.seg(4, mp_w0, moe_prof_.mark(stream_));
                         if (!exec_one(re, body_dev)) return false;
                         hybrid_.mark_prefill_compute_done(ri, stream_);
                         if (ri + 2 < static_cast<int>(ram_exps.size())) {
@@ -7314,9 +7503,14 @@ private:
                     (void)hipStreamSynchronize(stream_);
                 }
 
-                k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
-                    d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+                if (moe_y_f16_) {
+                    reduce_buckets_f16_route(d_by, d_s2b, tk_i, tk_w, moeout, B);
+                } else {
+                    k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
+                        d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+                }
             }
+            if (moe_prof_.armed) moe_prof_.seg(0, mp_span0, moe_prof_.mark(stream_));
             if (ep2_active_ && !layer_all_ep2_[ip]) {
                 if (!finish_peer_moe_add(B, moeout, err)) return false;
             }
@@ -7517,6 +7711,11 @@ private:
         }
 
         const bool ok = hip_ok(hipStreamSynchronize(stream_), "forward_batch sync", err);
+        if (moe_prof_.on && B >= 64 && moe_prof_.used > 0) {
+            std::fprintf(stderr, "[MOE-PROF] rocblas host %.1fms over %ld calls\n", blaslt_.host_ms, blaslt_.host_calls);
+            blaslt_.host_ms = 0.0; blaslt_.host_calls = 0;
+            moe_prof_.report(B);
+        }
         if (prof_on) {
             double sum = 0.0;
             for (int i = 0; i < 8; ++i) sum += p_acc[i];
@@ -9861,6 +10060,7 @@ private:
         adj_dir_.clear();
         free_gpu_buffer(expert_gpu_arena_); free_gpu_buffer(d_exp_stage_);
         free_gpu_buffer(d_exp_w13_f16_); free_gpu_buffer(d_exp_w2_f16_);
+        free_gpu_buffer(dense_w16_); free_gpu_buffer(dense_x16_); free_gpu_buffer(dense_y16_); free_gpu_buffer(sc_bucket_y32_); free_gpu_buffer(sc_small_exps_);
         free_gpu_buffer(d_dspark_state_); free_gpu_buffer(d_dspark_state2_); free_gpu_buffer(d_dspark_latent_);
         free_gpu_buffer(d_dspark_corr_); free_gpu_buffer(d_dspark_toks_);
         free_gpu_buffer(d_dspark_blk_v_); free_gpu_buffer(d_dspark_blk_i_);
@@ -9943,6 +10143,35 @@ private:
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
     HybProf hyb_prof_;
+    // STRATA_INK_MOE_PROF=1: GPU time of the prompt-chunk MoE (B >= 64), split into weight unpack, GEMM, SITU and the rest
+    // (bucket build, the host sync on the bucket offsets, RAM expert DMA waits, reduce), one line per chunk.
+    struct MoeProf {
+        bool on = [] { const char* e = std::getenv("STRATA_INK_MOE_PROF"); return e && e[0] == '1'; }();
+        bool armed = false;
+        std::vector<hipEvent_t> ev;
+        size_t used = 0;
+        std::vector<std::array<size_t, 3>> segs;   // kind, start event, end event
+        double host_sync_ms = 0.0;
+        long calls = 0, rows = 0;
+        size_t gap_open = static_cast<size_t>(-1);   // event before the offsets sync; closed by the next GPU work
+        size_t mark(hipStream_t s) {
+            if (used == ev.size()) { hipEvent_t e{}; (void)hipEventCreate(&e); ev.push_back(e); }
+            (void)hipEventRecord(ev[used], s);
+            return used++;
+        }
+        void seg(int kind, size_t a, size_t b) { segs.push_back({static_cast<size_t>(kind), a, b}); }
+        void report(int B) {
+            double t[6] = {0, 0, 0, 0, 0, 0};
+            for (const auto& g : segs) {
+                float ms = 0.0f;
+                (void)hipEventElapsedTime(&ms, ev[g[1]], ev[g[2]]);
+                t[g[0]] += ms;
+            }
+            std::fprintf(stderr, "[MOE-PROF] B=%d moe=%.1fms | unpack=%.1f gemm=%.1f situ=%.1f ram-wait=%.1f sync-gap=%.1f other=%.1f | host-sync wall %.1fms | %zu events | %ld expert calls, %.1f rows/call\n",
+                         B, t[0], t[1], t[2], t[3], t[4], t[5], t[0] - t[1] - t[2] - t[3] - t[4] - t[5], host_sync_ms, used, calls, calls ? double(rows) / calls : 0.0);
+            used = 0; segs.clear(); host_sync_ms = 0.0; armed = false; calls = 0; rows = 0;
+        }
+    } moe_prof_;
     int blaslt_min_m_ = 16;
     // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), every linear
     // layer uses the kernels whose row m is the value the one-token step gives (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.
@@ -9975,6 +10204,13 @@ private:
         ~ExactRowsScope() { f = old; }
     };
     int blaslt_moe_min_b_ = 999999;
+    bool moe_y_f16_ = false;
+    int dec_splits_ = 4;   // split-KV decode attention: KV splits per head (4, 16 or 32)
+    bool attn_qtile_ = [] { const char* e = std::getenv("STRATA_INK_ATTN_TILED"); return !(e && e[0] == '0'); }();
+    bool dense_f16_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_DENSE"); return !(e && e[0] == '0'); }();
+    GpuBuffer dense_w16_, dense_x16_, dense_y16_;   // RDNA2 rocBLAS dense route scratch
+    GpuBuffer sc_bucket_y32_, sc_small_exps_;   // grouped small experts of the RDNA2 rocBLAS route
+    int rocblas_min_rows_ = [] { const char* e = std::getenv("STRATA_INK_ROCBLAS_MIN_ROWS"); return e ? std::max(1, std::atoi(e)) : 16; }();   // RDNA2 rocBLAS prompt route: expert GEMMs write FP16 buckets
     bool use_i8_moe_wmma_ = true;
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;

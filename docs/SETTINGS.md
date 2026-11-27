@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (428)
+## Switches you can turn on (431)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -128,10 +128,12 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_INK_ATTN_PROBE_MAXREC` | number | NVIDIA and AMD | - |
 | `STRATA_INK_ATTN_PROBE_MINCTX` | number | NVIDIA and AMD | - |
 | `STRATA_INK_ATTN_PROBE_NEEDLE` | on / off | NVIDIA and AMD | - |
+| `STRATA_INK_DEC_SPLITS` | number | AMD | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_INK_DFLASH2_FORCE` | on / off | NVIDIA and AMD | [MODELS.md](MODELS.md) |
 | `STRATA_INK_ELASTIC_1M` | text | NVIDIA and AMD | [INKLING_SM120.md](INKLING_SM120.md) |
 | `STRATA_INK_INTELARC` | text | Intel Arc | - |
 | `STRATA_INK_INTELARC_EXACT` | text | Intel Arc | - |
+| `STRATA_INK_KEEP_CHUNK` | on / off | AMD | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_INK_KV_FIRST` | on / off | NVIDIA and AMD | - |
 | `STRATA_INK_KV_K8V4` | on / off | NVIDIA and AMD | - |
 | `STRATA_INK_KV_RAM_MB` | number | NVIDIA and AMD | - |
@@ -140,6 +142,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_INK_M5MAX` | on / off | Mac | - |
 | `STRATA_INK_M5MAX_EXACT` | on / off | Mac | - |
 | `STRATA_INK_NUMA` | on / off | NVIDIA and AMD | - |
+| `STRATA_INK_PIN_CORE` | on / off | AMD | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_INK_PREFILL_CAP` | number | NVIDIA and AMD | - |
 | `STRATA_INK_R9700` | text | AMD | - |
 | `STRATA_INK_R9700_ASYNC_CKPT` | text | AMD | - |
@@ -445,7 +448,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (138)
+## Switches that go back to earlier behaviour (141)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -484,6 +487,7 @@ version made it the default.
 | `STRATA_IGPU_DEFAULTS` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_IGPU_PROMPT_SET` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [RADEON_780M.md](RADEON_780M.md), [release-notes-0.2.1.md](release-notes-0.2.1.md) |
 | `STRATA_IL_PAD` | number | NVIDIA and AMD | v0.2.16 | - |
+| `STRATA_INK_ATTN_TILED` | on / off | AMD | - | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_INK_CHUNK_AUTO` | number | NVIDIA and AMD | v0.2.21 | - |
 | `STRATA_INK_EXACT_GRAPH` | on / off | NVIDIA and AMD | v0.2.21 | - |
 | `STRATA_INK_EXACT_ROWS` | on / off | AMD | v0.2.21 | - |
@@ -502,6 +506,8 @@ version made it the default.
 | `STRATA_INK_PROMOTE_ASYNC` | text | AMD | v0.2.21 | - |
 | `STRATA_INK_Q80_TC` | number | NVIDIA and AMD | v0.2.21 | - |
 | `STRATA_INK_Q8_0_DENSE` | on / off | NVIDIA and AMD | v0.2.21 | - |
+| `STRATA_INK_ROCBLAS` | on / off | AMD | - | [AMD_HIP.md](AMD_HIP.md) |
+| `STRATA_INK_ROCBLAS_DENSE` | on / off | AMD | - | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_INK_RTX5060TI` | text | NVIDIA | - | [INKLING_SM120.md](INKLING_SM120.md) |
 | `STRATA_INK_RTX5060TI_EXACT` | text | NVIDIA | - | [INKLING_SM120.md](INKLING_SM120.md) |
 | `STRATA_INK_RTX5090` | text | NVIDIA | - | [INKLING_SM120.md](INKLING_SM120.md) |

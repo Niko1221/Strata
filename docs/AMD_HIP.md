@@ -554,6 +554,43 @@ On a 16 GB card keep the defaults for `--pcie-frac` and `--adapt-every`; the 790
 
 The 16 GB card holds 6,310 expert slots at 16K context and 5,247 at 131,072.
 
+### Inkling-2-Mini on RDNA2 (strata-inkling)
+
+hipBLASLt has no gfx1030 kernels and RDNA2 has no WMMA, so `strata-inkling` used to run prompt chunks on its generic kernels
+(about 200 tok/s on an RX 6900 XT). On RDNA2 the HIP backend now loads rocBLAS instead: prompt chunks of 64 tokens or more run their
+dense projections and experts as FP16-in / FP16-out rocBLAS GEMMs with FP32 accumulation (the gfx103x Tensile kernels are 1.6x to
+5x faster with FP16 output than with FP32 output), experts with fewer than 16 rows run in two grouped native launches, and the
+prompt attention shares 32-key K/V tiles across 8 queries (`k3_flash_swa_gqa_qtile`, fdot2). Decode is unchanged, apart from 16
+KV splits per head above 8K context.
+
+> **Measured on:** RX 6900 XT 16 GB (gfx1030), Ryzen 9 5950X, 62 GB DDR4-3600, Arch Linux, ROCm 7.2.4, Inkling-2-Mini SQ-15,
+> `--vram-experts-gb 9.79 --ram-experts-gb 2.40`, engine `--bench` (2,048-token prompt) and `--kld-eval` against `--dump-ref --cpu`
+> on 2,048 tokens of real text.
+
+| Path | Prompt (2K) | Decode | KLD vs CPU FP32 | PPL (CPU 4.994) |
+| --- | ---: | ---: | ---: | ---: |
+| Generic kernels (`STRATA_INK_ROCBLAS=0 STRATA_INK_ATTN_TILED=0`) | 264 tok/s | 38.3 | 0.0046 | 4.986 |
+| rocBLAS + tiled attention (default on RDNA2) | 765 tok/s | 39.4 | 0.0042 | 5.011 |
+| the same with `--chunk 1024` and `STRATA_INK_PIN_CORE=1` | 1,048 tok/s | 43.8 | 0.0042 | 5.024 |
+
+`--ring-check 64` passes at `--chunk 512` and `--chunk 1024` (median KL 0.0005). On a 16 GB card the experts in VRAM decide
+decode speed: moving 1.1 GB of experts to RAM cost about 25% decode, so prefer a shorter context over fewer VRAM experts.
+
+The DFlash 2 drafter pays off on top of this. It takes about 0.8 GiB of the card (414 MiB of drafter plus scratch), so on a 16 GB card
+move about 0.3 GB of experts to RAM for it. With 10.0 GB of VRAM experts, 64K context, FP8 KV and `--chunk 1024`, it decoded 400-token
+answers at 72.7 tok/s for code (46.7 without, 78% of drafts accepted), 74.3 for JSON (48.0, 83%) and 57.4 for chat (51.5, 60%), and 38-42
+tok/s after a 64K prompt (33.7). The whole card peaked at 15.49 GiB, the desktop's 477 MiB included.
+
+| Switch | Effect |
+| --- | --- |
+| `STRATA_INK_ROCBLAS=0` | Keeps the generic kernels for prompt chunks (the way back) |
+| `STRATA_INK_ROCBLAS_DENSE=0` | Keeps the BF16 route for the dense projections only |
+| `STRATA_INK_ATTN_TILED=0` | Keeps `k3_flash_swa_gqa` for prompt attention |
+| `STRATA_INK_PIN_CORE=1` | Loads every expert of the looped core layers into VRAM first, so 36 of 48 visits per token skip the host sync of the hybrid decode path (decode 37.8 -> 41.2 tok/s at 9.79 GB of VRAM experts) |
+| `STRATA_INK_KEEP_CHUNK=1` | Keeps the configured `--chunk` when less than 2.5 GiB is free after load (otherwise capped to 512) |
+| `STRATA_INK_DEC_SPLITS=4/16/32` | KV splits per head of the decode attention (default 16 on RDNA2 above 8K context, else 4) |
+| `STRATA_INK_MOE_PROF=1` | One `[MOE-PROF]` line per prompt chunk: unpack, GEMM, SITU, RAM-expert waits, sync gap |
+
 Other gfx103x and RDNA2-adjacent cards (community reports):
 
 | Card | Report |
