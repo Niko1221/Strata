@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (338)
+## Switches you can turn on (339)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -102,6 +102,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_HC_Q8_TC` | number | NVIDIA and AMD | - |
 | `STRATA_HC_REQ8` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_HEAD_HOST` | on / off | NVIDIA and AMD | - |
+| `STRATA_HEAD_STAGE` | on / off | NVIDIA | [DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) |
 | `STRATA_HIPBLASLT_MOE_MIN_B` | number | AMD | - |
 | `STRATA_HIPBLASLT_TUNING` | on / off | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md), [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md), [RADEON_780M.md](RADEON_780M.md) |
 | `STRATA_HIPBLASLT_VERBOSE` | text | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md), [METHOD-AND-DISCLOSURES.md](bench-results/2026-10-03-community-r9700-windows/METHOD-AND-DISCLOSURES.md), [README.md](bench-results/2026-10-03-community-r9700-windows/README.md) |

@@ -49,6 +49,10 @@ Japanese and Korean drafts.
 
 Start a model with its run script (`./run-iq3_s.sh`) or `./setup.sh`.
 
+If the Q5_K output head takes a long time to load, try `STRATA_HEAD_STAGE=1 ./run-iq3_xxs.sh`.
+This copies the head through a temporary RAM buffer before uploading it to the GPU. It needs up to one head's
+worth of extra RAM during startup (417 MiB for IQ3_XXS); it does not change decoding. Unset it to use the direct copy.
+
 ## Build the engine yourself
 
 You need the CUDA 13.0 toolkit (`/usr/local/cuda`; DGX OS has it), cmake, ninja and Python 3.10 or newer.
