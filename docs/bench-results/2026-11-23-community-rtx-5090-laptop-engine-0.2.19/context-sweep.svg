@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" width="1200" height="640" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif">
+<rect width="1200" height="640" fill="#f5f2eb"/>
+<rect x="0" y="0" width="14" height="640" fill="#c2593f"/>
+<text x="70" y="52" font-size="27" font-weight="700" fill="#2b2623">Inkling-2-Mini vs Qwen3.8-Flash-Next on one 24 GB laptop GPU</text>
+<text x="70" y="82" font-size="15" fill="#52796f">RTX 5090 Laptop, Strata 0.2.19, greedy, 256 new tokens, median of two runs per point; Qwen from 8K (first requests after start excluded)</text>
+<text x="70" y="128" font-size="19" font-weight="700" fill="#2b2623">Decode</text>
+<text x="585.0" y="128" font-size="13" fill="#8a8178" text-anchor="end">tok/s</text>
+<line x1="70" y1="544.0" x2="585.0" y2="544.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="548.0" font-size="12" fill="#8a8178" text-anchor="end">0</text>
+<line x1="70" y1="478.3" x2="585.0" y2="478.3" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="482.3" font-size="12" fill="#8a8178" text-anchor="end">30</text>
+<line x1="70" y1="412.7" x2="585.0" y2="412.7" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="416.7" font-size="12" fill="#8a8178" text-anchor="end">60</text>
+<line x1="70" y1="347.0" x2="585.0" y2="347.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="351.0" font-size="12" fill="#8a8178" text-anchor="end">90</text>
+<line x1="70" y1="281.3" x2="585.0" y2="281.3" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="285.3" font-size="12" fill="#8a8178" text-anchor="end">120</text>
+<line x1="70" y1="215.7" x2="585.0" y2="215.7" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="219.7" font-size="12" fill="#8a8178" text-anchor="end">150</text>
+<line x1="70" y1="150.0" x2="585.0" y2="150.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="62" y="154.0" font-size="12" fill="#8a8178" text-anchor="end">180</text>
+<line x1="113.6" y1="150" x2="113.6" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="113.6" y="564" font-size="12" fill="#8a8178" text-anchor="middle">1K</text>
+<line x1="232.0" y1="150" x2="232.0" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="232.0" y="564" font-size="12" fill="#8a8178" text-anchor="middle">4K</text>
+<line x1="350.3" y1="150" x2="350.3" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="350.3" y="564" font-size="12" fill="#8a8178" text-anchor="middle">16K</text>
+<line x1="468.7" y1="150" x2="468.7" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="468.7" y="564" font-size="12" fill="#8a8178" text-anchor="middle">64K</text>
+<line x1="565.9" y1="150" x2="565.9" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="565.9" y="564" font-size="12" fill="#8a8178" text-anchor="middle">200K</text>
+<line x1="70" y1="544" x2="585.0" y2="544" stroke="#2b2623" stroke-width="1.5"/>
+<path d="M293.2,206.9 L352.3,234.1 L411.5,208.5 L446.1,256.3 L470.7,253.3 L505.3,263.7 L529.9,266.8 L564.5,264.2" fill="none" stroke="#52796f" stroke-width="3.2" stroke-linejoin="round"/>
+<circle cx="293.2" cy="206.9" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="352.3" cy="234.1" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="411.5" cy="208.5" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="446.1" cy="256.3" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="470.7" cy="253.3" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="505.3" cy="263.7" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="529.9" cy="266.8" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="564.5" cy="264.2" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<path d="M94.9,354.0 L210.9,316.6 L268.7,312.4 L327.2,350.2 L386.0,368.0 L420.7,396.3 L445.3,412.8" fill="none" stroke="#c2593f" stroke-width="3.2" stroke-linejoin="round"/>
+<circle cx="94.9" cy="354.0" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="210.9" cy="316.6" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="268.7" cy="312.4" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="327.2" cy="350.2" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="386.0" cy="368.0" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="420.7" cy="396.3" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="445.3" cy="412.8" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<path d="M210.9,370.6 L386.0,412.6 L445.3,427.1 L480.0,448.8 L501.3,443.5" fill="none" stroke="#c2593f" stroke-width="3.2" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<circle cx="210.9" cy="370.6" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="386.0" cy="412.6" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="445.3" cy="427.1" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="480.0" cy="448.8" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="501.3" cy="443.5" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<text x="327.5" y="586" font-size="13" fill="#2b2623" text-anchor="middle">prompt tokens already in context (log scale)</text>
+<text x="655.0" y="128" font-size="19" font-weight="700" fill="#2b2623">Prompt reading</text>
+<text x="1170.0" y="128" font-size="13" fill="#8a8178" text-anchor="end">tok/s</text>
+<line x1="655.0" y1="544.0" x2="1170.0" y2="544.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="548.0" font-size="12" fill="#8a8178" text-anchor="end">0</text>
+<line x1="655.0" y1="478.3" x2="1170.0" y2="478.3" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="482.3" font-size="12" fill="#8a8178" text-anchor="end">600</text>
+<line x1="655.0" y1="412.7" x2="1170.0" y2="412.7" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="416.7" font-size="12" fill="#8a8178" text-anchor="end">1,200</text>
+<line x1="655.0" y1="347.0" x2="1170.0" y2="347.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="351.0" font-size="12" fill="#8a8178" text-anchor="end">1,800</text>
+<line x1="655.0" y1="281.3" x2="1170.0" y2="281.3" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="285.3" font-size="12" fill="#8a8178" text-anchor="end">2,400</text>
+<line x1="655.0" y1="215.7" x2="1170.0" y2="215.7" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="219.7" font-size="12" fill="#8a8178" text-anchor="end">3,000</text>
+<line x1="655.0" y1="150.0" x2="1170.0" y2="150.0" stroke="#ddd6c8" stroke-width="1"/>
+<text x="647.0" y="154.0" font-size="12" fill="#8a8178" text-anchor="end">3,600</text>
+<line x1="698.6" y1="150" x2="698.6" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="698.6" y="564" font-size="12" fill="#8a8178" text-anchor="middle">1K</text>
+<line x1="817.0" y1="150" x2="817.0" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="817.0" y="564" font-size="12" fill="#8a8178" text-anchor="middle">4K</text>
+<line x1="935.3" y1="150" x2="935.3" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="935.3" y="564" font-size="12" fill="#8a8178" text-anchor="middle">16K</text>
+<line x1="1053.7" y1="150" x2="1053.7" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="1053.7" y="564" font-size="12" fill="#8a8178" text-anchor="middle">64K</text>
+<line x1="1150.9" y1="150" x2="1150.9" y2="544" stroke="#ddd6c8" stroke-width="1"/>
+<text x="1150.9" y="564" font-size="12" fill="#8a8178" text-anchor="middle">200K</text>
+<line x1="655.0" y1="544" x2="1170.0" y2="544" stroke="#2b2623" stroke-width="1.5"/>
+<path d="M878.2,265.2 L937.3,215.2 L996.5,198.0 L1031.1,203.6 L1055.7,206.4 L1090.3,212.6 L1114.9,225.4 L1149.5,236.8" fill="none" stroke="#52796f" stroke-width="3.2" stroke-linejoin="round"/>
+<circle cx="878.2" cy="265.2" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="937.3" cy="215.2" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="996.5" cy="198.0" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="1031.1" cy="203.6" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="1055.7" cy="206.4" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="1090.3" cy="212.6" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="1114.9" cy="225.4" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<circle cx="1149.5" cy="236.8" r="4" fill="#f5f2eb" stroke="#52796f" stroke-width="2.4"/>
+<path d="M679.9,234.3 L795.9,270.3 L853.7,284.8 L912.2,319.7 L971.0,378.1 L1005.7,411.9 L1030.3,432.6" fill="none" stroke="#c2593f" stroke-width="3.2" stroke-linejoin="round"/>
+<circle cx="679.9" cy="234.3" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="795.9" cy="270.3" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="853.7" cy="284.8" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="912.2" cy="319.7" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="971.0" cy="378.1" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="1005.7" cy="411.9" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="1030.3" cy="432.6" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<path d="M795.9,273.8 L971.0,364.4 L1030.3,425.1 L1065.0,458.9 L1086.3,474.6" fill="none" stroke="#c2593f" stroke-width="3.2" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<circle cx="795.9" cy="273.8" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="971.0" cy="364.4" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="1030.3" cy="425.1" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="1065.0" cy="458.9" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<circle cx="1086.3" cy="474.6" r="4" fill="#f5f2eb" stroke="#c2593f" stroke-width="2.4"/>
+<text x="912.5" y="586" font-size="13" fill="#2b2623" text-anchor="middle">prompt tokens already in context (log scale)</text>
+<line x1="70" y1="610" x2="100" y2="610" stroke="#52796f" stroke-width="3.2"/>
+<text x="108" y="615" font-size="14" fill="#2b2623">Qwen3.8-Flash-Next Q2_0</text>
+<line x1="308.6" y1="610" x2="338.6" y2="610" stroke="#c2593f" stroke-width="3.2"/>
+<text x="346.6" y="615" font-size="14" fill="#2b2623">Inkling-2-Mini SQ-20 (DSpark)</text>
+<line x1="596.4" y1="610" x2="626.4" y2="610" stroke="#c2593f" stroke-width="3.2" stroke-dasharray="7 5"/>
+<text x="634.4" y="615" font-size="14" fill="#2b2623">Inkling-2-Mini, KV fp8 (full 128K)</text>
+<text x="1170" y="615" font-size="13" fill="#8a8178" text-anchor="end">KI SOUVERÄN · measured, not claimed</text>
+</svg>
