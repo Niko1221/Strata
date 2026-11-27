@@ -150,15 +150,14 @@ __global__ void pool_pos(int32_t* __restrict__ pos, int kpool, int max_new, int 
 
 /// Append completed keys after the previously pooled keys.
 __global__ void commit_pooled_k(const float* __restrict__ stage, float* __restrict__ pooled, int key_dim,
-                                int max_new, int n_tok, int kpool, const int32_t* __restrict__ cnt,
-                                bool reference) {
+                                int max_new, int n_tok, int kpool, const int32_t* __restrict__ cnt) {
     const int n_new = idx_nnew(cnt, n_tok, kpool);
     const long long total = (long long) key_dim * max_new;
     const long long base = (long long) idx_npool(cnt) * key_dim;
     for (long long i = (long long) blockIdx.x * kBlock + threadIdx.x; i < total;
          i += (long long) gridDim.x * kBlock) {
         if (i >= (long long) key_dim * n_new) return;
-        pooled[base + i] = reference ? __half2float(__float2half_rn(stage[i])) : stage[i];
+        pooled[base + i] = stage[i];
     }
 }
 
@@ -182,7 +181,7 @@ __global__ void idx_advance_k(int32_t* __restrict__ cnt, int n_tok, int kpool) {
     cnt[0] = have % kpool;
 }
 
-// Match the reference dot-product reduction with one half-warp per visible pool.
+// Each warp scores one pool, with four consecutive channels per lane.
 template <int kHeads, int kDim>
 __global__
 __launch_bounds__(kDim) void reference_score_k(const float* __restrict__ iq, const float* __restrict__ wgt,
@@ -194,26 +193,20 @@ __launch_bounds__(kDim) void reference_score_k(const float* __restrict__ iq, con
     const int visible = (pos + (select_tail ? 0 : 1)) / kpool;
     if (visible <= n_keep)
         return;
-    const int lane = threadIdx.x % 16;
-    const int group = threadIdx.x / 16;
-    const unsigned mask = 0xffffu << (threadIdx.x % 32 >= 16 ? 16 : 0);
-    for (int j = blockIdx.x * (blockDim.x / 16) + group; j < visible; j += gridDim.x * (blockDim.x / 16)) {
-        const float* key = pooled + size_t(j) * kDim;
-        float keys[8];
-#pragma unroll
-        for (int g = 0; g < 8; g++)
-            keys[g] = key[lane + 16 * g];
-        float total = 0;
+    static_assert(kDim == 32 * 4);
+    const int lane = threadIdx.x % 32;
+    const int warp = threadIdx.x / 32;
+    const int warps_per_block = blockDim.x / 32;
+    for (int j = blockIdx.x * warps_per_block + warp; j < visible; j += gridDim.x * warps_per_block) {
+        const float* key = pooled + size_t(j) * kDim + 4 * lane;
+        float total = 0.f;
         for (int h = 0; h < kHeads; h++) {
-            const float* q = iq + (size_t(t) * kHeads + h) * kDim;
-            float v[4];
-#pragma unroll
-            for (int g = 0; g < 4; g++)
-                v[g] = __fmaf_rn(q[lane + 16 * g + 64], keys[g + 4], __fmul_rn(q[lane + 16 * g], keys[g]));
-            float dot = __fadd_rn(__fadd_rn(v[0], v[2]), __fadd_rn(v[1], v[3]));
-#pragma unroll
-            for (int off = 8; off; off /= 2)
-                dot = __fadd_rn(dot, __shfl_down_sync(mask, dot, off, 16));
+            const float* q = iq + (size_t(t) * kHeads + h) * kDim + 4 * lane;
+            float dot = 0.f;
+            for (int k = 0; k < 4; k++)
+                dot = __fmaf_rn(q[k], key[k], dot);
+            for (int off = 16; off; off /= 2)
+                dot = __fadd_rn(dot, __shfl_xor_sync(0xffffffff, dot, off));
             if (!lane)
                 total = __fmaf_rn(fmaxf(dot, 0.f), wgt[size_t(t) * kHeads + h], total);
         }
@@ -593,7 +586,7 @@ void indexer_select(IndexerCache& c, int layer, const IndexerWeights& w, const I
     // Rotate only the tail of the 128-channel head.
     rope_norm_head_tail(praw, pstage, kd, n_rot, 1, max_new, ppos, freq_base, stream, image);
     commit_pooled_k<<<grid_for((long long)kd * max_new), kBlock, 0, s>>>(
-        pstage, (float*)c.pooled[(std::size_t)layer], kd, max_new, n_tok, kp, cnt, reference);
+        pstage, (float*)c.pooled[(std::size_t)layer], kd, max_new, n_tok, kp, cnt);
     carry_store_k<<<grid_for((long long) 2 * kd * kp), kBlock, 0, s>>>(vgs, (float*) c.vg[(std::size_t) layer],
                                                                       kd, kp, n_tok, cnt);
     // The caller advances both counters once for all layers; this one only writes its own rows.

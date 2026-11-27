@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <map>
 #include <set>
 #include <string>
@@ -736,6 +737,42 @@ int run(int argc, char** argv) {
         }
         const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start;
         std::fprintf(stderr, "HY4_FLASH_EXPERT_HOST init_ms=%.1f\n", elapsed.count() * 1000);
+    }
+    if (const char* output = flag_value(argc, argv, "--dump-logits")) {
+        const char* value = flag_value(argc, argv, "--prefix-tokens");
+        size_t prefix = 0;
+        if (value) {
+            const char* end = value + std::strlen(value);
+            const auto parsed = std::from_chars(value, end, prefix);
+            if (parsed.ec != std::errc{} || parsed.ptr != end) prefix = 0;
+        }
+        if (!prefix || prefix >= tokens.size()) {
+            std::fprintf(stderr, "--dump-logits requires --prefix-tokens in [1, token count - 1]\n");
+            return 2;
+        }
+        std::ofstream rows(output, std::ios::binary);
+        if (!rows) {
+            std::fprintf(stderr, "cannot open %s for writing logits\n", output);
+            return 2;
+        }
+        fo.history = &tokens;
+        fo.want_logits = fo.logits_last_only = true;
+        for (size_t at = 0; at < tokens.size() - 1;) {
+            const size_t take = at == 0 ? prefix : 1;
+            const std::vector<int32_t> part(tokens.begin() + at, tokens.begin() + at + take);
+            std::vector<float> logits;
+            if (!forward_prefill(path, g, pack, part, logits, err, fo) || logits.size() != size_t(vocab)) {
+                std::fprintf(stderr, "--dump-logits failed at token %zu: %s\n", at, err.c_str());
+                return 2;
+            }
+            if (!rows.write(reinterpret_cast<const char*>(logits.data()), logits.size() * sizeof(float))) {
+                std::fprintf(stderr, "cannot write logits to %s\n", output);
+                return 2;
+            }
+            at += take;
+        }
+        rows.close();
+        return rows ? 0 : 2;
     }
     if (has_flag(argc, argv, "--ppl")) {
         const int c = prefill_chunk_max();
