@@ -2628,15 +2628,17 @@ public:
 
         // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM, and the SWA ring margin
         const int chunk_cap = batch_token_cap(batch);
-        if (B_tot > chunk_cap) {
+        if (B_tot > chunk_cap || r9700_fp8_split(batch) > 0) {
             const int V = c_.vocab_unpadded;
             const int D = c_.hidden;
             if (taps_out) {
                 for (int k = 0; k < 4; ++k) taps_out->taps[k].resize(static_cast<size_t>(B_tot) * D);
             }
             size_t logit_cursor = 0;
-            for (int off = 0; off < B_tot; off += chunk_cap) {
-                const int sub_n = std::min(chunk_cap, B_tot - off);
+            const std::vector<int> cuts = batch_cuts(batch, chunk_cap);
+            for (size_t ci = 0; ci + 1 < cuts.size(); ++ci) {
+                const int off = cuts[ci];
+                const int sub_n = cuts[ci + 1] - off;
                 StepBatch sub;
                 sub.n_tokens = sub_n;
                 sub.slot_ids.assign(batch.slot_ids.begin() + off, batch.slot_ids.begin() + off + sub_n);
@@ -2686,9 +2688,11 @@ public:
             }
         }
         const int chunk_cap = batch_token_cap(batch);
-        if (B_tot > chunk_cap) {
-            for (int off = 0; off < B_tot; off += chunk_cap) {
-                const int sub_n = std::min(chunk_cap, B_tot - off);
+        if (B_tot > chunk_cap || r9700_fp8_split(batch) > 0) {
+            const std::vector<int> cuts = batch_cuts(batch, chunk_cap);
+            for (size_t ci = 0; ci + 1 < cuts.size(); ++ci) {
+                const int off = cuts[ci];
+                const int sub_n = cuts[ci + 1] - off;
                 StepBatch sub;
                 sub.n_tokens = sub_n;
                 sub.slot_ids.assign(batch.slot_ids.begin() + off, batch.slot_ids.begin() + off + sub_n);
@@ -2794,7 +2798,49 @@ public:
 
     void hint_prompt_len(int slot, int prompt_len) override {
         if (has_df2_) df2_->hint_prompt(slot, prompt_len);
+        // R9700 FP8 rows and the DFlash 2 drafter: FP8 prompt rows change the taps the drafter reads (acceptance fell 5 to 15 points on p620), so while the drafter runs
+        // (up to 16 slots) the FP8 trunk / MoE only read the prompt rows the drafter never looks at (older than its window before the prompt's end). STRATA_INK_R9700_FP8_TAIL=n
+        // sets the length of the exact tail (default 2304, 0 = FP8 for every prompt row).
+        if (r9700_ && has_df2_ && max_slots_ <= 16 && slot >= 0 && slot < max_slots_) {
+            static const int tail = [] { const char* e = std::getenv("STRATA_INK_R9700_FP8_TAIL"); return (e && *e) ? std::max(0, std::atoi(e)) : 2304; }();
+            if (r9700_fp8_until_.size() < static_cast<size_t>(max_slots_)) r9700_fp8_until_.assign(max_slots_, INT32_MAX);
+            r9700_fp8_until_[slot] = (tail > 0) ? std::max(0, prompt_len - tail) : INT32_MAX;
+        }
     }
+
+    // Offset in the batch where the R9700 FP8 rows end (a single-slot contiguous batch that crosses its slot's FP8 limit), 0 if none; see hint_prompt_len.
+    int r9700_fp8_split(const StepBatch& batch) const {
+        if (r9700_fp8_until_.empty() || batch.n_tokens < 2) return 0;
+        const int s = batch.slot_ids[0];
+        if (s < 0 || s >= static_cast<int>(r9700_fp8_until_.size()) || batch.slot_ids[batch.n_tokens - 1] != s ||
+            batch.pos[batch.n_tokens - 1] != batch.pos[0] + batch.n_tokens - 1) return 0;
+        const int k = r9700_fp8_until_[s] - batch.pos[0];
+        return (k > 0 && k < batch.n_tokens) ? k : 0;
+    }
+    // Start offsets of the sub-batches (plus the end): steps of chunk_cap, with a cut at the FP8 limit.
+    std::vector<int> batch_cuts(const StepBatch& batch, int chunk_cap) const {
+        const int B_tot = batch.n_tokens;
+        const int k = r9700_fp8_split(batch);
+        std::vector<int> cuts;
+        for (int off = 0; off < B_tot; off += chunk_cap) {
+            if (k > 0 && off < k && off + chunk_cap > k) { cuts.push_back(off); cuts.push_back(k); }
+            else cuts.push_back(off);
+        }
+        cuts.push_back(B_tot);
+        return cuts;
+    }
+
+    // R9700: may this batch use the FP8 trunk / FP8 MoE rows (see hint_prompt_len)? Every row must lie before its slot's FP8 limit (INT32_MAX without a hint).
+    bool r9700_fp8_rows_ok(const StepBatch& batch) const {
+        if (r9700_fp8_until_.empty()) return true;
+        for (int b = 0; b < batch.n_tokens; ++b) {
+            const int s = batch.slot_ids[b];
+            if (s >= 0 && s < static_cast<int>(r9700_fp8_until_.size()) && batch.pos[b] >= r9700_fp8_until_[s]) return false;
+        }
+        return true;
+    }
+    std::vector<int32_t> r9700_fp8_until_;
+    bool r9700_fp8_now_ = true;
 
     void df2_ingest(int B) {
         const int off = df2_off_;
@@ -4820,7 +4866,7 @@ private:
             launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
             return;
         }
-        if (r9700_ && r9700_->cfg.fp8_trunk && !exact_rows_ && (M > 16 || r9700_->cfg.fp8_decode) && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
+        if (r9700_ && r9700_->cfg.fp8_trunk && r9700_fp8_now_ && !exact_rows_ && (M > 16 || r9700_->cfg.fp8_decode) && M >= 1 && N >= 64 && K >= 64 && (K & 15) == 0) {
             auto it = r9700_->fp8_map.find(W);
             if (it != r9700_->fp8_map.end() && it->second.K == K && N <= it->second.N &&
                 (M <= 4 || r9700_->ensure_x_fp8(M, K))) {
@@ -5349,6 +5395,7 @@ private:
     bool forward_batch_chunk(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err,
                              CandRows* cand_out = nullptr, int32_t* argmax_out_host = nullptr) {
         const int B = batch.n_tokens;
+        r9700_fp8_now_ = !r9700_ || r9700_fp8_rows_ok(batch);
         const int D = c_.hidden;
         const int q_dim = c_.n_head * c_.head_dim;
         const int kv_dim = c_.n_kv * c_.head_dim;
@@ -6675,7 +6722,7 @@ private:
                 } else {
                     k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
                 }
-                if (r9700_ && r9700_->cfg.fp8_moe && (B > 16 || r9700_->cfg.fp8_decode) && !r9700_fp8_keeps_layer(ip) && !exact_rows_ &&
+                if (r9700_ && r9700_->cfg.fp8_moe && r9700_fp8_now_ && (B > 16 || r9700_->cfg.fp8_decode) && !r9700_fp8_keeps_layer(ip) && !exact_rows_ &&
                     (layer_gu_class_[ip] == 1 || layer_gu_class_[ip] == 2) &&
                     layer_dn_class_[ip] == layer_gu_class_[ip]) {
                     // R9700 Native Zero-Spill Persistent FP8 WMMA MoE (BM=64 prefill, BM=16 decode/C64)
