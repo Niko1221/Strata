@@ -846,7 +846,7 @@ PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and t
 # Tencent Hy4-Flash (220B-A12B), Strata's own `.strata` v1.0 builds: a family with its own engine program (strata-hy4, a component like a model shape's engine), its own files
 # (one build + the Engram shard every build shares + an optional Vision shard) and its own installer, install_hy4_flash.  Not in OWN_PATH_FAMILIES: that table's installer is
 # the single-GGUF one (mmproj, MTP, GGUF tokenizer) and its membership is pinned by tests.  The files, sizes and rules are strata_control/hy4_family.py and hy4_fit.py.
-from strata_control import hy4_family, hy4_fit, inkling_family, inkling_fit  # noqa: E402
+from strata_control import custom_models, hy4_family, hy4_fit, inkling_family, inkling_fit  # noqa: E402
 HY4_FAMILIES = {
     hy4_family.FAMILY: {
         "title": hy4_family.TITLE, "by": hy4_family.BY, "tag": hy4_family.TAG, "name": hy4_family.FAMILY, "arch": hy4_family.ARCH, "hy4": True, "vision": hy4_family.DEFAULT_VISION,
@@ -3734,7 +3734,9 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
     the size in it (an upload split or named differently: -00001-of-00003, Unsloth's ...-00001-of-00004.gguf).  A
     missing shard is check_shards' error later, as before."""
     first = folder / model_file(fam, model, 1)
-    if not first.exists():
+    if _OWN_FIRST is not None and _OWN_FIRST.parent == folder and _OWN_FIRST.is_file():
+        first = _OWN_FIRST                             # a custom build: the file the person picked, even when the published file is in the same folder
+    elif not first.exists():
         found = sorted(p for p in folder.glob("*-00001-of-*.gguf") if SHARD_NAME.search(p.name))
         # (not the files of a catalog choice with the same quant name but another layout: the v3.1 UD-IQ4_XS (four shards) is not the pinned UD-IQ4_XS (three))
         other = lambda p: (c := gguf_choice(p.name)) is not None and c[1] != model and model_quant(c[1]).lower() == model_quant(model).lower()   # noqa: E731
@@ -3798,7 +3800,7 @@ def gguf_dir_problem(folder: Path, first: Path, fam: dict, model: str) -> tuple 
     Strata cannot run (Unsloth's UD-IQ3_XXS taken for IQ3_XXS by its name), or it is missing and the folder holds
     other GGUFs - then the hint names the --family/--model of the usable ones.  None otherwise (a missing shard in a
     folder without GGUFs stays check_shards' "missing")."""
-    bad = gguf_unsupported(first.name) if first.exists() else None
+    bad = gguf_unsupported(first.name) if first.exists() and not _CUSTOM else None     # a custom build's file was checked by what is in it (its tensor types), not by what its name says
     if bad:
         why = UNSUPPORTED_WHY.get(bad.upper())
         return f"{first.name} is {bad}, a GGUF Strata cannot run", SUPPORTED_GGUFS + (".\n       " + why if why else "")
@@ -7809,6 +7811,87 @@ def engine_exe(eng: Path) -> str:
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
+_CUSTOM: dict = {}                                     # --custom-label: what run_tag decided for this run's custom build (read by write_setup_config)
+_OWN_FIRST: Path | None = None                         # --gguf-dir FILE with --custom-label: the file the person picked (the first shard of a split set)
+
+
+def custom_requested(a) -> bool:
+    """A custom build: the person's own model files (--gguf-dir) with a name of their own (--custom-label). Never for a download."""
+    return bool(str(getattr(a, "custom_label", None) or "").strip()) and bool(getattr(a, "gguf_dir", None))
+
+
+def custom_tags_in_use() -> dict:
+    """{tag: weights path} of the custom run configs already written here (strata-<tag>.json with "custom": true), so the same files keep their
+    tag and other files with the same name get another one."""
+    found: dict = {}
+    try:
+        for p in home().glob("strata-*custom-*.json"):
+            try:
+                c = json.loads(p.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(c, dict) and c.get("custom") is True:
+                found[p.stem[len("strata-"):].lower()] = c.get("custom_source")
+    except OSError:
+        pass
+    return found
+
+
+def run_tag(a, family: str, fam: dict, model: str) -> str:
+    """The tag that names the pack, the run config and the start script: the family's own (<tag><size>) for a download or an official file, and for a
+    custom build <tag>custom-<name> (strata_control/custom_models.py), so a custom build never replaces the official install of the same size."""
+    official = fam["tag"] + model
+    if not custom_requested(a):
+        return official
+    label = custom_models.clean_label(a.custom_label)
+    source = os.path.abspath(os.path.expanduser(str(getattr(a, "custom_source", None) or a.gguf_dir)))
+    try:
+        tag = custom_models.run_tag(family, label, source, custom_tags_in_use())
+    except ValueError:                                 # a family Strata's engines do not run a custom build of
+        fail(f"{family} cannot be set up from your own files with --custom-label", "use one of: " + ", ".join(sorted(custom_models.SUPPORTED_FAMILIES)))
+    _CUSTOM.clear()
+    _CUSTOM.update(label=label, family=family, model=model, source=source)
+    ok(f"custom build: {label} (run as {family} {model}; its own settings file, {official} is not touched)")
+    return tag
+
+
+def custom_weight_bytes(native: Path) -> int:
+    """The size of the person's model files: the one file, or every shard of a split GGUF set. 0 when it cannot be read."""
+    try:
+        m = re.match(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$", native.name, re.I)
+        if m:
+            total = int(m.group(3))
+            return sum((native.with_name(f"{m.group(1)}-{i:05d}-of-{total:05d}.gguf").stat().st_size
+                        if native.with_name(f"{m.group(1)}-{i:05d}-of-{total:05d}.gguf").is_file() else 0) for i in range(1, total + 1))
+        return native.stat().st_size
+    except OSError:
+        return 0
+
+
+def custom_build(fit_module, model: str, a):
+    """`with custom_build(hy4_fit, model, a) as key:` the fit functions' build name: `model` for a download or an official file, and for a custom build the closest published build
+    moved to the real size of the person's files (custom_models.temporary_build)."""
+    import contextlib
+    if not custom_requested(a):
+        return contextlib.nullcontext(model)
+    src = Path(os.path.expanduser(str(getattr(a, "custom_source", None) or a.gguf_dir)))
+    return custom_models.temporary_build(fit_module, model, custom_weight_bytes(src) if src.is_file() else 0)
+
+
+def add_custom_fields(cfg: dict) -> None:
+    """A custom build's run config says so: custom, display_name, base_family, base_model, custom_bytes, custom_source; its model name is its own."""
+    if not _CUSTOM:
+        return
+    args = [str(x) for x in cfg.get("args", [])]
+    native = Path(args[args.index("--native") + 1]) if "--native" in args and args.index("--native") + 1 < len(args) else Path(_CUSTOM["source"])
+    if native.is_dir():                                # a folder of safetensors: no single file size
+        native = Path(_CUSTOM["source"])
+    cfg.update(custom_models.run_fields(_CUSTOM["label"], _CUSTOM["family"], _CUSTOM["model"], custom_weight_bytes(native), _CUSTOM["source"]))
+    cfg["model_name"] = custom_models.model_alias(_CUSTOM["family"], _CUSTOM["label"])
+    if _CUSTOM["family"] == "hy4-flash" and cfg.get("drafting") != "off":
+        cfg["drafting"] = "auto"                       # the drafter is used while it helps and left off when it does not (hy4_kind: auto means the family's default)
+
+
 def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, explicit: list[str] | None = None, after_carry=None) -> None:
     """#629: setup's run config, written over an earlier one for the same model without losing what the user added
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
@@ -7825,6 +7908,7 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
             pass
         if not isinstance(old, dict):
             old = None
+    add_custom_fields(cfg)                             # a custom build: its marks and its own model name (never on an official config)
     kept = carry_over(old, cfg, explicit) if old is not None else []
     if old is None:
         carry_user_args({}, cfg, explicit)              # a first install: only what this run's command line sets (nothing to report as kept)
@@ -7873,6 +7957,15 @@ def model_config_files(folder: Path) -> list:
     return [p for p in folder.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")]
 
 
+def config_is_custom(path: Path) -> bool:
+    """Is this run config a custom build (the person's own model files, "custom": true)? An unreadable file is not."""
+    try:
+        c = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return custom_models.is_custom_cfg(c)
+
+
 def previous_config(elsewhere_first: list, settings: dict):
     """The most recently used model config of another Strata folder on this PC, for a folder that has none yet.  One
     that does not parse (an empty or cut-off file, #459) is skipped with a warning: the newest readable one is used,
@@ -7881,7 +7974,7 @@ def previous_config(elsewhere_first: list, settings: dict):
     for folder in [*elsewhere_first, *other_installs(settings)]:
         cands += model_config_files(folder)
     from strata_control import retired
-    cands = [c for c in dict.fromkeys(cands) if c.is_file() and not retired.config_file_reason(c)]   # never set up like a DeepSeek model
+    cands = [c for c in dict.fromkeys(cands) if c.is_file() and not retired.config_file_reason(c) and not config_is_custom(c)]   # never set up like a DeepSeek model, nor like a custom build (its files are the person's own)
     return next((c for c in sorted(cands, key=lambda p: p.stat().st_mtime, reverse=True) if readable_config(c)), None)
 
 
@@ -7894,6 +7987,8 @@ def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
+    if custom_models.is_custom_cfg(cfg):               # a custom build is read as the published size it is run as (base_family, base_model), whatever its own tag says
+        tag = custom_models.FAMILY_TAGS.get(cfg["base_family"], "") + str(cfg.get("base_model") or "")
     special_fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}
     own = next((f for f, d in special_fams.items() if tag.startswith(d["tag"])), None)
     if own is not None:                                # Qwen3.6 / Hy4-Flash / Inkling-2-Mini: own sizes; no Flash-Next KV / projection settings
@@ -7932,6 +8027,7 @@ def choices_from_config(cfg_path: Path) -> dict:
 def calibration_targets(have: list, model: str | None, family: str | None) -> list:
     """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
     skip = set(OWN_PATH_FAMILIES) | set(HY4_FAMILIES) | set(INKLING_FAMILIES)
+    have = [c for c in have if not config_is_custom(c)]      # a custom build is the person's own files: calibration would rewrite the settings of the official size it is run as
     if not (model or family):
         return [c for c in have if choices_from_config(c)["family"] not in skip]
     out = []
@@ -9481,7 +9577,7 @@ def intel_control_setup(a) -> int:
     if not model:
         fail("an Intel Arc setup needs --model, e.g. --model Q2_0")
     data, _elsewhere = data_folder_for(a)
-    tag = fam["tag"] + model
+    tag = run_tag(a, family, fam, model)
     if a.gguf_dir:
         model_dir = Path(a.gguf_dir)
     else:
@@ -9987,7 +10083,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                      f"choose a smaller size, or --model {model} --yes to install it anyway", "  Install it anyway?")
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
-    tag = fam["tag"] + model
+    tag = run_tag(a, family, fam, model)
     rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0), model)
     if a.context:
         ctx = a.context
@@ -10030,7 +10126,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     published = fam["file"].format(q=model)           # the published file's name: its pinned size and SHA-256
     gguf = folder / published
-    if a.gguf_dir and not gguf.exists():
+    if _OWN_FIRST is not None and _OWN_FIRST.parent == folder and _OWN_FIRST.is_file():
+        gguf = _OWN_FIRST                              # a custom build: the file the person picked, though the published one may be in the same folder
+    elif a.gguf_dir and not gguf.exists():
         gguf = own_path_gguf_in(folder) or gguf        # #5869: the person's own file under another name (the importer checked its types)
     size = fam["sha256"][published][0]
     part = gguf.with_name(gguf.name + ".part")
@@ -10076,6 +10174,17 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model file: {gguf}")
     if vision != "none" and fam.get("mmproj"):         # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
         mmproj = folder / fam["mmproj"]
+        mmproj_own = bool(a.gguf_dir)
+        if _CUSTOM and not have(mmproj):               # a custom build: the family's picture reader that an official install already has, else Strata's own download of it (checked as any download)
+            beside = next((p for p in sorted(Path(a.models_dir).glob("*/" + fam["mmproj"])) if p.is_file() and done(p)), None)
+            if beside is not None:
+                mmproj, mmproj_own = beside, False
+                ok(f"picture reader: the one an installed {fam['title']} already has ({beside})")
+            else:
+                mmproj, mmproj_own = Path(a.models_dir) / (fam["tag"] + "vision") / fam["mmproj"], False
+                mmproj.parent.mkdir(parents=True, exist_ok=True)
+                if not have(mmproj):
+                    download(fam["mmproj_hf"] + mmproj.name, mmproj, "vision encoder")
         if not a.gguf_dir and not have(mmproj) and not mmproj.with_name(mmproj.name + ".part").exists():
             # another size of this model has it already (the same file, kept beside each size): linked here, not fetched again
             if share_sibling_file(mmproj, Path(a.models_dir), mmproj.name, fam["sha256"][mmproj.name][0]):
@@ -10086,7 +10195,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             if a.gguf_dir:
                 fail(f"{mmproj} is missing", f"put {mmproj.name} in {folder}, or drop --gguf-dir to download it")
             download(fam["mmproj_hf"] + mmproj.name, mmproj, "vision encoder")
-        verify_sha256(mmproj, *fam["sha256"][mmproj.name], own=bool(a.gguf_dir))
+        verify_sha256(mmproj, *fam["sha256"][mmproj.name], own=mmproj_own)
         ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
@@ -10178,8 +10287,49 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 def hy4_folder(a) -> Path:
     """Where the Hy4-Flash files live: --gguf-dir (the person's own folder with the files), else <models>/hy4-flash (every build and the Engram shard they share are in it)."""
     if getattr(a, "gguf_dir", None):
-        return Path(a.gguf_dir)
+        p = Path(a.gguf_dir)
+        return p.parent if p.is_file() else p
     return Path(getattr(a, "models_dir", None) or (home() / "models")) / hy4_family.FAMILY
+
+
+def hy4_local_native(a, model: str) -> Path | None:
+    """The person's own HY-4 Flash .strata file (--gguf-dir FILE, or a folder whose one model .strata is not a published build's name), None when the files are Strata's published ones."""
+    raw = Path(a.gguf_dir) if getattr(a, "gguf_dir", None) else None
+    if raw is None:
+        return None
+    if raw.is_file():
+        return raw if raw.suffix.lower() == ".strata" and raw.name not in hy4_family.FILES else None
+    if not raw.is_dir() or (raw / hy4_family.build_file(model)).is_file():
+        return None
+    own = [p for p in sorted(raw.glob("*.strata")) if p.is_file() and p.name not in hy4_family.FILES and "vision" not in p.name.lower() and "engram" not in p.name.lower()]
+    return own[0] if len(own) == 1 else None
+
+
+def own_strata_check(path: Path) -> None:
+    """A .strata file the person chose is used as it is: Strata checks that it is a whole .strata (its magic, its header's section table inside the file), never its SHA-256 or
+    byte size (it is a fine-tune or another build, not a download), and never deletes or renames it."""
+    from strata_control import strata_manifest
+    try:
+        head = strata_manifest.read_header(path)
+    except (ValueError, OSError) as e:
+        fail(f"{path.name} is not a usable .strata file: {e}", "your file was left as it is; it may be cut short (a copy that did not finish) or not a .strata model")
+    if path.name not in hy4_family.FILES and path.name not in inkling_family.ALL_FILES:
+        warn(f"{path.name} ({head['size']:,} bytes) is not one of the files Strata publishes; it is used as it is. It may be a fine-tune or another build: check a few answers before you rely on it")
+
+
+def hy4_companion(a, name: str, folder: Path, data: Path) -> Path:
+    """The Engram or Vision file a custom HY-4 build needs: beside the person's file, else the one an official install keeps in the data folder, else Strata's own download of it into
+    the data folder (the published file: its size and SHA-256 are checked strictly, as for any download)."""
+    for d in (folder, data / "models" / hy4_family.FAMILY):
+        if (d / name).is_file():
+            return d / name
+    dest = data / "models" / hy4_family.FAMILY
+    dest.mkdir(parents=True, exist_ok=True)
+    saved, a.gguf_dir = a.gguf_dir, None               # this one is a download, not the person's file: the strict checks apply
+    try:
+        return hy4_fetch(a, name, dest, False)
+    finally:
+        a.gguf_dir = saved
 
 
 def hy4_offered(a=None) -> bool:
@@ -10361,8 +10511,9 @@ def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None, a=None, folde
         except (SystemExit, OSError, ValueError):
             pass
     # Public HF / configured source fallback so `packs/hy4-flash-*/tokenizer/vocab.json` is ALWAYS populated even without zstd or unpacked engine
-    if not own and a is not None:
-        fetch_dir = Path(folder) if folder is not None else model.parent
+    if a is not None and (not own or data is not None):
+        # a download goes into Strata's own folders: the person's folder is never written to (the shared family folder of the data folder, <data>/models/hy4-flash, serves every build)
+        fetch_dir = (Path(data) / "models" / hy4_family.FAMILY) if own else (Path(folder) if folder is not None else model.parent)
         fetch_dir.mkdir(parents=True, exist_ok=True)
         tok_json = fetch_dir / hy4_family.TOKENIZER_FILE
         tmpl_file = fetch_dir / hy4_family.CHAT_TEMPLATE_FILE
@@ -10425,7 +10576,7 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         say(f"  Every build also needs the Engram file ({hy4_fit.ENGRAM_GB:.0f} GB, read from the SSD while it answers, shared by all builds, downloaded once).")
     model = a.model or order[int(ask("Which size?", [str(i) for i in range(1, len(order) + 1)], str(order.index(rec["build"]) + 1), a.yes)) - 1]
     ok(f"size: {model}")
-    tag = fam["tag"] + model
+    tag = run_tag(a, family, fam, model)
     ctx = a.context or hy4_family.DEFAULT_CONTEXT       # 128K on every card (owner, 2026-11-19: "people can change whenever they want themselves"); no card-size special case
     if not a.context:
         ctxs = hy4_family.CONTEXTS
@@ -10434,7 +10585,8 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         for i, c in enumerate(ctxs, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == hy4_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(hy4_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
-    placed = hy4_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)
+    with custom_build(hy4_fit, model, a) as fit_build:       # a custom build: the closest published build moved to the real file size
+        placed = hy4_fit.place(fit_build, vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)
     mode = hy4_fit.mode(placed["ssd_gb"])
     if mode == "cross_tier_ssd":
         warn(f"{model} does not fit this PC's memory: about {placed['ssd_gb']:.0f} GB of its experts are read from the SSD while it answers, so it is much slower "
@@ -10445,9 +10597,16 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} does not use them")
     folder = hy4_folder(a)
     own = bool(getattr(a, "gguf_dir", None))
+    local_native = hy4_local_native(a, model) if own else None      # the person's own .strata (a fine-tune or another build): used as it is, never hash-checked
     files = hy4_family.files_of(model, vision)
+    if local_native is not None:
+        own_strata_check(local_native)
+        files = [local_native.name] + [n for n in files if n != hy4_family.build_file(model)]
     left = 0.0
+    data_have, _ = data_folder_for(a) if local_native is not None else (None, None)
     for n in files:
+        if local_native is not None and (n == local_native.name or any((d / n).is_file() for d in (folder, data_have / "models" / hy4_family.FAMILY))):
+            continue                                   # the person's file, or a companion already beside it or in the data folder: nothing to fetch
         p = folder / n
         if not hy4_have(a, p):
             part = p.with_name(p.name + ".part")
@@ -10472,7 +10631,11 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         ok(f"engine: {engine_program}")
 
     step(5, f"downloading {fam['title']} {model}")
-    paths = {n: hy4_fetch(a, n, folder, own) for n in files}
+    if local_native is not None:
+        data0, _ = data_folder_for(a)
+        paths = {local_native.name: local_native, **{n: hy4_companion(a, n, folder, data0) for n in files[1:]}}
+    else:
+        paths = {n: hy4_fetch(a, n, folder, own) for n in files}
     ok(f"model file: {paths[files[0]]}")
     engram = paths[hy4_family.ENGRAM_FILE] if hy4_family.ENGRAM_FILE in paths else folder / hy4_family.ENGRAM_FILE
     ok(f"Engram file: {engram}")
@@ -10944,7 +11107,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         say(f"  {i}) {text}")
     model = a.model or order[int(ask("Which size?", [str(i) for i in range(1, len(order) + 1)], str(order.index(rec["build"]) + 1), a.yes)) - 1]
     ok(f"size: {model}")
-    tag = fam["tag"] + model
+    tag = run_tag(a, family, fam, model)
     ctx = a.context or inkling_family.DEFAULT_CONTEXT
     if not a.context:
         ctxs = inkling_family.CONTEXTS
@@ -10954,7 +11117,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == inkling_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(inkling_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
     par = max(1, min(inkling_family.MAX_PARALLEL, int(getattr(a, "parallel", None) or 1)))     # --parallel N: the slots the planner makes room for (0221 APPTUI: it planned for one)
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra, **inkling_plan_kv(a, plan_extra.get("backend")))
+    with custom_build(inkling_fit, model, a) as fit_build:   # a custom build: the closest published build moved to the real file size
+        placed = inkling_fit.place(fit_build, vram_gib, ram_gib, unified, ctx, vision, parallel=par, **plan_extra, **inkling_plan_kv(a, plan_extra.get("backend")))
     mode = inkling_fit.mode(placed)
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
@@ -11045,7 +11209,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     # ("auto", inkling_probe.py) unless the person asked (--drafter dflash2 / off). A slightly different answer is accepted, a loss in speed is not (owner, 11-23).
     drafting_mode = "off" if (not want_drafter or sidecar is None) else (
         inkling_family.DEFAULT_DRAFTER if drafter_asked in ("dflash2", "dspark") else inkling_family.default_drafting(ink_backend))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
+    with custom_build(inkling_fit, model, a) as fit_build:
+        placed = inkling_fit.place(fit_build, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend, **inkling_plan_kv(a, ink_backend)})
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
@@ -11359,7 +11524,7 @@ def mac_control_setup(a) -> int:
     SHAPE_ENGINE.clear()
     if fam.get("shape"):                               # a feed model of its own shape: its own Metal engine component (strata_control/shape_engine.py)
         SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
-    tag = fam["tag"] + model
+    tag = run_tag(a, family, fam, model)
     stream = MF.streams(model, ram)
 
     step(4, "the Strata engine (Metal)")
@@ -11680,6 +11845,9 @@ def main() -> int:
                          "or the release's (as `strata update --feed`; a folder is a local test feed)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
                                        "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
+    ap.add_argument("--custom-label", metavar="NAME", help="with --gguf-dir: your own model files (a fine-tune, a merge, another maker's "
+                                                          "quantization) of a model Strata runs, under a name of your choice: they get their own settings "
+                                                          "file and the official install of that model is left alone")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -11770,6 +11938,22 @@ def main() -> int:
         pulled = update_pull(sys.argv[1:])
         if pulled is not None:
             return pulled
+    if getattr(a, "custom_label", None):
+        if not getattr(a, "gguf_dir", None):
+            ap.error("--custom-label names your own model files: use it with --gguf-dir FILE_OR_FOLDER")
+        if not (a.family and a.model):
+            ap.error("--custom-label needs --family and --model: the model Strata runs your files as (the closest published size)")
+        if a.family not in custom_models.SUPPORTED_FAMILIES:
+            ap.error(f"--custom-label is for the model families Strata's engines run, not {a.family}: " + ", ".join(sorted(custom_models.SUPPORTED_FAMILIES)))
+        a.custom_label = custom_models.clean_label(a.custom_label)
+        a.custom_source = os.path.abspath(os.path.expanduser(str(a.gguf_dir)))
+        if Path(a.gguf_dir).is_file() and Path(a.gguf_dir).suffix.lower() == ".gguf" and a.family not in INKLING_FAMILIES:
+            global _OWN_FIRST                          # the picked GGUF file itself (its first shard): the file set is this one, not the one under a published name
+            _OWN_FIRST = Path(a.custom_source)
+            _shard = re.match(r"^(.+)-\d{5}-of-(\d{5})\.gguf$", _OWN_FIRST.name, re.I)
+            if _shard and (_OWN_FIRST.with_name(f"{_shard.group(1)}-00001-of-{_shard.group(2)}.gguf")).is_file():
+                _OWN_FIRST = _OWN_FIRST.with_name(f"{_shard.group(1)}-00001-of-{_shard.group(2)}.gguf")
+            a.gguf_dir = str(_OWN_FIRST.parent)
     if getattr(a, "gguf_dir", None):                   # the person's own files: their finish marks go to Strata's marks/, never beside them
         own_files_in(a.gguf_dir)
     if getattr(a, "dsv41_package", None):              # DeepSeek's engine package: no longer offered (strata_control/retired.py)
@@ -12298,7 +12482,7 @@ def main() -> int:
         warn(_q4)
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
-    tag = fam["tag"] + model                           # names of the pack, config and start script
+    tag = run_tag(a, family, fam, model)               # names of the pack, config and start script (a custom build has its own)
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 131072                                   # 128K on every card (owner, 2026-11-01); a card it leaves little room on is warned about below, never lowered
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice

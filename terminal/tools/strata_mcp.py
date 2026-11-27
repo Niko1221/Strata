@@ -898,7 +898,17 @@ class Strata:
                 "shared_bytes": own_usage["shared_bytes"],
                 # what Delete would remove (files in Strata's own folders that no other model uses); the person's own GGUF folders stay
                 "removable_gb": plan["gb"], "kept_files": len(plan["keep"]),
-                "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))}
+                "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime)),
+                **self.custom_fields(cfg)}
+
+    @staticmethod
+    def custom_fields(cfg: dict) -> dict:
+        """A custom build's row says so (custom, display_name, base_family, base_model, custom_bytes, display_family, badge); an official model's row has none of these keys."""
+        try:
+            from strata_control import custom_models
+            return custom_models.summary_fields(cfg)
+        except Exception:                               # noqa: BLE001 - an older strata_control without the module: no custom rows
+            return {}
 
     # ---- what a model owns on disk (Delete, and the per-model disk usage in Storage)
     FILE_FLAGS = ("--native", "--ple-gguf", "--embd-gguf", "--native-dense-gguf")
@@ -1036,6 +1046,7 @@ class Strata:
             used_files |= {norm(x) for x in f}
             used_dirs |= {norm(x) for x in d}
         remove, keep = [], []
+        custom = isinstance(cfg, dict) and cfg.get("custom") is True       # a custom build: the person's own model files (a fine-tune, a merge, another quantization)
 
         def shared(p: Path, is_dir: bool) -> bool:
             n = norm(p)
@@ -1046,7 +1057,10 @@ class Strata:
         for p, is_dir in [(x, False) for x in files] + [(x, True) for x in dirs]:
             if not p.exists():
                 continue
-            if not self.allowed(p) and not self.made_by_strata(p, is_dir):
+            if custom and (not is_dir or not self.made_by_strata(p, True)):
+                # a custom build is removed from Strata's list, never from the disk: its model files (and the Engram / picture files an official install may share) stay
+                keep.append({"path": str(p), "reason": "your own model file: it stays where it is"})
+            elif not self.allowed(p) and not self.made_by_strata(p, is_dir):
                 keep.append({"path": str(p), "reason": "outside Strata's folders"})
             elif shared(p, is_dir):
                 keep.append({"path": str(p), "reason": "another installed model still uses it"})
@@ -1830,7 +1844,7 @@ class Strata:
         prog = install_progress(tail)
         prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
-               "log": str(log_path), **prog}
+               "log": str(log_path), **prog, **({"run_id": j["run_id"]} if j.get("run_id") else {})}
         if not running:
             if res.get("job") == j.get("job") and "exit_code" in res:
                 out["exit_code"] = res["exit_code"]
@@ -2375,6 +2389,9 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                         "mtp (the default) downloads the draft layer"},
              "mtp": {"type": "string", "enum": ["on", "off"],
                      "description": "off = Drafting Off: the MTP draft layer (~5 GB) is not downloaded and the model starts without it (setup --mtp off)"},
+             "custom_label": {"type": "string", "maxLength": 80,
+                              "description": "with gguf_dir (one .gguf or .strata file): your own model files (a fine-tune, a merge, another maker's quantization) of a model "
+                                             "Strata runs, under a name of your choice; they get their own settings file and the official install of that model is left alone"},
              "gguf_dir": {"type": "string", "maxLength": 260,
                           "description": "a folder that already holds this model's GGUF files under their original names: setup "
                                          "checks them (size and SHA-256) and does not download them again"},
@@ -2589,7 +2606,7 @@ class Tools:
 
     def strata_install(self, family=None, model=None, context=None, vision=None, kv=None, gpu=None, gpus=None,
                        backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
-                       gguf_dir=None, drafter=None, mtp=None) -> dict:
+                       gguf_dir=None, drafter=None, mtp=None, custom_label=None) -> dict:
         s = self.s
         asked = time.monotonic()                         # when this call came in (before it waits for the lock)
         asked_seq = next(_INSTALL_SEQ)
@@ -2638,7 +2655,7 @@ class Tools:
                                 "fix the problem above and call strata_install again with confirm=true (finished "
                                 "steps are skipped)"}
             plan, args = self.install_plan(family, model, context, vision, kv, gpu, gpus, backend, low_ram, port,
-                                           data_dir, gguf_dir, drafter, mtp)
+                                           data_dir, gguf_dir, drafter, mtp, custom_label)
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 raise ToolError("Strata is running (started by strata_start): stop it first with strata_stop - setup "
@@ -2652,7 +2669,7 @@ class Tools:
                 raise ToolError(plan["disk_short"])
             return self.launch_install(plan, args)
 
-    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None, drafter=None, mtp=None):
+    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None, drafter=None, mtp=None, custom_label=None):
         s = self.s
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
@@ -2768,6 +2785,21 @@ class Tools:
             if not local.is_absolute() or (not local.is_dir() and not is_model_file) or ".." in local.parts:
                 raise ToolError("gguf_dir must be an existing absolute folder or .gguf/.strata file")
             args += ["--gguf-dir", str(local)]
+        run_id = None
+        if custom_label is not None and gguf_dir and str(custom_label).strip():
+            # the person's own files under a name of their own: setup writes a run config of its own (custom_models.py) and never the official one
+            from strata_control import custom_models
+            label = custom_models.clean_label(custom_label)
+            args += ["--custom-label", label]
+            used = {}
+            for c in s.configs():
+                cc = s.read_config(c)
+                if custom_models.is_custom_cfg(cc):
+                    used[c.stem[len("strata-"):].lower()] = cc.get("custom_source")
+            try:
+                run_id = custom_models.run_tag(family, label, str(local), used)
+            except ValueError:
+                raise ToolError("custom_label is for Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, HY-4 Flash and Inkling-2-Mini model files")
         if backend in ("cuda", "hip", "sycl"):
             args += ["--backend", backend]
         if drafter in ("mtp", "dflash2") and backend != "sycl" and not md.get("hy4") and not md.get("inkling"):
@@ -2785,8 +2817,8 @@ class Tools:
             elif md.get("inkling"):
                 row = s.inkling_fit_row(model, ram, s.engine_gpus(hw))
                 fit = None if row is None else ("may run slower" if row["mode"] == "cross_tier_ssd" else "fits")
-        installed = (s.root / f"strata-{tag.lower()}.json").exists()
-        here = None                                     # the page's "already on this computer": the files whole, by the pinned sizes (a local folder: not asked)
+        installed = (s.root / f"strata-{(run_id or tag).lower()}.json").exists()      # a custom build has its own run config
+        here = None                                   # the page's "already on this computer": the files whole, by the pinned sizes (a local folder: not asked)
         if not gguf_dir and not arc and s.setup_module() is not None:
             try:
                 here = files_here(s.setup_module(), family, model, target / "models", vision in ("yes", "gpu", "cpu"))
@@ -2801,6 +2833,9 @@ class Tools:
                 "setup_command": ("START-HERE.bat " if WIN else "./setup.sh ") + " ".join(args),
                 "takes": "about 20-90 minutes, mostly the download; the PC stays usable",
                 "recommended_for_this_pc": rec if rec.get("model") else None}
+        if run_id:
+            plan["run_id"] = run_id
+            plan["custom"] = True
         if installed:
             plan["note"] = ("this model is already installed: running setup again updates the engine and applies "
                             "the options (finished steps are skipped)")
@@ -2839,7 +2874,7 @@ class Tools:
                                    plan.get("images") in ("yes", "gpu", "cpu"))
         s.save_state("install", {"job": job_id, "pid": p.pid, "ident": ident, "log": str(log_path),
                                  "model": plan["model"], "family": plan["family"], "folder": folder, "files": files,
-                                 "total_gb": plan.get("download_gb"),
+                                 "total_gb": plan.get("download_gb"), "run_id": plan.get("run_id"),
                                  "started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": args})
         return {"summary": f"Install of {plan['title']} started in the background (about 20-90 minutes, mostly the "
                            f"{plan['download_gb']:.0f} GB download). Call strata_install again to see the progress; "

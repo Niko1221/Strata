@@ -200,6 +200,7 @@ def inspect_metadata(path: Path) -> dict:
             if not 0 <= tensors <= MAX_TENSORS or keys > MAX_METADATA_KEYS:
                 raise ProfileError("GGUF tensor or metadata count exceeds the inspection limit", 5)
             found: dict[str, object] = {}
+            general_name: str | None = None
             for _ in range(keys):
                 key = reader.string(capture=True)
                 if key is None or len(key) > 256:
@@ -208,7 +209,9 @@ def inspect_metadata(path: Path) -> dict:
                 if key in CAPTURE_STRINGS and value_type != 8:
                     raise ProfileError("GGUF architecture or tokenizer model is not a string", 5)
                 value = reader.value(value_type, capture=key in CAPTURE_STRINGS or
-                                     key == "general.alignment")
+                                     key == "general.alignment" or (key == "general.name" and value_type == 8))
+                if key == "general.name":                         # the maker's name for the model: only a suggestion for the person's own name for it
+                    general_name = value if isinstance(value, str) else None
                 if key in CAPTURE_STRINGS:
                     found[key] = value
                 elif key in PRESENCE_KEYS:
@@ -268,6 +271,6 @@ def inspect_metadata(path: Path) -> dict:
                     "expert_tensor_types": dict(sorted(expert_types.items())),
                     "header_bytes_scanned": reader.used,
                     "payload_bytes_required": required_payload_bytes,
-                    "payload_extent_valid": True}
+                    "payload_extent_valid": True, "general_name": general_name}
     except OSError:
         raise ProfileError("GGUF metadata could not be read", 5) from None

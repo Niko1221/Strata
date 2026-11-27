@@ -52,8 +52,8 @@ def make_inkling_gguf(
 
 
 def make_fake_strata() -> bytes:
-    # 8-byte magic + 8-byte reserved + 8-byte manifest off + 8-byte manifest len
-    return b"STRATA\x00\x01" + struct.pack("<QQQ", 0, 4096, 16) + b"\x00" * 4096
+    from tests.terminal.strata_fixtures import inkling_strata        # a small valid .strata (header, three sections, a stored-block manifest)
+    return inkling_strata()
 
 
 def write_fake_o200k_files(folder: Path) -> None:
