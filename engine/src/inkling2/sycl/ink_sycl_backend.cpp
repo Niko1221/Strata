@@ -37,6 +37,12 @@ public:
 
     bool dspark_ready() const override { return runner_.use_dflash2 || runner_.use_dspark; }
 
+    // The one drafter rule, principle 2 (strata/core/ink_draft_rule.hpp): on a hybrid load (experts not all in VRAM) a draft step costs extra expert reads, so from 2048 tokens on the step is plain.
+    bool draft_plain_now(int ctx_pos) const override {
+        if (!runner_.use_dflash2) return false;
+        return strata::core::ink_draft_plain_step(mod_.n_host_experts > 0, ctx_pos, draft_user_on_);
+    }
+
     int effective_chunk() const override { return effective_chunk_; }
 
     bool supports_candidates() const noexcept override { return ink_sycl::arc_cfg().active; }
@@ -89,7 +95,12 @@ public:
         effective_chunk_ = (acfg.active && opts.chunk_auto) ? acfg.effective_chunk : 0;
         const int run_chunk = (effective_chunk_ > 0) ? effective_chunk_ : opts.chunk;
         const int batch_cap = std::max(256, std::max(run_chunk, par));
-        const std::string df2_path = opts.enable_dspark ? ink_sycl::df2_resolve_path(model.path, opts.dspark_path) : "";
+        std::string df2_path = opts.enable_dspark ? ink_sycl::df2_resolve_path(model.path, opts.dspark_path) : "";
+        {   // asked for by name: --draft on, or STRATA_INK_DRAFTER=dflash2 (never vetoed, never cut to plain steps)
+            const char* de = std::getenv("STRATA_INK_DRAFTER");
+            const std::string dl = de ? to_lower_ascii(de) : "";
+            draft_user_on_ = opts.draft_forced || dl == "dflash2" || dl == "df2";
+        }
         // Exact runner + KV + DFlash2/DSpark + Vision + XMX/Hybrid reserve (ink_sy_fit.h), so an 8-16 GB Arc card is told BEFORE the runner allocates
         // that the --parallel / --max-context asked for does not fit (a start used to die with "dalloc ...: out of device memory").
         const auto& mc = model.m.c;
@@ -114,10 +125,18 @@ public:
         fit.intelarc_active = acfg.active;
         const size_t extra_reserve = ink_sycl::ink_sy_runner_reserve(fit, par, ctx, run_chunk);
         ink_sycl::ensure_l0_v1_default();
+        mod_.draft_probe = {};
+        mod_.draft_probe.bytes = fit.dflash2 ? ink_sycl::ink_sy_df2_bytes(par) : 0;
+        mod_.draft_probe.user_on = draft_user_on_;
         if (model.kind == ModelSourceKind::Strata) {
             if (!mod_.load(model.path, opts.vram_experts_gb, err, extra_reserve, opts.gpus, opts.gpu_ids, opts.ep_split)) return false;
         } else {
             if (!mod_.load_from_model_file(model, opts.vram_experts_gb, err, extra_reserve)) return false;
+        }
+        if (mod_.draft_probe.vetoed) {   // the one drafter rule: it would move the model off full residency or cut the expert tier
+            fprintf(stderr, "%s\n", mod_.draft_probe.line.c_str());
+            df2_path.clear();
+            fit.dflash2 = false;
         }
         {
             const size_t gpu_mem = ink_sycl::dev_caps().global_mem;
@@ -380,6 +399,7 @@ private:
     std::vector<uint8_t> slot_used_;
     int active_slots_ = 0;
     int effective_chunk_ = 0;
+    bool draft_user_on_ = false;   // --draft on / STRATA_INK_DRAFTER=dflash2
     KvDtype kv_dtype_ = KvDtype::FP16;
     int pending_gpu_index_ = 0;
     int pending_gpus_ = 1;

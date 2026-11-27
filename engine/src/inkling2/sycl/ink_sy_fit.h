@@ -30,6 +30,13 @@ struct InkSyFitGeom {
     bool intelarc_active = false;
 };
 
+// What DFlash 2 takes on the device for `par` slots: the widened weights (the shipped file's SF4 matrices are widened to row-scaled int8 here: 5 layers of q/k/v/o, two conv
+// projections and gate/up/down, fc, two 200058 x 256 bf16 codebooks, the selector: about 570 MiB, 600 MiB with the block and ingest scratch) plus the per-slot context rings.
+inline size_t ink_sy_df2_bytes(int par) {
+    const size_t p = (size_t)std::max(1, par);
+    return (600ull << 20) + 5ull * 2ull * p * 2112ull * 1024ull * 2ull;
+}
+
 // The bytes the runner, its batch buffers, DSpark/DFlash2, Vision, the hybrid cache ring and the XMX scratch need on the device for `par` slots at `ctx` tokens
 // (the planner keeps this much free of experts). Same formulas as the backend used before this header existed when OFF.
 inline size_t ink_sy_runner_reserve(const InkSyFitGeom& g, int par, int ctx, int chunk) {
@@ -44,7 +51,7 @@ inline size_t ink_sy_runner_reserve(const InkSyFitGeom& g, int par, int ctx, int
         }
     }
     const size_t dsp = g.dspark ? (3ull * 2ull * p * (size_t)ctx * 1024ull * 2ull) : 0ull;
-    const size_t df2 = g.dflash2 ? ((520ull << 20) + 5ull * 2ull * p * 2112ull * 1024ull * 2ull) : 0ull;
+    const size_t df2 = g.dflash2 ? ink_sy_df2_bytes(par) : 0ull;
     const size_t sc_mult = g.intelarc_active ? (size_t)(g.sc_elem_bytes * 2) : 8ull;  // hist + snap
     const size_t sc = g.visit_is_swa.size() * p * 3ull * (2048ull + 2ull * (size_t)g.hidden) * sc_mult;
     const size_t act = (size_t)batch_cap * 512ull * 1024ull + (128ull << 20);

@@ -30,6 +30,7 @@
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/artifact/strata_layout.hpp"
 #include "strata/core/device_error_exit.hpp"
+#include "strata/core/ink_draft_rule.hpp"
 #ifdef INK_SYCL_WITH_MODEL_FILE
 #include "../ink_gguf_transcode.h"
 #endif
@@ -822,6 +823,29 @@ struct InkSyclModel {
     float* static_sconv_dev = nullptr;     // [24 * kSconvLayerFloats]
     float* rel_proj_pad_dev = nullptr;     // [24 * 16 * 1025]
 
+    // The one drafter rule (strata/core/ink_draft_rule.hpp, principle 1): the backend sets `draft_probe.bytes` (what DFlash 2 adds to the reserve) before load();
+    // load() asks the rule with the real expert bytes and, when the drafter would move the model off full residency or cut the expert tier by 10% or more, takes its bytes
+    // back out of the reserve and sets `vetoed` (the backend then does not load the drafter and prints `line`).
+    struct DraftProbe { size_t bytes = 0; bool user_on = false; bool vetoed = false; std::string line; } draft_probe;
+    size_t draft_adjust_reserve(size_t reserve, size_t gpu_mem, size_t used, size_t total_expert_bytes, bool budget_overridden) {
+        if (draft_probe.bytes == 0 || budget_overridden || draft_probe.bytes > reserve) return reserve;
+        const size_t with_b = gpu_mem > used + reserve ? gpu_mem - used - reserve : 0;
+        const size_t res_wo = reserve - draft_probe.bytes;
+        const size_t wo_b = gpu_mem > used + res_wo ? gpu_mem - used - res_wo : 0;
+        strata::core::InkDraftLoadIn in;
+        in.full_without = total_expert_bytes <= wo_b;
+        in.full_with = total_expert_bytes <= with_b;
+        in.tier_budget_mib = (double)wo_b / 1048576.0;
+        in.drafter_mib = (double)draft_probe.bytes / 1048576.0;
+        in.user_on = draft_probe.user_on;
+        const auto out = strata::core::ink_draft_load_rule(in);
+        if (out.load) return reserve;
+        draft_probe.vetoed = true;
+        draft_probe.line = strata::core::ink_draft_veto_line("[ink_sycl]", "DFlash 2", (double)total_expert_bytes / 1073741824.0, (double)with_b / 1073741824.0,
+                                                             in.drafter_mib, (double)wo_b / 1073741824.0);
+        return res_wo;
+    }
+
     int n_vram_experts = 0;
     int n_host_experts = 0;
     size_t vram_expert_bytes = 0;
@@ -1011,8 +1035,13 @@ struct InkSyclModel {
                                   : gpu_mem >= (11ull << 30) ? (1536ull << 20)
                                                              : (1024ull << 20);
         const size_t pad_mib = acfg.active ? acfg.headroom_reserve_mib : 768ull;
-        const size_t reserve = (extra_reserve_bytes > 0) ? (extra_reserve_bytes + (pad_mib << 20)) : base_reserve;
+        size_t reserve = (extra_reserve_bytes > 0) ? (extra_reserve_bytes + (pad_mib << 20)) : base_reserve;
         const size_t used = dev_bytes_allocated();
+        {
+            size_t total_eb = 0;
+            for (uint16_t gid : order) if (gid < n_total) total_eb += ((ents_by_gid[gid].body_bytes + 4095) / 4096) * 4096;
+            reserve = draft_adjust_reserve(reserve, gpu_mem, used, total_eb, vram_experts_gb_override >= 0.0);
+        }
         size_t vram_budget = (gpu_mem > used + reserve) ? (gpu_mem - used - reserve) : 0;
         if (vram_experts_gb_override >= 0.0) {
             vram_budget = (size_t)(vram_experts_gb_override * (1024.0 * 1024.0 * 1024.0));
@@ -1472,8 +1501,13 @@ struct InkSyclModel {
                                   : gpu_mem >= (11ull << 30) ? (1536ull << 20)
                                                              : (1024ull << 20);
         const size_t pad_mib = acfg.active ? acfg.headroom_reserve_mib : 768ull;
-        const size_t reserve = (extra_reserve_bytes > 0) ? (extra_reserve_bytes + (pad_mib << 20)) : base_reserve;
+        size_t reserve = (extra_reserve_bytes > 0) ? (extra_reserve_bytes + (pad_mib << 20)) : base_reserve;
         const size_t used = dev_bytes_allocated();
+        {
+            size_t total_eb = 0;
+            for (uint16_t gid : order) if (gid < n_total && dir_idx_by_gid[gid] != (size_t)-1) total_eb += ents_by_gid[gid].body_bytes;
+            reserve = draft_adjust_reserve(reserve, gpu_mem, used, total_eb, vram_experts_gb_override >= 0.0);
+        }
         size_t vram_budget = (gpu_mem > used + reserve) ? (gpu_mem - used - reserve) : 0;
         if (vram_experts_gb_override >= 0.0) {
             vram_budget = (size_t)(vram_experts_gb_override * (1024.0 * 1024.0 * 1024.0));

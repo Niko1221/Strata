@@ -25,6 +25,7 @@
 #include "ink_sy_common.h"
 #include "ink_sy_dspark.h"
 #include "ink_sy_dflash2.h"
+#include "ink_sy_fit.h"
 #include "ink_sy_hybrid.h"
 #include "ink_sy_intelarc_xmx.h"
 #include "ink_sy_ops.h"
@@ -425,7 +426,11 @@ struct InkSyRunner {
 
         if (!df2_path.empty()) {
             const int df2_cap_m = acfg.active ? acfg.dflash2_max_m : 8;
-            if (!df2.load(df2_path, max_slots, df2_cap_m, err)) {
+            const size_t df2_before = dev_bytes_allocated();
+            const bool df2_ok = df2.load(df2_path, max_slots, df2_cap_m, err);
+            if (df2_ok) fprintf(stderr, "[ink_sycl] DFlash 2 loaded: %.0f MiB on the device (the memory plan counted %.0f MiB)\n",
+                                (double)(dev_bytes_allocated() - df2_before) / 1048576.0, (double)ink_sy_df2_bytes(max_slots) / 1048576.0);
+            if (!df2_ok) {
                 fprintf(stderr, "[ink_sycl] DFlash 2 disabled (%s)\n", err.c_str());
                 err.clear();
             } else {
