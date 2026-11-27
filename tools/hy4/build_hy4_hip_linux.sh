@@ -23,9 +23,10 @@ for c in "$Z"/common/*.c "$Z"/decompress/*.c; do
   [ "$o" -nt "$c" ] || "$CC" -O3 -DZSTD_DISABLE_ASM=1 -DXXH_NAMESPACE=ZSTD_ $INC -c "$c" -o "$o" &
   objs+=("$o")
 done
-for c in "$E/src/artifact/strata_reader.cpp" "$E/src/quant/sk_codecs.cpp" "$RUN/hy4_engram.cpp" "$RUN/hy4_cpu_experts.cpp"; do
+for c in "$E/src/artifact/strata_reader.cpp" "$E/src/quant/sk_codecs.cpp" "$RUN/hy4_engram.cpp" "$RUN/hy4_cpu_experts.cpp" "$RUN/hy4_cpu_k512.cpp"; do
   o="$OUT/obj/$(basename "$c" .cpp).o"
-  [ "$o" -nt "$c" ] || "$CXX" -std=c++17 -O3 -pthread $INC -c "$c" -o "$o" &
+  X=""; case "$c" in *hy4_cpu_experts.cpp) X="-mavx2 -mfma -mf16c" ;; esac   # as engine/CMakeLists.txt (k512 sets its own target attributes)
+  [ "$o" -nt "$c" ] || "$CXX" -std=c++17 -O3 -pthread $X $INC -c "$c" -o "$o" &
   objs+=("$o")
 done
 wait
