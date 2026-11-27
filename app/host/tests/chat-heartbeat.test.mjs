@@ -11,12 +11,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
+import { startRouteHost } from './helpers/route-host.mjs';
 import { BEAT_MS, beatInterval, keepStreamAlive } from '../server/stream-beat.mjs';
 
 /** A response stand-in: records writes, emits finish/close like http.ServerResponse. */
@@ -96,7 +96,6 @@ test('two responses beat independently: ending one leaves the other beating', t 
 
 /* ---------------------------------------------------------------- the real route --- */
 
-const HOST = resolve(import.meta.dirname, '..', 'server', 'index.mjs');
 const freePort = () => new Promise(r => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const cleanup = dir => { try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } };
@@ -104,33 +103,23 @@ const cleanup = dir => { try { rmSync(dir, { recursive: true, force: true, maxRe
 async function setup(t, beatMs) {
   const worker = await startScriptedWorker({ model: 'cloud-model' });
   const home = mkdtempSync(join(tmpdir(), 'strata-beat-'));
+  let host;
+  t.after(async () => {
+    await host?.stop();
+    await worker.close();
+    cleanup(home);
+  });
   const ws = join(home, 'workspace'); mkdirSync(ws, { recursive: true });
-  const port = await freePort();
   const env = {
-    ...process.env, STRATA_HOME: home, STRATA_PORT: String(port), STRATA_WORKSPACE: ws, STRATA_REAL_ENGINE: '0',
+    ...process.env, STRATA_HOME: home, STRATA_WORKSPACE: ws, STRATA_REAL_ENGINE: '0',
     STRATA_COMPONENTS_DIR: join(home, 'components'), STRATA_STREAM_BEAT_MS: String(beatMs),
     STRATA_SETTINGS_FILE: join(home, 'app-settings.json'), LOCALAPPDATA: join(home, 'Local'), APPDATA: join(home, 'Roaming'),
     XDG_DATA_HOME: join(home, 'xdg-data'), XDG_STATE_HOME: join(home, 'xdg-state'), XDG_CONFIG_HOME: join(home, 'xdg-config'),
     STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()),
   };
   delete env.STRATA_HARNESS_DIR;
-  const child = spawn(process.execPath, [HOST], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  let log = '';
-  child.stdout.on('data', d => { log += d; }); child.stderr.on('data', d => { log += d; });
-  t.after(async () => {
-    if (child.exitCode === null) {
-      if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-      else child.kill('SIGTERM');
-      await new Promise(r => child.once('exit', r));
-    }
-    await worker.close(); cleanup(home);
-  });
-  const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`${base}/api/health`)).ok) break; } catch { /* not up yet */ }
-    if (child.exitCode !== null) throw new Error(`the host exited: ${log.slice(-500)}`);
-    await sleep(100);
-  }
+  host = await startRouteHost(env);
+  const { base, alive } = host;
   const saved = await fetch(`${base}/api/model-providers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'custom', name: 'Scripted API', baseUrl: worker.url, protocol: 'openai-chat', apiKey: 'sk-host-test-0123456789', models: [{ id: 'cloud-model', name: 'Cloud model', contextMax: 64000 }] }) });
   assert.equal(saved.status, 200);
   const connectionId = (await saved.json()).connections[0].id;
@@ -153,7 +142,7 @@ async function setup(t, beatMs) {
     })();
     return { frames, done, abort: () => controller.abort() };
   };
-  return { worker, chat, alive: () => child.exitCode === null, log: () => log };
+  return { worker, chat, alive };
 }
 // A wait for an event, not a deadline: on a loaded Windows PC the host, the scripted model and the test share the CPU with whatever else runs, and a window of 1.5 s or 8 s
 // failed now and then (0.2.16 INT runs). The limit only ends a test that would otherwise hang; the test's own timeout is longer.

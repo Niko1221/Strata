@@ -8,13 +8,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
-import { resolveHarness } from '../server/agent/harness-runtime.mjs';
+import { resolveHarness, taskkillTree } from '../server/agent/harness-runtime.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
@@ -29,21 +29,32 @@ async function startHost(t, { home, ws, harness = HARNESS } = {}) {
   const env = { ...process.env, STRATA_HOME: home, STRATA_PORT: String(port), STRATA_WORKSPACE: ws, STRATA_REAL_ENGINE: '0', STRATA_COMPONENTS_DIR: join(home, 'components') };
   if (harness) env.STRATA_HARNESS_DIR = harness; else delete env.STRATA_HARNESS_DIR;
   const child = spawn(process.execPath, [HOST], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const exited = new Promise(resolve => child.once('close', resolve));
+  const alive = () => child.pid && child.exitCode === null && child.signalCode === null;
   let log = '';
   child.stdout.on('data', d => { log += d; }); child.stderr.on('data', d => { log += d; });
-  const stop = async () => {
-    if (child.exitCode !== null) return;
-    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-    else child.kill('SIGTERM');
-    await new Promise(r => child.once('exit', r));
-  };
+  child.on('error', error => { log += error.message; });
+  let stopping;
+  const stop = () => stopping ??= (async () => {
+    if (alive()) {
+      if (process.platform === 'win32') {
+        if (taskkillTree(child.pid).status !== 0) child.kill('SIGKILL');
+      } else child.kill('SIGTERM');
+    }
+    await exited;
+  })();
   t.after(stop);
   const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) {
+  const deadline = Date.now() + 30_000;
+  let ready = false;
+  while (Date.now() < deadline && alive()) {
     // #5577: each attempt ends within 2 s, so a host that accepts the connection but never answers fails with its log instead of hanging
-    try { if ((await fetch(`${base}/api/agent/status`, { signal: AbortSignal.timeout(2000) })).ok) break; } catch { /* not up yet, or no answer in time */ }
-    if (child.exitCode !== null) throw new Error(`the host exited: ${log.slice(-500)}`);
+    try { if ((await fetch(`${base}/api/agent/status`, { signal: AbortSignal.timeout(2000) })).ok) { ready = true; break; } } catch { /* not up yet, or no answer in time */ }
     await sleep(200);
+  }
+  if (!ready) {
+    await stop();
+    throw new Error(`the host stopped before it became ready: ${log.slice(-500)}`);
   }
   const post = async (path, body) => { const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: res.status, body: await res.json().catch(() => null) }; };
   /** Stream one chat turn; `onFrame` may react while it runs. Resolves with every frame. */
@@ -67,16 +78,24 @@ async function startHost(t, { home, ws, harness = HARNESS } = {}) {
 
 async function setup(t, { harness = HARNESS, reuse } = {}) {
   const worker = reuse?.worker ?? await startScriptedWorker({ model: 'cloud-model' });
-  const home = reuse?.home ?? mkdtempSync(join(tmpdir(), 'strata-host-'));
+  let home = reuse?.home;
+  let host;
+  if (!reuse) {
+    t.after(async () => {
+      await host?.stop();
+      await worker.close();
+      if (home) cleanup(home);
+    });
+    home = mkdtempSync(join(tmpdir(), 'strata-host-'));
+  }
   const ws = join(home, 'workspace'); mkdirSync(ws, { recursive: true });
-  const host = await startHost(t, { home, ws, harness });
+  host = await startHost(t, { home, ws, harness });
   let connectionId = reuse?.connectionId;
   if (!connectionId) {
     const saved = await host.post('/api/model-providers', { kind: 'custom', name: 'Scripted API', baseUrl: worker.url, protocol: 'openai-chat', apiKey: 'sk-host-test-0123456789', models: [{ id: 'cloud-model', name: 'Cloud model', contextMax: 64000 }] });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     connectionId = saved.body.connections[0].id;
   }
-  if (!reuse) t.after(async () => { await worker.close(); cleanup(home); });
   const remoteModel = { connectionId, modelId: 'cloud-model' };
   const send = (host, sessionId, message, onFrame) => host.chat({ sessionId, message, remoteModel, workspaceId: null, history: [] }, onFrame);
   return { worker, home, ws, host, connectionId, remoteModel, send: (sessionId, message, onFrame) => send(host, sessionId, message, onFrame) };

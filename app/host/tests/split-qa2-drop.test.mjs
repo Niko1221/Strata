@@ -1,15 +1,13 @@
 // Files dropped on the app window on Linux and macOS: the shell hands the paths to the host, the page fetches each file once.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { transform } from 'esbuild';
 import { createNativeDrops, typeOfName, MAX_FILES } from '../server/native-drop.mjs';
+import { startRouteHost } from './helpers/route-host.mjs';
 
-const root = resolve(import.meta.dirname, '..');
 async function loadTs(path) {
   const { code } = await transform(await readFile(new URL(path, import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
   return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
@@ -41,13 +39,11 @@ test('the host keeps only regular files it can read, each for one fetch, for a s
 
 test('only the app shell can hand files over; the page fetches each file once', { timeout: 60000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'strata-drop-host-'));
-  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
-  const port = socket.address().port; await new Promise(r => socket.close(r));
   const secret = 'a'.repeat(40);
-  const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_REAL_ENGINE: '0', STRATA_WORKSPACE: join(home, 'work'), STRATA_SHUTDOWN_TOKEN: secret }, stdio: 'ignore', windowsHide: true });
-  const base = `http://127.0.0.1:${port}`;
+  let host;
   try {
-    for (let i = 0; i < 100; i++) { try { if ((await fetch(base + '/api/skills')).ok) break; } catch { /* not up */ } await new Promise(r => setTimeout(r, 100)); }
+    host = await startRouteHost({ ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_REAL_ENGINE: '0', STRATA_WORKSPACE: join(home, 'work'), STRATA_SHUTDOWN_TOKEN: secret });
+    const { base } = host;
     const picture = join(home, 'qa.png'); await writeFile(picture, Buffer.from([137, 80, 78, 71]));
     const post = (headers) => fetch(base + '/api/app/drop', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ paths: [picture] }) });
     assert.equal((await post({})).status, 403, 'a page cannot hand over paths');
@@ -61,7 +57,7 @@ test('only the app shell can hand files over; the page fetches each file once', 
     assert.deepEqual([...new Uint8Array(await first.arrayBuffer())], [137, 80, 78, 71]);
     assert.equal((await fetch(`${base}/api/app/drop/${file.id}`)).status, 404, 'once');
     assert.equal((await fetch(`${base}/api/app/drop/not-an-id`)).status, 404);
-  } finally { child.kill(); await new Promise(r => setTimeout(r, 300)); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
+  } finally { await host?.stop(); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
 });
 
 test('the page reads what the shell announced and makes Files of it', async () => {
