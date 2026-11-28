@@ -14,6 +14,11 @@ Nothing here is known to work on another ARM machine.
 - **Not tested:** contexts above 128K, more than eight chat slots (four and eight were measured: "Several chats at once" below), a long soak. `strata doctor --live` lists the GB10 with no memory
   figure, because `nvidia-smi` reports none for it.
 
+With a single Linux CUDA GPU holding every expert, set `STRATA_RESIDENT_PREFILL_SCRATCH=1` to keep small prompts from evicting
+experts. In single-slot serving with `--prefill auto`, this takes at most one eighth of free device memory above the configured
+reserve at startup, capped by the prompt loan size. If the space is unavailable or a prompt needs more, the engine borrows
+expert slots as before. Unset the variable to keep the original memory budget.
+
 ## Install with the Terminal
 
 ```sh

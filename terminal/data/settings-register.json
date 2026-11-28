@@ -47192,6 +47192,36 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_RESIDENT_PREFILL_SCRATCH",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 16087,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DGX_SPARK_LINUX.md:17"
+   ],
+   "status": "opt-in",
+   "owner": "program",
+   "note": "Allocate a bounded prompt workspace when every expert is resident on one Linux CUDA GPU.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_RING_BYTES",
    "backends": [
     "cuda-hip",
