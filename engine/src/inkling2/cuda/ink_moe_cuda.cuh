@@ -1152,7 +1152,7 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
 }
 
 // bit of a GSQ-RCO expert type in the STRATA_INK_IQ_TC_MASK word (the dp4a kernels skip the types whose bit is set; bits 8.. of their skip argument)
-__device__ __forceinline__ bool ink_rco_tc_skips(int skip, uint32_t t) {
+__host__ __device__ __forceinline__ bool ink_rco_tc_skips(int skip, uint32_t t) {
     if (!(skip & 4)) return false;
     const int bit = (t == 16u) ? 0 : (t == 17u) ? 1 : (t == 18u) ? 2 : (t == 19u) ? 3 : (t == 21u) ? 4 : (t == 22u) ? 5 : (t == 42u) ? 6 : -1;
     return bit >= 0 && ((skip >> (8 + bit)) & 1);
@@ -4688,48 +4688,68 @@ inline void launch_ink_moe_dispatch_only(
         static const int q80_tc_min = [] { const char* e = std::getenv("STRATA_INK_Q80_TC"); return e ? std::atoi(e) : 256; }();
         // IQ4_NL experts (the down projections of the GSQ-RCO files) take the same tensor-core path; STRATA_INK_IQ4NL_TC=0 keeps them on the dp4a kernels (for A/B runs)
         static const int nl_tc_on = [] { const char* e = std::getenv("STRATA_INK_IQ4NL_TC"); return !(e && e[0] == '0'); }();
-        const int skip_tc = (q80_tc_min > 0 && M >= q80_tc_min && ink_has_int8_tc()) ? 1 : 0;
+        const bool has_tc = ink_has_int8_tc();
+        const int skip_q80_bit = (q80_tc_min > 0 && M >= q80_tc_min && has_tc) ? 1 : 0;
+        // GSQ-RCO IQ / IQ4_NL widened-tile TC kernels beat DP4A from M >= 32 (STRATA_INK_IQ_TC_MIN overrides; STRATA_INK_Q80_TC=0 disables all)
+        static const int iq_tc_min = [] { const char* e = std::getenv("STRATA_INK_IQ_TC_MIN"); return e ? std::atoi(e) : 32; }();
+        const bool iq_tc_ok = (q80_tc_min > 0 && iq_tc_min > 0 && M >= iq_tc_min && has_tc);
         static const int rco_tc_on = [] { const char* e = std::getenv("STRATA_INK_IQ_TC"); return !(e && e[0] == '0'); }();   // the IQ / Q2_0 types of the GSQ-RCO files
         static const unsigned rco_mask = [] { const char* e = std::getenv("STRATA_INK_IQ_TC_MASK"); return e ? (unsigned)std::strtoul(e, nullptr, 0) : 0x7Fu; }();
-        const int skip_q80 = skip_tc ? (1 | (nl_tc_on ? 2 : 0) | (rco_tc_on ? 4 : 0) | (int)((rco_mask & 0x7Fu) << 8)) : 0;   // bit 0: Q8_0, bit 1: IQ4_NL, bit 2: the RCO types in bits 8..14
-        if (skip_q80) k_ink_moe_q80_tc<true><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-        if (skip_q80 & 2) k_ink_moe_q80_tc<true, 20><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+        const int skip_q80 = skip_q80_bit
+                           | ((iq_tc_ok && nl_tc_on) ? 2 : 0)
+                           | ((iq_tc_ok && rco_tc_on) ? (4 | (int)((rco_mask & 0x7Fu) << 8)) : 0);
+        const uint32_t gut = info.gguf_gu_t;
+        if ((skip_q80 & 1) && (gut == 0u || gut == 8u))  k_ink_moe_q80_tc<true><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+        if ((skip_q80 & 2) && (gut == 0u || gut == 20u)) k_ink_moe_q80_tc<true, 20><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         if (skip_q80 & 4) {
-            if (rco_mask & 1u) k_ink_moe_iq_tc<true, 16><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            if (rco_mask & 2u) k_ink_moe_iq_tc<true, 17><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            if (rco_mask & 4u) k_ink_moe_iq_tc<true, 18><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            if (rco_mask & 8u) k_ink_moe_iq_tc<true, 19><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            if (rco_mask & 16u) k_ink_moe_iq_tc<true, 21><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
-            if (rco_mask & 32u) k_ink_moe_iq_tc<true, 22><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 1u)  && (gut == 0u || gut == 16u)) k_ink_moe_iq_tc<true, 16><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 2u)  && (gut == 0u || gut == 17u)) k_ink_moe_iq_tc<true, 17><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 4u)  && (gut == 0u || gut == 18u)) k_ink_moe_iq_tc<true, 18><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 8u)  && (gut == 0u || gut == 19u)) k_ink_moe_iq_tc<true, 19><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 16u) && (gut == 0u || gut == 21u)) k_ink_moe_iq_tc<true, 21><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
+            if ((rco_mask & 32u) && (gut == 0u || gut == 22u)) k_ink_moe_iq_tc<true, 22><<<g_gu_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, nullptr, ws.h_f32);
         }
+        const bool gu_all_tc = (gut != 0u) && (
+            ((skip_q80 & 1) && gut == 8u) ||
+            ((skip_q80 & 2) && gut == 20u) ||
+            ink_rco_tc_skips(skip_q80, gut));
         static const int spec_on = [] { const char* e = std::getenv("STRATA_INK_GGUF_SPEC"); return !(e && e[0] == '0'); }();
-        if (gmt == 1) {
-            launch_gu_gguf_spec<1>(g_gu, st, spec_on ? info.gguf_gu_t : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
-        } else if (gmt == 2) {
-            launch_gu_gguf_spec<2>(g_gu, st, spec_on ? info.gguf_gu_t : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
-        } else if (gmt == 4) {
-            k_ink_moe_gu_gguf_dp4a<4><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
-        } else if (gmt == 8) {
-            k_ink_moe_gu_gguf_dp4a<8><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
-        } else {
-            k_ink_moe_gu_gguf_dp4a<16><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+        if (!gu_all_tc) {
+            if (gmt == 1) {
+                launch_gu_gguf_spec<1>(g_gu, st, spec_on ? gut : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            } else if (gmt == 2) {
+                launch_gu_gguf_spec<2>(g_gu, st, spec_on ? gut : 0u, sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            } else if (gmt == 4) {
+                k_ink_moe_gu_gguf_dp4a<4><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            } else if (gmt == 8) {
+                k_ink_moe_gu_gguf_dp4a<8><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            } else {
+                k_ink_moe_gu_gguf_dp4a<16><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32, skip_q80);
+            }
         }
         ink_moe_mark(4);
         const int nblk_h = P * (kInkInter / 32);
         k_ink_quant_q8_1_g32<<<(nblk_h + 7) / 8, 256, 0, st>>>(ws.h_f32, ws.hq_g32, P, kInkInter);
-        if (skip_q80) k_ink_moe_q80_tc<false><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
-        if (skip_q80 & 2) k_ink_moe_q80_tc<false, 20><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
-        if ((skip_q80 & 4) && (rco_mask & 64u)) k_ink_moe_iq_tc<false, 42><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
-        if (gmt == 1) {
-            launch_dn_gguf_spec<1>(g_dn, st, spec_on ? info.gguf_dn_t : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
-        } else if (gmt == 2) {
-            launch_dn_gguf_spec<2>(g_dn, st, spec_on ? info.gguf_dn_t : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
-        } else if (gmt == 4) {
-            k_ink_moe_dn_gguf_dp4a<4><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
-        } else if (gmt == 8) {
-            k_ink_moe_dn_gguf_dp4a<8><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
-        } else {
-            k_ink_moe_dn_gguf_dp4a<16><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+        const uint32_t dnt = info.gguf_dn_t;
+        if ((skip_q80 & 1) && (dnt == 0u || dnt == 8u))  k_ink_moe_q80_tc<false><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
+        if ((skip_q80 & 2) && (dnt == 0u || dnt == 20u)) k_ink_moe_q80_tc<false, 20><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
+        if ((skip_q80 & 4) && (rco_mask & 64u) && (dnt == 0u || dnt == 42u)) k_ink_moe_iq_tc<false, 42><<<g_dn_tc, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.topk_w, ws.y_pair);
+        const bool dn_all_tc = (dnt != 0u) && (
+            ((skip_q80 & 1) && dnt == 8u) ||
+            ((skip_q80 & 2) && dnt == 20u) ||
+            ink_rco_tc_skips(skip_q80, dnt));
+        if (!dn_all_tc) {
+            if (gmt == 1) {
+                launch_dn_gguf_spec<1>(g_dn, st, spec_on ? dnt : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            } else if (gmt == 2) {
+                launch_dn_gguf_spec<2>(g_dn, st, spec_on ? dnt : 0u, sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            } else if (gmt == 4) {
+                k_ink_moe_dn_gguf_dp4a<4><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            } else if (gmt == 8) {
+                k_ink_moe_dn_gguf_dp4a<8><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            } else {
+                k_ink_moe_dn_gguf_dp4a<16><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair, skip_q80);
+            }
         }
         ink_moe_mark(5);
     }
