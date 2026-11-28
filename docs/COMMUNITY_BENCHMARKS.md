@@ -20,9 +20,6 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
-- [2026-11-28: RTX 3070 8 GB (sm_86), Core i7-9700KF, 64 GB RAM](bench-results/2026-11-28-community-rtx-3070-8gb-inkling-sq10-vs-gguf/README.md):
-  Strata 0.2.23 (Control 0.1.70, `strata-inkling` and `strata-engine` 0.1.70) on Windows 11 / CUDA 13: Inkling-2-Mini SQ-10 (native `.strata`), GSQ-RCO IQ3_S, a community AtomicChat AD-IQ3_S GGUF, and two Qwen3.6-35B-A3B GGUF builds.
-  Four runs of 256 tokens on an 870-token prompt, one 18,953-token needle prompt, ten auto-graded probes, a vision request, and prompt probes at 32k and 64k. SQ-10 28.0/29.1 tok/s against 10.1 at 19k; the uncensored IQ3_S build holds 16.1 at 19k; the Qwen rows reach 30.8 and 23.9 tok/s and cap at 76,800 tokens of context. Two models are reported as load failures.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](bench-results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
@@ -76,7 +73,9 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
-
+- [2026-11-28: RTX 3070 8 GB (sm_86), Core i7-9700KF, 64 GB RAM](bench-results/2026-11-28-community-rtx-3070-8gb-inkling-sq10-vs-gguf/README.md):
+  Strata 0.2.23 (Control 0.1.70, `strata-inkling` and `strata-engine` 0.1.70) on Windows 11 / CUDA 13: Inkling-2-Mini SQ-10 (native `.strata`), GSQ-RCO IQ3_S, a community AtomicChat AD-IQ3_S GGUF, and two Qwen3.6-35B-A3B GGUF builds.
+  Four runs of 256 tokens on an 870-token prompt, one 18,953-token needle prompt, ten auto-graded probes, a vision request, and prompt probes at 32k and 64k. SQ-10 28.0/29.1 tok/s against 10.1 at 19k; the uncensored IQ3_S build holds 16.1 at 19k; the Qwen rows reach 30.8 and 3.9 tok/s and cap at 76,800 tokens of context. Two models are reported as load failures.
 ## Run the standard benchmark
 
 ```sh
