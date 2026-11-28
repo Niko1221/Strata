@@ -5250,6 +5250,17 @@ const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
     return blob(layer, expert);
 }
 
+int FileExpertSource::mapped_parts(int64_t layer, int64_t expert, BlobPart* out) {
+    if (role_ptr_.empty() || !direct_.empty() || unmapped_ || base_ == nullptr || layer < 0 || expert < 0 ||
+        layer >= n_layers_ || expert >= n_expert_)
+        return 0;
+    Span sp[3];
+    const int ns = spans(layer, expert, sp);
+    for (int i = 0; i < ns; ++i) out[i] = {sp[i].p, sp[i].n, sp[i].at};
+    if (ns > 0) file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
+    return ns;
+}
+
 int FileExpertSource::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
     // the GGUF mapped in place only (three tensors per expert); the RAM copy, an exchange override, the unbuffered
     // reads, a closed mapping and the I/O prefetch (STRATA_IO_PREFETCH: it preads the ranges the page cache lacks, which a copy out

@@ -322,6 +322,13 @@ The weights and the MTP draft files are asked for ahead of their reads at start 
 steps), which matters on a slow drive: `STRATA_READ_AHEAD=0` turns it off, `STRATA_FILL_AHEAD=N` sets how many fill pairs
 are requested ahead (default 256).
 
+`STRATA_FILL_BATCH=N` (opt-in, off by default) fills the expert cache at start N experts at a time: `STRATA_FILL_THREADS`
+threads (default 16) copy a batch out of the mapped GGUF into pinned memory while the GPU copies the previous batch. It
+applies to a GGUF read in place (not the unbuffered reads, not a per-layer fill); other sources keep the one-by-one fill.
+Measured on a Ryzen AI Max+ 395 (gfx1151, ROCm 7.14.1, 55 GiB of experts in the cache, v0.2.23, `STRATA_FILL_BATCH=64`):
+start to first token 63.3 s -> 50.4 s (mean of 4 starts each) with the model files already in the page cache, 56.4 s -> 53.9 s
+(2 each) with them dropped; the fill itself 38.3 s -> 25.0 s. Replies are byte-identical.
+
 **Sequential read-ahead on the mapped experts (Linux, opt-in).** `STRATA_EXPERTS_SEQ_READAHEAD=1` marks the mapped expert
 files (`experts.bin`, or the GGUF shards in place) `MADV_SEQUENTIAL` when they are mapped. When the experts outside the GPU
 are much larger than the file cache, the kernel can stop reading ahead on the mapping: each page fault then reads one 4 KiB

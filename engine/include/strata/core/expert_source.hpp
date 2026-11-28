@@ -978,6 +978,9 @@ public:
     /// With io prefetch in the experts.bin tier, the mapping itself (blob() may hand out a recycled staging buffer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
     int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override;
+    /// STRATA_FILL_BATCH: the three mapped tensors of an expert, whatever the I/O prefetch says - for the
+    /// startup profile fill only (nothing else reads the file then; its threads fault the mapping in parallel). 0: not mapped.
+    int mapped_parts(int64_t layer, int64_t expert, BlobPart* out);
     void note_async_read(const uint8_t* blob, void* stream) override;
     /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.

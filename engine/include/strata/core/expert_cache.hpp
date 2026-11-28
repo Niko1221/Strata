@@ -21,6 +21,7 @@
 // holds in the verify window's grouped kernels and the prompt path (the hit/miss split), and the CPU pool the rest.
 // (Written when nothing consumed the slots yet and `--expert-cache` defaulted to 0; setup's configs use `auto`.)
 #pragma once
+#include <functional>
 
 #include <cstddef>
 #include <cstdint>
@@ -215,6 +216,15 @@ public:
     /// of the slot (the pieces tile the blob).  Same queue, same `sync_queued`.
     bool fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err);
     bool sync_queued(std::string& err);
+    /// STRATA_FILL_BATCH (opt-in): the startup profile fill in bulk. `n` blobs go to their slots `batch` at a
+    /// time: `threads` CPU threads copy a batch into one half of a pinned staging area (the mapped file's page faults
+    /// in parallel) while the GPU copies the previous half (legacy stream, queued); one sync at the end, so
+    /// verify_slot's read-back is ordered after every copy. `before(at, m)` runs before batch [at, at+m) is read
+    /// (the caller's read-ahead advice). Same bytes as n fill_slot_blocking calls.
+    /// Pair i's blob is `nparts[i]` pieces at parts[3*i .. 3*i+nparts[i]) (FileExpertSource::blob_parts: the GGUF's three
+    /// tensors where they are mapped), copied by the threads straight into the staging area at their offsets.
+    bool fill_slots_bulk(const int32_t* slots, const BlobPart* parts, const int* nparts, int64_t n, int batch,
+                         int threads, const std::function<void(int64_t, int64_t)>& before, std::string& err);
 
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
     /// THE CACHE HOLDS THE EXPERT IT CLAIMS TO.**  A slot table that is right about indices and wrong about
