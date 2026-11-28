@@ -60,9 +60,45 @@ up, the server starts the layer split itself (as above) and the load says so in 
 
 sFNX as published needs the cards to write into each other (CUDA peer access): GeForce drivers refuse that, and its start checks need the
 IOMMU in identity mode, which most Linux PCs do not have by default. Here the buffers the cards exchange sums through live in page-locked
-host memory that both cards read and write with ordinary loads and stores. No peer API is called anywhere on NVIDIA: `terminal/tests/split/test_split_engine.py`
-fails if one appears in `engine/src/split`, and `tools/packaging/build_split_cuda.sh` fails if the built engine can call one. The IOMMU and BAR1 start
-checks are removed because the path they protect no longer exists.
+host memory that both cards read and write with ordinary loads and stores. The engine calls no peer API on NVIDIA (with `FNX_PF_NCCL=1`, NCCL makes
+its own choice: see below): `terminal/tests/split/test_split_engine.py` fails if one appears in `engine/src/split`, and `tools/packaging/build_split_cuda.sh`
+fails if the built engine can call one. The IOMMU and BAR1 start checks are removed because the path they protect no longer exists.
+
+### NCCL for the prompt sums on NVIDIA (opt-in)
+
+`FNX_PF_NCCL=1` (NVIDIA, off by default) sums the prompt chunks through NCCL instead of the host exchange, with the same code as the AMD path's
+RCCL (below). Strata does not ship NCCL: the engine loads `libnccl.so.2` from the library path when it starts (`dlopen`, never linked) and runs the
+same exact fp16 self-test on every card. Without the library, or if the self-test fails, it says so in one line and keeps the host exchange. Unset
+or `0`, nothing is loaded and nothing changes.
+
+- **What it needs:** any `libnccl.so.2` the dynamic loader finds, for example NVIDIA's NCCL 2.x on `LD_LIBRARY_PATH`. The start line says which:
+  `fnx: The prompt sums use NCCL (libnccl.so.2).`
+- **Peer access:** the engine still calls no peer API, but NCCL chooses its own way between the cards: host memory where the driver refuses peer
+  access (GeForce cards on NVIDIA's driver), its own peer mappings where the driver offers P2P (NVLink, workstation cards, a P2P-enabled driver).
+  `NCCL_P2P_DISABLE=1` keeps it in host memory.
+- **Answers:** NCCL rounds every card's part to fp16 before it adds, so answers can differ from the host exchange's after some tokens, as with
+  RCCL. `FNX_PF_RCCL_F32=1` sums in f32 with NCCL too.
+- **Decode** is unchanged: only the prompt's chunk sums go through NCCL.
+- **Logs:** NCCL writes `NCCL_DEBUG` output to standard output, which is the engine's protocol channel; set `NCCL_DEBUG_FILE` as well.
+- `FNX_RCCL_LIB` points the loader at another file, for NCCL too.
+
+Measured on three RTX 3090 (24 GB, 250 W; one on PCIe 4.0 x4 behind the X570 chipset, two on PCIe 4.0 x8 CPU lanes), Ryzen 9
+5900X, 121 GB RAM, Linux, NVIDIA 615.71.09, NVIDIA's NCCL 2.32.6, Flash-Next GSQ-RCO IQ3_S, context 262,144, `strata-split-3`,
+DFlash2 drafting, greedy. Prompt read in seconds, the median of two engine starts (same-day runs):
+
+| Prompt, tokens | Host exchange (the default) | NCCL through host memory | NCCL over P2P |
+| --- | --- | --- | --- |
+| 8,192 | 3.06 | 2.51 (+22 %) | 2.79 (+10 %) |
+| 32,768 | 11.99 | 9.90 (+21 %) | 11.14 (+8 %) |
+| 65,536 | 24.06 | 20.03 (+20 %) | 22.57 (+7 %) |
+| 131,072 | 49.20 | 41.45 (+19 %) | 46.50 (+6 %) |
+| 261,120 | 105.43 | 89.96 (+17 %) | 99.74 (+6 %) |
+
+NCCL over P2P needs a driver that offers peer access between these cards (GeForce drivers refuse it) and, on this board, where the
+cards meet at the CPU's host bridge, `NCCL_P2P_LEVEL=SYS`; it was slower than NCCL through host memory here, so measure both on your
+PC. Between the two NCCL routes every answer was the same, token for token. On two of these cards (both on PCIe 4.0 x8 CPU lanes,
+`strata-split-2`) NCCL through host memory read 8K and 32K prompts about 4 % faster than the host exchange. The default path is unchanged:
+the engine built without this change read every prompt in the same time (within 0.3 %), gave the same tokens and printed the same lines.
 
 ## AMD (Radeon AI PRO R9700, gfx1201)
 
