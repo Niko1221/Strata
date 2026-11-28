@@ -1,0 +1,421 @@
+{
+ "schema_version": 1,
+ "kind": "community-report",
+ "generated_at": "2026-11-28T08:10:00+01:00",
+ "hardware": {
+  "gpu": "NVIDIA GeForce RTX 3070, 8 GiB (sm_86)",
+  "cpu": "Intel Core i7-9700KF",
+  "ram_gib": 63.92,
+  "os": "Windows 11",
+  "cuda": "13.0",
+  "storage": "NVMe, models on G:",
+  "desktop_vram_mib_at_idle": 620
+ },
+ "software": {
+  "app": "0.2.23",
+  "control": "0.1.70",
+  "inkling_engine": "0.1.70",
+  "qwen_engine": "0.1.70",
+  "launch_path": "serve/server.py run config, not strata launch"
+ },
+ "method": {
+  "protocol": "community report under docs/COMMUNITY_BENCHMARKS.md; strata bench run / BENCHMARK_PROTOCOL not used",
+  "speed_series": 4,
+  "tokens_per_series": 256,
+  "short_prompt_tokens": 870,
+  "prefill_prompt_tokens": 1983,
+  "depth_prompt_tokens": 18953,
+  "quality_probes": 10,
+  "vision_image": "768x512 PNG",
+  "timing_source": "engine timings (predicted_per_second, prompt_per_second)",
+  "prompt_cache": "none reused; every prompt carries a unique prefix"
+ },
+ "models": [
+  {
+   "model": "Inkling-2-Mini-SQ-10",
+   "family": "inkling-2-mini",
+   "file": "Inkling-2-Mini-SQ-10.strata",
+   "bytes": 10471526400,
+   "settings": {
+    "args": [
+     "--native",
+     "<models>/inkling-2-mini/Inkling-2-Mini-SQ-10.strata",
+     "--max-context",
+     "262144",
+     "--vram-experts-gb",
+     "2.91",
+     "--ram-experts-gb",
+     "5.69",
+     "--vision",
+     "<models>/inkling-2-mini/Inkling-2-Mini-Vision.strata",
+     "--kv",
+     "k8v4"
+    ],
+    "env": {
+     "STRATA_INK_DRAFTER": "dspark"
+    },
+    "context": 262144,
+    "drafter": "DSpark, 70 MiB"
+   },
+   "load_s": 31.2,
+   "runs": [
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 217,
+     "decode_tps": 24.9
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 219,
+     "decode_tps": 28.1
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 217,
+     "decode_tps": 27.9
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 217,
+     "decode_tps": 29.0
+    }
+   ],
+   "prefill": {
+    "prompt_tokens": 1983,
+    "prompt_tps": 297.9
+   },
+   "depth": {
+    "prompt_tokens": 18953,
+    "decode_tps": 10.1,
+    "prompt_tps": 332.0,
+    "needle": "found"
+   },
+   "quality": {
+    "passed": 9,
+    "total": 10,
+    "failed": [
+     "Q7_tool_choix"
+    ]
+   },
+   "vision": {
+    "verdict": "ok",
+    "seconds": 56.0,
+    "decode_tps": 28.1
+   },
+   "note": "reference row; measured the same night with the same protocol, before the three community models"
+  },
+  {
+   "model": "Inkling-2-Mini-GSQ-RCO-IQ3_S",
+   "family": "inkling-2-mini",
+   "file": "Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf",
+   "bytes": 11425259648,
+   "settings": {
+    "args": [
+     "--native",
+     "<models>/inkling-2-mini/Inkling-2-Mini-GSQ-RCO-IQ3_S.gguf",
+     "--max-context",
+     "262144",
+     "--vram-experts-gb",
+     "2.33",
+     "--ram-experts-gb",
+     "9.60",
+     "--vision",
+     "<models>/inkling-2-mini/Inkling-2-Mini-Vision-v2.strata",
+     "--kv",
+     "k8v4"
+    ],
+    "env": {
+     "STRATA_INK_DRAFTER": "dspark"
+    },
+    "context": 262144,
+    "drafter": "none (refused: sidecar absent)"
+   },
+   "load_s": 39.8,
+   "runs": [
+    {
+     "prompt_tokens": 870,
+     "completion_tokens": 217,
+     "decode_tps": 21.2
+    },
+    {
+     "prompt_tokens": 870,
+     "completion_tokens": 179,
+     "decode_tps": 24.6
+    },
+    {
+     "prompt_tokens": 870,
+     "completion_tokens": 217,
+     "decode_tps": 25.0
+    },
+    {
+     "prompt_tokens": 870,
+     "completion_tokens": 180,
+     "decode_tps": 23.2
+    }
+   ],
+   "prefill": {
+    "prompt_tokens": 1983,
+    "prompt_tps": 172.1
+   },
+   "depth": {
+    "prompt_tokens": 18953,
+    "decode_tps": 10.8,
+    "prompt_tps": 182.0,
+    "needle": "found"
+   },
+   "quality": {
+    "passed": 9,
+    "total": 10,
+    "failed": [
+     "Q7_tool_choix"
+    ]
+   },
+   "vision": null,
+   "note": "reference row; the 21,2 t/s first arm had a pageable host arena, 9.60 GB of RAM experts removes it"
+  },
+  {
+   "model": "Inkling-2-Mini-Uncensored-AD-IQ3_S",
+   "family": "inkling-2-mini",
+   "file": "Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf",
+   "bytes": 13340510176,
+   "settings": {
+    "args": [
+     "--native",
+     "<models>/community/atomicchat/Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf",
+     "--max-context",
+     "262144",
+     "--vram-experts-gb",
+     "3.20",
+     "--ram-experts-gb",
+     "11.00",
+     "--vision",
+     "<models>/inkling-2-mini/Inkling-2-Mini-Vision-v2.strata",
+     "--kv",
+     "k8v4"
+    ],
+    "env": {
+     "STRATA_INK_DRAFTER": "dspark"
+    },
+    "context": 262144,
+    "drafter": "none (Control wrote --draft off: no sidecar in the model's folder)"
+   },
+   "load_s": 38.3,
+   "runs": [
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 212,
+     "decode_tps": 20.0
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 212,
+     "decode_tps": 26.2
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 212,
+     "decode_tps": 26.1
+    },
+    {
+     "prompt_tokens": 874,
+     "completion_tokens": 212,
+     "decode_tps": 26.8
+    }
+   ],
+   "prefill": {
+    "prompt_tokens": 1983,
+    "prompt_tps": 141.4
+   },
+   "depth": {
+    "prompt_tokens": 18953,
+    "decode_tps": 16.1,
+    "prompt_tps": 148.4,
+    "needle": "found"
+   },
+   "context_probes": [
+    {
+     "prompt_tokens": 29843,
+     "answered": true,
+     "seconds": 197.2,
+     "prompt_tps": 152.3
+    },
+    {
+     "prompt_tokens": 59733,
+     "answered": true,
+     "seconds": 419.8,
+     "prompt_tps": 143.5
+    }
+   ],
+   "quality": {
+    "passed": 10,
+    "total": 10,
+    "failed": []
+   },
+   "vision": {
+    "verdict": "ok",
+    "seconds": 56.0,
+    "decode_tps": 28.1
+   },
+   "note": "quality and vision come from the same night's first run; the raw JSON of that run was overwritten by the context probe run, the values are the ones quoted in the campaign log"
+  },
+  {
+   "model": "Ornith-1.5-35B-Q4_K_M",
+   "family": "ornith",
+   "file": "Ornith-1.5-35B-Q4_K_M.gguf",
+   "bytes": 21713463040,
+   "settings": {
+    "args": [
+     "--native",
+     "<models>/community/ornith/Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "76800",
+     "--prefill",
+     "auto",
+     "--mtp",
+     "2",
+     "--vision",
+     "--prompt-cache-spread"
+    ],
+    "env": {},
+    "context": 76800,
+    "drafter": "MTP, 99 of 144 draft tokens accepted"
+   },
+   "load_s": 66.3,
+   "runs": [
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 172,
+     "decode_tps": 31.9
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 172,
+     "decode_tps": 30.7
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 172,
+     "decode_tps": 30.9
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 172,
+     "decode_tps": 30.5
+    }
+   ],
+   "prefill": {
+    "prompt_tokens": 1894,
+    "prompt_tps": 122.4
+   },
+   "depth": {
+    "prompt_tokens": 18138,
+    "decode_tps": 18.3,
+    "prompt_tps": 126.5,
+    "needle": "found"
+   },
+   "quality": {
+    "passed": 9,
+    "total": 10,
+    "failed": [
+     "Q7_tool_choix"
+    ]
+   },
+   "vision": {
+    "verdict": "ok",
+    "pt": 411,
+    "ct": 200,
+    "s": 14.4,
+    "decode_tps": 26.6,
+    "shingle_max_repet": 1
+   },
+   "note": "262144 was refused by the engine on this card: 'conversation memory needs 10.56 GiB and only 3.15 GiB is free after the model. Start it again with a shorter context (76800 tokens fit here)'"
+  },
+  {
+   "model": "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M",
+   "family": "qwen36",
+   "file": "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+   "bytes": 21166758016,
+   "settings": {
+    "args": [
+     "--native",
+     "<models>/community/hauhau/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+     "--max-context",
+     "76800",
+     "--prefill",
+     "auto",
+     "--mtp",
+     "2",
+     "--vision",
+     "--prompt-cache-spread"
+    ],
+    "env": {},
+    "context": 76800,
+    "drafter": "none — 'drafts accepted 0 of 0' on every request"
+   },
+   "load_s": null,
+   "runs": [
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 256,
+     "decode_tps": 23.9
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 256,
+     "decode_tps": 23.8
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 256,
+     "decode_tps": 24.1
+    },
+    {
+     "prompt_tokens": 832,
+     "completion_tokens": 256,
+     "decode_tps": 23.9
+    }
+   ],
+   "prefill": {
+    "prompt_tokens": 1894,
+    "prompt_tps": 127.3
+   },
+   "depth": {
+    "prompt_tokens": 18138,
+    "decode_tps": 17.4,
+    "prompt_tps": 130.6,
+    "needle": "found"
+   },
+   "quality": {
+    "passed": 10,
+    "total": 10,
+    "failed": []
+   },
+   "vision": {
+    "verdict": "ok",
+    "pt": 411,
+    "ct": 200,
+    "s": 15.3,
+    "decode_tps": 23.5,
+    "shingle_max_repet": 1
+   },
+   "note": "same architecture and size as Ornith, but this quantization drops the MTP block ('drafts accepted 0 of 0' on every request)",
+   "load_note": "not captured: this run was started by strata launch, which does not report a load time"
+  }
+ ],
+ "failures": [
+  {
+   "model": "huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP Q2_K",
+   "file": "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q2_K.gguf",
+   "bytes": 13246129376,
+   "stage": "load",
+   "error": "strata-q36: blk.0.attn_gate.weight is Q2_K, which the native MMVQ does not take"
+  },
+  {
+   "model": "Tsunderee/Inkling-2-Mini-Bonsai-QAT bonsai_6g1-step75",
+   "file": "Inkling-2-Mini-Bonsai-QAT-bonsai_6g1-step75.gguf",
+   "bytes": 6646124160,
+   "stage": "load",
+   "error": "engine exit code 1, last line: open: Failed to open .strata file: <models>/community/bonsai/Inkling-2-Mini-Bonsai-QAT-bonsai_6g1-step75.gguf (no other output)"
+  }
+ ]
+}
