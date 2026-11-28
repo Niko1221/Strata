@@ -31,12 +31,13 @@ class InklingRule(unittest.TestCase):
     the engine keeps in engine/src/inkling2/ink_vision_policy.h."""
 
     def test_nvidia_and_amd_by_card_memory(self):
-        for gb, want in ((8, "cpu"), (12, "cpu"), (16, "cpu"), (20, "cpu"), (23, "cpu"), (24, "gpu"), (32, "gpu"), (48, "gpu")):
+        for gb, want in ((8, "cpu"), (12, "cpu"), (16, "cpu"), (20, "cpu"), (22, "cpu"), (23, "gpu"), (24, "gpu"), (32, "gpu"), (48, "gpu")):
             for make in ("nvidia", "amd", ""):
                 self.assertEqual(VR.inkling_reader(None, gb, make), want, (gb, make))
                 self.assertEqual(VR.inkling_reader("yes", gb, make), want, (gb, make))
-        self.assertEqual(VR.inkling_reader(None, 23.5), "gpu")                 # a "24 GB" card reports 23.5 to 24 GiB
-        self.assertEqual(VR.inkling_reader(None, 23.49), "cpu")
+        self.assertEqual(VR.inkling_reader(None, 23.48), "gpu")                # #7327: 24 GB cards (e.g. Quadro RTX 6000 / ECC) can report ~23.48 GiB
+        self.assertEqual(VR.inkling_reader(None, 23.0), "gpu")
+        self.assertEqual(VR.inkling_reader(None, 22.99), "cpu")
 
     def test_the_card_is_unknown(self):
         """Nothing is written then (None): the engine's own rule decides at start."""

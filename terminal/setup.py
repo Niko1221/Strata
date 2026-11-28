@@ -4191,7 +4191,7 @@ def images_default(model, family, ram, gpu=None) -> bool:
 unsloth_images_default = images_default     # the earlier name
 
 
-IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # = strata_control/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
+IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.0   # = strata_control/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
                                         # encoder's ~1.1-1.4 GB is ~850 expert slots lost, 3-5% of decode and prompt on P100 / A4000
                                         # 16 GB (Linux, IQ3_S / IQ3_XXS), and 35-60% on an RTX 4080 SUPER under Windows as reported)
 

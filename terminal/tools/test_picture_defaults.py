@@ -64,7 +64,7 @@ class PictureDefaults(unittest.TestCase):
 
     def test_one_rule_for_the_reader(self):
         self.assertEqual(setup.IMAGES_GPU_ENCODER_MIN_VRAM_GB, VR.GPU_MIN_VRAM_GB)
-        for vram, want in ((8, "cpu"), (16, "cpu"), (23.0, "cpu"), (24, "gpu"), (32, "gpu"), (None, "gpu")):
+        for vram, want in ((8, "cpu"), (16, "cpu"), (22.0, "cpu"), (23.0, "gpu"), (23.48, "gpu"), (24, "gpu"), (32, "gpu"), (None, "gpu")):
             self.assertEqual(VR.default_mode(vram), want)
             self.assertEqual(VR.wanted("yes", vram), want)
             self.assertEqual(setup.hip_vision("yes", vram or 0.0), want if vram else "gpu")
