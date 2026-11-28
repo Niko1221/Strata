@@ -430,7 +430,7 @@ class TimeSkipRun:
 
     def checkpoint(self, label: str, source: Path | None = None, parent: str | None = None) -> Checkpoint:
         """Snapshot a directory and record what it contained."""
-        src = Path(source or (self.workspace if label == "baseline" else self.workspace))
+        src = Path(source or self.workspace)
         # `pending` holds speculative work; the workspace itself is only read here.
         cp_id = f"cp{len(self.checkpoints) + 1}-{label}"
         dest = self.root / "checkpoints" / cp_id
