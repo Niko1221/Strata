@@ -19,8 +19,8 @@
 
 namespace ink2 {
 
-// Same number as strata_control/vision_reader.py GPU_MIN_VRAM_GB.
-constexpr double kVisionGpuMinGiB = 23.5;
+// Same number as strata_control/vision_reader.py GPU_MIN_VRAM_GB (23.0 GiB covers 24 GB cards that report ~23.4-23.5 GiB under ECC/driver reserve).
+constexpr double kVisionGpuMinGiB = 23.0;
 // Qwen's idle time before the elastic reader gives its VRAM back.
 constexpr int kVisionIdleSecondsDefault = 120;
 // Same as strata_control/vision_reader.py INTEL_GPU_READER_BY_DEFAULT.
@@ -56,17 +56,17 @@ inline VisionPlan plan_vision_reader(VisionAsk ask, const std::string& backend, 
     if (ask == VisionAsk::Cpu) {
         p.gpu = false;
         p.forced = true;
-        p.reason = "pictures are read on the CPU, as you asked (--vision cpu); the card keeps all its memory for the model";
+        p.reason = "pictures are read on the CPU, as you asked (--vision-reader cpu); the card keeps all its memory for the model";
         return p;
     }
     if (ask == VisionAsk::Gpu) {
         p.gpu = true;
         p.forced = true;
         if (mem_gib > 0.0 && mem_gib < kVisionGpuMinGiB && !is_metal) {
-            p.reason = std::string("pictures are read on the card, as you asked (--vision gpu); it keeps about 1.3 GB of the card's ") + mem +
-                       " that the experts would use (--vision cpu reads them on the CPU instead): kept as you chose";
+            p.reason = std::string("pictures are read on the card, as you asked (--vision-reader gpu); it keeps about 1.3 GB of the card's ") + mem +
+                       " that the experts would use (--vision-reader cpu reads them on the CPU instead): kept as you chose";
         } else {
-            p.reason = "pictures are read on the card, as you asked (--vision gpu)";
+            p.reason = "pictures are read on the card, as you asked (--vision-reader gpu)";
         }
         return p;
     }
@@ -75,10 +75,10 @@ inline VisionPlan plan_vision_reader(VisionAsk ask, const std::string& backend, 
         p.reason = "pictures are read on the Mac's GPU (its memory is the system's)";
     } else if (is_sycl && !kVisionIntelGpuByDefault) {
         p.gpu = false;
-        p.reason = "pictures are read on the CPU on an Intel Arc card (--vision gpu uses the card)";
+        p.reason = "pictures are read on the CPU on an Intel Arc card (--vision-reader gpu uses the card)";
     } else if (mem_gib > 0.0 && mem_gib < kVisionGpuMinGiB) {
         p.gpu = false;
-        p.reason = std::string("pictures are read on the CPU: this card has ") + mem + " (under 24 GB), so the experts keep all of it (--vision gpu uses the card anyway)";
+        p.reason = std::string("pictures are read on the CPU: this card has ") + mem + " (under 24 GB), so the experts keep all of it (--vision-reader gpu uses the card anyway)";
     } else {
         p.gpu = true;
         p.reason = mem_gib > 0.0 ? std::string("pictures are read on the card (") + mem + ", 24 GB or more)" : std::string("pictures are read on the card");

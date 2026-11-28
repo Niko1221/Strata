@@ -35,7 +35,7 @@ GPU_READERS = (GPU_READER, SYCL_READER)       # the GPU reader of an engine fold
 #: of card.  A person can switch it per model (--vision gpu / --vision cpu, the Pictures step); what was asked for is kept.
 #: Owner rule 2026-11-01: the reader lives in RAM, not VRAM.  The GPU reader of an NVIDIA card with one GPU is therefore started by the first picture and
 #: stopped when idle (serve/server.py apply_vision_defaults), with the CPU reader (the same program without --gpu) when the card has no room.
-GPU_MIN_VRAM_GB = 23.5
+GPU_MIN_VRAM_GB = 23.0
 
 #: The one exception to that rule.  An Intel Arc of 24 GB or more keeps the CPU reader by default: the SYCL GPU reader works (tested on an A750,
 #: forced with --vision gpu: 0.16 s a picture against 1.7 s on the CPU, embeddings cosine >= 0.995 to the CPU reader's) but it needs the oneAPI
