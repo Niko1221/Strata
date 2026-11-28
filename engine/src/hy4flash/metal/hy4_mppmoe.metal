@@ -446,7 +446,6 @@ kernel void moe_mm_dn2(device const uchar* sec4 [[buffer(0)]], device const Expe
     template [[host_name("moe_mm_gu_" #TM "_" #TN "_" #SG)]] kernel decltype(moe_mm_gu<TM, TN, SG>) moe_mm_gu<TM, TN, SG>;                                                 \
     template [[host_name("moe_mm_dn_" #TM "_" #TN "_" #SG)]] kernel decltype(moe_mm_dn<TM, TN, SG>) moe_mm_dn<TM, TN, SG>;
 MOEMM(16, 32, 2) MOEMM(32, 32, 2) MOEMM(64, 32, 4) MOEMM(16, 64, 2) MOEMM(32, 64, 4) MOEMM(64, 64, 4)
-template [[host_name("moe_mm_gu2_64_32_4")]] kernel decltype(moe_mm_gu2<64, 32, 4>) moe_mm_gu2<64, 32, 4>;
 template [[host_name("moe_mm_gu2_64_64_4")]] kernel decltype(moe_mm_gu2<64, 64, 4>) moe_mm_gu2<64, 64, 4>;
 template [[host_name("moe_mm_dn2_64_64_4")]] kernel decltype(moe_mm_dn2<64, 64, 4>) moe_mm_dn2<64, 64, 4>;
 

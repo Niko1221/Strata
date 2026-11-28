@@ -73,6 +73,8 @@ struct MlaArgs {  // = MlaArgs of hy4.metal
     float scale;
 };
 
+struct int2h { int x, y; };  // host mirror of the tiles' int2 (expert, row0)
+
 struct TreeArgs {  // = TreeArgs of hy4_dfly2b.metal (76 B)
     int32_t n = 0;
     uint8_t depth[8] = {};
@@ -340,6 +342,7 @@ public:
     bool moe_bucket = true;    // multi-size (128/64/32/16) bucketed MPP MoE with 2x weight reuse on 128-row tiles (--no-moe-bucket for A/B)
     int mpp_tile_arg = 0;      // MPP dense GEMM tile override: 0=128x64 (default), 64=64x64, 128=128x128
     Buffer m_srt, m_pos, m_tiles, m_t128, m_t64, m_t32, m_t16, m_meta, m_xs, m_hs, m_y;
+    Buffer m_tg;  // per-group tile staging for the pipelined expert loader (16 groups x 4 buckets x 520 int2)
     Buffer hc_part;            // partials of the split iHC mix [T<=8][24][9]
     bool hc_split = true;
     Buffer attn_ws;            // split-K attention partials [T<=8][64][S<=16][514] floats
@@ -566,6 +569,7 @@ public:
                 m_t64  = cx.alloc((512 + 8) * 8);
                 m_t32  = cx.alloc((512 + 8) * 8);
                 m_t16  = cx.alloc((512 + 8) * 8);
+                m_tg   = cx.alloc((size_t) 16 * 4 * 520 * 8);  // per-group tile staging (see HY4_IO_GROUPS)
                 m_meta = cx.alloc(128);
                 m_xs = cx.alloc(rows_max * 1536 * 2);
                 m_hs = cx.alloc(rows_max * 1536 * 2);
@@ -739,7 +743,7 @@ public:
                 (void) P("moe_mm_dn_32_64_4");
                 (void) P("moe_mm_gu_64_64_4");
                 (void) P("moe_mm_dn_64_64_4");
-                (void) P("moe_mm_gu2_64_32_4");
+                (void) P("moe_mm_gu2_64_64_4");
                 (void) P("moe_mm_dn2_64_64_4");
             }
             run_all();
@@ -895,18 +899,13 @@ public:
         add("idx_select", T, 1, 256, {B(score), I((int) ldS), I(p0), I(n_top), I(index_topk), B(keys), B(nkeys)});
     }
 
-    // 32 GB Mac tier: ensure all experts selected in moe_idx[0..P-1] for layer `il` (il >= 1) are loaded in exp_cache
-    void ensure_cold_experts(int il, int P) {
+    // 32 GB Mac tier: load an explicit set of experts (global ids) into the cache. `needed` (512 entries, may be
+    // null) marks the experts the current layer uses, so no slot holding one of them is evicted.
+    void cold_load_gids(const std::vector<int>& gids, const uint8_t* needed, int base_gid) {
         const double t0 = now_s();
-        const int* idx = (const int*) moe_idx.ptr;
-        const int base_gid = (il - 1) * 512;
-        uint8_t needed[512] = {};
         std::vector<int> misses;
-        for (int i = 0; i < P; ++i) {
-            int e = idx[i];
-            if (e < 0 || e >= 512 || needed[e]) continue;
-            needed[e] = 1;
-            int gid = base_gid + e;
+        misses.reserve(gids.size());
+        for (int gid : gids) {
             int sl = exp_slot_of[gid];
             if (sl >= 0) {
                 exp_lru[sl] = ++exp_tick;
@@ -926,9 +925,10 @@ public:
             for (int s = 0; s < exp_n_slots; ++s) {
                 int own = exp_owner[s];
                 if (own < 0) { best = s; break; }
-                if (own >= base_gid && own < base_gid + 512 && needed[own - base_gid]) continue;
+                if (needed && own >= base_gid && own < base_gid + 512 && needed[own - base_gid]) continue;
                 if (exp_lru[s] < best_tick) { best_tick = exp_lru[s]; best = s; }
             }
+            if (best < 0) continue;  // every slot holds an expert this layer needs: load later
             if (exp_owner[best] >= 0) exp_slot_of[exp_owner[best]] = -1;
             exp_owner[best] = gid;
             exp_slot_of[gid] = best;
@@ -936,29 +936,46 @@ public:
             ((ExpertDev*) d_experts.ptr)[gid].body_off = (uint64_t) best * exp_slot_bytes;
             loads.push_back({gid, best});
         }
-        // Parallel pread into shared Metal exp_cache buffer
-        const int nth = std::min((int) loads.size(), 8);
+        static const int hy4_io_threads = [] {
+            const char* e = getenv("HY4_COLD_IO_THREADS");
+            const int n = e && *e ? atoi(e) : 8;
+            return n > 0 ? n : 8;
+        }();
+        const int nth = std::min((int) loads.size(), hy4_io_threads);
         if (nth <= 1) {
-            for (auto& kv : loads) {
-                uint8_t* dst = (uint8_t*) exp_cache.ptr + (size_t) kv.second * exp_slot_bytes;
-                (void) pread(g.fd_model, dst, g.expert_bytes[kv.first], (off_t) g.expert_file_off[kv.first]);
-            }
+            for (auto& kv : loads)
+                (void) pread(g.fd_model, (uint8_t*) exp_cache.ptr + (size_t) kv.second * exp_slot_bytes, g.expert_bytes[kv.first], (off_t) g.expert_file_off[kv.first]);
         } else {
             std::atomic<size_t> next{0};
             std::vector<std::thread> th;
-            for (int t = 0; t < nth; ++t)
-                th.emplace_back([&]() {
+            th.reserve((size_t) nth);
+            for (int k = 0; k < nth; ++k)
+                th.emplace_back([&] {
                     for (;;) {
                         size_t i = next.fetch_add(1);
                         if (i >= loads.size()) break;
                         auto kv = loads[i];
-                        uint8_t* dst = (uint8_t*) exp_cache.ptr + (size_t) kv.second * exp_slot_bytes;
-                        (void) pread(g.fd_model, dst, g.expert_bytes[kv.first], (off_t) g.expert_file_off[kv.first]);
+                        (void) pread(g.fd_model, (uint8_t*) exp_cache.ptr + (size_t) kv.second * exp_slot_bytes, g.expert_bytes[kv.first], (off_t) g.expert_file_off[kv.first]);
                     }
                 });
             for (auto& x : th) x.join();
         }
         t_cold_io += now_s() - t0;
+    }
+
+    void ensure_cold_experts(int il, int P) {
+        const int* idx = (const int*) moe_idx.ptr;
+        const int base_gid = (il - 1) * 512;
+        uint8_t needed[512] = {};
+        std::vector<int> gids;
+        gids.reserve(P);
+        for (int i = 0; i < P; ++i) {
+            int e = idx[i];
+            if (e < 0 || e >= 512 || needed[e]) continue;
+            needed[e] = 1;
+            gids.push_back(base_gid + e);
+        }
+        cold_load_gids(gids, needed, base_gid);
     }
 
     // iHC pre/post of a layer part + the reduce and norm into cur_h (fp32 copy cur_f with want_f)
@@ -1165,9 +1182,18 @@ public:
             save_npy_f32(dump_dir + "/L" + std::to_string(il) + "_cur_mlp.npy", (const float*) cur_f.ptr, {T, HID_});
         }
         op("router_zproj");
+        // Pipelined expert staging: split the layer's experts into groups and overlap group g+1's pread with group
+        // g's GPU work. Without it the pread blocks the host and the GPU idles (measured: wall = gpu + io exactly).
+        int io_groups = 0;
+        if (g.cold_experts && T >= moe_mm_min) {  // only the bucketed prefill path is pipelined
+            const char* e = getenv("HY4_IO_GROUPS");
+            io_groups = e && *e ? atoi(e) : 8;
+            if (io_groups < 1) io_groups = 1;
+            if (io_groups > 16) io_groups = 16;
+        }
         if (g.cold_experts) {
             run_all();
-            ensure_cold_experts(il, T * 16);
+            if (io_groups <= 1) ensure_cold_experts(il, T * 16);
         }
         const Arg sec4 = g.cold_experts ? Arg::B(exp_cache, 0) : Arg::B(g.wbuf, g.sec4_off);
         const Arg exl = Arg::B(d_experts, (size_t) (il - 1) * 512 * sizeof(ExpertDev));
@@ -1182,11 +1208,60 @@ public:
         } else if (mpp_ok && T >= moe_mm_min) {
             const int Pn = T * 16;
             if (moe_bucket && moe_tm_arg == 0 && moe_tn_arg == 64) {
-                add("moe_plan_b", 1, 1, 512, {B(moe_idx), I(Pn), B(m_srt), B(m_pos), B(m_t128), B(m_t64), B(m_t32), B(m_t16), B(m_meta), I(1536 / 32), I(1536 / 64), I(1536 / 64)});
+                add("moe_plan_b", 1, 1, 512, {B(moe_idx), I(Pn), B(m_srt), B(m_pos), B(m_t128), B(m_t64), B(m_t32), B(m_t16), B(m_meta), I(1536 / 64), I(1536 / 64), I(1536 / 64)});
                 add("moe_gather", 1, 1, 256, {B(z_h), B(m_srt), B(m_xs)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 0;
+                if (g.cold_experts && io_groups > 1) {
+                    run_all();  // tiles + routing readable on the host now
+                    const uint32_t* mm = (const uint32_t*) m_meta.ptr;
+                    const int cnt[4] = {(int) mm[4], (int) mm[10], (int) mm[16], (int) mm[22]};
+                    const int2h* tbs[4] = {(const int2h*) m_t128.ptr, (const int2h*) m_t64.ptr, (const int2h*) m_t32.ptr, (const int2h*) m_t16.ptr};
+                    uint8_t needed[512] = {};
+                    for (int i = 0; i < Pn; ++i) { const int e = ((const int32_t*) moe_idx.ptr)[i]; if (e >= 0 && e < 512) needed[e] = 1; }
+                    struct Grp { std::vector<int> exps; std::vector<int2h> tiles[4]; };
+                    std::vector<Grp> gsp((size_t) io_groups);
+                    for (int b = 0; b < 4; ++b) {
+                        const int n = cnt[b] > 520 ? 520 : cnt[b];
+                        for (int t = 0; t < n; ++t) {
+                            const int e = tbs[b][t].x;
+                            if (e < 0 || e >= 512) continue;
+                            gsp[(size_t) std::min(io_groups - 1, e * io_groups / 512)].tiles[b].push_back(tbs[b][t]);
+                        }
+                    }
+                    for (int e = 0; e < 512; ++e)
+                        if (needed[e]) gsp[(size_t) std::min(io_groups - 1, e * io_groups / 512)].exps.push_back((il - 1) * 512 + e);
+                    std::vector<void*> toks;
+                    for (int gi = 0; gi < io_groups; ++gi) {
+                        cold_load_gids(gsp[(size_t) gi].exps, needed, (il - 1) * 512);
+                        std::vector<Dispatch> v;
+                        for (int b = 0; b < 4; ++b) {
+                            const size_t n = gsp[(size_t) gi].tiles[b].size();
+                            if (!n) continue;
+                            static const char* kn[4] = {"moe_mm_gu2_64_64_4", "moe_mm_gu_64_64_4", "moe_mm_gu_32_64_4", "moe_mm_gu_16_64_2"};
+                            static const char* kd[4] = {"moe_mm_dn2_64_64_4", "moe_mm_dn_64_64_4", "moe_mm_dn_32_64_4", "moe_mm_dn_16_64_2"};
+                            const size_t off = ((size_t) gi * 4 + b) * 520 * 8;
+                            std::memcpy((uint8_t*) m_tg.ptr + off, gsp[(size_t) gi].tiles[b].data(), n * sizeof(int2h));
+                            const uint32_t tg = b == 3 ? 64 : 128;
+                            Dispatch dg;
+                            dg.p = &P(kn[b]);
+                            dg.args = {sec4, exl, B(m_xs), B(m_hs), Arg::B(m_tg, off)};
+                            dg.grid[0] = 24; dg.grid[1] = (uint32_t) n; dg.grid[2] = 1; dg.tg[0] = tg;
+                            v.push_back(std::move(dg));
+                            Dispatch dd;
+                            dd.p = &P(kd[b]);
+                            dd.args = {sec4, exl, B(m_hs), B(m_y), Arg::B(m_tg, off)};
+                            dd.grid[0] = 24; dd.grid[1] = (uint32_t) n; dd.grid[2] = 1; dd.tg[0] = tg;
+                            v.push_back(std::move(dd));
+                        }
+                        if (!v.empty()) toks.push_back(cx.run_graph_async(v));
+                    }
+                    for (void* tk : toks) gpu_total += cx.wait_async(tk);
+                    add("moe_combine_h", T, 1, 256, {B(m_y), B(m_pos), B(moe_w), B(z_h)});
+                    part("moe_combine");
+                    op("moe_experts");
+                } else {
                 // Gate+Up buckets write disjoint rows of m_hs: run concurrently with no inter-bucket barrier!
-                add("moe_mm_gu2_64_32_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t128)});
+                add("moe_mm_gu2_64_64_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t128)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 12;
                 add("moe_mm_gu_64_64_4", 1, 1, 128, {sec4, exl, B(m_xs), B(m_hs), B(m_t64)});
                 ds.back().indirect = &m_meta; ds.back().ind_off = 36;
@@ -1210,6 +1285,7 @@ public:
                 ds.back().indirect = &m_meta; ds.back().ind_off = 96;
                 ds.back().barrier = false;
                 add("moe_combine_h", T, 1, 256, {B(m_y), B(m_pos), B(moe_w), B(z_h)});
+                }
             } else {
                 const int TM = moe_tm_arg > 0 ? moe_tm_arg : moe_tm(T), TN = moe_tn_arg;
                 const int SG = (TM == 64 || (TM == 32 && TN == 64)) ? 4 : 2;
