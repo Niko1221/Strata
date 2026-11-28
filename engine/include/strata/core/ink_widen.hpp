@@ -17,6 +17,20 @@ inline bool ink_dspark_wants_f32(const std::string& name, size_t rank, int wfmt)
            name.find("fuse_weight") != std::string::npos;
 }
 
+// Raw HF safetensors checkpoints (e.g. Inkling-2-Mini-HF, Inkblot-2-mini-HF) store non-matmul trunk tensors
+// (norms, ShortConv kernels/static taps, L2 clip scales, rel-pos projections, router gates, loop controllers)
+// in BF16, whereas canonical .strata/GGUF and the Metal/CUDA trunk kernels read them as F32.
+inline bool ink_trunk_wants_f32(const std::string& name, size_t rank, int wfmt) {
+    if (wfmt != 102 && wfmt != 103) return false;
+    if (rank <= 1) return true;
+    if (name.find("norm") != std::string::npos || name.find("bias") != std::string::npos) return true;
+    if (name.find("attn_res.") != std::string::npos || name.find("middle_cycle_cross_pass") != std::string::npos) return true;
+    if (name.find("l2_clip") != std::string::npos || name.find("rel_logits_proj") != std::string::npos) return true;
+    if (name.find("mlp.gate.") != std::string::npos || name.find(".controllers.") != std::string::npos) return true;
+    if (name.find("sconv.") != std::string::npos && name.find("weight_proj") == std::string::npos) return true;
+    return false;
+}
+
 // n little-endian 16-bit values (BF16 when wfmt == 102, IEEE half when 103) widened to n floats at dst.
 inline void ink_widen16_to_f32(const uint8_t* src, int wfmt, size_t n, uint8_t* dst) {
     for (size_t i = 0; i < n; ++i) {
