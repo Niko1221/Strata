@@ -765,6 +765,22 @@ class NoPeerAccess(unittest.TestCase):
             if p.suffix in (".cu", ".cuh", ".cpp", ".hpp", ".h") and p.name not in ("rccl.h", "rccl_dl.hpp", "prefill.cu", "engine.cu", "engine.hpp"):
                 self.assertNotIn("rccl.h>", p.read_text(encoding="utf-8", errors="ignore"), p.name)
 
+    def test_nccl_is_off_by_default_and_loaded_at_run_time_never_linked(self):
+        # FNX_PF_NCCL (NVIDIA): the RCCL path's code with NCCL; unset, the default path loads nothing and says nothing (tools/nccl_policy_test.cpp)
+        engine = (ROOT.parent / "engine" / "src" / "split" / "src" / "engine.cu").read_text(encoding="utf-8")
+        self.assertIn('nccl_decide(std::getenv("FNX_PF_NCCL"),', engine)
+        cmake = (ROOT.parent / "engine" / "src" / "split" / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotRegex(cmake.replace("nccl_policy_test", ""), r"(?i)nccl")   # no find_package(NCCL), no -lnccl
+        build = (ROOT.parent / "tools" / "packaging" / "build_split_cuda.sh").read_text(encoding="utf-8")
+        self.assertRegex(build, r"NEEDED\.\*nccl")                                # the built engine is checked too
+
+    def test_the_cuda_names_of_the_rccl_self_test_stay_in_its_header(self):
+        # hip/rccl.h spells its self-test with HIP names and maps them to CUDA on NVIDIA; every name it defines is undefined again at its end
+        text = (ROOT.parent / "engine" / "src" / "split" / "src" / "hip" / "rccl.h").read_text(encoding="utf-8")
+        defined = re.findall(r"^#define (hip\w+) ", text, re.M)
+        self.assertTrue(defined)
+        self.assertEqual(sorted(defined), sorted(re.findall(r"^#undef (hip\w+)$", text, re.M)))
+
     def test_the_peer_probe_and_the_27b_files_are_gone(self):
         names = {p.name for p in (ROOT.parent / "engine" / "src" / "split" / "src").iterdir()}
         self.assertNotIn("peer_probe.cu", names)

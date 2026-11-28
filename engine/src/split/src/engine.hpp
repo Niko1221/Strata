@@ -376,7 +376,8 @@ private:
     void mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T);
     const Mtp* mtp_ = nullptr;
     std::vector<Pf*> pf_;
-    // FNX_PF_RCCL (AMD, hip/rccl.h): the prompt's chunk sums through RCCL, loaded at run time; rccl_ holds the library and the communicators (null: the host exchange)
+    // FNX_PF_RCCL (AMD) / FNX_PF_NCCL (NVIDIA), hip/rccl.h: the prompt's chunk sums through RCCL / NCCL, loaded at run time; rccl_ holds the library and the
+    // communicators (null: the host exchange)
     std::shared_ptr<void> rccl_;
     bool rccl_on_ = false;
     // FNX_PF_PEER (AMD, needs the peer push): the prompt chunk sums' receive slots, gather rows and flags live in the receiving card's fine-grained device memory, the

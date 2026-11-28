@@ -25,8 +25,8 @@
 #include <thread>
 #if FNX_HIP
 #include "hip/peer.h"
-#include "hip/rccl.h"
 #endif
+#include "hip/rccl.h"   // RCCL on AMD, NCCL on NVIDIA (FNX_PF_NCCL): both loaded at run time
 
 namespace fnx {
 
@@ -76,6 +76,24 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         ctx_pages = (int) (ctx_pages * ratio);
     }
     int n_pages = ctx_pages + extra_pages;
+#if !FNX_HIP
+    {   // FNX_PF_NCCL=1 (NVIDIA, off by default): the prompt chunk sums through NCCL, the RCCL path's code (hip/rccl.h: libnccl.so.2 loaded at run time, the
+        // self-test, one communicator per card). Started before the prompt rows are picked from the cards' free memory (below), so the pick counts NCCL's
+        // buffers. The engine calls no peer API itself, but NCCL chooses its own way between the cards: host memory where the driver refuses peer access,
+        // its own peer mappings where the driver offers P2P (NCCL_P2P_DISABLE=1 keeps it in host memory). Unset or 0: nothing is loaded and the host
+        // exchange runs as before. A failure at start is one line and the host exchange.
+        std::vector<int> devs;
+        for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
+        const RcclDecision rd = nccl_decide(std::getenv("FNX_PF_NCCL"), [&](std::string& why) {
+            std::shared_ptr<RcclState> st;
+            if (!rccl_open(devs, st, why)) return false;
+            rccl_ = st;
+            return true;
+        });
+        if (!rd.line.empty()) std::fprintf(stderr, "fnx: %s\n", rd.line.c_str());
+        rccl_on_ = rd.use;
+    }
+#endif
     // prompt-path memory per card in MiB, measured (FNX_PF_TIMING "prefill buffers on card", the same for both models on 2 cards), and what must stay free beside the K/V pool: the decode buffers,
     // graphs and cuBLAS workspaces (UD-Q4_K_XL on 2 x 48 GB: 6.5 GB are free after the weights; 8192 x 2 fits but leaves 0.8 GB, 4096 x 4 leaves 2.3 GB)
     constexpr size_t PF_MARGIN_MIB = 2000;

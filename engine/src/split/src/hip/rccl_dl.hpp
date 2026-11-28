@@ -3,6 +3,7 @@
 // tools/rccl_policy_test.cpp holds the loader and the decision to their rules without a card. The library comes with the standard AMD Linux install (setup.py installs the
 // rocm[libraries] wheel: librccl.so.1, BSD-3-clause text from NVIDIA with AMD modifications, in share/doc/rccl/LICENSE.txt of the SDK); we do not copy or ship it.
 // The six functions and the two enum values are RCCL's (rccl.h: ncclSum = 0, ncclFloat16 = 6, ncclFloat32 = 7, ncclSuccess = 0).
+// NVIDIA: FNX_PF_NCCL loads libnccl.so.2 the same way (nccl_decide below); NCCL has the same six functions and enum values (nccl.h).
 #pragma once
 
 #if !defined(_WIN32)
@@ -73,22 +74,32 @@ struct RcclDecision {
     bool use = false;
     std::string line;
 };
-inline RcclDecision rccl_decide(const char* env, bool peer_on, bool default_on, const std::function<bool(std::string&)>& open) {
+// name: the library in the lines ("NCCL" for FNX_PF_NCCL on NVIDIA, where the engine passes peer_on = true: NCCL chooses its own way between the cards).
+inline RcclDecision rccl_decide(const char* env, bool peer_on, bool default_on, const std::function<bool(std::string&)>& open, const char* name = "RCCL") {
     RcclDecision d;
     const bool wanted = env ? std::strcmp(env, "0") != 0 : default_on;
     if (!wanted) return d;
     if (!peer_on) {
-        if (env) d.line = "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";   // (asked for: say so; the default stays quiet)
+        if (env) d.line = std::string(name) + " is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";   // (asked for: say so; the default stays quiet)
         return d;
     }
     std::string why;
     if (!open(why)) {
-        d.line = "RCCL is not available here (" + why + "): the prompt sums use the host exchange.";
+        d.line = std::string(name) + " is not available here (" + why + "): the prompt sums use the host exchange.";
         return d;
     }
     d.use = true;
-    d.line = "The prompt sums use RCCL (" + why + ").";
+    d.line = "The prompt sums use " + std::string(name) + " (" + why + ").";
     return d;
+}
+
+// NVIDIA (FNX_PF_NCCL): the same decision with NCCL, whose API RCCL shares. Off unless FNX_PF_NCCL is set to something other than 0: unset or 0 is
+// silent, never calls open() and leaves the host exchange exactly as it is. peer_on = true: the engine enables no peer access for it, NCCL picks its own way
+// between the cards. open() (hip/rccl.h rccl_open) loads NCCL_LIB from the library path (FNX_RCCL_LIB overrides it, for tests) and runs the self-test.
+constexpr bool NCCL_DEFAULT_ON = false;
+constexpr const char* NCCL_LIB = "libnccl.so.2";
+inline RcclDecision nccl_decide(const char* env, const std::function<bool(std::string&)>& open) {
+    return rccl_decide(env, true, NCCL_DEFAULT_ON, open, "NCCL");
 }
 
 }  // namespace fnx

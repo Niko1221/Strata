@@ -12,9 +12,7 @@
 #include "engine_impl.hpp"
 #include "env.hpp"
 #include "pf_ring_plan.hpp"
-#if FNX_HIP
-#include "hip/rccl.h"
-#endif
+#include "hip/rccl.h"   // RCCL on AMD, NCCL on NVIDIA (FNX_PF_NCCL)
 
 #include <cublas_v2.h>
 #if !FNX_HIP
@@ -341,7 +339,7 @@ struct Engine::Pf {
     // two sets by the sum's parity; flags [2 sets][PF_RING_STEPS], set by the previous card's stream (seq: the sum's number)
     bool ring_sm = false;
     PfRing ring_ce;                   // the chunk sums on the copy engines
-    // FNX_PF_RCCL=1 (AMD): the chunk sums through RCCL in place on ring_ce.dag[set] (rc_api: RcclApi*, rc_comm: this card's communicator). RCCL launches a group's collectives
+    // FNX_PF_RCCL=1 (AMD) or FNX_PF_NCCL=1 (NVIDIA): the chunk sums through RCCL / NCCL in place on ring_ce.dag[set] (rc_api: RcclApi*, rc_comm: this card's communicator). RCCL launches a group's collectives
     // at ncclGroupEnd, so what must follow a sum on its stream (the f32 conversion, the `done` event) waits in post until the prompt loop's per-card pass is closed
     bool rccl = false;
     bool rc_f32 = false;              // FNX_PF_RCCL_F32=1: the sums in f32
@@ -723,8 +721,7 @@ __global__ void k_pfr_addend(float* __restrict__ x, const float* __restrict__ pa
 void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s, bool own_out = false) {
     const unsigned seq = ++p.seq;
     if (m) k_pfr_addend<<<grid_for((size_t) C * N), 256, 0, s>>>(x, m->part, m->topw, m->logits, C);
-#if FNX_HIP
-    if (p.rccl) {
+    if (p.rccl) {   // RCCL (AMD) or NCCL (NVIDIA, FNX_PF_NCCL): every card gets every row's sum, a superset of what own_out asks for
         const RcclApi& api = *(const RcclApi*) p.rc_api;
         const size_t n = (size_t) C * N;
         if (p.rc_f32) {   // FNX_PF_RCCL_F32=1: the f32 rows summed in place (twice the bytes of the f16 sum, no rounding of the cards' parts)
@@ -740,7 +737,6 @@ void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* 
         ckc(cudaGetLastError(), "ring");
         return;
     }
-#endif
 #if FNX_HIP
     if (p.a2a_rows > 0 && C <= p.a2a_rows && !own_out) {   // a small chunk: all-to-all and a local sum, one cross-card latency (bit-identical to the ring)
         const size_t slot4 = (size_t) p.a2a_rows * N / 4, set_off4 = (size_t) (seq & 1u) * NCARD * slot4;
@@ -1011,14 +1007,12 @@ void Engine::prefill_alloc() {
 #endif
         }
         p->dev = b.dev;
-#if FNX_HIP
         if (rccl_on_) {
             p->rccl = true;
             p->rc_f32 = env_int("FNX_PF_RCCL_F32", 0) != 0;
             p->rc_api = &static_cast<RcclState*>(rccl_.get())->api;
             p->rc_comm = static_cast<RcclState*>(rccl_.get())->comm[(size_t) c];
         }
-#endif
         p->attn_dec = env_flag("FNX_PF_ATTN_DEC");
         p->apart[1] = palloc<float>(NCARD * attn_prompt_block_floats(pf_c_));   // set 0 is in the attention phase's region
         for (int s = 0; s < 2; ++s) {
@@ -1411,15 +1405,12 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         }
     }
     auto each = [&](auto&& f) {
-#if FNX_HIP
         const RcclApi* rc = rccl_on_ ? &static_cast<RcclState*>(rccl_.get())->api : nullptr;
         if (rc) rc->GroupStart();
-#endif
         for (int c = 0; c < NCARD; ++c) {
             ckc(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c], *pf_[c]);
         }
-#if FNX_HIP
         if (rc) {   // the group's collectives launch now; what follows each sum on its stream is enqueued after them
             const int r = rc->GroupEnd();
             if (r != RCCL_SUCCESS) throw std::runtime_error(std::string("prefill: ncclGroupEnd: ") + rc->ErrorString(r));
@@ -1429,7 +1420,6 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                 pf_[c]->post.clear();
             }
         }
-#endif
     };
     // the chunk that runs: its rows, groups and buffers
     int C = 0, ng = 0, set = 0;

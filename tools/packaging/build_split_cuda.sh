@@ -7,7 +7,8 @@
 #
 # ARCH is one compute capability; 86 is the one that has been run (2 RTX A6000). CARDS lists the counts to build; 3 and 4 build but have
 # not been run with the host exchange, and the launcher keeps them off unless a tester allows them (terminal/strata_control/split_engine.py).
-# After the build the script FAILS if the binary can call any CUDA peer-access function: the engine must not map one card into another.
+# After the build the script FAILS if the binary can call any CUDA peer-access function (the engine must not map one card into another),
+# or links libnccl (FNX_PF_NCCL loads it at run time with dlopen; NCCL is optional and not shipped).
 # Prints the binary paths, one per line, last.
 set -eu
 SRC=${SRC:-$(cd "$(dirname "$0")/../.." && pwd)}
@@ -32,6 +33,11 @@ for n in $CARDS; do
   if nm -D --undefined-only "$exe" | grep -qi peer; then
     echo "build_split_cuda.sh: $exe can call a CUDA peer function:" >&2
     nm -D --undefined-only "$exe" | grep -i peer >&2
+    exit 1
+  fi
+  if readelf -d "$exe" | grep -qi 'NEEDED.*nccl'; then
+    echo "build_split_cuda.sh: $exe links libnccl (FNX_PF_NCCL must dlopen it only):" >&2
+    readelf -d "$exe" | grep -i needed >&2
     exit 1
   fi
   out="$out$exe"$'\n'
