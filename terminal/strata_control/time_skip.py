@@ -31,7 +31,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import time
 import uuid
@@ -42,6 +44,10 @@ from typing import Any, Callable, Iterable, Sequence
 from strata_control import atomic
 
 SCHEMA_VERSION = 1
+
+#: A run id is one uuid4().hex (as journal.py's operation ids are): 32 hex characters. It names a
+#: directory under the store root, so anything wider than this reaches into the filesystem.
+RUN_ID = re.compile(r"[0-9a-f]{32}")
 
 # --------------------------------------------------------------------------- phases and states
 
@@ -321,6 +327,8 @@ class TimeSkipRun:
     def __init__(self, root: Path, workspace: Path, prompt: str,
                  checks: Sequence[CheckSpec], max_attempts: int = DEFAULT_MAX_ATTEMPTS,
                  run_id: str | None = None, clock: Callable[[], float] = time.time) -> None:
+        if run_id is not None and not RUN_ID.fullmatch(run_id):
+            raise TimeSkipError("a Time-skip run id must be a 32-character hex value")
         self.id = run_id or uuid.uuid4().hex
         self.root = root / self.id
         self.workspace = Path(workspace)
@@ -373,6 +381,8 @@ class TimeSkipRun:
 
     @staticmethod
     def load(root: Path, run_id: str) -> dict[str, Any]:
+        if not RUN_ID.fullmatch(run_id):
+            raise TimeSkipError("a Time-skip run id must be a 32-character hex value")
         p = Path(root) / run_id / "run.json"
         if not p.exists():
             raise TimeSkipError(f"no Time-skip run {run_id}")
