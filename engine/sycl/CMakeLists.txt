@@ -134,7 +134,18 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+  # The MSVC-style drivers: MSVC itself, icx/icx-cl and clang-cl.  A Linux->Windows cross build (intel/llvm clang++
+  # targeting windows-msvc, report on PR #3607) selects this same WIN32 path with the GNU frontend, where the flags are
+  # spelled -fp-model / -qmkl instead; CMAKE_CXX_COMPILER_FRONTEND_VARIANT is what tells the two apart (CMake leaves it
+  # unset for icx, which keeps this branch).
+  set(_sycl_fp /fp:precise)
+  set(_sycl_mkl /Qmkl:sequential)
+else()
+  set(_sycl_fp -fp-model=precise)
+  set(_sycl_mkl -qmkl=sequential)
+endif()
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" ${_sycl_fp} -Wno-unused-parameter
                     -Wno-unused-variable -Wno-deprecated-declarations)
 add_link_options(${_sycl_link})
 
@@ -265,9 +276,19 @@ strata_resolve(_core src/core/device.cu src/core/pinned.cu src/platform/memory.c
                      src/core/weights.cpp src/core/layout.cpp)
 add_library(strata_core STATIC ${_core})
 target_link_libraries(strata_core PUBLIC strata_includes)
+if(WIN32)
+  target_link_libraries(strata_core PUBLIC dxgi psapi)
+endif()
 # zeMemAllocHost for the host memory a kernel polls (include/strata/sycl_queue.hpp, host_malloc_polled): only when libze-dev's header is there
 find_library(STRATA_ZE_LOADER ze_loader)
-if(STRATA_ZE_LOADER)
+if(WIN32)
+  find_path(STRATA_ZE_INCLUDE_DIR level_zero/ze_api.h)
+  if(STRATA_ZE_LOADER AND STRATA_ZE_INCLUDE_DIR)
+    target_compile_definitions(strata_includes INTERFACE STRATA_HAVE_ZE=1)
+    target_include_directories(strata_includes INTERFACE ${STRATA_ZE_INCLUDE_DIR})
+    target_link_libraries(strata_core PUBLIC ${STRATA_ZE_LOADER})
+  endif()
+elseif(STRATA_ZE_LOADER)
   target_link_libraries(strata_core PUBLIC ${STRATA_ZE_LOADER})
 endif()
 
@@ -307,8 +328,8 @@ add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp   # upstream's fused int8 kernels: not built here
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/xmx_moe.dp.cpp         # A770 port: grouped XMX expert GEMM
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/esimd_moe.dp.cpp)       # 151-b70: fused int8 DPAS expert products (ESIMD, Battlemage)
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+target_compile_options(strata_prefill PUBLIC ${_sycl_mkl})
+target_link_options(strata_prefill PUBLIC ${_sycl_mkl})
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 # Optional TLA data movement for exact FP32 sparse prompt attention on B70.
@@ -376,10 +397,29 @@ message(STATUS "Strata SYCL: Battlemage TLA routed experts: ${_expert_tla_enable
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+if(WIN32)
+    # Diagnosis only, off by default: STRATA_ALLOC_TRACE=1 then names the code that holds host memory, through a
+    # /MAP build (strata.map). It adds a 32-byte header to every allocation, so the default engine must not carry it.
+    option(STRATA_ALLOC_TRACE "Build the host-allocation tracker behind STRATA_ALLOC_TRACE=1 (diagnosis)" OFF)
+    if(STRATA_ALLOC_TRACE)
+        target_compile_definitions(strata PRIVATE STRATA_ALLOC_TRACE_BUILD=1)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+            target_link_options(strata PRIVATE "/Qoption,link,/MAP")
+        else()
+            target_link_options(strata PRIVATE /MAP)
+        endif()
+    endif()
+endif()
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 if(STRATA_SYCL_PARITY)   # (the option is declared above, next to STRATA_OWN_CPU_QUANT: it decides whether ggml is configured)
   enable_testing()
+  # marcelloc's GGUF positioned-read test (#2079): the host-only regression net for the reader that
+  # GgufExpertSource shares with it (strata/positioned_file.hpp). No card, no model - only a sparse
+  # 4 GiB fixture - so it runs everywhere, Windows and Linux, next to the kernel parity tests.
+  add_executable(positioned_file_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/host/positioned_file_test.cpp)
+  target_link_libraries(positioned_file_test PRIVATE strata_includes Threads::Threads)
+  add_test(NAME positioned_file_test COMMAND positioned_file_test)
   add_executable(bmg_expert_window_plan_test src/prefill/bmg_expert_window_plan_test.cpp)
   add_test(NAME bmg_expert_window_plan_test COMMAND bmg_expert_window_plan_test)
   add_test(NAME bmg_expert_defaults_test COMMAND ${CMAKE_COMMAND} -E env

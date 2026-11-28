@@ -1802,7 +1802,11 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         }
         // Same condition as `sh_fork` above, which is per group and out of scope here: wait only when the fork
         // actually ran (a wait on an event never recorded is a no-op, but saying it outright reads better).
-        if (sh_stream_on() && !prof_on_ &&
+        // `!g_stepped` matches `sh_fork` above: with the session split into graph segments the fork never ran, so
+        // the join must not submit a barrier on its event either - an event from another queue is not a node of the
+        // segment being recorded, and capture fails with "Event dependency from handler::depends_on does not
+        // correspond to a node within the graph" (Arc A770, Level Zero on Windows).
+        if (sh_stream_on() && !prof_on_ && !g_stepped &&
             sh_cs_ != &dpct::get_in_order_queue() && ev_fork_ != nullptr &&
             ev_join_ != nullptr) {
             cs->ext_oneapi_submit_barrier({*ev_join_});
