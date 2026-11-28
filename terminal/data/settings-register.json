@@ -9411,6 +9411,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_FILL_BATCH",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 9790,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:325"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "[auto] documented for users (docs/DETAILS.md)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_FILL_SERIAL",
    "backends": [
     "sycl"
@@ -9442,6 +9477,41 @@
    "status": "default",
    "owner": "sycl/program",
    "note": "[auto] on unless set to 0 (sycl/src/program/generate.cpp:5095)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_FILL_THREADS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 9793,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "16",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:325"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "[auto] documented for users (docs/DETAILS.md)",
    "retire_after": "",
    "retired_in": ""
   },

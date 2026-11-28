@@ -9,6 +9,9 @@
 #endif
 
 #include <thread>
+#include <chrono>
+#include <functional>
+#include <vector>
 #include <mutex>
 #include <cuda_runtime.h>
 #if !defined(STRATA_EC_NO_VMM)
@@ -895,6 +898,69 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
     }
     ++fills_;
     return true;
+}
+
+bool ExpertCache::fill_slots_bulk(const int32_t* slots, const BlobPart* parts, const int* nparts, int64_t n,
+                                  int batch, int threads, const std::function<void(int64_t, int64_t)>& before,
+                                  std::string& err) {
+    if (n <= 0) return true;
+    if (sealed_) sealed_write("fill_slots_bulk", slots[0]);
+    batch = std::max(1, batch);
+    threads = std::max(1, threads);
+    auto size_of = [&](int64_t i) { uint64_t t = 0; for (int j = 0; j < nparts[i]; ++j) t += parts[3 * i + j].n; return (size_t) std::min<uint64_t>(t, (uint64_t) blob_); };
+    const size_t half = (size_t) batch * (size_t) blob_;
+    void* st = nullptr;
+    if (cudaHostAlloc(&st, 2 * half, cudaHostAllocDefault) != cudaSuccess || st == nullptr) {
+        err = "ExpertCache::fill_slots_bulk: pinned staging allocation failed";
+        return false;
+    }
+    cudaEvent_t ev[2] = {nullptr, nullptr};
+    bool pending[2] = {false, false};
+    double t_copy = 0, t_wait = 0, t_adv = 0;   // timing line: CPU copy out of the mapping, GPU-copy waits, read-ahead advice
+    bool ok = cudaEventCreateWithFlags(&ev[0], cudaEventDisableTiming) == cudaSuccess &&
+              cudaEventCreateWithFlags(&ev[1], cudaEventDisableTiming) == cudaSuccess;
+    if (!ok) err = "ExpertCache::fill_slots_bulk: event creation failed";
+    for (int64_t at = 0, k = 0; ok && at < n; at += batch, ++k) {
+        const int h = (int) (k & 1);
+        const int64_t m = std::min<int64_t>(batch, n - at);
+        { const auto ta0 = std::chrono::steady_clock::now(); if (before) before(at, m);
+          t_adv += std::chrono::duration<double>(std::chrono::steady_clock::now() - ta0).count(); }
+        const auto tw0 = std::chrono::steady_clock::now();
+        if (pending[h] && cudaEventSynchronize(ev[h]) != cudaSuccess) { err = "ExpertCache::fill_slots_bulk: event wait failed"; ok = false; break; }
+        t_wait += std::chrono::duration<double>(std::chrono::steady_clock::now() - tw0).count();
+        uint8_t* base = static_cast<uint8_t*>(st) + (size_t) h * half;
+        const auto tc0 = std::chrono::steady_clock::now();
+        {
+            std::vector<std::thread> ts;
+            const int nt = (int) std::min<int64_t>(threads, m);
+            ts.reserve((size_t) nt);
+            for (int t = 0; t < nt; ++t)
+                ts.emplace_back([&, t] {
+                    for (int64_t i = t; i < m; i += nt)
+                        for (int j = 0; j < nparts[at + i]; ++j) {
+                            const BlobPart& bp = parts[3 * (at + i) + j];
+                            if (bp.at + bp.n <= (uint64_t) blob_) std::memcpy(base + (size_t) i * blob_ + bp.at, bp.p, bp.n);
+                        }
+                });
+            for (auto& t : ts) t.join();
+        }
+        t_copy += std::chrono::duration<double>(std::chrono::steady_clock::now() - tc0).count();
+        for (int64_t i = 0; i < m; ++i) {
+            uint8_t* dst = device_slot(slots[at + i]);
+            if (dst == nullptr) { err = "ExpertCache::fill_slots_bulk: slot outside the arena"; ok = false; break; }
+            const cudaError_t e = cudaMemcpyAsync(dst, base + (size_t) i * blob_, size_of(at + i), cudaMemcpyHostToDevice, (cudaStream_t) 0);
+            if (e != cudaSuccess) { err = std::string("ExpertCache::fill_slots_bulk: ") + cudaGetErrorString(e); ok = false; break; }
+        }
+        if (ok && cudaEventRecord(ev[h], (cudaStream_t) 0) != cudaSuccess) { err = "ExpertCache::fill_slots_bulk: event record failed"; ok = false; }
+        pending[h] = ok;
+    }
+    if (cudaStreamSynchronize((cudaStream_t) 0) != cudaSuccess && ok) { err = "ExpertCache::fill_slots_bulk: final sync failed"; ok = false; }
+    for (auto& e : ev) if (e) (void) cudaEventDestroy(e);
+    (void) cudaFreeHost(st);
+    if (ok) fills_ += (uint64_t) n;
+    std::fprintf(stderr, "strata generate: STRATA_FILL_BATCH timing: CPU copy out of the mapping %.1f s, waiting for the GPU "
+                         "copies %.1f s, read-ahead advice %.1f s\n", t_copy, t_wait, t_adv);
+    return ok;
 }
 
 bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {

@@ -9783,7 +9783,53 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        for (int64_t i = 0; i < want; ++i) {
+        // STRATA_FILL_BATCH=N (opt-in; pairs per batch, STRATA_FILL_THREADS threads, default 16): the same fill, N experts
+        // at a time, copied out of the mapping by many threads and queued to the GPU while the next batch is copied. The
+        // default path below copies one expert at a time (gfx1151: 55 GiB in 27 s, about 2.2 GB/s).
+        int64_t bulk_done = 0;
+        if (const char* fb = std::getenv("STRATA_FILL_BATCH"); fb != nullptr && std::atoi(fb) > 0 && !per_layer &&
+            !nib_x.active() && srcp == &src && !src.unbuffered()) {
+            const int batch = std::atoi(fb);
+            const char* ft = std::getenv("STRATA_FILL_THREADS");
+            const int threads = ft != nullptr && std::atoi(ft) > 0 ? std::atoi(ft) : 16;
+            std::vector<int32_t> sl; std::vector<strata::core::BlobPart> pa; std::vector<int> np; std::vector<int64_t> by;
+            sl.reserve((size_t) want); pa.reserve((size_t) want * 3); np.reserve((size_t) want); by.reserve((size_t) want);
+            strata::core::BlobPart probe[3];
+            if (want > 0 && src.mapped_parts(profile[0].first, profile[0].second, probe) == 0) {
+                std::fprintf(stderr, "strata generate: STRATA_FILL_BATCH: this source cannot hand out blob pieces; the one-by-one fill runs\n");
+            } else {
+            for (int64_t i = 0; i < want; ++i) {
+                const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
+                if (slot == strata::core::kNotResident) break;
+                strata::core::BlobPart bp[3];
+                const int k = src.mapped_parts(profile[(size_t) i].first, profile[(size_t) i].second, bp);
+                const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
+                if (k == 0) {   // not in pieces after all: this one the old way, now (its pointer is only good until the next call)
+                    const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+                    if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err, nb)) {
+                        std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n", (long long) i, err.c_str());
+                        return 1;
+                    }
+                    fill_bytes += (uint64_t) nb; ++prefilled; continue;
+                }
+                sl.push_back(slot); np.push_back(k); by.push_back(nb);
+                for (int j = 0; j < 3; ++j) pa.push_back(j < k ? bp[j] : strata::core::BlobPart{nullptr, 0, 0});
+            }
+            auto advise = [&](int64_t at, int64_t m) {
+                if (fill_ahead > 0 && at + m < (int64_t) sl.size())
+                    (void) src.advise_pairs(profile.data() + at + m, std::min<int64_t>(fill_ahead, (int64_t) sl.size() - at - m));
+            };
+            if (!xcache.fill_slots_bulk(sl.data(), pa.data(), np.data(), (int64_t) sl.size(), batch, threads, advise, err)) {
+                std::fprintf(stderr, "strata generate: the bulk profile fill failed: %s\n", err.c_str());
+                return 1;
+            }
+            for (int64_t i = 0; i < (int64_t) sl.size(); ++i) fill_bytes += (uint64_t) by[(size_t) i];
+            prefilled += (int64_t) sl.size(); bulk_done = want;
+            std::fprintf(stderr, "strata generate: STRATA_FILL_BATCH=%d, %d threads: %zu pairs in bulk (from the mapped pieces)\n",
+                         batch, threads, sl.size());
+            }
+        }
+        for (int64_t i = bulk_done > 0 ? want : 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
                 else read_batch(i);
