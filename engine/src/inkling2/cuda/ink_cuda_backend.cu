@@ -594,11 +594,22 @@ public:
         }
 
         strata::ink::sm120_plan_slots_ref().store(max_slots_);
+        // Per-visit Stage-0 KV + workspace budget for auto layer-split (#7030): avoids falling back to
+        // Host KV Offload when an extra card can hold the tail layers and keep full KV in VRAM, while
+        // counting only the visits Stage 0 owns in each candidate partition (matching InkCudaRunner::init).
+        strata::core::InkLayerSplitKvBudget ls_kv_budget;
+        const size_t vit_room = (min_reserve_bytes > plan.min_reserve_bytes) ? (min_reserve_bytes - plan.min_reserve_bytes) : 0ull;
+        const int full_glob = (kv_offload_mode == 1 || plan.c64_host_kv) ? 0 : std::max(256, opts.max_ctx);
+        ls_kv_budget.swa_kv_per_visit  = plan.c64_host_kv ? 0ull : (size_t)max_slots_ * plan.swa_r * plan.per_visit_pos;
+        ls_kv_budget.glob_kv_per_visit = (size_t)max_slots_ * (size_t)full_glob * plan.per_visit_pos;
+        ls_kv_budget.sconv_per_visit   = (size_t)max_slots_ * 3u * strata::ink::kInkSconvCh * 4u;
+        ls_kv_budget.ws_reserve_bytes  = strata::core::ink_runner_ws_reserve_bytes(max_slots_, build_screen)
+                                       + plan.dspark_pad + vit_room + (128ull << 20);
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
                                          min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,
                                          opts.vram_experts_gb, opts.ram_experts_gb, opts.ssd_experts,
-                                         all_gpus, opts.layer_split, opts.threads)) {
+                                         all_gpus, opts.layer_split, opts.threads, ls_kv_budget)) {
             return false;
         }
 
