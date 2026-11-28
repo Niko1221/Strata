@@ -113,6 +113,11 @@ __device__ __forceinline__ float rel_dot16_h2(
 //    - Direct cp.async.cg.16B from FP16 KV cache -> XOR-swizzled s_k[BN][128] & s_v[BN][128] (ZERO conversion!)
 //    - BN=32 (32 KB smem, 3 CTAs/SM) for SWA; BN=64 (48 KB smem, 2 CTAs/SM) for Global (2x fewer s_q reloads & rescales!)
 //    - BF16_IO=true: reads FP16 Q & R directly (zero F32->FP16!), reads BF16 gate_attn (2x less BW), fuses d_amax_out!
+//    - The output sum (P @ V over all K/V tiles, divided by the sum of P at the end): BN=64, the global visits, keeps it in FP32 and adds each
+//      tile's FP16 tensor-core product to it. Held in FP16 across the tiles it reaches (number of keys) x |V| when many keys score alike: it lost
+//      the tiles smaller than half a unit of the sum (6% off at 8K keys of equal score, 22% at 32K) and passed the largest half (65504) from about
+//      50K keys on, so rows came out inf / NaN and a long prompt of similar records ended the engine (ink_pf_acc_test.cu). BN=32, the sliding-window
+//      visits, sees at most kInkSwaWin keys and keeps the FP16 sum.
 // ============================================================================
 template <int BN = 32, bool BF16_IO = false>
 __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
@@ -132,6 +137,7 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
     constexpr int D  = kInkHeadDim;       // 128
     constexpr int NK8  = BN / 8;          // 4 (BN=32) or 8 (BN=64)
     constexpr int NK16 = BN / 16;         // 2 (BN=32) or 4 (BN=64)
+    constexpr bool ACC32 = (BN == 64);    // global visits: the output sum across the tiles is FP32 (see the header)
     constexpr float kScale = 0.08838834764831845f;
 
     const int h      = blockIdx.x;        // 0..23 Q head (3 GQA heads adjacent -> L2 KV sharing!)
@@ -229,10 +235,12 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
     float l_row0 = 1.0f;
     float l_row1 = 1.0f;
     uint32_t acc_o[16][2];
+    float acc_f[16][4];                   // ACC32: [jd][0..1] row 0, [jd][2..3] row 1
 #pragma unroll
     for (int jd = 0; jd < 16; ++jd) {
         acc_o[jd][0] = 0u;
         acc_o[jd][1] = 0u;
+        acc_f[jd][0] = 0.0f; acc_f[jd][1] = 0.0f; acc_f[jd][2] = 0.0f; acc_f[jd][3] = 0.0f;
     }
 
     const int q_end = min(M, q_base + BM);
@@ -461,14 +469,24 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
         const float al1 = (m_row1 > -1e29f) ? __expf(m_row1 - mn1) : 0.0f;
         l_row0 *= al0;
         l_row1 *= al1;
-        const __half2 h_al0 = __float2half2_rn(al0);
-        const __half2 h_al1 = __float2half2_rn(al1);
+        if constexpr (ACC32) {
+            if (al0 != 1.0f || al1 != 1.0f) {   // the row maximum moved: rare once the first tiles are in
 #pragma unroll
-        for (int jd = 0; jd < 16; ++jd) {
-            __half2 o0 = __hmul2(*reinterpret_cast<const __half2*>(&acc_o[jd][0]), h_al0);
-            __half2 o1 = __hmul2(*reinterpret_cast<const __half2*>(&acc_o[jd][1]), h_al1);
-            acc_o[jd][0] = *reinterpret_cast<const uint32_t*>(&o0);
-            acc_o[jd][1] = *reinterpret_cast<const uint32_t*>(&o1);
+                for (int jd = 0; jd < 16; ++jd) {
+                    acc_f[jd][0] *= al0; acc_f[jd][1] *= al0;
+                    acc_f[jd][2] *= al1; acc_f[jd][3] *= al1;
+                }
+            }
+        } else {
+            const __half2 h_al0 = __float2half2_rn(al0);
+            const __half2 h_al1 = __float2half2_rn(al1);
+#pragma unroll
+            for (int jd = 0; jd < 16; ++jd) {
+                __half2 o0 = __hmul2(*reinterpret_cast<const __half2*>(&acc_o[jd][0]), h_al0);
+                __half2 o1 = __hmul2(*reinterpret_cast<const __half2*>(&acc_o[jd][1]), h_al1);
+                acc_o[jd][0] = *reinterpret_cast<const uint32_t*>(&o0);
+                acc_o[jd][1] = *reinterpret_cast<const uint32_t*>(&o1);
+            }
         }
         m_row0 = mn0;
         m_row1 = mn1;
@@ -514,8 +532,13 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
         }
 
         // 4. acc_o[16, 128] += P[16, BN] @ V[BN, 128] via hardware ldmatrix.x4.trans + 419 TFLOPS FP16-Acc TC!
+        //    ACC32: the tile's product starts from zero (at most BN keys with P <= 1, so FP16 holds it) and is added to the FP32 sum
         const int v_ld_r_in = lane & 15;
         const int v_ld_c_in = (lane >> 4) & 1;
+        if constexpr (ACC32) {
+#pragma unroll
+            for (int jd = 0; jd < 16; ++jd) { acc_o[jd][0] = 0u; acc_o[jd][1] = 0u; }
+        }
 #pragma unroll
         for (int kk = 0; kk < NK16; ++kk) {
             const uint32_t a0 = rp[kk][0], a1 = rp[kk][1], a2 = rp[kk][2], a3 = rp[kk][3];
@@ -526,6 +549,15 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
                 ldmatrix_x4_trans(v, &s_v[vr][swiz(vr, j2 * 2 + v_ld_c_in)]);
                 mma_fp16_acc16_m16n8k16(acc_o[2 * j2 + 0], a0, a1, a2, a3, v[0], v[1]);
                 mma_fp16_acc16_m16n8k16(acc_o[2 * j2 + 1], a0, a1, a2, a3, v[2], v[3]);
+            }
+        }
+        if constexpr (ACC32) {
+#pragma unroll
+            for (int jd = 0; jd < 16; ++jd) {
+                const float2 t0 = __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][0]));
+                const float2 t1 = __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][1]));
+                acc_f[jd][0] += t0.x; acc_f[jd][1] += t0.y;
+                acc_f[jd][2] += t1.x; acc_f[jd][3] += t1.y;
             }
         }
     }
@@ -539,7 +571,7 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
 #pragma unroll
         for (int jd = 0; jd < 16; ++jd) {
             const int c0 = jd * 8 + 2 * tig;
-            const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][0]));
+            const float2 f = ACC32 ? make_float2(acc_f[jd][0], acc_f[jd][1]) : __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][0]));
             float v0 = f.x * inv0;
             float v1 = f.y * inv0;
             if (gate_in) {
@@ -565,7 +597,7 @@ __global__ void __launch_bounds__(128) k_ink_flash_gqa_pf_sm120(
 #pragma unroll
         for (int jd = 0; jd < 16; ++jd) {
             const int c0 = jd * 8 + 2 * tig;
-            const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][1]));
+            const float2 f = ACC32 ? make_float2(acc_f[jd][2], acc_f[jd][3]) : __half22float2(*reinterpret_cast<const __half2*>(&acc_o[jd][1]));
             float v0 = f.x * inv1;
             float v1 = f.y * inv1;
             if (gate_in) {
