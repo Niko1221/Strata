@@ -18,4 +18,8 @@ void native_router_top10(const float* logits, int32_t* ids, float* weights, void
 void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream);
 /// SYCL port: the same for 256 experts (the Coder) as well as 512; logits [n, n_expert].
 void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weights, int n_tok, int n_expert, void* stream);
+
+bool native_router_topk_supported(int n_expert, int k);
+void native_router_topk(const float* logits, int32_t* ids, float* weights,
+                        int n_expert, int k, int n_tok, void* stream);
 }

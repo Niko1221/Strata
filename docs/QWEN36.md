@@ -6,11 +6,14 @@ chunk behave. For sizes and memory, see [MODELS.md](MODELS.md).
 
 Strata runs [Unsloth's GGUFs with the MTP layer](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
 (UD-Q4_K_XL, UD-Q6_K_XL, Q8_0) on its own engine path (`engine/src/qwen35`; `strata` switches to it from the file's
-architecture). It runs on NVIDIA and AMD cards. The Intel Arc and Mac engines do not run it.
+architecture). The released engine runs this family on NVIDIA and AMD cards.
+
+On Linux, the [experimental Intel SYCL source build](QWEN36_SYCL.md) runs `UD-Q4_K_XL` on a 12 GB Arc B580 with
+`STRATA_SYCL_QWEN35=ON`. Use that guide to configure the model and the CPU picture reader by hand.
 
 ## Quick start
 
-Pick it in the app's model list, in `strata launch` or in setup:
+On NVIDIA or AMD, pick it in the app's model list, in `strata launch` or in setup:
 
 ```sh
 strata launch --family qwen36 --model ud-q4_k_xl
@@ -137,7 +140,8 @@ More numbers are in [History](#history--older-measurements).
 - A slot that stopped being alone goes back to the solo path only through the server's own hand-over. The MTP block's
   cache has holes for the tokens a slot decoded in batch windows, so the drafts of a later solo stretch are a little
   worse. The text is not affected.
-- Intel Arc (SYCL) and Mac do not run this family.
+- The Intel Arc source build has separate [hardware and runtime limits](QWEN36_SYCL.md#run-a-prepared-model).
+- The Mac engine does not support this family.
 
 ## Testing
 

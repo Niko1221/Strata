@@ -103,6 +103,9 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#if defined(STRATA_HAVE_QWEN35)
+#include "strata/qwen35/engine.hpp"
+#endif
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1832,10 +1835,13 @@ int main(int argc, char **argv) try {
             std::printf("strata %s\n", STRATA_VERSION);
             return 0;
         }
-        // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one). The Intel engine has no
-        // qwen35moe path (src/qwen35 is CUDA and HIP only), so it names Flash-Next's alone, as the CUDA build without STRATA_HAVE_QWEN35.
+        // Report the GGUF architectures compiled into this engine.
         if (std::strcmp(argv[i], "--families") == 0) {
+#if defined(STRATA_HAVE_QWEN35)
+            std::printf("qwen4exp qwen35moe\n");
+#else
             std::printf("qwen4exp\n");
+#endif
             return 0;
         }
         // `strata --geometry`: the name of the model shape the kernels are compiled for (the geometry header's kGeometryName: flash_next for the default build);
@@ -1845,6 +1851,21 @@ int main(int argc, char **argv) try {
             return 0;
         }
     }
+#if defined(STRATA_HAVE_QWEN35)
+    // Inspect only the header before creating the FlashNext engine state.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
+        bool qwen35 = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+        } catch (const std::exception&) {
+            // The normal path below reports unreadable model files.
+        }
+        if (qwen35) return strata::qwen35::run(argc, argv);
+        break;
+    }
+#endif
     // #6250, #4698: STRATA_VERIFY_NO_HOST=1 without STRATA_VERIFY_DEVICE_PLAN leaves a layer with an expert outside VRAM unplanned (strata-sycl.sh sets both;
     // an engine started without it, as the packaged component is, with only NO_HOST=1 ended "the GPU stopped waiting for the plan (flag A)" or wrote "!!!").
     if (strata::no_host_wants_device_plan(std::getenv("STRATA_VERIFY_NO_HOST"), std::getenv("STRATA_VERIFY_DEVICE_PLAN"))) {

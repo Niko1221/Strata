@@ -1,7 +1,8 @@
 # Strata on an Intel Arc: the SYCL engine
 
 This page is for people who build the Intel Arc engine from source or run it in a container, and for those who maintain the
-port. For the released Linux engine package, start with [INTEL_ARC.md](INTEL_ARC.md).
+port. For the released Linux engine package, start with [INTEL_ARC.md](INTEL_ARC.md). For Qwen3.6-35B-A3B on
+an Arc B580, see the [experimental source build](QWEN36_SYCL.md).
 
 Strata's engine is CUDA. On an Intel Arc it runs as Strata's own engine ported to SYCL (`sycl/`), behind the same server:
 OpenAI and Anthropic APIs, streaming, tool calls, MCP and the web app are unchanged. Everything Intel-specific lives in `sycl/`;

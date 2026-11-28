@@ -7,7 +7,8 @@
 //   g++ -O2 -std=c++17 q36_mtmd_dump.cpp -I<llama>/include -I<llama>/ggml/include -I<llama>/tools/mtmd -L<llama>/build/bin
 //       -lllama -lmtmd -lggml -lggml-base -Wl,-rpath,<llama>/build/bin -o q36_mtmd_dump
 // Usage: q36_mtmd_dump --model GGUF --mmproj F --image F [--image F2 ...] --prompt TEXT [--n 32] [--ngl 99] [--max-tokens N] [--mm-cpu 1]
-//                      [--dump-full-logits F] [--force ID,ID,...]
+//                      [--dump-full-logits F] [--dump-embeddings F] [--force ID,ID,...]
+// --dump-embeddings writes a single image as SVE1, using this reference run's exact encoder output.
 //   TEXT holds one <__media__> marker where the picture goes (the chat template's user turn); it is tokenized with
 //   special tokens parsed and no BOS.  --force feeds that continuation instead of the greedy ids (teacher forcing).
 #include "llama.h"
@@ -33,7 +34,7 @@ static std::vector<int> parse_ids(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-    std::string model, mmproj, prompt, dump_full, force;
+    std::string model, mmproj, prompt, dump_full, dump_embeddings, force;
     std::vector<std::string> images;
     int n_gen = 32, ngl = 99, max_tokens = 0, mm_cpu = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -47,8 +48,13 @@ int main(int argc, char** argv) {
         else if (a == "--max-tokens") max_tokens = std::atoi(v.c_str());
         else if (a == "--mm-cpu") mm_cpu = std::atoi(v.c_str());   // the encoder on the CPU (as strata-vision's default)
         else if (a == "--dump-full-logits") dump_full = v;
+        else if (a == "--dump-embeddings") dump_embeddings = v;
         else if (a == "--force") force = v;
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
+    }
+    if (!dump_embeddings.empty() && images.size() != 1) {
+        std::fprintf(stderr, "--dump-embeddings requires exactly one image\n");
+        return 2;
     }
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
@@ -57,8 +63,13 @@ int main(int argc, char** argv) {
     if (!mdl) { std::fprintf(stderr, "cannot load %s\n", model.c_str()); return 1; }
     const llama_vocab* vocab = llama_model_get_vocab(mdl);
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 8192;
-    cp.n_batch = cp.n_ubatch = 2048;
+    const char* dump_ctx = std::getenv("STRATA_DUMP_CTX");
+    const char* dump_batch = std::getenv("STRATA_DUMP_BATCH");
+    cp.n_ctx = dump_ctx ? std::atoi(dump_ctx) : 8192;
+    cp.n_batch = cp.n_ubatch = dump_batch ? std::atoi(dump_batch) : 2048;
+    if (cp.n_ctx < 256 || cp.n_batch < 1 || cp.n_batch > cp.n_ctx) {
+        std::fprintf(stderr, "invalid reference context/batch\n"); return 2;
+    }
     cp.op_offload = ngl > 0;
     llama_context* ctx = llama_init_from_model(mdl, cp);
     if (!ctx) { std::fprintf(stderr, "cannot create the context\n"); return 1; }
@@ -98,6 +109,26 @@ int main(int argc, char** argv) {
         if (mtmd_helper_eval_chunk_single(mctx, ctx, ch, n_past, 0, (int32_t) cp.n_batch, c + 1 == nc, &np) != 0) {
             std::fprintf(stderr, "eval failed at chunk %zu\n", c);
             return 1;
+        }
+        if (!dump_embeddings.empty() && mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+            const int32_t n = (int32_t)mtmd_input_chunk_get_n_tokens(ch);
+            const mtmd_image_tokens* it = mtmd_input_chunk_get_tokens_image(ch);
+            if (n <= 0 || !it) { std::fprintf(stderr, "invalid image chunk\n"); return 1; }
+            const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t)n - 1);
+            const int32_t nx = (int32_t)last.x + 1, ny = (int32_t)last.y + 1;
+            const int32_t width = llama_model_n_embd_inp(mdl);
+            const float* encoded = mtmd_get_output_embd(mctx);
+            if ((int64_t)nx * ny != n || width <= 0 || !encoded) {
+                std::fprintf(stderr, "cannot export this image grid\n"); return 1;
+            }
+            FILE* ef = std::fopen(dump_embeddings.c_str(), "wb");
+            if (!ef) { std::fprintf(stderr, "cannot write embeddings\n"); return 1; }
+            const int32_t header[5] = {0x31455653, n, nx, ny, width};
+            const bool ok = std::fwrite(header, sizeof header, 1, ef) == 1 &&
+                std::fwrite(encoded, sizeof(float) * (size_t)width, (size_t)n, ef) == (size_t)n;
+            const int close_rc = std::fclose(ef);
+            if (!ok || close_rc) { std::fprintf(stderr, "short embeddings write\n"); return 1; }
+            std::printf("embeddings: %d %d %d %d\n", n, nx, ny, width);
         }
         n_past = np;
     }

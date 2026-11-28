@@ -37,7 +37,7 @@
     "nvidia_spark": {"supported": "untested", "hardware": "", "limits": "The engine package is the same one; no page states a Qwen3.6 run on the Spark.", "measured": ""},
     "amd_win": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
     "amd_linux": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
-    "intel_linux": {"supported": "no", "hardware": "", "limits": "The Intel Arc engine does not run this family ([QWEN36.md](QWEN36.md)).", "measured": ""},
+    "intel_linux": {"supported": "source-only", "hardware": "B580 12 GB", "limits": "Unsloth UD-Q4_K_XL, CPU vision and graph capture off. See the [SYCL source build](QWEN36_SYCL.md).", "measured": ""},
     "mac": {"supported": "no", "hardware": "", "limits": "The Mac engine does not run this family ([QWEN36.md](QWEN36.md)).", "measured": ""}
    }
   }

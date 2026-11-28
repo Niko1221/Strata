@@ -3,7 +3,7 @@
 This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of release v0.2.23 ([docs/data/release.json](data/release.json)). Do not edit it by hand.
 
 - **Packaged**: the engine packages in the release for that hardware. Read from the release's file names.
-- **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
+- **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed. *source only* requires building the engine.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
 App and Terminal 0.2.23, Control and engines 0.1.70; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3; these packages stay at 0.1.69: engines linux-aarch64-cuda-cuda13, linux-x86_64-cuda-cuda12, linux-x86_64-cuda-cuda13, linux-x86_64-hip-halo, linux-x86_64-hip-rx6000, linux-x86_64-hip-rx7900, linux-x86_64-hip-rx9070, linux-x86_64-sycl. App, Control and engine versions differ on purpose.
@@ -13,7 +13,7 @@ App and Terminal 0.2.23, Control and engines 0.1.70; these packages stay at 0.1.
 | Model | NVIDIA on Windows | NVIDIA on Linux | NVIDIA DGX Spark | AMD on Windows | AMD on Linux | Intel Arc on Linux | Apple silicon |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Qwen3.8-Flash-Next](#qwen38) | yes | yes | yes | yes | yes | yes | yes |
-| [Qwen3.6-35B-A3B](#qwen36) | yes | yes | untested | yes | yes | no | no |
+| [Qwen3.6-35B-A3B](#qwen36) | yes | yes | untested | yes | yes | source only | no |
 
 <a id="qwen38"></a>
 
@@ -44,5 +44,5 @@ Model guide: [QWEN36.md](QWEN36.md).
 | NVIDIA DGX Spark | `cuda-cuda13` | package present, untested | The engine package is the same one; no page states a Qwen3.6 run on the Spark. | - |
 | AMD on Windows | `hip-rdna2`, `hip-rdna3`, `hip-rx9070` | supported | - | [QWEN36.md](QWEN36.md) |
 | AMD on Linux | `hip-halo`, `hip-rx6000`, `hip-rx7900`, `hip-rx9070` | supported | - | [QWEN36.md](QWEN36.md) |
-| Intel Arc on Linux | none | does not run | The Intel Arc engine does not run this family ([QWEN36.md](QWEN36.md)). | - |
+| Intel Arc on Linux | none | experimental source build: B580 12 GB | Unsloth UD-Q4_K_XL, CPU vision and graph capture off. See the [SYCL source build](QWEN36_SYCL.md). | - |
 | Apple silicon | none | does not run | The Mac engine does not run this family ([QWEN36.md](QWEN36.md)). | - |

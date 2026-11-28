@@ -217,6 +217,76 @@ __dpct_inline__ void route_multi(const float *__restrict__ logits,
     const float inverse_selected_sum = 1.0f / selected_sum;
     if (lane < 10) weights[lane] = selected * inverse_selected_sum;
 }
+#if defined(STRATA_HAVE_QWEN35)
+// Qwen3.6 uses the same finite-logit/tie/renormalization contract with k=8.
+template <int NE, int K>   // Qwen3.6: its own top-k kernel; legacy top-K stays unchanged.
+__dpct_inline__ void route_q36_topk(const float *__restrict__ logits,
+                           int32_t *__restrict__ ids,
+                           float *__restrict__ weights) {
+    // Preserve the pinned 32x8 block geometry; only row zero is active here.
+    // blockIdx.x = the token (a multi-token launch; 0 for the single one)
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    logits += (size_t)item_ct1.get_group(2) * NE;
+    ids += (size_t)item_ct1.get_group(2) * K;
+    weights += (size_t)item_ct1.get_group(2) * K;
+    if (item_ct1.get_local_id(1) != 0) return;
+    const int lane = item_ct1.get_local_id(2);
+    float values[NE / 32];
+#pragma unroll
+    for (int i = 0; i < NE / 32; ++i) values[i] = logits[lane + i * 32];
+    // Only subgroup row zero reaches this point (the other rows returned above): a work-group barrier here is
+    // divergent and hangs on Alchemist (A770); the subgroup barrier is the one the surviving row can meet.
+    sycl::group_barrier(item_ct1.get_sub_group());
+    float maximum = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < NE / 32; ++i) maximum = sycl::max(maximum, values[i]);
+    maximum = warp_max(maximum);
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < NE / 32; ++i) {
+        values[i] = sycl::native::exp(values[i] - maximum);
+        sum += values[i];
+    }
+    const float reciprocal = 1.0f / warp_sum(sum);
+#pragma unroll
+    for (int i = 0; i < NE / 32; ++i) {
+        values[i] *= reciprocal;
+        if (sycl::isnan(values[i])) values[i] = -FLT_MAX;
+    }
+    float selected = 0.0f, selected_sum = 0.0f;
+    for (int rank = 0; rank < K; ++rank) {
+        float best = values[0];
+        int expert = lane;
+#pragma unroll
+        for (int i = 1; i < NE / 32; ++i) {
+            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+        }
+#pragma unroll
+        for (int mask = 16; mask; mask >>= 1) {
+            const float other = dpct::experimental::permute_sub_group_by_xor(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                best, mask);
+            const int other_id = dpct::experimental::permute_sub_group_by_xor(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                expert, mask);
+            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+        }
+        if ((expert & 31) == lane) {
+            values[expert / 32] = -INFINITY;
+            ids[rank] = expert;
+            // Deliberately accumulate by WINNING EXPERT lane, not output rank.
+            // Multiple selected experts in one lane add in selection order.
+            selected_sum += best;
+        }
+        if (rank == lane) selected = best;
+    }
+    selected_sum = sycl::max(warp_sum(selected_sum), 6.103515625e-5f);
+    const float inverse_selected_sum = 1.0f / selected_sum;
+    if (lane < K) weights[lane] = selected * inverse_selected_sum;
+}
+
+#endif
+
 bool valid(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % 4 == 0 && bytes <= UINTPTR_MAX - address;
@@ -310,4 +380,34 @@ void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weig
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_tok) * sycl::range(1, 8, 32), sycl::range(1, 8, 32)),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] { route<256>(logits, ids, weights); });
 }
+
+#if defined(STRATA_HAVE_QWEN35)
+bool native_router_topk_supported(int n_expert, int k) {
+    return (n_expert == 512 && k == 10) || (n_expert == 256 && k == 8);
+}
+void native_router_topk(const float* logits, int32_t* ids, float* weights,
+                        int n_expert, int k, int n_tok, void* stream) {
+    if (n_expert == 512 && k == 10) {
+        if (n_tok == 1) native_router_top10(logits, ids, weights, stream);
+        else native_router_top10_multi(logits, ids, weights, n_tok, stream);
+        return;
+    }
+    const size_t input_bytes = n_tok > 0 ? (size_t)n_tok * (size_t)n_expert * sizeof(float) : 0;
+    const size_t output_bytes = n_tok > 0 ? (size_t)n_tok * (size_t)k * sizeof(float) : 0;
+    if (!stream || n_tok < 1 || !native_router_topk_supported(n_expert, k) ||
+        !valid(logits, input_bytes) || !valid(ids, output_bytes) || !valid(weights, output_bytes) ||
+        overlap(logits, input_bytes, ids, output_bytes) ||
+        overlap(logits, input_bytes, weights, output_bytes) || overlap(ids, output_bytes, weights, output_bytes))
+        throw std::invalid_argument("native_router_topk: a stream, supported (experts,k), aligned disjoint spans");
+    // One work-group per token, as the proven 256-expert SYCL path. Only subgroup 0 is active;
+    // it uses subgroup barriers, never a divergent work-group barrier.
+    strata::q_of(stream)->parallel_for<dpct_kernel_name<class route_q36_256_top8>>(
+        sycl::nd_range<3>(sycl::range(1, 1, (size_t)n_tok) * sycl::range(1, 8, 32),
+                          sycl::range(1, 8, 32)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            route_q36_topk<256, 8>(logits, ids, weights);
+        });
+}
+#endif
+
 }

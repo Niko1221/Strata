@@ -218,8 +218,11 @@ packing conversion and is not an installer menu option.
 A smaller model from the same maker: [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (35 billion
 parameters, 3 billion active per token, 256 experts, Apache 2.0). Strata runs
 [Unsloth's GGUFs with the MTP draft layer](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) on its own engine
-path, chosen by the file. It is in the app's model list and in setup (`--family qwen36`). It runs on NVIDIA and AMD
-cards; the Intel Arc engine and the Mac engine do not run it. It reads pictures and serves several requests at once.
+path, chosen by the file. On NVIDIA and AMD it is in the app's model list and in setup (`--family qwen36`). It reads
+pictures and serves several requests at once.
+
+Linux Arc B580 users can run `UD-Q4_K_XL` with the [experimental SYCL source build](QWEN36_SYCL.md) and
+`STRATA_SYCL_QWEN35=ON`. This route uses a prepared GGUF and manual server settings.
 
 | Size | File | RAM setup plans for | In plain words |
 | --- | ---: | ---: | --- |
@@ -243,7 +246,7 @@ do not describe a 16 GB card sharing 32 GB of system RAM with other large proces
 | Radeon AI PRO R9700 (32 GB) | 117.8 tokens/s |
 | RTX 3060 (12 GB), most experts on the CPU | 59.7 tokens/s |
 
-Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md).
+See the [Qwen3.6 guide](QWEN36.md) for pictures, parallel requests, measurements and limits. On NVIDIA or AMD, run:
 
 ```sh
 strata launch --family qwen36 --model UD-Q4_K_XL
