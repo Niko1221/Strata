@@ -61,5 +61,6 @@ jobs:
           PY
       - name: Run full server suite without terminal packages
         shell: bash
+        working-directory: terminal
         run: |
-          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s terminal/serve -p 'test_*.py'
+          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
