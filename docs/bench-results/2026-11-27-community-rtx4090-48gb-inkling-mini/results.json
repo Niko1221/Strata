@@ -1,0 +1,105 @@
+{
+  "model": "AtomicChat/Inkling-2-Mini-Uncensored-GGUF",
+  "model_revision": "82b34b9b0e5bc2e3e7b6d617ec8cc3e0f9692ee2",
+  "weights": "Inkling-2-Mini-Uncensored-AD-Q4_K.gguf",
+  "weights_sha256": "36e99f1f56ca33cb356f19d7e3822938f65af1cde978ad13170238928d4c955f",
+  "hardware": {
+    "active_gpus": 1,
+    "gpu": "GeForce RTX 4090, 49140 MiB reported",
+    "driver": "595.99.02",
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpu": "2 x Xeon Platinum 8481C",
+    "ram_gib": 125
+  },
+  "strata_0_1_69": {
+    "revision": "c234774038d1c9249cb33637d27b895d47b39786",
+    "speed_prompt_tokens": 64,
+    "speed_generation_tokens": 128,
+    "speed_context": 4096,
+    "speed_parallel": 1,
+    "prefill_decode_tokens_per_sec": [
+      [
+        556.5,
+        96.5
+      ],
+      [
+        556.5,
+        96.4
+      ],
+      [
+        554.3,
+        96.3
+      ]
+    ],
+    "smoke": {
+      "arithmetic": true,
+      "native_tool": true,
+      "tool_result_followup": true
+    },
+    "bfcl_v4": {
+      "categories": {
+        "simple_python": {
+          "correct": 365,
+          "total": 400
+        },
+        "simple_java": {
+          "correct": 43,
+          "total": 100
+        },
+        "simple_javascript": {
+          "correct": 25,
+          "total": 50
+        },
+        "multiple": {
+          "correct": 179,
+          "total": 200
+        },
+        "parallel": {
+          "correct": 179,
+          "total": 200
+        },
+        "parallel_multiple": {
+          "correct": 169,
+          "total": 200
+        },
+        "irrelevance": {
+          "correct": 196,
+          "total": 240
+        },
+        "multi_turn_base": {
+          "correct": 125,
+          "total": 200
+        }
+      },
+      "scored_cases": 1590,
+      "correct_cases": 1281,
+      "inference_errors": 0,
+      "requests": 4063,
+      "output_tokens": 631732,
+      "request_seconds": 9395.108762250456,
+      "end_to_end_output_tokens_per_second": 67.24052014579107
+    },
+    "terminal_bench_4_pilot": [
+      {
+        "task": "terminal-bench/data-anonymization",
+        "reward": 0.0,
+        "infrastructure_error": false
+      },
+      {
+        "task": "terminal-bench/legacy-utility-triage",
+        "reward": 0.0,
+        "infrastructure_error": false
+      },
+      {
+        "task": "terminal-bench/session-window-debug",
+        "reward": 0.0,
+        "infrastructure_error": false
+      }
+    ]
+  },
+  "llama_cpp_b12600_decode_tokens_per_sec": [
+    70.73644436300161,
+    72.19293134565919,
+    72.23148655811848
+  ]
+}
