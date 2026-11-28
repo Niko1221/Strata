@@ -605,7 +605,22 @@ cmake -S engine/src/inkling2 -B build-inkling-win -G Ninja -DCMAKE_CXX_COMPILER=
 cmake --build build-inkling-win --target strata-inkling
 ```
 
-One change was needed for this: on Windows oneMKL ships its SYCL domain as DLL import libraries
+**Build the drafter variant without oneMKL.** Two builds are possible, and they differ by more than link flags on this
+card (measured here, SQ-15, Terminal server, `temperature 0`, 3 runs per arm):
+
+| build | drafter | code prompt, 400 max | 6.4K prompt prefill |
+|---|---|---:|---:|
+| default (oneMKL) | off | 36.3 tok/s | 423.5 tok/s |
+| default (oneMKL) | DFlash 2 | **3.8** | 65.9 |
+| `-DSTRATA_SYCL_NO_ONEMKL=ON` (the CI build) | off | 36.9 | 195.1 |
+| `-DSTRATA_SYCL_NO_ONEMKL=ON` (the CI build) | DFlash 2 | **66.1** | 97.5 |
+
+So the drafter is a +79% decode win on the zero-oneMKL build (in line with CUDA and HIP) and a 10x loss on the oneMKL
+build, where it also crashed once (`0xC0000409`). The oneMKL build keeps a much faster prefill, so which to run depends
+on the workload: long prompts -> the default build without a drafter; interactive decode -> the noMKL build with DFlash 2.
+Issue #7334 has the evidence.
+
+One change was needed for the default build: on Windows oneMKL ships its SYCL domain as DLL import libraries
 (`mkl_sycl_blas_dll.lib` -> `mkl_sycl_blas.6.dll`), and the backend's link block skipped oneMKL on Windows, so the link
 stopped at `unresolved external symbol oneapi::mkl::blas::row_major::gemm`. It now links the import library and the
 three core libraries. Like the main engine, it needs Intel's redistributable oneAPI runtime beside the exe.
@@ -613,8 +628,12 @@ three core libraries. Like the main engine, it needs Intel's redistributable one
 Served by the Terminal server (`--engine strata --config <json>` with `"arch": "inkling2_loop"`), SQ-15
 (14.35 GB) on this B70: loaded in 5.7 s, 14.85 GiB of device memory, KV 1184 MiB at 32K, 1 slot; a 317-token code
 reply came out in 8.7 s (36.6 tok/s end to end), and a 29-token arithmetic question in 1.8 s. The vision file
-(0.64 GB) loads with it. `DSpark` drafting is off until the 636 MB drafter file is passed with `--dspark`
-(the engine prints `dspark=0`).
+(0.64 GB) loads with it.
+
+**DFlash 2** (the 551.6 MB `strata-engine/Inkling-2-Mini-DFlash2` mix, as `dflash2.safetensors` beside the model) needs
+both `"drafting": "dflash2"` and `STRATA_INK_DRAFTER=dflash2` in the config's env on SYCL - `--draft dflash2` alone
+leaves the engine at `dflash2=0`. `--bench` never loads it on this backend (the B70 CI gate that uses it therefore
+measures the plain path), so only the serve route exercises it.
 
 ## Reporting a problem
 
