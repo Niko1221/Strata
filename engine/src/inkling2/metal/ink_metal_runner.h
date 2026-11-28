@@ -291,7 +291,11 @@ struct InkMetalRunner {
         is_apple10 = cx->has_family_apple(10);
         max_slots = std::max(1, std::min(64, slots));
         df2_slot_off.assign((size_t)max_slots, 0);
-        df2_hw_ok = M5MaxCfg::hardware_matches(cx->device_name(), cx->has_family_apple(10), cx->supports_metal4(), cx->gpu_core_count(), cx->physical_memory_bytes());
+        const bool df2_m4max_ok = cx->device_name().find("Apple M4 Max") != std::string::npos
+                                  && cx->gpu_core_count() >= 32
+                                  && cx->physical_memory_bytes() >= (64ull << 30);
+        df2_hw_ok = M5MaxCfg::hardware_matches(cx->device_name(), cx->has_family_apple(10), cx->supports_metal4(), cx->gpu_core_count(), cx->physical_memory_bytes())
+                    || df2_m4max_ok;
         max_ctx = std::max(256, ctx_len);
         max_batch = std::max(64, batch_cap);
         kv_is_fp8 = (m5.active && m5.use_fp8_kv);
@@ -994,7 +998,7 @@ struct InkMetalRunner {
                 // On the older SQ-20 pack it accepted no draft at all (measured), on other Macs it is not measured. One line, no drafter, whatever --draft says.
                 const char* why = nullptr;
                 if (!mod->page16k) why = "is validated only on the 16 KiB-aligned SQ-20 pack (this file uses the older layout)";
-                else if (!df2_hw_ok) why = "is validated only on an Apple M5 Max with 64 GiB or more";
+                else if (!df2_hw_ok) why = "is validated only on an Apple M4 Max or M5 Max with 64 GiB or more";
                 else if (m5.active && m5.exact) why = "is not loaded in the exact mode (it can change greedy tokens on long documents)";
                 if (why) {
                     fprintf(stderr, "[ink_metal] DFlash 2 %s; decoding without a drafter.\n", why);
