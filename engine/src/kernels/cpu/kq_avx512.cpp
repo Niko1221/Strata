@@ -286,6 +286,7 @@ void kq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
     __m128i q8s_stack[kQ8sStack];
     const size_t need = (size_t) nt * (size_t) nb;
     __m128i* q8s = need <= kQ8sStack ? q8s_stack : (__m128i*) std::malloc(need * sizeof(__m128i));
+    if (!q8s) { kq256_gu_rows(type, blob, gu_row, up_off, n, act, nt, ff, r0, r1); return; }   // same bits, no q8s cache
     q8s_prep(act, nt, nb, q8s);
     for (int r = r0; r < r1; ++r) {
         q4k_expand((const block_q4_K*) (blob + (size_t) r * gu_row), nb, eg);
@@ -311,6 +312,7 @@ void kq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         __m128i q8s_stack[kQ8sStack];
         const size_t need = (size_t) nt * (size_t) nb;
         __m128i* q8s = need <= kQ8sStack ? q8s_stack : (__m128i*) std::malloc(need * sizeof(__m128i));
+        if (!q8s) { kq256_rows(type, w, row_bytes, n, act, nt, out, r0, r1); return; }   // same bits, no q8s cache
         q8s_prep(act, nt, nb, q8s);
         for (int r = r0; r < r1; ++r) {
             q4k_expand((const block_q4_K*) (w + (size_t) r * row_bytes), nb, e);
@@ -334,6 +336,7 @@ void kq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         float yt_stack[kYStack];
         const size_t need = 2 * (size_t) nt * (size_t) nb;
         float* yt = need <= kYStack ? yt_stack : (float*) std::malloc(need * sizeof(float));
+        if (!yt) { kq256_rows(type, w, row_bytes, n, act, nt, out, r0, r1); return; }   // same bits, no q5_1 cache
         q51_prep(act, nt, nb, yt);
         for (int r = r0; r < r1; ++r) {
             q51_expand((const block_q5_1*) (w + (size_t) r * row_bytes), nb, e);
@@ -350,6 +353,7 @@ void kq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         float yd_stack[kYStack];
         const size_t need = (size_t) nt * (size_t) nb;
         float* yd = need <= kYStack ? yd_stack : (float*) std::malloc(need * sizeof(float));
+        if (!yd) { kq256_rows(type, w, row_bytes, n, act, nt, out, r0, r1); return; }   // same bits, no q8_0 cache
         q80_prep(act, nt, nb, yd);
         for (int r = r0; r < r1; ++r) {
             q80_expand((const block_q8_0*) (w + (size_t) r * row_bytes), nb, e);
