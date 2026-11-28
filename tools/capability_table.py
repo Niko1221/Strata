@@ -6,7 +6,7 @@
 
 Inputs: docs/data/capabilities.json (what the docs commit to) and docs/data/release.json (the packages in the release).  The
 "packaged" column is read from the release's package names, never typed.  Checks:
-  * a family marked "yes" or "untested" on some hardware has a package for it in the release, and one marked "no" has none;
+  * a family marked "yes" or "untested" has a release package. A family marked "no" or "source-only" has none.
   * every package of a family lands in a column of the table;
   * docs/CAPABILITIES.md and every `<!-- cap:... -->` block in AI_SETUP and AI_REFERENCE are what the
     generator would write (so a page cannot keep a sentence the table contradicts).
@@ -34,7 +34,8 @@ COLUMN_OF = {("windows", "cuda"): "nvidia_win", ("linux", "cuda", "x86_64"): "nv
 PKG_RE = re.compile(r"^strata-(control|dsv41|engine)-(\d+(?:\.\d+)*)-(.+?)\.(?:tar\.gz|zip)$")
 KIND_WORDS = {"control": "Control", "dsv41": "DeepSeek engines", "engine": "engines"}
 MARK_RE = re.compile(r"<!-- cap:(\S+?) -->(.*?)<!-- /cap -->", re.S)
-STATUS_WORD = {"yes": "supported", "untested": "package present, untested", "no": "does not run"}
+STATUS_WORD = {"yes": "supported", "untested": "package present, untested",
+               "source-only": "experimental source build", "no": "does not run"}
 
 
 def read_json(path):
@@ -80,8 +81,9 @@ def validate(cap, release):
             has = bool(pk.get(col))
             if cell["supported"] in ("yes", "untested") and not has:
                 problems.append("%s on %s is marked %s but the release has no package for it" % (fam["id"], col, cell["supported"]))
-            if cell["supported"] == "no" and has:
-                problems.append("%s on %s is marked 'no' but the release has a package for it (%s)" % (fam["id"], col, ", ".join(v for v, _ in pk[col])))
+            if cell["supported"] in ("no", "source-only") and has:
+                problems.append("%s on %s is marked %r but the release has a package for it (%s)"
+                                % (fam["id"], col, cell["supported"], ", ".join(v for v, _ in pk[col])))
             if cell["supported"] not in STATUS_WORD:
                 problems.append("%s on %s: unknown status %r" % (fam["id"], col, cell["supported"]))
     return problems
@@ -116,8 +118,9 @@ def label(cap, col):
 
 def cell_text(cap, fam, col):
     c = fam["cells"][col]
-    if c["supported"] == "yes":
-        return "runs" + (" (%s)" % c["hardware"] if c["hardware"] else "")
+    if c["supported"] in ("yes", "source-only"):
+        status = "runs" if c["supported"] == "yes" else STATUS_WORD["source-only"]
+        return status + (" (%s)" % c["hardware"] if c["hardware"] else "")
     if c["supported"] == "untested":
         return "package present, not tested"
     return "does not run"
@@ -127,10 +130,14 @@ def summary(cap, fam):
     yes = ["%s%s" % (label(cap, c["id"]), " (%s)" % fam["cells"][c["id"]]["hardware"] if fam["cells"][c["id"]]["hardware"] else "")
            for c in cap["columns"] if fam["cells"][c["id"]]["supported"] == "yes"]
     untested = [label(cap, c["id"]) for c in cap["columns"] if fam["cells"][c["id"]]["supported"] == "untested"]
+    source_only = [c["label"] + (" (%s)" % cell["hardware"] if cell["hardware"] else "")
+                   for c in cap["columns"] if (cell := fam["cells"][c["id"]])["supported"] == "source-only"]
     no = [label(cap, c["id"]) for c in cap["columns"] if fam["cells"][c["id"]]["supported"] == "no"]
     s = "%s runs in the desktop app and in the Terminal. Hardware: %s." % (fam["name"], "; ".join(yes))
     if untested:
         s += " Package present but not tested: %s." % ", ".join(untested)
+    if source_only:
+        s += " Experimental source build for %s." % ", ".join(source_only)
     if no:
         s += " Does not run on: %s." % ", ".join(no)
     return s + " Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#%s)." % fam["id"]
@@ -152,7 +159,7 @@ def page(cap, release):
            "This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of release %s ([docs/data/release.json](data/release.json)). Do not edit it by hand." % release["tag"],
            "",
            "- **Packaged**: the engine packages in the release for that hardware. Read from the release's file names.",
-           "- **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.",
+           "- **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed. *source only* requires building the engine.",
            "- **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.",
            "",
            versions_line(release),
@@ -161,7 +168,7 @@ def page(cap, release):
            "| --- |" + " --- |" * len(cols)]
     for fam in cap["families"]:
         out.append("| [%s](#%s) | %s |" % (fam["name"], fam["id"], " | ".join(
-            {"yes": "yes", "untested": "untested", "no": "no"}[fam["cells"][c["id"]]["supported"]] for c in cols)))
+            fam["cells"][c["id"]]["supported"].replace("-", " ") for c in cols)))
     for fam in cap["families"]:
         pk = packages(release, fam)
         out += ["", '<a id="%s"></a>' % fam["id"], "", "## " + fam["name"], "", "Model guide: [%s](%s)." % (fam["guide"].split("#")[0], fam["guide"]), "",

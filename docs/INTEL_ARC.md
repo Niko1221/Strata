@@ -8,6 +8,9 @@ maxfridbe wrote the port in [#423](https://github.com/Niko1221/Strata/pull/423).
 official platform since 0.1.40.2. The maintainers test on an Arc Pro B70 (32 GB, `xe` driver) and an Arc A750 (8 GB, `i915`
 driver); results from other cards are community reports. The Mac and Windows builds have no Intel engine.
 
+For Qwen3.6-35B-A3B on an Arc B580, follow the [experimental SYCL source-build guide](QWEN36_SYCL.md). The
+instructions below use the released Intel package.
+
 ## Quick start
 
 Install the [Terminal](INSTALL.md#the-terminal), then point `strata launch` at the folder that holds the model's `.gguf` files

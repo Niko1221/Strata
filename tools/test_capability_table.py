@@ -39,6 +39,8 @@ class CapabilityTable(unittest.TestCase):
         self.assertNotIn("mac", pk)
         self.assertNotIn("intel_linux", pk)
         self.assertIn("nvidia_win", pk)
+        self.assertEqual(fam["cells"]["intel_linux"]["supported"], "source-only")
+        self.assertIn("Experimental source build for Intel Arc on Linux (B580 12 GB)", ct.summary(self.cap, fam))
 
     def test_the_version_line_names_carried_packages(self):
         rel = {"product_version": "0.2.14", "control_version": "0.1.60", "engine_version": "0.1.60",
