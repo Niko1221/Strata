@@ -147,6 +147,11 @@ struct InkMetalRunner {
     mtl::Pipeline p_moe_gu_rco[6], p_moe_dn_rco[6];
     uint8_t layer_rco_gu_mask[24]{}, layer_rco_dn_mask[24]{};
     bool layer_all_rco_gu[24]{}, layer_all_rco_dn[24]{};
+    // STRATA_INK_GGUF_TYPED=1: per-type GGUF expert kernels (bit-identical to the generic ones). layer_gguf_* index
+    // kGgufTypes when every expert of the layer has that one type, else -1.
+    bool use_gguf_typed = false;
+    int8_t layer_gguf_gu[24]{}, layer_gguf_dn[24]{};
+    mtl::Pipeline p_moe_gu_gguf[8], p_moe_dn_gguf[8], p_moe_gu_mm_gguf[8], p_moe_dn_mm_gguf[8];
     mtl::Pipeline p_kv_store_fp8, p_kv_store_pf_swa, p_kv_commit_pf_swa, p_kv_tree_commit_fp8;
     mtl::Pipeline p_top128_part, p_top128_red;
 
@@ -370,6 +375,11 @@ struct InkMetalRunner {
                 default: return -1;
             }
         };
+        static const uint32_t kGgufTypes[8] = {16u, 17u, 18u, 19u, 20u, 21u, 22u, 42u};  // IQ2_XXS IQ2_XS IQ3_XXS IQ1_S IQ4_NL IQ3_S IQ2_S Q2_0
+        auto gguf_idx_for = [](uint32_t gt) -> int {
+            for (int i = 0; i < 8; ++i) if (kGgufTypes[i] == gt) return i;
+            return -1;
+        };
         const auto* ed_host = mod->expert_dev_buf.as<InkExpertDev>();
         for (int il = 0; il < mod->man.c.n_phys; ++il) {
             int g0 = ed_host[il * mod->man.c.n_experts].gu_code;
@@ -378,6 +388,7 @@ struct InkMetalRunner {
             uint32_t gm = 0, dm = 0;
             uint8_t rgm = 0, rdm = 0;
             bool all_rg = true, all_rd = true;
+            int tg = -2, td = -2;  // -2: no expert seen yet, -1: not one listed GGUF type
             for (int e = 0; e < mod->man.c.n_experts; ++e) {
                 const auto& ed = ed_host[il * mod->man.c.n_experts + e];
                 if (ed.gu_code != g0) hg = false;
@@ -391,9 +402,13 @@ struct InkMetalRunner {
                     const int di = rco_idx_for(hdr[2]);
                     if (gi >= 0) rgm |= (uint8_t)(1u << gi); else all_rg = false;
                     if (di >= 0) rdm |= (uint8_t)(1u << di); else all_rd = false;
+                    const int gx = gguf_idx_for(hdr[1]), dx = gguf_idx_for(hdr[2]);
+                    tg = (tg == -2 || tg == gx) ? gx : -1;
+                    td = (td == -2 || td == dx) ? dx : -1;
                 } else {
                     all_rg = false;
                     all_rd = false;
+                    tg = td = -1;
                 }
             }
             layer_homog_gu[il] = hg ? g0 : -1;
@@ -404,6 +419,31 @@ struct InkMetalRunner {
             layer_rco_dn_mask[il] = rdm;
             layer_all_rco_gu[il] = all_rg && (rgm != 0);
             layer_all_rco_dn[il] = all_rd && (rdm != 0);
+            layer_gguf_gu[il] = (int8_t)(tg >= 0 ? tg : -1);
+            layer_gguf_dn[il] = (int8_t)(td >= 0 ? td : -1);
+        }
+        if (const char* ev = std::getenv("STRATA_INK_GGUF_TYPED"); ev && ev[0] == '1' && ev[1] == '\0') {
+            bool used_gu[8] = {}, used_dn[8] = {};
+            for (int il = 0; il < mod->man.c.n_phys; ++il) {
+                if (layer_gguf_gu[il] >= 0) used_gu[layer_gguf_gu[il]] = true;
+                if (layer_gguf_dn[il] >= 0) used_dn[layer_gguf_dn[il]] = true;
+            }
+            for (int i = 0; i < 8; ++i) {
+                const mtl::Constants c = mtl::Constants().u(40, kGgufTypes[i]);
+                if (used_gu[i]) {
+                    p_moe_gu_gguf[i]    = cx->pipeline(lib_codecs, "ink_moe_gu_gguf", c);
+                    p_moe_gu_mm_gguf[i] = cx->pipeline(lib_codecs, "ink_moe_gu_mm_gguf", c);
+                }
+                if (used_dn[i]) {
+                    p_moe_dn_gguf[i]    = cx->pipeline(lib_codecs, "ink_moe_dn_gguf", c);
+                    p_moe_dn_mm_gguf[i] = cx->pipeline(lib_codecs, "ink_moe_dn_mm_gguf", c);
+                }
+                use_gguf_typed = use_gguf_typed || used_gu[i] || used_dn[i];
+            }
+            int n_gu = 0, n_dn = 0;
+            for (int il = 0; il < mod->man.c.n_phys; ++il) { n_gu += layer_gguf_gu[il] >= 0; n_dn += layer_gguf_dn[il] >= 0; }
+            std::fprintf(stderr, "[ink_metal] STRATA_INK_GGUF_TYPED=1: per-type GGUF expert kernels on %d gate/up and %d down layers of %d\n",
+                         n_gu, n_dn, mod->man.c.n_phys);
         }
 
         p_emb_bf16     = cx->pipeline(lib_ops, "ink_embed_bf16");
@@ -2366,6 +2406,7 @@ struct InkMetalRunner {
                         mtl::Dispatch d;
                         d.p = (layer_homog_gu[ip] == 15) ? &p_moe_gu_mm_sf4
                             : (layer_homog_gu[ip] == 16) ? &p_moe_gu_mm_mx8 : &p_moe_gu_mm_gen;
+                        if (use_gguf_typed && layer_gguf_gu[ip] >= 0) d.p = &p_moe_gu_mm_gguf[layer_gguf_gu[ip]];
                         d.ind_off = 8 * sizeof(uint32_t);
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
                         d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
@@ -2378,6 +2419,7 @@ struct InkMetalRunner {
                         mtl::Dispatch d;
                         d.p = (layer_homog_dn[ip] == 15) ? &p_moe_dn_mm_sf4
                             : (layer_homog_dn[ip] == 16) ? &p_moe_dn_mm_mx8 : &p_moe_dn_mm_gen;
+                        if (use_gguf_typed && layer_gguf_dn[ip] >= 0) d.p = &p_moe_dn_mm_gguf[layer_gguf_dn[ip]];
                         d.ind_off = 8 * sizeof(uint32_t);
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
                         d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
@@ -2403,6 +2445,15 @@ struct InkMetalRunner {
                                       mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                             ds.push_back(std::move(d));
                         }
+                    } else if (use_gguf_typed && layer_gguf_gu[ip] >= 0) {
+                        mtl::Dispatch d;
+                        d.p = &p_moe_gu_gguf[layer_gguf_gu[ip]]; d.ind_off = 2 * sizeof(uint32_t);
+                        d.tg[0] = 256; d.indirect = &b_moe_meta;
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
+                                  mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
+                        ds.push_back(std::move(d));
                     } else {
                         mtl::Dispatch d;
                         if (layer_homog_gu[ip] == 15)      { d.p = (m5.active && m5.use_fast_sf4_shfl) ? &p_moe_gu_sf4_shfl : &p_moe_gu_sf4;  d.ind_off = 5 * sizeof(uint32_t); }
@@ -2434,6 +2485,15 @@ struct InkMetalRunner {
                                       mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                             ds.push_back(std::move(d));
                         }
+                    } else if (use_gguf_typed && layer_gguf_dn[ip] >= 0) {
+                        mtl::Dispatch d;
+                        d.p = &p_moe_dn_gguf[layer_gguf_dn[ip]]; d.ind_off = 2 * sizeof(uint32_t);
+                        d.tg[0] = 256; d.indirect = &b_moe_meta;
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
+                                  mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h), mtl::Arg::B(b_moe_yp),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
+                        ds.push_back(std::move(d));
                     } else {
                         mtl::Dispatch d;
                         if (layer_homog_dn[ip] == 15)      { d.p = (m5.active && m5.use_fast_sf4_shfl) ? &p_moe_dn_sf4_shfl : &p_moe_dn_sf4;  d.ind_off = 11 * sizeof(uint32_t); }
