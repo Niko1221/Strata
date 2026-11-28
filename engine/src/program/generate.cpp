@@ -12329,6 +12329,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: the prompt path reads the experts a helper cache holds from that "
                                  "cache (STRATA_PREFILL_HELPER_SOURCE)\n");
         }
+#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+        // Destroy the prefill views before their optional backing allocation.
+        auto free_scratch = [](void* ptr) { if (ptr) (void) cudaFree(ptr); };
+        std::unique_ptr<void, decltype(free_scratch)> resident_scratch(nullptr, free_scratch);
+        uint64_t resident_scratch_bytes = 0;
+#endif
         strata::prefill::Prefill sp;
         // 149-prefetch STRATA_RAM_ADAPT2=1 (with STRATA_RAM_ADAPT=n, the promotions staged per window): see the window loop
         struct RamAdapt2 {
@@ -16077,6 +16083,37 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata trace: %s %lld %lld %.1f ms\n", what, a, b, ms);
             std::fflush(stderr);
         };
+#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+        const char* scratch_env = std::getenv("STRATA_RESIDENT_PREFILL_SCRATCH");
+        if (scratch_env && std::strcmp(scratch_env, "1") == 0 &&
+            borrow && gpu_holds_all && !multi_gpu && stages.empty() && !peer.valid() && prefill_helpers.empty() &&
+            o.prefill_auto && o.batch <= 1 && !o.prefill_head_alias && !o.kv_grow && !o.vram_elastic) {
+            // Keep the reserve and 7/8 of the remaining headroom for graphs and other users.
+            const uint64_t fb = strata::core::device_free_bytes();
+            const uint64_t reserve = (uint64_t) std::max(0, o.vram_reserve_mib) << 20;
+            const uint64_t bytes = std::min(borrow_bytes, (fb - std::min(reserve, fb)) / 8);
+            const int64_t slots = part_slots(pf_parts[0], std::min<int64_t>(256, o.prefill_chunk));
+            if (slots > 0 && slots <= xcache.slots() && bytes >= part_bytes(pf_parts[0], (int32_t) (xcache.slots() - slots))) {
+                void* ptr = nullptr;
+                const auto status = cudaMalloc(&ptr, bytes);
+                if (status == cudaSuccess) {
+                    resident_scratch.reset(ptr);
+                    if (cudaMemsetAsync(ptr, 0, bytes, nullptr) != cudaSuccess || cudaStreamSynchronize(nullptr) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: cannot initialize the resident prompt scratch\n");
+                        return 1;
+                    }
+                    resident_scratch_bytes = bytes;
+                    std::fprintf(stderr, "strata serve: %llu MiB of separate prompt scratch; larger layouts borrow as before\n",
+                                 (unsigned long long) (bytes >> 20));
+                } else if (status == cudaErrorMemoryAllocation) {
+                    (void) cudaGetLastError();    // optional: keep the expert-cache loan
+                } else {
+                    std::fprintf(stderr, "strata serve: resident prompt scratch: %s\n", cudaGetErrorString(status));
+                    return 1;
+                }
+            }
+        }
+#endif
         {
             // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
             // and a page-in while the verify graph spins on a host flag stalls the request for good
@@ -20693,6 +20730,17 @@ int main(int argc, char** argv) {
                                          (long long) need_p, (long long) (p.cache->slots() - p.first));
                         first = (int32_t) (p.cache->slots() - need_p);
                     }
+#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+                    if (resident_scratch && part_bytes(p, first) <= resident_scratch_bytes) {
+                        if (p.first_now >= 0 || want_p != p.sp->chunk() ||
+                            (tail_p >= 0 && tail_p != p.sp->layout_tail())) {
+                            if (!p.sp->relayout(want_p, resident_scratch.get(), resident_scratch_bytes, e, tail_p)) return false;
+                        }
+                        p.first_now = -1;   // no expert slot under this layout
+                        p.lent_chunk = want_p;
+                        continue;
+                    }
+#endif
                     if (want_p != p.sp->chunk() || first != p.first_now || (tail_p >= 0 && tail_p != p.sp->layout_tail())) {
                         const auto t_rl = Clock::now();
                         if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e, tail_p)) return false;

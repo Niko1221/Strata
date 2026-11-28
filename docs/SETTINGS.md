@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (428)
+## Switches you can turn on (429)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -386,6 +386,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_RDNA_Q6K` | on / off | NVIDIA and AMD | - |
 | `STRATA_RDNA_Q80_WMMA` | on / off | NVIDIA and AMD | - |
 | `STRATA_RESIDENT_HEADROOM_GIB` | number | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md), [DETAILS.md](DETAILS.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| `STRATA_RESIDENT_PREFILL_SCRATCH` | on / off | NVIDIA | [DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) |
 | `STRATA_ROCBLAS_TUNING` | on / off | AMD | [AMD_HIP.md](AMD_HIP.md), [README.md](bench-results/2026-10-05-rdna2-rocblas-table/README.md), [README.md](bench-results/2026-10-06-community-2x-rx-6900xt-0.1.40.1/README.md) |
 | `STRATA_ROCBLAS_VERBOSE` | text | AMD | [AMD_HIP.md](AMD_HIP.md), [README.md](bench-results/2026-10-05-rdna2-rocblas-table/README.md) |
 | `STRATA_ROUTE_PER_TOKEN` | on / off | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
