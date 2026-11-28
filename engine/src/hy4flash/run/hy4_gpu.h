@@ -386,6 +386,7 @@ inline hipError_t hy4_hip_host_malloc_wddm(void** ptr, size_t size, unsigned int
 #define hipHostMalloc(p, n, f) ::hy4::hy4_hip_host_malloc_wddm((p), (n), (f))
 #endif
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 namespace hy4 {
@@ -401,15 +402,17 @@ inline bool hy4_is_rdna2() {
 #if HY4_RDNA2
     return true;
 #else
-    static int cached = -1;
-    if (cached < 0) {
+    // per current device: a --gpus pair can mix a WMMA card with a no-WMMA one (0 = not asked yet, 1 = WMMA, 2 = no WMMA)
+    static std::atomic<signed char> cached[64] = {};
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) dev = 0;
+    signed char v = cached[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
         hipDeviceProp_t dp{};
-        if (hipGetDeviceProperties(&dp, 0) == hipSuccess)
-            cached = (std::strncmp(dp.gcnArchName, "gfx10", 5) == 0) ? 1 : 0;
-        else
-            cached = 0;
+        v = (hipGetDeviceProperties(&dp, dev) == hipSuccess && std::strncmp(dp.gcnArchName, "gfx10", 5) == 0) ? 2 : 1;
+        cached[dev].store(v, std::memory_order_relaxed);
     }
-    return cached != 0;
+    return v == 2;
 #endif
 }
 typedef _Float16 hv2 __attribute__((ext_vector_type(2)));
