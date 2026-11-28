@@ -551,6 +551,33 @@ int main() {
         check(cache.best(std::vector<int64_t>{1, 2, 3, 4}, {}, true).tokens == 0, "a cleared cache matches nothing");
         check(cache.clear() == 0, "clear() on an empty cache");
     }
+    {   // #2255: every slot holds a conversation with the same pinned prefix (a client that pins its prompt on every
+        // request): a new one still parks, the oldest pinned conversation leaves, the newest holder keeps the prefix
+        auto pin = [&](std::initializer_list<int32_t> ids) {
+            auto c = image(ids);
+            c.checkpoints.push_back(ConversationCheckpoint{});
+            c.checkpoints.back().ids = {1, 2};
+            c.checkpoints.back().pinned = true;
+            c.checkpoints.back().gdn.resize(64, 1);
+            c.checkpoints.push_back(ConversationCheckpoint{});   // its own deeper checkpoint, like a real turn
+            c.checkpoints.back().ids = std::vector<int32_t>(ids);
+            c.checkpoints.back().gdn.resize(64, 2);
+            return c;
+        };
+        const size_t pb = pin({1, 2, 3}).bytes();
+        ConversationCache full(pb * 4, 3);
+        check(full.put(pin({1, 2, 3})) && full.put(pin({1, 2, 4})) && full.put(pin({1, 2, 5})) && full.size() == 3,
+              "#2255: three pinned conversations fill the slots");
+        check(full.put(pin({1, 2, 6})) && full.size() == 3 && full.evictions() == 1,
+              "#2255: a fourth pinned one still parks: the oldest pinned conversation leaves");
+        check(full.best(std::vector<int64_t>{1, 2, 3}, {}, true).tokens == 2, "#2255: the oldest is gone, the pinned prefix is still found");
+        check(full.best(std::vector<int64_t>{1, 2, 6, 9}, {}, true).tokens == 3, "#2255: the newest pinned conversation is found whole");
+        check(full.put(image({7, 8, 9})) && full.size() == 3 && full.evictions() == 2, "#2255: an unpinned one also gets a slot");
+        check(full.evictable_bytes() == full.bytes() - pin({1, 2, 6}).bytes(), "#2255: everything but the newest pinned holder may go");
+        while (full.evict_oldest()) {}
+        check(full.size() == 1 && full.best(std::vector<int64_t>{1, 2, 6, 9}, {}, true).tokens == 3,
+              "#2255: the newest pinned holder is the one that is never evicted");
+    }
     {
         auto s = image({1, 2, 3});
         ConversationCheckpoint cp;

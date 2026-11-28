@@ -453,7 +453,7 @@ public:
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
+        auto stays = [&](size_t i) { return sticky(i); };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
             // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
             // shared prefix)?  If not, evict nothing
@@ -476,8 +476,8 @@ public:
         trim_pool(held + incoming);
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            // the oldest entry that does not hold a pinned shared prefix leaves, then the oldest pinned one but the
+            // newest (#2255); with only the newest pinned one and the guarded donor left the new image does not fit
             if (!drop_oldest()) return false;
         }
         trim_pool(held + incoming);   // (an evicted image that lived in the pool left its bytes idle)
@@ -491,7 +491,7 @@ public:
     // the heap's top - an entry below a newer one stayed resident and the gate read no change.  So the freed memory
     // is handed back here (release_free_heap).  make_room() drops entries without it: its room is for the image
     // that is allocated right after, which reuses that memory.
-    // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
+    // False when none can go (empty, or only the newest entry that holds a pinned shared prefix and the guarded donor are left).
     bool evict_oldest() {
         if (!drop_oldest()) return false;
         release_free_heap();
@@ -499,9 +499,8 @@ public:
     }
     /// The bytes the next evict_oldest() frees (0: nothing can go) - for the RAM gate's progress check (evict_for_ram)
     size_t oldest_evictable_bytes() const {
-        for (size_t i = 0; i < entries_.size(); ++i)
-            if (!entries_[i].pinned() && !(guarded_ != 0 && serials_[i] == guarded_)) return entries_[i].bytes();
-        return 0;
+        const size_t i = victim();
+        return i == SIZE_MAX ? 0 : entries_[i].bytes();
     }
     /// #2253 (PR by alanthinker, from Arthur031221's #1394): what evict_oldest() could give back in all - every parked entry
     /// that may go (the same rule as oldest_evictable_bytes: no pinned shared prefix, not the guarded donor).  The RAM gate
@@ -509,7 +508,7 @@ public:
     size_t evictable_bytes() const {
         size_t n = 0;
         for (size_t i = 0; i < entries_.size(); ++i)
-            if (!entries_[i].pinned() && !(guarded_ != 0 && serials_[i] == guarded_)) n += entries_[i].bytes();
+            if (!sticky(i)) n += entries_[i].bytes();
         return n;
     }
 
@@ -677,17 +676,34 @@ private:
     }
     // evict_oldest() without handing the memory back (make_room's loop)
     bool drop_oldest() {
-        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
-            SavedConversation victim = sink_ ? std::move(entries_[i]) : SavedConversation{};
-            erase(i);
-            ++evictions_;
-            if (sink_) sink_(std::move(victim));   // (its RAM is freed when the sink is done with it)
-            return true;
-        }
-        return false;
+        const size_t i = victim();
+        if (i == SIZE_MAX) return false;
+        bytes_ -= entries_[i].bytes();
+        SavedConversation gone = sink_ ? std::move(entries_[i]) : SavedConversation{};
+        erase(i);
+        ++evictions_;
+        if (sink_) sink_(std::move(gone));   // (its RAM is freed when the sink is done with it)
+        return true;
+    }
+    // #2255: the newest parked conversation that holds a pinned shared prefix stays, so the prefix stays findable.
+    // Older holders may go after every unpinned conversation: a client that pins its prompt on every request (an
+    // agent, a voice assistant) otherwise fills every slot with pinned conversations and nothing is parked again.
+    size_t newest_pinned() const {
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (entries_[i].pinned()) return i;
+        return SIZE_MAX;
+    }
+    bool sticky(size_t i) const {
+        return (entries_[i].pinned() && i == newest_pinned()) || (guarded_ != 0 && serials_[i] == guarded_);
+    }
+    // what drop_oldest() takes: the oldest entry with no pinned shared prefix that is not the guarded (borrowed)
+    // donor, else the oldest pinned one that is neither the newest pinned one nor the donor; SIZE_MAX: none
+    size_t victim() const {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (!entries_[i].pinned() && !sticky(i)) return i;
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (!sticky(i)) return i;
+        return SIZE_MAX;
     }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
