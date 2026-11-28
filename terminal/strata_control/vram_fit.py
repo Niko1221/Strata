@@ -193,6 +193,52 @@ class Fit:
     slots: int = 0                      # the request slots of this start: always the number asked for
 
 
+_PLAN_KEYS = {"ctx", "reserve_mib", "prefill", "changed", "fits", "slack_mib", "line", "changes", "kv_resident", "slots"}
+
+
+def _valid_plan_result(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != _PLAN_KEYS:
+        return False
+    if type(value["ctx"]) is not int or type(value["reserve_mib"]) is not int or type(value["slots"]) is not int:
+        return False
+    if value["prefill"] is not None and not isinstance(value["prefill"], str):
+        return False
+    if type(value["changed"]) is not bool or type(value["fits"]) is not bool:
+        return False
+    if not isinstance(value["slack_mib"], (int, float)) or type(value["slack_mib"]) is bool:
+        return False
+    if not isinstance(value["line"], str):
+        return False
+    if not isinstance(value["changes"], list) or not all(isinstance(x, str) for x in value["changes"]):
+        return False
+    if value["kv_resident"] is not None and type(value["kv_resident"]) is not int:
+        return False
+    return True
+
+
+def _native_plan(payload: dict) -> Fit | None:
+    import json
+    from strata_control import native_helpers
+    if not native_helpers.enabled("fit"):
+        return None
+    try:
+        d = native_helpers.call("fit", "vram-plan", [json.dumps(payload)], validate=_valid_plan_result)
+    except native_helpers.Unavailable:
+        return None
+    return Fit(
+        ctx=d["ctx"],
+        reserve_mib=d["reserve_mib"],
+        prefill=d["prefill"],
+        changed=d["changed"],
+        fits=d["fits"],
+        slack_mib=float(d["slack_mib"]),
+        line=d["line"],
+        changes=list(d["changes"]),
+        kv_resident=d["kv_resident"],
+        slots=d["slots"],
+    )
+
+
 def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto", vendor: str = "intel",
          title: str = "", ctx_fixed: bool = False, reserve_fixed: bool = False, prefill_fixed: bool = False, slots: int = 0, kv_resident: int = 0,
          drafter: str = "mtp", kv_fixed: bool = False) -> Fit:
@@ -205,6 +251,23 @@ def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: in
     ctx = int(ctx)
     reserve_mib = int(reserve_mib)
     slots = int(slots) if slots and int(slots) >= 2 else 0
+    if (native := _native_plan({
+        "model": str(model or ""),
+        "vram_gb": float(vram_gb or 0.0),
+        "ctx": ctx,
+        "kv": str(kv or "int8"),
+        "reserve_mib": reserve_mib,
+        "prefill": str(prefill),
+        "vendor": str(vendor or "intel"),
+        "title": str(title or ""),
+        "reserve_fixed": bool(reserve_fixed),
+        "prefill_fixed": bool(prefill_fixed),
+        "slots": slots,
+        "kv_resident": int(kv_resident or 0),
+        "drafter": str(drafter or "mtp"),
+        "kv_fixed": bool(kv_fixed),
+    })) is not None:
+        return native
     keep = Fit(ctx, reserve_mib, None, False, True, 0.0, slots=slots)
     if not vram_gb or vram_gb < MIN_CARD_GB:
         return keep
