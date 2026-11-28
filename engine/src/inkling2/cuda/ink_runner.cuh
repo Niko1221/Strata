@@ -26,6 +26,7 @@
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_kv_grow.hpp"
 #include "strata/core/ink_kv_reserve.hpp"
+#include "strata/core/ink_layer_split.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1405,7 +1406,8 @@ struct InkCudaModel {
         bool ssd_experts = false,
         const std::vector<int>& all_gpus = {},
         const std::string& layer_split_spec = "",
-        int cpu_threads = 0) {
+        int cpu_threads = 0,
+        const strata::core::InkLayerSplitKvBudget& ls_kv_budget = {}) {
         // Fast zero-overhead path for single-GPU .strata v1.1!
         // The file's real kind decides, not the manifest's format string: a GGUF / safetensors file must never reach load() (the .strata reader).
         const bool is_strata_fmt = mf.is_native_strata();
@@ -1707,7 +1709,8 @@ struct InkCudaModel {
                     std::fprintf(stderr, " layers per stage\n");
                 }
             };
-            if (!layer_split_spec.empty() && layer_split_spec != "auto") {
+            const bool spread_req = (layer_split_spec == "spread" || layer_split_spec == "vram");
+            if (!layer_split_spec.empty() && layer_split_spec != "auto" && !spread_req) {
                 size_t ppos = 0;
                 while (ppos < layer_split_spec.size()) {
                     size_t comma = layer_split_spec.find(',', ppos);
@@ -1731,8 +1734,8 @@ struct InkCudaModel {
                     counts[n_stages - 1] = std::max(1, man.c.n_phys - acc);
                 }
                 clamp_peers();
-            } else {
-                // Automatic VRAM-weighted partition (ensuring peer stages s > 0 fit 100% in VRAM!)
+            } else if (spread_req) {
+                // Legacy VRAM-weighted spread (--layer-split spread)
                 counts.assign(n_stages, 0);
                 std::vector<double> usable(n_stages, 0.0);
                 double tot_u = 0.0;
@@ -1752,14 +1755,61 @@ struct InkCudaModel {
                     for (int s = n_stages - 1; s >= 1; --s) {
                         int want = std::max(1, (int)std::lround((double)man.c.n_phys * (usable[s] / tot_u)));
                         want = std::min(want, rem - s);
-                        // Clamp stage s > 0 to layers that fit 100% in stage_gpu[s] VRAM (leaving stage 0 to handle any hybrid overflow!)
-                        // (#7093: counts the packed trunk bytes of those layers and the --vram-experts-gb cap too, and keeps the
-                        // shortfall found by an earlier try as extra margin)
                         const int fit = fit_tail(s, rem, want);
                         counts[s] = fit;
                         rem -= fit;
                     }
                     counts[0] = rem;
+                }
+            } else {
+                // #7030: Visit-aware, speed-weighted, per-stage-KV-aware automatic layer split (strata/core/ink_layer_split.hpp).
+                strata::core::InkLayerSplitIn ls_in;
+                ls_in.n_phys = man.c.n_phys;
+                ls_in.core_start = man.c.core_start;
+                ls_in.core_end = man.c.core_end;
+                ls_in.num_passes = man.c.num_passes;
+                ls_in.is_swa = man.c.is_swa;
+                ls_in.layer_exp_bytes = layer_exp_b;
+                ls_in.layer_trunk_bytes = layer_trunk_b;
+                ls_in.n_stages = n_stages;
+                ls_in.stage_speed.resize(n_stages, 1.0);
+                for (int s = 0; s < n_stages; ++s) {
+                    int mem_clk_khz = 0, bus_bits = 0;
+                    cudaDeviceGetAttribute(&mem_clk_khz, cudaDevAttrMemoryClockRate, stage_gpu[s]);
+                    cudaDeviceGetAttribute(&bus_bits, cudaDevAttrGlobalMemoryBusWidth, stage_gpu[s]);
+                    ls_in.stage_speed[s] = strata::core::ink_stage_rel_speed(mem_clk_khz, bus_bits, stage_cc[s]);
+                    for (int t = 0; t < n_stages; ++t) ls_in.stage_p2p[s][t] = stage_p2p[s][t];
+                }
+                const size_t wddm0 = wddm_safety_floor(gpu_vt[0]);
+                const size_t base_res0 = ((gpu_vt[0] >= (20ull << 30)) ? (1600ull << 20)
+                                        : (gpu_vt[0] <= (13ull << 30)) ? (960ull << 20) : (1280ull << 20))
+                                       + (wddm0 > (512ull << 20) ? (wddm0 - (512ull << 20)) : 0ull);
+                ls_in.stage0_free_bytes = gpu_vf[0];
+                ls_in.stage0_base_reserve_bytes = base_res0;
+                ls_in.stage0_wddm_floor_bytes = wddm0;
+                ls_in.stage0_extra_reserve_bytes = extra_reserve_bytes;
+                ls_in.stage0_ws_reserve_bytes = ls_kv_budget.ws_reserve_bytes;
+                ls_in.stage0_swa_kv_per_visit = ls_kv_budget.swa_kv_per_visit;
+                ls_in.stage0_glob_kv_per_visit = ls_kv_budget.glob_kv_per_visit;
+                ls_in.stage0_sconv_per_visit = ls_kv_budget.sconv_per_visit;
+                ls_in.peer_room_bytes.assign(n_stages, 0);
+                for (int s = 1; s < n_stages; ++s) ls_in.peer_room_bytes[s] = peer_room(s);
+                ls_in.user_expert_cap_bytes = ls_user_cap;
+
+                const strata::core::InkLayerSplitOut ls_out = strata::core::ink_plan_layer_split(ls_in);
+                counts = ls_out.counts;
+                size_t tot_exp = 0;
+                for (size_t b : layer_exp_b) tot_exp += b;
+                if (counts[0] == man.c.n_phys) {
+                    std::fprintf(stderr, "[InkCUDA] layer split auto: whole model + KV fits on GPU%d (%.2f GiB experts <= %.2f GiB budget); using single card (--layer-split spread to force splitting)\n",
+                                 stage_gpu[0], (double)tot_exp / 1073741824.0, (double)ls_out.stage0_budget_bytes / 1073741824.0);
+                } else {
+                    std::fprintf(stderr, "[InkCUDA] layer split auto (#7030): counts");
+                    for (int s = 0; s < n_stages; ++s) std::fprintf(stderr, "%s%d", s ? "," : " ", counts[s]);
+                    std::fprintf(stderr, " (visits");
+                    for (int s = 0; s < n_stages; ++s) std::fprintf(stderr, "%s%d", s ? "+" : " ", ls_out.visits[s]);
+                    std::fprintf(stderr, ", hops %d, stage0_bud %.2f GiB, ovf %.0f MiB)\n",
+                                 ls_out.hops, (double)ls_out.stage0_budget_bytes / 1073741824.0, (double)ls_out.overflow_bytes / 1048576.0);
                 }
             }
             // Drop any empty peer stages if a secondary GPU had zero usable VRAM
