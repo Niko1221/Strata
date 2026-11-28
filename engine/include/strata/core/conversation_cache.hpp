@@ -52,7 +52,7 @@ struct ConversationCheckpoint {
     // only writer of a checkpoint's GDN bytes besides a whole copy (which keeps them equal, so it keeps the tag).
     uint64_t dev_tag = 0;
     // A shared-prefix pin (the request key pin=N): this checkpoint is the read-only prefix many suffix queries branch
-    // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
+    // from, so retention never evicts it (conv_cache.hpp) and the parked cache keeps at least one holder.  A run-time
     // mark only: it is not in the session file, a request that pins the same prefix again sets it.
     bool pinned = false;
     // --prefill-pipe on a layer split: the plan a prompt segment [from, to) is read in - its chunk (0: none), the loan
@@ -225,7 +225,7 @@ struct SavedConversation {
     // STRATA_CKPT_ASYNC: the same for the background copy that fills `live.gdn` (the park's running state)
     std::shared_ptr<void> live_pending;
 
-    /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
+    /// Holds a pinned shared prefix; the cache preserves at least one holder of each prefix.
     bool pinned() const {
         for (const auto& c : checkpoints) if (c.pinned) return true;
         return false;
@@ -300,7 +300,8 @@ public:
     };
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+        : budget_(budget), slots_(slots), admission_alive_(budget != 0 ? slots : 0),
+          min_tokens_(min_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
@@ -453,31 +454,18 @@ public:
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
-        if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
-            // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
-            // shared prefix)?  If not, evict nothing
-            size_t kept = 0, kept_bytes = 0;
-            for (size_t i = 0; i < entries_.size(); ++i)
-                if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
-            if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
-        }
-        {
-            // #5697: decide before anything goes.  With every entry that may go gone, would the image fit beside the
-            // ones that stay (a pinned shared prefix)?  If not, the park is refused with the cache as it was: before,
-            // the loop below evicted every other conversation (and the retained K/V) and then refused anyway.
-            size_t kept = 0, kept_bytes = 0;
-            for (size_t i = 0; i < entries_.size(); ++i)
-                if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
-            if (kept >= slots_ || kept_bytes > budget_ - held - incoming) return false;
+        // Decide before releasing any owner: admission simulates the same removals as eviction.
+        const auto [kept, kept_bytes] = kept_after_drops();
+        if (kept >= slots_ || kept_bytes > budget_ - held - incoming) {
+            if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) guard_blocked_ = true;
+            return false;
         }
         // the pool's idle bytes go first (never an image for them); the decisions below read the images only, so they are
         // the ones the cache makes with no pool
         trim_pool(held + incoming);
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            // Unpinned entries leave first, then redundant holders; every pinned prefix keeps a holder.
             if (!drop_oldest()) return false;
         }
         trim_pool(held + incoming);   // (an evicted image that lived in the pool left its bytes idle)
@@ -491,7 +479,7 @@ public:
     // the heap's top - an entry below a newer one stayed resident and the gate read no change.  So the freed memory
     // is handed back here (release_free_heap).  make_room() drops entries without it: its room is for the image
     // that is allocated right after, which reuses that memory.
-    // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
+    // False when no entry can leave without losing a pinned prefix or the guarded donor.
     bool evict_oldest() {
         if (!drop_oldest()) return false;
         release_free_heap();
@@ -499,18 +487,16 @@ public:
     }
     /// The bytes the next evict_oldest() frees (0: nothing can go) - for the RAM gate's progress check (evict_for_ram)
     size_t oldest_evictable_bytes() const {
-        for (size_t i = 0; i < entries_.size(); ++i)
-            if (!entries_[i].pinned() && !(guarded_ != 0 && serials_[i] == guarded_)) return entries_[i].bytes();
+        for (bool redundant : {false, true})
+            for (size_t i = 0; i < entries_.size(); ++i)
+                if (may_drop(i, redundant)) return entries_[i].bytes();
         return 0;
     }
-    /// #2253 (PR by alanthinker, from Arthur031221's #1394): what evict_oldest() could give back in all - every parked entry
-    /// that may go (the same rule as oldest_evictable_bytes: no pinned shared prefix, not the guarded donor).  The RAM gate
-    /// evicts nothing when even all of it would leave the park short.
+    /// What repeated eviction can release, excluding retained K/V and surviving pinned holders.
     size_t evictable_bytes() const {
-        size_t n = 0;
-        for (size_t i = 0; i < entries_.size(); ++i)
-            if (!entries_[i].pinned() && !(guarded_ != 0 && serials_[i] == guarded_)) n += entries_[i].bytes();
-        return n;
+        const auto [kept, kept_bytes] = kept_after_drops();
+        (void) kept;
+        return bytes_ - kept_bytes;
     }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
@@ -677,23 +663,70 @@ private:
     }
     // evict_oldest() without handing the memory back (make_room's loop)
     bool drop_oldest() {
-        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
-            SavedConversation victim = sink_ ? std::move(entries_[i]) : SavedConversation{};
-            erase(i);
-            ++evictions_;
-            if (sink_) sink_(std::move(victim));   // (its RAM is freed when the sink is done with it)
-            return true;
-        }
-        return false;
+        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor; with only pinned
+        // ones left, the oldest whose every pinned prefix another entry still holds (#2255: a client that pins its
+        // system prompt on every request fills every slot with holders of that one prefix, and refusing them all
+        // refused every later park), so every prefix keeps at least one holder
+        auto evict = [&](bool redundant) {
+            for (size_t i = 0; i < entries_.size(); ++i) {
+                if (!may_drop(i, redundant)) continue;
+                bytes_ -= entries_[i].bytes();
+                SavedConversation victim = sink_ ? std::move(entries_[i]) : SavedConversation{};
+                erase(i);
+                ++evictions_;
+                if (sink_) sink_(std::move(victim));   // (its RAM is freed when the sink is done with it)
+                return true;
+            }
+            return false;
+        };
+        return evict(false) || evict(true);
     }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
+    // drop_oldest()'s choice for entry i among the entries still in `alive`: never the guarded donor; a pinned holder
+    // only on the redundant pass, and only while every prefix it pins is held by another live entry
+    bool may_drop(size_t i, bool redundant, const std::vector<bool>* alive = nullptr) const {
+        if (guarded_ != 0 && serials_[i] == guarded_) return false;
+        return !entries_[i].pinned() || (redundant && pins_held_elsewhere(i, alive));
+    }
+    // The entries and bytes left once drop_oldest() has dropped all it can (the guarded donor and one holder of
+    // each pinned prefix), without dropping anything: make_room's decide-first check (#5697) with #2255's eviction.
+    std::pair<size_t, size_t> kept_after_drops() const {
+        auto& alive = admission_alive_;
+        std::fill(alive.begin(), alive.begin() + entries_.size(), true);
+        auto drop = [&](bool redundant) {
+            for (size_t i = 0; i < entries_.size(); ++i)
+                if (alive[i] && may_drop(i, redundant, &alive)) { alive[i] = false; return true; }
+            return false;
+        };
+        while (drop(false) || drop(true)) {}
+        size_t kept = 0, kept_bytes = 0;
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (alive[i]) { ++kept; kept_bytes += entries_[i].bytes(); }
+        return {kept, kept_bytes};
+    }
+    // Every pinned prefix entry i holds is held (same tokens and images, pinned) by another live parked entry.
+    bool pins_held_elsewhere(size_t i, const std::vector<bool>* alive) const {
+        const SavedConversation& e = entries_[i];
+        for (const auto& c : e.checkpoints) {
+            if (!c.pinned) continue;
+            bool held = false;
+            for (size_t j = 0; j < entries_.size(); ++j) {
+                const SavedConversation& o = entries_[j];
+                if (j == i || (alive && !(*alive)[j]) || o.cvec != e.cvec) continue;
+                for (const auto& k : o.checkpoints)
+                    if (k.pinned && k.ids == c.ids && k.imgs == c.imgs) { held = true; break; }
+                if (held) break;
+            }
+            if (!held) return false;
+        }
+        return true;
+    }
+
+    mutable std::vector<bool> admission_alive_; // Scratch for serialized cache-policy queries; allocated with the slots.
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
