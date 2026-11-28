@@ -455,6 +455,28 @@ public:
             return false;
         }
         {
+            // RTX 50 fast mode / COMPACT is only prepared by InkCudaModel::load() (single-GPU .strata v1.1).
+            // Multi-GPU (cuda-ls / cuda-ep2) and non-.strata files (GGUF / safetensors) go through
+            // load_from_model_file(), which never runs COMPACT or sm120_compact_refuse(). Leaving fast-mode
+            // flags enabled on an RTX 5060 Ti in cuda-ls corrupts output completely (v0.2.23 regression).
+            const bool multi_gpu_req = (all_gpus.size() >= 2) || (peer_gpu_id >= 0 && peer_gpu_id != gpu_id_);
+            const bool uses_load_from_mf = !(mf.is_native_strata() && !multi_gpu_req && opts.layer_split.empty());
+            if (multi_gpu_req) {
+                for (int g : all_gpus) {
+                    if (strata::ink::sm120_cfg(g).fast || strata::ink::ink_rtx5060ti_cfg(g).enabled) {
+                        std::fprintf(stderr, "[Ink5060Ti] COMPACT/fast mode refused on GPU %d: multi-GPU mode uses the standard path; the old path (every RTX 50 part off) runs\n", g);
+                        strata::ink::sm120_compact_refuse(g);
+                    }
+                }
+            } else if (uses_load_from_mf && strata::ink::ink_rtx5060ti_cfg(gpu_id_).compact_vram) {
+                std::fprintf(stderr, "[Ink5060Ti] COMPACT refused on GPU %d: %s; the old path (every RTX 50 part off) runs\n",
+                             gpu_id_,
+                             mf.is_native_strata() ? "explicit --layer-split uses the standard path"
+                                                   : "non-.strata model does not use COMPACT");
+                strata::ink::sm120_compact_refuse(gpu_id_);
+            }
+        }
+        {
             // the card's table row (RTX 50 fast mode); every flag is false and every number the shipped one when no switch is set
             const auto& s120 = strata::ink::sm120_cfg(gpu_id_);
             track_pld90_ = s120.dspark_opt;
