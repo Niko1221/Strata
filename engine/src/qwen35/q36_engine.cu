@@ -4478,6 +4478,11 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (!alloc_vram((void**) &E.ecpu, T * Kp * N * 4, "expert scratch (E.ecpu)")) return false;
     if (!alloc_vram((void**) &E.d_miss, T * Kp * 4, "expert misses (E.d_miss)")) return false;
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
+    if (!E.acts) {
+        err = "no host memory for the native expert activations (" +
+              std::to_string((T * C::kNativeActBytes + 64) >> 20) + " MiB)";
+        return false;
+    }
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
         bool stage_ok = true;
