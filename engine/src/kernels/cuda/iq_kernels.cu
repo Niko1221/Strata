@@ -57,6 +57,26 @@ __device__ __forceinline__ int get_int_b2(const void* x, const int& i32) {
     return x32;
 }
 __device__ __forceinline__ int get_int_b4(const void* x, const int& i32) { return ((const int*) x)[i32]; }
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+// Carry-free branchless sign negation for the IQ2/IQ3 codebooks on wave32 HIP (where __vcmpne4/__vsub4
+// expand to ~15 SWAR VALU ops each). Every byte in iq2xxs_grid, iq2xs_grid, iq2s_grid, iq3xxs_grid, and
+// iq3s_grid is strictly in [0x01..0x3e] (never 0x00), so two's-complement negation (b ^ 0xff) + 1 = 256 - b
+// never carries into the next byte. Using v_perm_b32 avoids LLVM folding (t << 8) - t into quarter-rate v_mul_lo_u32.
+__device__ __forceinline__ int iq_sign_negate4(uint32_t g, uint32_t s4) {
+    const uint32_t t = __umul24(s4 & 0xFu, 0x00204081u) & 0x01010101u;
+    const uint32_t m = __builtin_amdgcn_perm(0u, 0x0000FF00u, t);
+    return (int) ((g ^ m) + t);
+}
+__device__ __forceinline__ uint32_t iq_ksigns8(uint32_t v) {
+    const uint32_t sv = v & 0x7Fu;
+    return sv | ((__popc(sv) & 1u) << 7);
+}
+// Exact signed 24-bit multiply (1-cycle v_mul_i32_i24 on RDNA vs 4-cycle v_mul_lo_u32) for IQ2/IQ3
+// sub-block scale multiplies where |sumi| <= 32 * 62 * 127 = 251,968 < 2^23 and 0 <= ls <= 31.
+__device__ __forceinline__ int iq_mul24(int a, int b) { return __mul24(a, b); }
+#else
+__device__ __forceinline__ int iq_mul24(int a, int b) { return a * b; }
+#endif
 __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     const uint32_t p = __popc(v) & 1;
     const uint32_t s = v ^ p << 7;
@@ -124,6 +144,15 @@ __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ v
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xxs_grid)[aux8[k0 / 2]];
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        const uint32_t s8 = iq_ksigns8(aux32 >> (7 * k0 / 2));
+        const int grid0 = iq_sign_negate4(grid_pos.x, s8);
+        const int grid1 = iq_sign_negate4(grid_pos.y, s8 >> 4);
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 0);
+        sumi = ggml_cuda_dp4a(grid0, u0, sumi);
+        const int u1 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 1);
+        sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+#else
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
@@ -133,9 +162,10 @@ __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ v
         const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 1);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+#endif
     }
     const int ls = aux32 >> 27 | 1;
-    sumi = sumi * ls / 8;
+    sumi = iq_mul24(sumi, ls) / 8;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 }
@@ -151,12 +181,18 @@ __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(const void* __restrict__ vb
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xs_grid)[q2[l0 / 2] & 0x1FF];
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        const uint32_t s8 = iq_ksigns8(q2[l0 / 2] >> 9);
+        const int grid_l = iq_sign_negate4(grid_pos.x, s8);
+        const int grid_h = iq_sign_negate4(grid_pos.y, s8 >> 4);
+#else
         const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         if (l0 < 4) {
             sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
@@ -166,7 +202,7 @@ __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(const void* __restrict__ vb
             sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
         }
     }
-    const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
+    const int sumi = (iq_mul24(sumi0, ls0) + iq_mul24(sumi1, ls1) + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 }
@@ -185,10 +221,15 @@ __device__ __forceinline__ float vec_dot_iq2_s_q8_1(const void* __restrict__ vbq
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int* grid_pos = (const int*) (iq2s_grid + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        const int grid_l = iq_sign_negate4((uint32_t) grid_pos[0], signs_packed_8[l0 / 2]);
+        const int grid_h = iq_sign_negate4((uint32_t) grid_pos[1], signs_packed_8[l0 / 2] >> 4);
+#else
         const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
         const int grid_l = __vsub4(grid_pos[0] ^ signs0, signs0);
         const int grid_h = __vsub4(grid_pos[1] ^ signs1, signs1);
+#endif
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         if (l0 < 4) {
@@ -199,7 +240,7 @@ __device__ __forceinline__ float vec_dot_iq2_s_q8_1(const void* __restrict__ vbq
             sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
         }
     }
-    const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
+    const int sumi = (iq_mul24(sumi0, ls0) + iq_mul24(sumi1, ls1) + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 }
@@ -214,18 +255,24 @@ __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(const void* __restrict__ v
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        const uint32_t s8 = iq_ksigns8(aux32 >> (7 * l0 / 2));
+        const int grid_l = iq_sign_negate4((uint32_t) grid_pos.x, s8);
+        const int grid_h = iq_sign_negate4((uint32_t) grid_pos.y, s8 >> 4);
+#else
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
     }
     const int ls = aux32 >> 28;
-    sumi = (ls * sumi + sumi / 2) / 2;
+    sumi = (iq_mul24(ls, sumi) + sumi / 2) / 2;
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 }
@@ -243,16 +290,21 @@ __device__ __forceinline__ float vec_dot_iq3_s_q8_1(const void* __restrict__ vbq
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
                                         iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        const int grid_l = iq_sign_negate4((uint32_t) grid_pos.x, signs_packed_8[l0 / 2]);
+        const int grid_h = iq_sign_negate4((uint32_t) grid_pos.y, signs_packed_8[l0 / 2] >> 4);
+#else
         const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
         const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
         const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
     }
-    sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+    sumi = iq_mul24(sumi, 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F));
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 }
@@ -940,9 +992,51 @@ template<> struct Fmt<40> { static constexpr int qk = 64, ipb = 2, step = 4;    
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_nvfp4_q8_1(v, y, kbx, iqs); } };
 
 __device__ __forceinline__ float warp_sum(float v) {
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1200__) || defined(__gfx1201__)
+    v += __int_as_float(__builtin_amdgcn_permlanex16(0, __float_as_int(v), 0x76543210, 0xfedcba98, false, false));
+    v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x168, 0xf, 0xf, false));
+    v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x164, 0xf, 0xf, false));
+    v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x162, 0xf, 0xf, false));
+    v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x161, 0xf, 0xf, false));
+    return v;
+#else
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
     return v;
+#endif
+}
+
+__device__ __forceinline__ float warp_max(float v) {
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1200__) || defined(__gfx1201__)
+    v = fmaxf(v, __int_as_float(__builtin_amdgcn_permlanex16(0, __float_as_int(v), 0x76543210, 0xfedcba98, false, false)));
+    v = fmaxf(v, __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x168, 0xf, 0xf, false)));
+    v = fmaxf(v, __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x164, 0xf, 0xf, false)));
+    v = fmaxf(v, __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x162, 0xf, 0xf, false)));
+    v = fmaxf(v, __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x161, 0xf, 0xf, false)));
+    return v;
+#else
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    return v;
+#endif
+}
+
+template<int W>
+__device__ __forceinline__ float subwarp_sum(float v) {
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1200__) || defined(__gfx1201__)
+    if constexpr (W >= 16) v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x168, 0xf, 0xf, false));
+    if constexpr (W >= 8)  v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x164, 0xf, 0xf, false));
+    if constexpr (W >= 4)  v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x162, 0xf, 0xf, false));
+    if constexpr (W >= 2)  v += __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), 0x161, 0xf, 0xf, false));
+    return v;
+#else
+#pragma unroll
+    for (int o = W / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    return v;
+#endif
 }
 
 // One row against one q8_1 activation, the whole warp: call k = (block, part) is lane-strided.
@@ -995,10 +1089,14 @@ template<int TY> inline constexpr bool kTqType = (TY == 144 || TY == 145 || TY =
 template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 21 || TY == 22 || TY == 29 || kTqType<TY>);
 
 // LDS-only barrier (#3259, bsorensen110): the staging barriers of the grid / activation tables need the shared-memory stores to be
-// visible, not a global-memory fence; on gfx12 __syncthreads() is s_wait_loadcnt_dscnt 0; s_barrier; global_inv scope:SCOPE_SE.
+// visible, not a global-memory fence; on gfx12 __syncthreads() is s_wait_loadcnt_dscnt 0; s_barrier; global_inv scope:SCOPE_SE,
+// and on gfx11 it emits s_waitcnt lgkmcnt(0); s_barrier; buffer_gl0_inv.
 __device__ __forceinline__ void iq_sync_lds() {
 #if defined(__gfx1200__) || defined(__gfx1201__)
     asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+      defined(__gfx1150__) || defined(__gfx1151__)
+    strata::kernels::hip_unsloth::hip_lds_barrier();
 #else
     __syncthreads();   // every other target keeps the full barrier (the other HIP targets were not run for this change)
 #endif
@@ -1020,11 +1118,17 @@ template<> struct Split<16> {   // IQ2_XXS
 #pragma unroll
         for (int k0 = 0; k0 < 8; k0 += 2) {
             const uint2 grid_pos = grid_lut[aux8[k0 / 2]];
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            const uint32_t s8 = iq_ksigns8(aux32 >> (7 * k0 / 2));
+            r.g[k0 + 0] = iq_sign_negate4(grid_pos.x, s8);
+            r.g[k0 + 1] = iq_sign_negate4(grid_pos.y, s8 >> 4);
+#else
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
             r.g[k0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
             r.g[k0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.ls = aux32 >> 27 | 1;
         r.dw = __half2float(bq2->d);
@@ -1034,7 +1138,7 @@ template<> struct Split<16> {   // IQ2_XXS
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], get_int_b4(bq8_1[iqs / 2].qs, j), sumi);
-        sumi = sumi * r.ls / 8;
+        sumi = iq_mul24(sumi, r.ls) / 8;
         const float d = r.dw * __low2float(bq8_1[iqs / 2].ds);
         return d * sumi;
     }
@@ -1044,7 +1148,7 @@ template<> struct Split<16> {   // IQ2_XXS
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], u[j], sumi);
-        sumi = sumi * r.ls / 8;
+        sumi = iq_mul24(sumi, r.ls) / 8;
         const float d = r.dw * d8;
         return d * sumi;
     }
@@ -1058,7 +1162,7 @@ struct SplitLs2 {
         for (int j = 0; j < 4; ++j) sumi0 = ggml_cuda_dp4a(r.g[j], get_int_b4(bq8_1[iqs / 2].qs, j), sumi0);
 #pragma unroll
         for (int j = 4; j < 8; ++j) sumi1 = ggml_cuda_dp4a(r.g[j], get_int_b4(bq8_1[iqs / 2].qs, j), sumi1);
-        const int sumi = (sumi0 * r.ls0 + sumi1 * r.ls1 + (sumi0 + sumi1) / 2) / 4;
+        const int sumi = (iq_mul24(sumi0, r.ls0) + iq_mul24(sumi1, r.ls1) + (sumi0 + sumi1) / 2) / 4;
         const float d = r.dw * __low2float(bq8_1[iqs / 2].ds);
         return d * sumi;
     }
@@ -1068,7 +1172,7 @@ struct SplitLs2 {
         for (int j = 0; j < 4; ++j) sumi0 = ggml_cuda_dp4a(r.g[j], u[j], sumi0);
 #pragma unroll
         for (int j = 4; j < 8; ++j) sumi1 = ggml_cuda_dp4a(r.g[j], u[j], sumi1);
-        const int sumi = (sumi0 * r.ls0 + sumi1 * r.ls1 + (sumi0 + sumi1) / 2) / 4;
+        const int sumi = (iq_mul24(sumi0, r.ls0) + iq_mul24(sumi1, r.ls1) + (sumi0 + sumi1) / 2) / 4;
         const float d = r.dw * d8;
         return d * sumi;
     }
@@ -1089,11 +1193,17 @@ template<> struct Split<17> : SplitLs2 {   // IQ2_XS
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const uint2 grid_pos = grid_lut[q2[l0 / 2] & 0x1FF];
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            const uint32_t s8 = iq_ksigns8(q2[l0 / 2] >> 9);
+            r.g[l0 + 0] = iq_sign_negate4(grid_pos.x, s8);
+            r.g[l0 + 1] = iq_sign_negate4(grid_pos.y, s8 >> 4);
+#else
             const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
             r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
             r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.dw = __half2float(bq2->d);
         return r;
@@ -1118,10 +1228,15 @@ template<> struct Split<22> : SplitLs2 {   // IQ2_S
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int* grid_pos = (const int*) (grid_lut + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            r.g[l0 + 0] = iq_sign_negate4((uint32_t) grid_pos[0], signs_packed_8[l0 / 2]);
+            r.g[l0 + 1] = iq_sign_negate4((uint32_t) grid_pos[1], signs_packed_8[l0 / 2] >> 4);
+#else
             const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
             r.g[l0 + 0] = __vsub4(grid_pos[0] ^ signs0, signs0);
             r.g[l0 + 1] = __vsub4(grid_pos[1] ^ signs1, signs1);
+#endif
         }
         r.dw = __half2float(bq2->d);
         return r;
@@ -1141,6 +1256,12 @@ template<> struct Split<18> {   // IQ3_XXS
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int2 grid_pos = make_int2(grid[q3[l0 + 0]], grid[q3[l0 + 1]]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            // Wave32 HIP: compute sign negation directly in registers rather than staging a 1 KB sign LUT in LDS.
+            const uint32_t s8 = iq_ksigns8(aux32 >> (7 * l0 / 2));
+            r.g[l0 + 0] = iq_sign_negate4((uint32_t) grid_pos.x, s8);
+            r.g[l0 + 1] = iq_sign_negate4((uint32_t) grid_pos.y, s8 >> 4);
+#else
             if constexpr (STAGE_GRID) {
                 // The staged tables hold one mask per 7-bit sign field; bit 7 of the field is the next group's
                 // first sign, which unpack_ksigns cancels, so masking it off is the same value.
@@ -1155,6 +1276,7 @@ template<> struct Split<18> {   // IQ3_XXS
                 const int signs1 = __vcmpne4(signs & 0x80402010, 0);
                 r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
             }
+#endif
         }
         r.ls = aux32 >> 28;
         r.dw = __half2float(bq3->d);
@@ -1164,7 +1286,7 @@ template<> struct Split<18> {   // IQ3_XXS
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], get_int_b4(bq8_1[iqs / 2].qs, j), sumi);
-        sumi = (r.ls * sumi + sumi / 2) / 2;
+        sumi = (iq_mul24(r.ls, sumi) + sumi / 2) / 2;
         const float d = r.dw * __low2float(bq8_1[iqs / 2].ds);
         return d * sumi;
     }
@@ -1172,7 +1294,7 @@ template<> struct Split<18> {   // IQ3_XXS
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], u[j], sumi);
-        sumi = (r.ls * sumi + sumi / 2) / 2;
+        sumi = (iq_mul24(r.ls, sumi) + sumi / 2) / 2;
         const float d = r.dw * d8;
         return d * sumi;
     }
@@ -1194,6 +1316,11 @@ template<> struct Split<21> {   // IQ3_S
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int2 grid_pos = make_int2(grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
                                             grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            // Wave32 HIP: compute sign negation directly in registers rather than staging a 2 KB sign LUT in LDS.
+            r.g[l0 + 0] = iq_sign_negate4((uint32_t) grid_pos.x, signs_packed_8[l0 / 2]);
+            r.g[l0 + 1] = iq_sign_negate4((uint32_t) grid_pos.y, signs_packed_8[l0 / 2] >> 4);
+#else
             if constexpr (STAGE_GRID) {
                 // The staged tables hold the byte masks of a sign byte's bits 0-3 and 4-7; every iq3s_grid byte is
                 // odd, so (g ^ mask) + (mask & 0x01010101) negates the masked bytes with no carry into the next.
@@ -1206,6 +1333,7 @@ template<> struct Split<21> {   // IQ3_S
                 r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
                 r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
             }
+#endif
         }
         r.ls = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
         r.dw = __half2float(bq3->d);
@@ -1215,7 +1343,7 @@ template<> struct Split<21> {   // IQ3_S
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], get_int_b4(bq8_1[iqs / 2].qs, j), sumi);
-        sumi *= r.ls;
+        sumi = iq_mul24(sumi, r.ls);
         const float d = r.dw * __low2float(bq8_1[iqs / 2].ds);
         return d * sumi;
     }
@@ -1223,7 +1351,7 @@ template<> struct Split<21> {   // IQ3_S
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 8; ++j) sumi = ggml_cuda_dp4a(r.g[j], u[j], sumi);
-        sumi *= r.ls;
+        sumi = iq_mul24(sumi, r.ls);
         const float d = r.dw * d8;
         return d * sumi;
     }
@@ -1752,10 +1880,7 @@ __device__ __forceinline__ void row_dot_40_sub8(const uint8_t* row, const block_
     }
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
-        if (EXACT_N || c < n) {
-#pragma unroll
-            for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
-        }
+        if (EXACT_N || c < n) s[c] = subwarp_sum<8>(s[c]);
     }
 }
 
@@ -1799,9 +1924,7 @@ __device__ __forceinline__ void row_dot_20_sub8(const uint8_t* row, const block_
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
         if (EXACT_N || c < n) {
-            s[c] = __fadd_rn(__fadd_rn(s[c], s16[c]), __fadd_rn(s8[c], 0.0f));
-#pragma unroll
-            for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+            s[c] = subwarp_sum<8>(__fadd_rn(__fadd_rn(s[c], s16[c]), __fadd_rn(s8[c], 0.0f)));
         }
     }
 }
@@ -1834,11 +1957,7 @@ __device__ __forceinline__ void row_dot_20_sub16(const uint8_t* row, const block
     }
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
-        if (EXACT_N || c < n) {
-            s[c] = __fadd_rn(s[c], s16[c]);
-#pragma unroll
-            for (int o = 8; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
-        }
+        if (EXACT_N || c < n) s[c] = subwarp_sum<16>(__fadd_rn(s[c], s16[c]));
     }
 }
 
@@ -1870,11 +1989,7 @@ __device__ __forceinline__ void row_dot_80_sub16(const uint8_t* row, const block
     }
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
-        if (EXACT_N || c < n) {
-            s[c] = __fadd_rn(s[c], s16[c]);
-#pragma unroll
-            for (int o = 8; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
-        }
+        if (EXACT_N || c < n) s[c] = subwarp_sum<16>(__fadd_rn(s[c], s16[c]));
     }
 }
 
@@ -1908,9 +2023,7 @@ __device__ __forceinline__ void row_dot_160_sub8(const uint8_t* row, const block
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
         if (EXACT_N || c < n) {
-            s[c] = __fadd_rn(__fadd_rn(p[0][c], p[2][c]), __fadd_rn(p[1][c], p[3][c]));
-#pragma unroll
-            for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+            s[c] = subwarp_sum<8>(__fadd_rn(__fadd_rn(p[0][c], p[2][c]), __fadd_rn(p[1][c], p[3][c])));
         }
     }
 }
@@ -1953,13 +2066,8 @@ __device__ __forceinline__ void row_dot2_80_sub16(const uint8_t* ra, const uint8
 #pragma unroll
     for (int c = 0; c < NC; ++c) {
         if (EXACT_N || c < n) {
-            sa[c] = __fadd_rn(sa[c], a16[c]);
-            sb[c] = __fadd_rn(sb[c], b16[c]);
-#pragma unroll
-            for (int o = 8; o > 0; o >>= 1) {
-                sa[c] += __shfl_xor_sync(0xffffffffu, sa[c], o);
-                sb[c] += __shfl_xor_sync(0xffffffffu, sb[c], o);
-            }
+            sa[c] = subwarp_sum<16>(__fadd_rn(sa[c], a16[c]));
+            sb[c] = subwarp_sum<16>(__fadd_rn(sb[c], b16[c]));
         }
     }
 }
@@ -1968,6 +2076,7 @@ __device__ __forceinline__ void row_dot2_80_sub16(const uint8_t* ra, const uint8
 // masks of every 7-bit sign field (IQ3_XXS, 2 x 128 words at +256) and of a sign byte's bits 0-3 and 4-7 (IQ3_S, 2 x 256
 // words at +512).  Split<18>::load<true> and Split<21>::load<true> read them, so every kernel that stages these two
 // codebooks (the default kernels through stage_iq_grid, the STRATA_EXPDEC window kernels through EdGrid) fills them too.
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
 __device__ __forceinline__ void stage_iq3xxs_masks(uint32_t* s_buf, int tid, int nthreads) {
     for (int u = tid; u < 128; u += nthreads) {
         const uint32_t s = (uint32_t) u | ((__popc((uint32_t) u) & 1u) << 7);   // 8th sign = parity of the 7
@@ -1993,6 +2102,7 @@ __device__ __forceinline__ void stage_iq3s_masks(uint32_t* s_buf, int tid, int n
         s_buf[768 + u] = mh;
     }
 }
+#endif
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int tid, int nthreads) {
@@ -2030,7 +2140,9 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         // Ported from shinbunbun/llama-cpp-p100-patches (MIT), patches 29 `mmvq-iq3xxs-grid-smem` and 30
         // `mmvq-ksigns-smem`, measured there on a Tesla P100 (sm_60).
         for (int i = tid; i < 256; i += nthreads) s_buf[i] = iq3xxs_grid[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         stage_iq3xxs_masks(s_buf, tid, nthreads);
+#endif
         iq_sync_lds();
         return s_buf;
     } else if constexpr (kTqType<TY>) {
@@ -2040,11 +2152,13 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         __syncthreads();
         return s_buf;
     } else if constexpr (TY == 21) {
-        // 512 codebook words, then two 256-word tables: the byte masks of a sign byte's bits 0-3 and of its bits
+        // 512 codebook words, then (outside wave32 HIP) two 256-word tables: the byte masks of a sign byte's bits 0-3 and of its bits
         // 4-7 (IQ3_S stores one sign byte per 8 values).  As for IQ3_XXS, one pass per block replaces the
         // per-lookup __vcmpne4 / __vsub4 chain, and the codebook reads leave global memory.
         for (int i = tid; i < 512; i += nthreads) s_buf[i] = iq3s_grid[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         stage_iq3s_masks(s_buf, tid, nthreads);
+#endif
         iq_sync_lds();
         return s_buf;
     } else {
@@ -2054,7 +2168,11 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 struct IqGridWords {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17 || kTqType<TY>) ? 1024 : (TY == 16 || TY == 21) ? 512 : (TY == 18) ? 256 : 4;
+#else
     static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17 || TY == 21 || kTqType<TY>) ? 1024 : (TY == 16 || TY == 18) ? 512 : 4;
+#endif
 };
 
 // mmvq_kernel with the columns taken NC at a time.  After warp_sum every lane holds the same sum, so lane c stores
@@ -2670,15 +2788,29 @@ template<> struct EdGrid<17> { static constexpr int words = 1024;
 template<> struct EdGrid<22> { static constexpr int words = 2048;
     __device__ static void copy(uint32_t* s, int tid) { const uint2* src = (const uint2*) iq2s_grid; uint2* dst = (uint2*) s; for (int i = tid; i < 1024; i += 256) dst[i] = src[i]; } };
 // (IQ3_XXS / IQ3_S: the codebook and, behind it, the sign-mask tables Split<TG>::load<true> reads - stage_iq_grid's layout)
-template<> struct EdGrid<18> { static constexpr int words = 512;
+template<> struct EdGrid<18> {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    static constexpr int words = 256;
+#else
+    static constexpr int words = 512;
+#endif
     __device__ static void copy(uint32_t* s, int tid) {
         for (int i = tid; i < 256; i += 256) s[i] = iq3xxs_grid[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         stage_iq3xxs_masks(s, tid, 256);
+#endif
     } };
-template<> struct EdGrid<21> { static constexpr int words = 1024;
+template<> struct EdGrid<21> {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    static constexpr int words = 512;
+#else
+    static constexpr int words = 1024;
+#endif
     __device__ static void copy(uint32_t* s, int tid) {
         for (int i = tid; i < 512; i += 256) s[i] = iq3s_grid[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         stage_iq3s_masks(s, tid, 256);
+#endif
     } };
 
 // One entry's q8_1 row (XB blocks of 36 bytes, 4-byte aligned) into shared memory as entry c: the 8 words of block k
@@ -3068,12 +3200,8 @@ __global__ void __launch_bounds__(256, 4) sm86_down_iq4nl_clean_kernel(const uns
 // ---------------------------------------------------------------- q8_1 (quantize.cu)
 // value i of a q8_1 row set (the warp holds block i / 32, lane = i % 32)
 __device__ __forceinline__ void q8_1_store(const float xi, block_q8_1* __restrict__ y, const long long i) {
-    float amax = fabsf(xi), sum = xi;
-#pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
-        sum += __shfl_xor_sync(0xffffffffu, sum, o);
-    }
+    const float amax = warp_max(fabsf(xi));
+    const float sum = warp_sum(xi);
     const float d = q8_1_finite(amax / 127.0f);   // #606: q8_1_finite.hpp - the same bits for every finite block
     const int8_t q = q8_1_quant(xi, d, amax);
     const long long ib = i / 32, iqs = i % 32;
@@ -3844,10 +3972,15 @@ template<bool NT> struct S26Split<21, NT> {   // IQ3_S: Split<21>::load with the
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int2 grid_pos = make_int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
                                             iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            r.g[l0 + 0] = iq_sign_negate4((uint32_t) grid_pos.x, signs_packed_8[l0 / 2]);
+            r.g[l0 + 1] = iq_sign_negate4((uint32_t) grid_pos.y, signs_packed_8[l0 / 2] >> 4);
+#else
             const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
             r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.ls = 1 + 2 * ((ld8i<NT>(bq3->scales + iqs / 4) >> ((iqs << 1) & 0x04)) & 0x0F);
         r.dw = ldhalf<NT>(&bq3->d);
@@ -3885,10 +4018,15 @@ struct S26IQ3S {   // Split<21>::load with the grid from `grid` (LT) or iq3s_gri
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int i0 = qs[l0 + 0] | ((qh << (8 - l0)) & 0x100), i1 = qs[l0 + 1] | ((qh << (7 - l0)) & 0x100);
             const int2 grid_pos = LT ? make_int2(grid[i0], grid[i1]) : make_int2(iq3s_grid[i0], iq3s_grid[i1]);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+            r.g[l0 + 0] = iq_sign_negate4((uint32_t) grid_pos.x, signs_packed_8[l0 / 2]);
+            r.g[l0 + 1] = iq_sign_negate4((uint32_t) grid_pos.y, signs_packed_8[l0 / 2] >> 4);
+#else
             const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
             r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
             r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+#endif
         }
         r.ls = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
         r.dw = __half2float(bq3->d);
@@ -6113,7 +6251,7 @@ template<int SG> struct DotG<22, SG> { __device__ static __forceinline__ float f
             acc = ggml_cuda_dp4a(grid_h, u1, acc);
         }
     }
-    const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
+    const int sumi = (iq_mul24(sumi0, ls0) + iq_mul24(sumi1, ls1) + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
@@ -6145,7 +6283,7 @@ template<int SG> struct DotG<18, SG> { __device__ static __forceinline__ float f
         }
     }
     const int ls = aux32 >> 28;
-    sumi = (ls * sumi + sumi / 2) / 2;
+    sumi = (iq_mul24(ls, sumi) + sumi / 2) / 2;
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
@@ -6178,7 +6316,7 @@ template<int SG> struct DotG<21, SG> { __device__ static __forceinline__ float f
             sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
         }
     }
-    sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+    sumi = iq_mul24(sumi, 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F));
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
@@ -6211,7 +6349,7 @@ template<int SG> struct DotG<16, SG> { __device__ static __forceinline__ float f
         }
     }
     const int ls = aux32 >> 27 | 1;
-    sumi = sumi * ls / 8;
+    sumi = iq_mul24(sumi, ls) / 8;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
@@ -6245,7 +6383,7 @@ template<int SG> struct DotG<17, SG> { __device__ static __forceinline__ float f
             acc = ggml_cuda_dp4a((int) __vsub4(grid_pos.y ^ signs1, signs1), u1, acc);
         }
     }
-    const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
+    const int sumi = (iq_mul24(sumi0, ls0) + iq_mul24(sumi1, ls1) + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
@@ -6289,12 +6427,12 @@ __global__ void __launch_bounds__(256) native_gu_lds_kernel(const unsigned long 
     };
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
-        __syncthreads();
+        iq_sync_lds();
         for (int j = 0; j < cn; ++j) {
             const int* src = (const int*) (xq + (size_t) ent_tok[c0 + j] * xb);
             for (int i = tid; i < xb * 9; i += 256) sx_raw[j * xb * 9 + i] = src[i];
         }
-        __syncthreads();
+        iq_sync_lds();
         for (int p = 0; p < LDS_RB / 16; ++p) {
             const int row0 = blockIdx.x * LDS_RB + p * 16 + warp, row1 = row0 + 8;
             if (row0 >= nrow) break;
@@ -6362,7 +6500,11 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                                                               float* __restrict__ out) {
     using F = Fmt<TD>;
     constexpr bool kStageSplit = (TD == 18 || TD == 21);
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    constexpr int kGridN = (TD == 21) ? 512 : (TD == 18) ? 256 : 1;
+#else
     constexpr int kGridN = (TD == 21) ? 1024 : (TD == 18) ? 512 : 1;
+#endif
     __shared__ uint32_t sgrid[kGridN];
     extern __shared__ int sh_raw[];   // LDS_NT entries x hb blocks of q8_1
     const int g = blockIdx.y;
@@ -6372,11 +6514,15 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     if constexpr (TD == 18) {
         sgrid[tid] = iq3xxs_grid[tid];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         stage_iq3xxs_masks(sgrid, tid, 256);
+#endif
     } else if constexpr (TD == 21) {
         for (int i = tid; i < 512; i += 256) sgrid[i] = iq3s_grid[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         sgrid[512 + tid] = (uint32_t) nib_mask((uint32_t) tid);
         sgrid[768 + tid] = (uint32_t) nib_mask((uint32_t) tid >> 4);
+#endif
     }
     const uint8_t* blob = (const uint8_t*) grp_ptr[g];
     const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;
@@ -6391,12 +6537,12 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
     const bool use_sub16 = kCanSub16 && !use_sub8 && (n_items == 80 || n_items == 16 || n_items == 48);
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
-        __syncthreads();
+        iq_sync_lds();
         {
             const int* src = (const int*) (hq + (size_t) c0 * hb);   // the chunk's entries are contiguous
             for (int i = tid; i < cn * hb * 9; i += 256) sh_raw[i] = src[i];
         }
-        __syncthreads();
+        iq_sync_lds();
         if constexpr (kCanSub8) if (use_sub8) {
             // 8-lane sub-warp (4 rows/warp = 32 rows/block in 2 passes of 32 = 64 rows), 100% active lanes + hoisted load!
             const int sub_row = (tid >> 3);   // 0..31 within block
@@ -6461,9 +6607,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                     }
 #pragma unroll
                     for (int j = 0; j < NTC; ++j) {
-                        float v = s[j];
-#pragma unroll
-                        for (int o = 4; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+                        float v = subwarp_sum<8>(s[j]);
                         if (slane == 0) {
                             if constexpr (TD == 40) v *= sd;
                             out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
@@ -6518,9 +6662,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                         }
 #pragma unroll
                         for (int j = 0; j < NTC; ++j) {
-                            float v = s[j];
-#pragma unroll
-                            for (int o = 8; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+                            float v = subwarp_sum<16>(s[j]);
                             if (t16 == 0) {
                                 if constexpr (TD == 40) v *= sd;
                                 out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
@@ -6604,8 +6746,12 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                                                               block_q8_1* __restrict__ hq) {
     using F = Fmt<TG>;
     constexpr bool kHasGrid = (TG == 16 || TG == 17 || TG == 18 || TG == 21 || TG == 22);
-    // TG == 18 (IQ3_XXS): 256 grid + 256 sign masks = 512 u32s; TG == 21 (IQ3_S): 512 grid + 512 sign masks = 1024 u32s!
+    // TG == 18 (IQ3_XXS): 256 grid (+ 256 sign masks off wave32 HIP); TG == 21 (IQ3_S): 512 grid (+ 512 sign masks off wave32 HIP)
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    constexpr int kGridN = kHasGrid ? (TG == 22 ? 1024 : (TG == 17 || TG == 21) ? 512 : 256) : 1;
+#else
     constexpr int kGridN = kHasGrid ? (TG == 22 ? 1024 : TG == 21 ? 1024 : (TG == 17 || TG == 18) ? 512 : 256) : 1;
+#endif
     using GT = typename std::conditional<(TG == 16 || TG == 17 || TG == 22), uint64_t, uint32_t>::type;
     __shared__ GT sgrid[kGridN];
     __shared__ float res[LDS_NT][64];
@@ -6618,6 +6764,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     if constexpr (kHasGrid) {
         const GT* gsrc = GridOf<TG>::src();
         for (int i = tid; i < GridOf<TG>::N; i += 256) sgrid[i] = gsrc[i];
+#if !(defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
         if constexpr (TG == 18) {
             stage_iq3xxs_masks((uint32_t*) sgrid, tid, 256);
         } else if constexpr (TG == 21) {
@@ -6627,6 +6774,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
             sgrid[512 + tid] = m_lo;
             sgrid[768 + tid] = m_hi;
         }
+#endif
     }
     const uint8_t* blob = (const uint8_t*) grp_ptr[g];
     const float s_gate = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 0) : 1.0f;
@@ -6640,12 +6788,12 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     constexpr bool kStageSplit = (TG == 16 || TG == 17 || TG == 18 || TG == 21 || TG == 22);
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
-        __syncthreads();
+        iq_sync_lds();
         for (int j = 0; j < cn; ++j) {
             const int* src = (const int*) (xq + (size_t) ent_tok[c0 + j] * xb);
             for (int i = tid; i < xb * 9; i += 256) sx_raw[j * xb * 9 + i] = src[i];
         }
-        __syncthreads();
+        iq_sync_lds();
         if (kSplit<TG> && (nb * F::ipb == 80)) {
             // 16-lane sub-warp dual-row (gate+up pair): 16 pairs/pass x 2 passes = 64 rows, 100% active lanes (0 idle
             // lanes on k=64..79), halves shared activation reads, bitwise identical addition tree to warp_sum!
@@ -6724,7 +6872,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                 }
             }
         }
-        __syncthreads();
+        iq_sync_lds();
         if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
             const float gg = res[warp][lane] * s_gate, uu = res[warp][32 + lane] * s_up;
 #if defined(__HIPCC__)
@@ -6732,12 +6880,8 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
 #else
             const float xi = __fmul_rn(gg / (1.0f + __expf(-gg)), uu);
 #endif
-            float amax = fabsf(xi), sum = xi;
-#pragma unroll
-            for (int o = 16; o > 0; o >>= 1) {
-                amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
-                sum += __shfl_xor_sync(0xffffffffu, sum, o);
-            }
+            const float amax = warp_max(fabsf(xi));
+            const float sum = warp_sum(xi);
             const float d = q8_1_finite(amax / 127.0f);   // #606, as q8_1_store: finite blocks bit for bit
             const int8_t q = q8_1_quant(xi, d, amax);
             block_q8_1* y = hq + (size_t) (c0 + warp) * hb + blockIdx.x;
