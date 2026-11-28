@@ -7719,14 +7719,22 @@ int main(int argc, char** argv) {
             bool remote = false;
             for (const int r : o.expert_cache_remote) remote = remote || r > 0;
             const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
+            // Linux HIP can share the K/V arena with the VRAM command on the single-card server path.
             const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
-                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
-                            o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+                            o.batch == 0 && o.peer_device < 0 &&
+                            (!o.vram_elastic ||
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+                             (o.serve && o.vram_segment_mib >= 64 && strata::core::vmm_shared_arena_available())
+#else
+                             false
+#endif
+                            );
             if (asked && !on)
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+                                     "every expert in RAM, no --batch or --peer-device; "
+                                     "with --vram-elastic, supported Linux HIP only)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
@@ -9580,13 +9588,19 @@ int main(int argc, char** argv) {
                         : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
                                       [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
-#if defined(STRATA_USE_HIP)
-        if (why == nullptr) why = "it is NVIDIA-only for now";
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+        if (why == nullptr && multi_gpu) why = "Linux HIP elastic VRAM requires one GPU";
+        if (why == nullptr && !strata::core::vmm_shared_arena_available())
+            why = "the Linux HIP virtual memory probe did not pass";
+#else
+        if (why == nullptr) why = "elastic VRAM requires a supported Linux HIP or NVIDIA GPU";
+#endif
 #endif
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
             o.vram_elastic = false;
-        } else {
+        } else if (!strata::core::qsa_kv_elastic()) {
             xcache.set_segment_bytes(o.vram_segment_mib << 20);
         }
     }
@@ -11533,7 +11547,15 @@ int main(int argc, char** argv) {
         int64_t cells = 0;                // what every K/V pool holds now
         std::vector<strata::core::VmmChunk> spare;   // out of the cache, not (yet) in the K/V
         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
+        int64_t released = 0;             // whole chunks handed back to the driver by VRAM
     } kvg;
+    auto hip_vram_arena = [&]() -> bool {
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+        return o.vram_elastic && kvg.on && kvg.from_cache && !src.complement_ready();
+#else
+        return false;
+#endif
+    };
     // Pools made elastic at session init map only their first cells, so they grow whenever the session is elastic: a
     // cache that cannot give slots (no VMM range, residency table or expert source, or a top at or under the floor)
     // only means the K/V grows from new VRAM (kv_grow_rules.hpp).  Before, such a start left the pools at their first
@@ -11558,15 +11580,10 @@ int main(int argc, char** argv) {
                      (double) strata::core::qsa_kv_elastic_full_bytes() / 1073741824.0, (long long) xcache.slots(),
                      (long long) top);
     };
-    // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
-    // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
-    auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
-        if (!kvg.on || cells <= kvg.cells) return true;
-        const int64_t target = strata::core::kv_grow_target(cells, kvg.step, o.max_context);
-        const int64_t need = strata::core::qsa_kv_elastic_need(target);
-        if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
+    // Quiesce before taking whole chunks from the expert cache for K/V or the VRAM command.
+    auto kvg_take = [&](int64_t need, const std::function<void()>& quiesce,
+                        int64_t& gave, int64_t& moved) -> bool {
         quiesce();
-        int64_t gave = 0, moved = 0;
         // the expert cache gives the K/V slots only when kvg_start found it able to (kvg.from_cache); otherwise the
         // K/V grows from new VRAM alone (grow_take below), as it does when the cache is at its floor
         if (kvg.from_cache) {
@@ -11646,6 +11663,17 @@ int main(int argc, char** argv) {
                 return false;
             }
         }
+        return true;
+    };
+    // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
+    // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
+    auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
+        if (!kvg.on || cells <= kvg.cells) return true;
+        const int64_t target = strata::core::kv_grow_target(cells, kvg.step, o.max_context);
+        const int64_t need = strata::core::qsa_kv_elastic_need(target);
+        if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
+        int64_t gave = 0, moved = 0;
+        if (!kvg_take(need, quiesce, gave, moved)) return false;
         int64_t fresh = 0;
         auto grow_take = [&]() -> strata::core::VmmChunk {
             if (kvg.spare.empty()) { ++fresh; return 0; }   // the cache is at its floor: new memory
@@ -11673,33 +11701,27 @@ int main(int argc, char** argv) {
                          cudaGetErrorString(cudaGetLastError()));
         return ok;
     };
-    // A request that needs far fewer cells than the K/V holds gives the rest back: the slots refill with the
-    // profile's hottest experts the GPU does not hold.  Run on a quiet device (as kvg_ensure's `quiesce`).
-    auto kvg_trim = [&](int64_t cells, int64_t hold) -> bool {   // `hold`: the cells a parked conversation could need
-        if (!kvg.on || !kvg.from_cache) return true;   // new VRAM only: nothing to hand back to the cache
-        // #1128: a parked conversation comes back through kvg_ensure's grow, so a K/V that fell to a short request's
-        // size is grown again (its experts shuffled again) after every short request in between: the K/V keeps the
-        // longest parked conversation's cells while it is parked
-        const int64_t want = std::max<int64_t>(cells, hold);
-        const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
-        if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
-        strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+    // Refill only slots with all of their chunks mapped. Use detached chunks before new VRAM.
+    auto kvg_give_back = [&](int64_t fresh, int64_t& got) -> bool {
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
         const int64_t c1 = (int64_t) (xcache.slot_offset(kvg.top) / G);
+        const int64_t mapped0 = fresh > 0 ? r.mapped_count() : 0, spare0 = (int64_t) kvg.spare.size();
+        bool mapped_ok = true;
         {   // one run from the lowest unmapped chunk, as long as the chunks handed back last (one access call)
             const int64_t c0 = (int64_t) (xcache.slot_offset(kvg.lo) / G);
-            int64_t cend = c0, need = (int64_t) kvg.spare.size();
+            int64_t cend = c0, need = (int64_t) kvg.spare.size() + fresh;
             while (cend < c1 && need > 0) need -= r.mapped(cend++) ? 0 : 1;
-            if (!r.map_range(c0, cend, [&]() -> strata::core::VmmChunk {
+            mapped_ok = r.map_range(c0, cend, [&]() -> strata::core::VmmChunk {
                     if (kvg.spare.empty()) return 0;
                     const strata::core::VmmChunk h = kvg.spare.back();
                     kvg.spare.pop_back();
                     return h;
-                }))
+                });
+            if (!mapped_ok)
                 std::fprintf(stderr, "strata: the expert cache could not take its VRAM back from the K/V\n");
         }
+        got = fresh > 0 ? std::clamp<int64_t>(r.mapped_count() - mapped0 - (spare0 - (int64_t) kvg.spare.size()), 0, fresh) : 0;
         const int64_t lo0 = kvg.lo;
         while (kvg.lo < kvg.top) {   // a slot whose chunks are all mapped again holds an expert again
             const int64_t a = (int64_t) (xcache.slot_offset(kvg.lo) / G);
@@ -11737,6 +11759,29 @@ int main(int argc, char** argv) {
         kvg.refilled += (int64_t) filled.size();
         // res_put waits for its copy: the next reader can be a verify window (a non-blocking stream) right away
         if (res_put(d_res) != cudaSuccess) return false;
+        return mapped_ok || fresh == 0;
+    };
+    auto kvg_settle_released = [&]() {
+        if (kvg.released == 0) return;
+        const strata::core::VmmRange& r = *xcache.vmm_range();
+        kvg.released = std::clamp<int64_t>(kvg.released, 0, r.chunks() - r.mapped_count());
+    };
+    // A request that needs far fewer cells than the K/V holds gives the rest back: the slots refill with the
+    // profile's hottest experts the GPU does not hold.  Run on a quiet device (as kvg_ensure's `quiesce`).
+    auto kvg_trim = [&](int64_t cells, int64_t hold) -> bool {   // `hold`: the cells a parked conversation could need
+        if (!kvg.on || !kvg.from_cache) return true;   // new VRAM only: nothing to hand back to the cache
+        // #1128: a parked conversation comes back through kvg_ensure's grow, so a K/V that fell to a short request's
+        // size is grown again (its experts shuffled again) after every short request in between: the K/V keeps the
+        // longest parked conversation's cells while it is parked
+        const int64_t want = std::max<int64_t>(cells, hold);
+        const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
+        if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
+        strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
+        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        const int64_t lo0 = kvg.lo;
+        int64_t got = 0;
+        if (!kvg_give_back(0, got)) return false;
+        kvg_settle_released();
         for (const strata::core::VmmChunk h : kvg.spare) strata::core::vmm_chunk_free(h);   // new ones, if any
         kvg.spare.clear();
         ++kvg.trims;
@@ -16215,7 +16260,7 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
-                        (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
+                        (long long) o.tail_role_token, (xcache.segmented() || hip_vram_arena()) ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
                         (long long) o.prefill_chunk, sp.stage_count(),
@@ -16607,10 +16652,17 @@ int main(int argc, char** argv) {
             else if (tk.size() == 1 && is_nonneg_int(tk[0])) { reserve = std::strtoll(tk[0].c_str(), nullptr, 10); }
             else if (tk.size() == 2 && is_nonneg_int(tk[0]) && is_nonneg_int(tk[1])) {
                 reserve = std::strtoll(tk[0].c_str(), nullptr, 10);
-                dev_sel = (int) std::strtoll(tk[1].c_str(), nullptr, 10);
+                const auto dev = std::strtoll(tk[1].c_str(), nullptr, 10);
+                if (dev > std::numeric_limits<int>::max()) { e = "VRAM: no such device"; return false; }
+                dev_sel = (int) dev;
             } else { e = "expected: VRAM [reserve_mib] [dev]"; return false; }
-            if (!xcache.segmented()) {
-                e = "VRAM needs an engine started with --vram-elastic (NVIDIA GPU, --serve)";
+            if (reserve < 0 || reserve > (std::numeric_limits<int64_t>::max() >> 20)) {
+                e = "VRAM: reserve is out of range";
+                return false;
+            }
+            const bool shared_hip = hip_vram_arena();
+            if (!xcache.segmented() && !shared_hip) {
+                e = "VRAM needs an enabled elastic expert cache (--vram-elastic, --serve)";
                 return false;
             }
             if (src.complement_ready()) {
@@ -16627,9 +16679,65 @@ int main(int argc, char** argv) {
                 return false;
             }
             const auto t0 = Clock::now();
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+            if (shared_hip) {
+                if (dev_sel != -1 && dev_sel != primary_device) {
+                    e = "VRAM: no such device";
+                    return false;
+                }
+                strata::core::VmmDeviceGuard on(primary_device);
+                size_t free_b = 0, total_b = 0;
+                if (!on.ok() || cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+                    e = "VRAM: cannot query the owning HIP device";
+                    return false;
+                }
+                const int64_t want_free = (int64_t) reserve << 20;
+                const int64_t G = (int64_t) strata::core::vmm_granularity();
+                if (G <= 0) { e = "VRAM: the shared arena has no granularity"; return false; }
+                if ((int64_t) free_b < want_free) {
+                    const int64_t deficit = want_free - (int64_t) free_b;
+                    const int64_t need = deficit / G + (deficit % G != 0);
+                    int64_t gave = 0, moved = 0;
+                    if (!kvg_take(need, [] {}, gave, moved)) {
+                        e = "VRAM: the expert cache could not give up its slots";
+                        return false;
+                    }
+                    const auto kept = std::remove_if(kvg.spare.begin(), kvg.spare.end(), [&](strata::core::VmmChunk h) {
+                        if (!strata::core::vmm_chunk_release(h)) return false;
+                        ++kvg.released;
+                        return true;
+                    });
+                    kvg.spare.erase(kept, kvg.spare.end());
+                    if (!kvg.spare.empty()) {
+                        e = "VRAM: the driver could not release every detached chunk";
+                        return false;
+                    }
+                } else if (kvg.released > 0) {
+                    const int64_t n = std::min<int64_t>(kvg.released, ((int64_t) free_b - want_free) / G);
+                    int64_t got = 0;
+                    const bool refilled = n == 0 || kvg_give_back(n, got);
+                    kvg.released -= got;
+                    kvg_settle_released();
+                    if (!refilled) { e = "VRAM: refilling the expert cache failed"; return false; }
+                }
+                if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || !on.finish(true)) {
+                    e = "VRAM: could not read the reserve or restore the caller device";
+                    return false;
+                }
+                const auto& range = *xcache.vmm_range();
+                const int64_t held = kvg.lo + (xcache.slots() - kvg.top);
+                const int64_t mapped = range.mapped_count() * G;
+                std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
+                            "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
+                            (long long) held, (long long) xcache.slots(), (long long) (mapped >> 20),
+                            (long long) (xcache.full_bytes() >> 20), (long long) (free_b >> 20),
+                            (long long) o.prefill_chunk);
+                return true;
+            }
+#endif
             struct VCard { strata::core::ExpertCache* c; int dev; int64_t lo, hi; PfPart* part; };
             std::vector<VCard> cards;
-            cards.push_back({&xcache, 0, 0, stages.empty() ? (int64_t) g.n_layers : stages.front()->lb,
+            cards.push_back({&xcache, primary_device, 0, stages.empty() ? (int64_t) g.n_layers : stages.front()->lb,
                              pf_parts.empty() ? nullptr : &pf_parts[0]});
             for (size_t i = 0; i < stages.size(); ++i)
                 cards.push_back({&stages[i]->cache, stages[i]->dev, stages[i]->lb, stages[i]->le,
@@ -16656,7 +16764,10 @@ int main(int argc, char** argv) {
                     const int64_t floor_slots = std::min<int64_t>(cd.c->full_slots(),
                         g_lend_keep + (cd.part != nullptr && cd.part->first >= 0 ? part_slots(*cd.part, 256) : 0));
                     const int64_t floor_b = cd.c->bytes_of(floor_slots);
-                    int64_t keep = mapped - (want_free - (int64_t) fb);
+                    int64_t keep = std::max<int64_t>(0, mapped - (want_free - (int64_t) fb));
+                    // shrink keeps whole segments, rounding up; round down first to meet the requested reserve.
+                    const int64_t segment = cd.c->segment_bytes();
+                    if (segment > 0) keep = keep / segment * segment;
                     if (keep < floor_b) {
                         keep = floor_b;
                         note = " (a cache keeps its smallest size: the prompt path's buffers)";

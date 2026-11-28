@@ -3,6 +3,9 @@
 #include "strata/core/vmm.hpp"
 
 #include <cuda_runtime.h>
+#if defined(STRATA_USE_HIP) && defined(__linux__)
+#include <sys/resource.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -16,12 +19,41 @@ static int fails = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); ++fails; } } while (0)
 
 int main() {
-    if (cudaFree(nullptr) != cudaSuccess || !strata::core::vmm_available()) {
-        std::printf("vmm_test: no CUDA device with virtual memory - skipped\n");
+    if (cudaFree(nullptr) != cudaSuccess) {
+        std::printf("vmm_test: no GPU - skipped\n");
         return 0;
     }
+    if (!strata::core::vmm_available()) {
+        CHECK(strata::core::vmm_granularity() == 0);
+        std::puts("vmm_test: no GPU virtual memory here - skipped");
+        return fails ? 1 : 0;
+    }
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+    if (!strata::core::vmm_shared_arena_available()) {
+        std::puts("vmm_test: Linux HIP elastic VRAM probe did not pass - skipped");
+        return 0;
+    }
+#endif
     const uint64_t G = strata::core::vmm_granularity();
     CHECK(G >= 4096);
+#if defined(STRATA_USE_HIP)
+    // HIP's minimum may be smaller than the physical granularity the Linux elastic-VRAM probe requires.
+    CHECK(G >= (2u << 20));
+#if defined(__linux__)
+    {   // ROCm keeps an open file per chunk: the check raised the soft limit to cover every chunk of the card, and a
+        // range of more chunks than the usual soft limit of 1,024 maps whole (it failed at chunk 1,017 before)
+        size_t f = 0, t = 0;
+        rlimit rl{};
+        CHECK(cudaMemGetInfo(&f, &t) == cudaSuccess && getrlimit(RLIMIT_NOFILE, &rl) == 0 &&
+              (rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= t / G));
+        if (f > (4ull << 30)) {
+            VmmRange big;
+            CHECK(big.reserve(1100 * G) && big.map_range(0, big.chunks(), [] { return (VmmChunk) 0; }) &&
+                  big.mapped_count() == 1100);
+        }
+    }
+#endif
+#endif
     VmmRange a, b;
     CHECK(a.reserve(8 * G + 1));   // rounds up
     CHECK(a.chunks() == 9);

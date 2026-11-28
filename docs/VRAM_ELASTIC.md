@@ -1,4 +1,4 @@
-# POST /v1/vram: what it does and what it answers (opt-in; NVIDIA, across a layer split per card or one device; #533, #1034)
+# POST /v1/vram: what it does and what it answers (opt-in; NVIDIA across a layer split or on one device, Linux HIP on one device; #533, #1034)
 
 This page is written from `terminal/serve/server.py` and the engine's `VRAM` command (`engine/src/program/generate.cpp`,
 `engine/src/core/expert_cache.cpp`), and the cases the unit tests in `terminal/serve/test_vram.py` pin. A line marked **(code)** is
@@ -14,10 +14,11 @@ them again when more is free. Nothing resizes on its own. Only the expert cache 
 MTP head, the CUDA context and the prompt buffers stay, so Strata never gives back "everything".
 
 The engine switches the feature off at start, with one line in its log (`--vram-elastic is off: ...`), when it is not
-a `--serve` engine, with helper caches on other GPUs (`--peer-device`, an expert-profile tier), with a segment below 64 MiB, and on HIP
-(NVIDIA only). If the driver offers no virtual memory management the cache is one block and the engine starts all the same
-(`--vram-elastic is off: the driver or this GPU offers no virtual memory management`) **(code; not run on such a driver)**.
-Without the flag nothing changes: the same answers as without it. Across a `--layer-split` each card keeps its own segmented cache, so by default one call keeps the reserve on every card at once; pass a `"device"` to free just that CUDA device and leave the others with their full expert cache.
+a `--serve` engine, with helper caches on other GPUs (`--peer-device`, an expert-profile tier), or with a segment below
+64 MiB. If the driver offers no virtual memory management the cache is one block **(code)**. Linux HIP also requires
+a single GPU and a successful runtime probe. The opt-in is unavailable on Windows HIP and gfx906.
+Without the flag the ordinary cache stays active. On NVIDIA, across a `--layer-split` each card keeps its own segmented
+cache, so by default one call keeps the reserve on every card at once. Pass a `"device"` to select one card.
 
 ## The request
 
@@ -41,7 +42,7 @@ Content-Type: application/json          (anything else: 415)
 
 | Case | Status | Body |
 |---|---|---|
-| Done (or nothing to do) | 200 | `{"status": "ok", "reserve_mib", "expert_slots", "expert_slots_full", "expert_cache_mib", "expert_cache_full_mib", "vram_free_mib", "prompt_chunk"}` plus a `"per_device"` map (`"<cuda index>": {"mapped_mib", "free_mib"}`, every card after the call) and, when one device was named, `"device"` and `"vram_free_on_device_mib"` |
+| Done (or nothing to do) | 200 | `{"status": "ok", "reserve_mib", "expert_slots", "expert_slots_full", "expert_cache_mib", "expert_cache_full_mib", "vram_free_mib", "prompt_chunk"}` plus, in segmented mode, a `"per_device"` map (`"<cuda index>": {"mapped_mib", "free_mib"}`, every card after the call) and, when one device was named, `"device"` and `"vram_free_on_device_mib"` |
 | The model is unloaded | 200 | `{"status": "not loaded", "reserve_mib": N, "note": "applied when the model loads"}` |
 | Bad `reserve_mib` | 400 | `invalid_request_error` |
 | The engine refuses the command | 400 | `invalid_request_error`, the engine's reason in `message`. The engine stays up. |
@@ -118,7 +119,7 @@ number the person or the app chose is kept). A start that finds no room (the res
 starting) is read by the CPU reader, which is the same program without `--gpu`, with the same picture tokens; the next start tries the card again.
 `"elastic": false` in the config's `"vision"` section keeps the reader on the card as before; `"elastic": true` asks for it on any card the
 reader runs on. Intel and a Mac keep their readers as they were (not measured there). AMD works the same way (the HIP reader, with the CPU reader beside it) but is
-off by default: there is no shrinking expert cache on HIP, so the reader's room stays in the reserve and the experts get nothing back (Radeon AI PRO R9700, Qwen
+off by default. With the ordinary cache the reader's room stays in the reserve (Radeon AI PRO R9700, Qwen
 UD-Q4_K_XL: 7,959 slots on demand, 7,943 with the reader on the card, 8,411 with the CPU reader), and the first picture after a start takes 5 s longer (the HIP reader starts
 in 4.9 s, 1,480 MiB). It releases its VRAM when idle (30,585 to 32,098 MiB while it runs, back to 30,618 after 120 s). `"elastic": true` in the vision section asks for it. Not by default with a layer split, batch slots,
 `--kv-grow` or `--peer-device`.
@@ -141,7 +142,17 @@ With `"vram_elastic": true` as well (opt-in) the expert cache gives the room ins
 - An unload of the model stops the encoder too. A picture that was encoded before (a conversation sends its pictures with every turn)
   starts no reader. The log lines start with `[strata] images:` **(code; the unit tests in `terminal/serve/test_vision_elastic.py` pin each case)**.
 
-`--vram-elastic` turns `--kv-grow` off (the engine says so at start): with both asked, the whole K/V is in VRAM.
+## Linux HIP with `--kv-grow`
+
+With both flags, an eligible single-GPU Linux HIP server uses one arena for K/V growth and the cache. The VRAM
+command returns whole chunks to the driver below the prompt path's loan. It rounds a deficit up to a whole chunk
+and stops at the cache floor. When the reserve is lowered, only expert slots whose backing chunks are fully mapped
+can be refilled. The response reports the shared arena's totals. On other backends, `--vram-elastic` still takes
+precedence over `--kv-grow`.
+
+The Linux HIP runtime probe checks allocation granularity, the open-file limit, mapping, a write and VRAM returned
+to the driver. If it fails, the engine disables elastic VRAM. The probe makes no guarantee about other ROCm drivers
+or hardware.
 
 Measured (RTX A6000 as a 24 GB card, reserve 25,264 MiB, Qwen3.8-Flash-Next IQ3_S, 8K context, 5 interleaved pairs, median of 6 x 200 tokens per
 start): reader on the card 8,079 expert slots and 99.7-102.9 tok/s; on demand with the shrinking cache 8,766 slots and 96.8-99.8 tok/s (slower in

@@ -8,6 +8,13 @@
 
 namespace strata::core {
 
+// The shared range template uses this HIP owning-device scope. SYCL has no VMM,
+// so the scope has no device work to do and must not enable the unavailable path.
+VmmDeviceGuard::VmmDeviceGuard(int device) : device_(device) {}
+VmmDeviceGuard::~VmmDeviceGuard() = default;
+bool VmmDeviceGuard::enter() { return ok_; }
+bool VmmDeviceGuard::finish(bool result) { return result && ok_; }
+
 bool vmm_available() { return false; }
 uint64_t vmm_granularity() { return 0; }
 VmmChunk vmm_chunk_new() { return 0; }

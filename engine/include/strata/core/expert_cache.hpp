@@ -260,6 +260,8 @@ private:
     uint8_t* base_ = nullptr;
     int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
+    bool seg_pending_map_ = false;     ///< HIP: failed map setup whose unmap must be retried before reuse
+    int seg_device_ = -1;              ///< HIP segmented-cache owner; ordinary/CUDA paths leave it disabled
     int64_t guard_req_ = 0;             ///< STRATA_MMQ_DIRECT: bytes kept after each sized slot's blob (set_slot_guard)
     int64_t guard_ = 0;                 ///< ...the guard open_sized applied to the open slots (0: none)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)

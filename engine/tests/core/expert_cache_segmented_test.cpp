@@ -1,6 +1,6 @@
 // #533: the segmented expert cache (--vram-elastic).  A shrink gives the last segments' VRAM back to the driver and
 // keeps every slot left exactly as it was (same address, same bytes); a grow maps them again at the same addresses.
-// Uniform and sized slots.  Needs a CUDA device with virtual memory management (exits 77 without one).
+// Uniform and sized slots. Checks the ordinary cache before skipping an unavailable VMM path (exit 77).
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_cache_refuse.hpp"
 #include "strata/core/residency_trim.hpp"
@@ -54,6 +54,33 @@ int main() {
         return 77;
     }
     constexpr int64_t kBlob = 1 << 20, kSlots = 96, kSeg = 8ll << 20;
+    // A disabled probe must still leave both ordinary cache layouts usable. Do this before any VMM skip.
+#if defined(STRATA_USE_HIP) && defined(__linux__) && !defined(STRATA_HIP_GFX906)
+    const bool supported = strata::core::vmm_shared_arena_available();
+#else
+    const bool supported = true;
+#endif
+    for (int sized = 0; sized < 2; ++sized) {
+        strata::core::ExpertCache d;
+        std::string err;
+        const bool ok = sized ? d.open_sized(std::vector<int64_t>(8, kBlob), 2, 4, err)
+                              : d.open(8, 2, 4, kBlob, err);
+        if (!ok || !d.valid() || d.segmented() || d.slots() != 8 || d.shrink(0, err) ||
+            !fill(d, 0, 8, kBlob) || !check(d, 8, kBlob)) return fail("unsegmented", err);
+    }
+    if (!supported) {
+        for (int sized = 0; sized < 2; ++sized) {
+            strata::core::ExpertCache c;
+            c.set_segment_bytes(kSeg);
+            std::string err;
+            const bool ok = sized ? c.open_sized(std::vector<int64_t>(8, kBlob), 2, 4, err)
+                                  : c.open(8, 2, 4, kBlob, err);
+            if (!ok || !c.valid() || c.segmented() || c.slots() != 8 || c.shrink(0, err) ||
+                !fill(c, 0, 8, kBlob) || !check(c, 8, kBlob)) return fail("VMM-off fallback", err);
+        }
+        std::puts("ordinary and VMM-off fallback caches passed; segmented cache skipped");
+        return 77;
+    }
     for (int sized = 0; sized < 2; ++sized) {
         strata::core::ExpertCache c;
         c.set_segment_bytes(kSeg);
@@ -61,12 +88,13 @@ int main() {
         const bool ok = sized ? c.open_sized(std::vector<int64_t>(kSlots, kBlob), 4, 64, err)
                               : c.open(kSlots, 4, 64, kBlob, err);
         if (!ok) {
-            // #1475: a HIP build has no segmented cache ("--vram-elastic ... is CUDA-only for now"): a skip, not a failure
+#if !defined(STRATA_USE_HIP) || !defined(__linux__) || defined(STRATA_HIP_GFX906)
             if (err.find("virtual memory management") != std::string::npos ||
                 err.find("CUDA-only") != std::string::npos) {
                 std::printf("%s: skipped\n", err.c_str());
                 return 77;
             }
+#endif
             return fail("open", err);
         }
         if (!c.segmented() || c.slots() != kSlots || c.mapped_bytes() < kSlots * kBlob) return fail("open sizes");
@@ -140,10 +168,6 @@ int main() {
         c.close();
         if (c.valid()) return fail("refusal: close");
     }
-    // the default (no segment size): one allocation, shrink refused
-    strata::core::ExpertCache d;
-    std::string err;
-    if (!d.open(8, 2, 4, kBlob, err) || d.segmented() || d.shrink(0, err)) return fail("unsegmented", err);
     std::puts("expert cache segments: shrink gives VRAM back and keeps the slots, grow maps them again, a refused shrink "
               "counts only what stays mapped");
     return 0;
