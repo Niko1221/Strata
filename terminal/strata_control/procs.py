@@ -44,11 +44,44 @@ except ImportError:  # pragma: no cover - the Linux /proc fallback below still i
 
 # ---------------------------------------------------------------------------------------------- identity
 
+
+def _native_procs(cmd: str, pid: int, validate) -> dict | None:
+    from strata_control import native_helpers
+    if not native_helpers.enabled("procs"):
+        return None
+    try:
+        return native_helpers.call("procs", cmd, [str(pid)], validate=validate)
+    except native_helpers.Unavailable:
+        return None
+
+
+def _valid_token(v: object) -> bool:
+    return isinstance(v, dict) and set(v) == {"token"} and (v["token"] is None or isinstance(v["token"], str))
+
+
+def _valid_cmd(v: object) -> bool:
+    return isinstance(v, dict) and set(v) == {"cmd"} and (
+        v["cmd"] is None or (isinstance(v["cmd"], list) and all(isinstance(x, str) for x in v["cmd"]))
+    )
+
+
+def _valid_ppid(v: object) -> bool:
+    return isinstance(v, dict) and set(v) == {"ppid"} and (
+        v["ppid"] is None or (type(v["ppid"]) is int and v["ppid"] >= 0)
+    )
+
+
+def _valid_exe(v: object) -> bool:
+    return isinstance(v, dict) and set(v) == {"exe"} and (v["exe"] is None or isinstance(v["exe"], str))
+
+
 def start_token(pid: int) -> str | None:
     """A string that is the same for the lifetime of one process and different for a later process with the same
     PID. None when there is no such process or its start cannot be read."""
     if type(pid) is not int or pid <= 0:
         return None
+    if (native := _native_procs("start-token", pid, _valid_token)) is not None:
+        return native["token"]
     if sys.platform.startswith("linux"):
         try:
             raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
@@ -104,6 +137,9 @@ def started_epoch(pid: int) -> float | None:
 
 def command_line(pid: int) -> list[str] | None:
     """The process's argv, or None when it cannot be read (then it is never treated as a match)."""
+    if type(pid) is int and pid > 0:
+        if (native := _native_procs("command-line", pid, _valid_cmd)) is not None:
+            return native["cmd"] or None
     if sys.platform.startswith("linux"):
         try:
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -126,6 +162,9 @@ def command_line(pid: int) -> list[str] | None:
 
 
 def parent_of(pid: int) -> int | None:
+    if type(pid) is int and pid > 0:
+        if (native := _native_procs("parent-of", pid, _valid_ppid)) is not None:
+            return native["ppid"]
     if sys.platform.startswith("linux"):
         try:
             raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
@@ -141,6 +180,9 @@ def parent_of(pid: int) -> int | None:
 
 
 def exe_path(pid: int) -> str | None:
+    if type(pid) is int and pid > 0:
+        if (native := _native_procs("exe-path", pid, _valid_exe)) is not None:
+            return native["exe"] or None
     if sys.platform.startswith("linux"):
         try:
             return os.readlink(f"/proc/{pid}/exe")
