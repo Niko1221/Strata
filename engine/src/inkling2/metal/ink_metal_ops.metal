@@ -794,9 +794,11 @@ kernel void ink_relpos_sink_gqa(
     float4 o_acc = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
+    const int kv_stride = A.kv_stride;
+    const int k_init = k_start + int(sg);
+    int kidx = (A.is_swa && k_init < k_end) ? (k_init % kv_stride) : k_init;
 
-    for (int k = k_start + int(sg); k < k_end; k += 4) {
-        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
+    for (int k = k_init; k < k_end; k += 4) {
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         float sc = simd_sum(dot(qv, kv));
@@ -814,6 +816,9 @@ kernel void ink_relpos_sink_gqa(
         m_max = mn;
         const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
         o_acc = o_acc * corr + p * vv;
+
+        kidx += 4;
+        if (A.is_swa && kidx >= kv_stride) kidx -= kv_stride;
     }
 
     // Merge 4 SGs via threadgroup memory (1 barrier total!)
@@ -892,8 +897,10 @@ kernel void ink_relpos_gqa_splitk(
     float4 o0 = float4(0.0f), o1 = float4(0.0f), o2 = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)slot * A.kv_stride;
-    for (int k = p_start + int(sg); k < p_end; k += 4) {
-        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
+    const int kv_stride = A.kv_stride;
+    const int k_init = p_start + int(sg);
+    int kidx = (A.is_swa && k_init < p_end) ? (k_init % kv_stride) : k_init;
+    for (int k = k_init; k < p_end; k += 4) {
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
@@ -921,6 +928,9 @@ kernel void ink_relpos_gqa_splitk(
             const float p = exp(sc - mn);
             l2 = l2 * corr + p; m2 = mn; o2 = o2 * corr + p * vv;
         }
+
+        kidx += 4;
+        if (A.is_swa && kidx >= kv_stride) kidx -= kv_stride;
     }
 
     if (lane == 0) {
@@ -1384,8 +1394,10 @@ kernel void ink_relpos_tree_gqa_splitk(
     float4 o0 = float4(0.0f), o1 = float4(0.0f), o2 = float4(0.0f);
 
     const size_t slot_kv_base = (size_t)A.slot * A.kv_stride;
-    for (int k = p_start + int(sg); k < p_end; k += 4) {
-        const int kidx = A.is_swa ? (k % A.kv_stride) : k;
+    const int kv_stride = A.kv_stride;
+    const int k_init = p_start + int(sg);
+    int kidx = (A.is_swa && k_init < p_end) ? (k_init % kv_stride) : k_init;
+    for (int k = k_init; k < p_end; k += 4) {
         const size_t kv_off = ((slot_kv_base + kidx) * INK_NKV + kh) * INK_HD;
         const float4 kv = float4(((device const half4*)(k_cache + kv_off))[lane]);
         const float4 vv = float4(((device const half4*)(v_cache + kv_off))[lane]);
@@ -1406,6 +1418,9 @@ kernel void ink_relpos_tree_gqa_splitk(
             const float mn = max(m2, sc); const float corr = exp(m2 - mn); const float p = exp(sc - mn);
             l2 = l2 * corr + p; m2 = mn; o2 = o2 * corr + p * vv;
         }
+
+        kidx += 4;
+        if (A.is_swa && kidx >= kv_stride) kidx -= kv_stride;
     }
 
     // Split 0 also scores the <= 8 tree ancestor keys (exact path from root to node m!)

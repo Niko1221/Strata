@@ -920,6 +920,8 @@ kernel void ink_mpp_relpos_gqa_pf(
     const int k_min = A.is_swa ? max(0, qpos0 - A.swa_win + 1) : 0;
     const int k_max = qpos0 + q_valid;  // exclusive
     const size_t slot_kv_base = (size_t)A.slot * A.kv_stride;
+    const int kv_stride = A.kv_stride;
+    int k0_idx = (A.is_swa && k_min < k_max) ? (k_min % kv_stride) : k_min;
 
     for (int k0 = k_min; k0 < k_max; k0 += 64) {
         // 1. Stage K[64, 128] into sKV (128 threads x 8 uint4 = 64*128 halfs)
@@ -930,7 +932,8 @@ kernel void ink_mpp_relpos_gqa_pf(
             const int kpos = k0 + int(kr);
             uint4 kv = uint4(0u);
             if (kpos < k_max) {
-                const int kidx = A.is_swa ? (kpos % A.kv_stride) : kpos;
+                int kidx = k0_idx + int(kr);
+                if (A.is_swa && kidx >= kv_stride) kidx -= kv_stride;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + kc;
                 kv = *((device const uint4*)(k_cache + off));
             }
@@ -1015,7 +1018,8 @@ kernel void ink_mpp_relpos_gqa_pf(
             const int kpos = k0 + int(vr);
             uint4 vv = uint4(0u);
             if (kpos < k_max) {
-                const int kidx = A.is_swa ? (kpos % A.kv_stride) : kpos;
+                int kidx = k0_idx + int(vr);
+                if (A.is_swa && kidx >= kv_stride) kidx -= kv_stride;
                 const size_t off = ((slot_kv_base + kidx) * 8 + kh) * 128 + vc;
                 vv = *((device const uint4*)(v_cache + off));
             }
@@ -1024,6 +1028,9 @@ kernel void ink_mpp_relpos_gqa_pf(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         opPV.run(tP, tKV, accO);
         threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        k0_idx += 64;
+        if (A.is_swa && k0_idx >= kv_stride) k0_idx -= kv_stride;
     }
 
     // 6. Final deferred-sink normalization + fused sigmoid(gate) -> attn_out[q0+r, h, 0..127]
