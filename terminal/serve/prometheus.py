@@ -73,11 +73,13 @@ def render(m: dict, lat: dict) -> str:
     busy = live.get("state") in ("reading", "generating")
     ctx = _num((m.get("engine") or {}).get("max_context"), 0)
     used = _num(live.get("prompt_tokens")) + _num(live.get("generated")) if busy else 0
-    # "parallel": live.running / live.waiting count the requests together (waiting: for a slot or the control lines)
+    # "parallel": live.running / live.queued count the requests together (queued: waiting for the engine - the solo
+    # path waits for the turn, a parallel request waits for the control lines and for a free slot); the engine's
+    # waiting/admitting counters are kept in live as diagnostic detail only
     metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.",
            _num(live.get("running"), int(busy)))
     metric("vllm:num_requests_waiting", "gauge", "Requests waiting for their turn.",
-           _num(live.get("queued")) + _num(live.get("waiting")))
+           _num(live.get("queued")))
     metric("vllm:kv_cache_usage_perc", "gauge", "The running request's share of the context (1 = full).",
            round(min(1.0, used / ctx), 4) if ctx else 0)
     metric("vllm:prompt_tokens_total", "counter", "Prompt tokens of the finished requests.",

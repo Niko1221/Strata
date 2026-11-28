@@ -68,6 +68,33 @@ struct BackendStats {
     KvDtype kv_dtype = KvDtype::FP16;
     uint64_t expert_selections = 0;   // routed experts counted on the batched path (decode), 0 when the backend does not count
     uint64_t expert_misses = 0;       // of those, the ones not in the card
+    size_t expert_cache_bytes = 0;    // the card-side expert pool: resident expert bytes (the Monitor's expert cache)
+};
+
+// # Minimal conversation parking: the host-RAM copy of a slot's prompt-end checkpoint, kept so a later
+// conversation (not the slot's own history) can restore it by prefix match.  Token-only (no images); the
+// global-visit KV for positions [0..seq_len-1] is captured too, so a later reuse is exact.
+struct HostCkpt {
+    bool valid = false;
+    bool has_dspark = false;
+    int seq_len = 0;
+    int swa_start = 0;
+    int swa_len = 0;
+    std::vector<float> sconv;
+    std::vector<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
+    std::vector<uint8_t> dspark_k, dspark_v;
+    std::vector<float> dspark_frnn;
+    // Global-visit K/V for positions [0..seq_len-1], one contiguous slice per global visit (device VRAM part
+    // first, then the host-offload tail): K [seq_len][kInkKVDim] bytes (fp16: 2 bytes/elem), V [seq_len][K/2|kInkKVDim]
+    // bytes (k8v4 packs two lanes per byte), ksc/vsc [seq_len][kInkKVHeads] floats (quantized formats only).
+    std::vector<uint8_t> g_k, g_v, g_ksc, g_vsc;
+    size_t bytes() const {
+        size_t b = sconv.size() * sizeof(float);
+        b += swa_k.size() + swa_v.size() + swa_ksc.size() + swa_vsc.size();
+        b += dspark_k.size() + dspark_v.size() + dspark_frnn.size() * sizeof(float);
+        b += g_k.size() + g_v.size() + g_ksc.size() + g_vsc.size();
+        return b;
+    }
 };
 
 // Candidate rows of forward_batch_cand: row r (in the order of the wanted-logits rows) holds `k` = min(kInkCandidates, vocab)
@@ -124,6 +151,17 @@ public:
     }
     virtual bool restore_shared_checkpoint(int slot, int seq_len) {
         (void)slot; (void)seq_len;
+        return false;
+    }
+
+    /// Copy the slot's prompt-end checkpoint into host RAM (false: none to park).
+    virtual bool save_parked_checkpoint(int slot, HostCkpt& out) const {
+        (void)slot; (void)out;
+        return false;
+    }
+    /// Install `cpk` into the slot and restore it (false: nothing changed, caller falls back).
+    virtual bool restore_parked_checkpoint(int slot, const HostCkpt& cpk) {
+        (void)slot; (void)cpk;
         return false;
     }
 

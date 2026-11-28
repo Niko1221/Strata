@@ -517,6 +517,11 @@ struct ServeConfig {
     // token in front of that turn instead of at the end of the prompt, so a request that changes only the level reads only the tail.
     int64_t tail_role_token = -1;
     std::string version = "0.1.70";
+    // # Minimal conversation parking (token-only, images never parked): a host-RAM store of finished conversations,
+    // capped by mib and slots; a later request that shares a fully-matching prefix restores the parked checkpoint.
+    int conversation_cache_mib = 0;     // 0 = off
+    int conversation_cache_slots = 4;   // max parked conversations
+    int conversation_cache_min_tokens = 0; // 0 = park every finished conversation
 };
 
 /// Where the prompt checkpoint of `ids` goes: prompt_len - 1 (the end of the prompt; the default), or with tail_role_token >= 0 and a system turn
@@ -611,12 +616,14 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (kd == KvDtype::K8V4)     return "k8v4";
         return "fp16";
     }();
-    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1 vision_reader=%s",
+    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d conversation_cache_mib=%d conversation_cache_slots=%d ckpt_key=1 vision_reader=%s",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
           P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
           (mf.m.dspark.present || backend.dspark_ready()) ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
-          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots, images_ok ? (vision_gpu ? "gpu" : "cpu") : "off");
+          images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots,
+          cfg.conversation_cache_mib, cfg.conversation_cache_slots,
+          images_ok ? (vision_gpu ? "gpu" : "cpu") : "off");
     proto("READY %d stop hold holdb", eff_max_ctx);
 
     std::vector<ActiveReq> reqs(P);
@@ -626,6 +633,98 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
 
     auto is_stop_tok = [&](int32_t tok) -> bool {
         return tok == c.eos_token_id || tok == c.eot_token_id;
+    };
+
+    // # Minimal conversation parking (token-only, images never parked): a host-RAM store of finished
+    // conversations keyed by the token prefix of their prompt-end checkpoint.  A later request whose prompt
+    // starts with that prefix restores the parked checkpoint instead of reading it again!
+    struct ParkedEntry {
+        std::vector<int32_t> tokens;    // the checkpoint's token prefix (its seq_len)
+        HostCkpt ckpt;
+        int64_t age = 0;                // oldest first (insertion order)
+    };
+    std::vector<ParkedEntry> park_store;
+    int64_t park_age = 0;
+    size_t park_bytes = 0;
+    int park_count = 0;
+    int park_evictions = 0;
+    auto park_on = [&]() -> bool { return cfg.conversation_cache_mib > 0 && cfg.conversation_cache_slots > 0; };
+    auto evict_park = [&]() {
+        const size_t budget = (size_t)cfg.conversation_cache_mib * 1024 * 1024;
+        while (!park_store.empty() &&
+               (static_cast<int>(park_store.size()) >= cfg.conversation_cache_slots || park_bytes > budget)) {
+            const size_t old_tokens = park_store.front().tokens.size();
+            park_bytes -= park_store.front().ckpt.bytes();
+            park_store.erase(park_store.begin());
+            ++park_evictions;
+            std::fprintf(stderr, "[ink-serve] conversation cache: evicted %zu tokens (%d evictions total; %zu parked, %zu MiB)\n",
+                         old_tokens, park_evictions, park_store.size(), park_bytes / 1048576);
+        }
+    };
+    auto park_req = [&](ActiveReq& rq) {
+        if (!park_on()) return;
+        if (!rq.img_embeds.empty()) return;                    // token-only
+        const int n = (int)rq.prompt_ckpt_prefix.size();
+        if (n < std::max(0, cfg.conversation_cache_min_tokens)) return;
+        const bool fp16 = backend.stats().kv_dtype == KvDtype::FP16;
+        const size_t est = (size_t)n * (fp16 ? 32768ull : 12800ull)
+                         + (size_t)std::min(n, 1024) * (fp16 ? 163840ull : 64000ull)
+                         + 3900000ull;
+        const size_t budget = (size_t)cfg.conversation_cache_mib * 1024 * 1024;
+        const std::vector<int32_t> toks = rq.prompt_ckpt_prefix;
+        // # Supersede-on-append (the QWen cache's drop_superseded / live_extended_by, #342): a parked snapshot whose
+        // tokens are a prefix of (or equal to) this one is the same conversation a turn back, and the conversation
+        // only appends, so the longer copy serves every restore the older one could. Without it a chat parks one
+        // whole HostCkpt per turn and pushes every other conversation out of the budget and the slot count.
+        // Two branches of one conversation (neither prefix of the other) stay parked side by side, as before.
+        // The indices are collected here and removed only after the save below: a failed save keeps them (an
+        // exchange publishes only after every fallible step).
+        std::vector<size_t> gone;
+        size_t freed = 0;
+        for (size_t i = 0; i < park_store.size(); ++i) {
+            const auto& old = park_store[i].tokens;
+            if (!old.empty() && old.size() <= toks.size() &&
+                std::equal(old.begin(), old.end(), toks.begin())) {
+                freed += park_store[i].ckpt.bytes();
+                gone.push_back(i);
+            }
+        }
+        if (park_bytes - freed + est > budget) {
+            const size_t held = park_bytes > freed ? park_bytes - freed : 0;
+            std::fprintf(stderr, "[ink-serve] conversation cache: skipped %d tokens (est %.1f MiB; budget left %.1f MiB)\n",
+                         n, est / 1048576.0, (held > budget) ? 0.0 : (double)(budget - held) / 1048576.0);
+            return;
+        }
+        HostCkpt ck;
+        if (!backend.save_parked_checkpoint(rq.slot, ck)) return;   // the request never saved a checkpoint
+        for (size_t k = gone.size(); k-- > 0;) {                    // (reverse: the collected indices stay valid)
+            park_bytes -= park_store[gone[k]].ckpt.bytes();
+            park_store.erase(park_store.begin() + (std::ptrdiff_t)gone[k]);
+        }
+        if (!gone.empty())
+            std::fprintf(stderr, "[ink-serve] conversation cache: dropped %zu superseded cop%s of this conversation; %zu parked, %zu MiB\n",
+                         gone.size(), gone.size() == 1 ? "y" : "ies", park_store.size(), park_bytes / 1048576);
+        park_store.push_back({ toks, ck, ++park_age });
+        park_bytes += ck.bytes();
+        ++park_count;
+        evict_park();
+        std::fprintf(stderr, "[ink-serve] conversation cache: parked %d tokens (%.1f MiB; %zu parked, %zu MiB, cap %zu MiB / %d slots)\n",
+                     n, ck.bytes() / 1048576.0, park_store.size(), park_bytes / 1048576,
+                     (size_t)cfg.conversation_cache_mib, cfg.conversation_cache_slots);
+    };
+    auto find_park = [&](int prompt_len, const std::vector<int32_t>& prompt_ids) -> int {
+        if (!park_on()) return -1;
+        int best = -1, best_len = 0;
+        for (int i = 0; i < (int)park_store.size(); ++i) {
+            const auto& toks = park_store[i].tokens;
+            const int n = std::min((int)toks.size(), prompt_len);
+            int m = 0;
+            while (m < n && toks[m] == prompt_ids[m]) ++m;
+            if (m > best_len) { best_len = m; best = i; }
+        }
+        if (best < 0 || best_len <= 0) return -1;
+        if (best_len < (int)park_store[best].tokens.size()) return -1;   // full match only
+        return best;
     };
 
     auto finish_req = [&](ActiveReq& rq, const char* reason) {
@@ -768,6 +867,19 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 reuse = full_match;
             }
         }
+        // # Conversation parking: a fresh conversation whose prompt fully matches a parked checkpoint restores it!
+        if (reuse == 0 && park_on()) {
+            const int park_idx = find_park(rq.prompt_len, rq.prompt_ids);
+            if (park_idx >= 0) {
+                const auto& toks = park_store[park_idx].tokens;
+                if (backend.restore_parked_checkpoint(rq.slot, park_store[park_idx].ckpt)) {
+                    reuse = static_cast<int>(toks.size());
+                    rq.cached_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + reuse);
+                    std::fprintf(stderr, "[ink-serve] conversation cache: restored parked conversation %d tokens (%zu parked, %zu MiB)\n",
+                                 reuse, park_store.size(), park_bytes / 1048576);
+                }
+            }
+        }
         if (reuse == 0) {
             backend.reset_slot(rq.slot);
             rq.cached_prefix.clear();
@@ -805,10 +917,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
         if (line == "STATS") {
             auto st = backend.stats();
-            proto("STATS active_slots=%d max_slots=%d vram_experts=%zu ram_experts=%zu total_experts=%zu kv=%s expert_selections=%llu expert_misses=%llu",
+            proto("STATS active_slots=%d max_slots=%d vram_experts=%zu ram_experts=%zu total_experts=%zu kv=%s expert_selections=%llu expert_misses=%llu vram_used_bytes=%zu vram_total_bytes=%zu expert_cache_bytes=%zu",
                   st.active_slots, st.max_slots, st.vram_experts_loaded, st.ram_experts_loaded, st.total_experts,
                   st.kv_dtype == KvDtype::FP8_E4M3 ? "fp8" : "fp16",
-                  (unsigned long long)st.expert_selections, (unsigned long long)st.expert_misses);
+                  (unsigned long long)st.expert_selections, (unsigned long long)st.expert_misses,
+                  st.vram_used_bytes, st.vram_total_bytes, st.expert_cache_bytes);
             return true;
         }
         if (line == "STOP") {
@@ -1358,6 +1471,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     const int ckpt_pos = rq.ckpt_at;   // the prompt end - 1, or the tail-role checkpoint (#7241)
                     if (backend.save_prompt_checkpoint(rq.slot, ckpt_pos)) {
                         rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + ckpt_pos);
+                        park_req(rq);
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {
