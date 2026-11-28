@@ -17,8 +17,8 @@ def amd(index, arch="gfx1201"):
 
 
 class StartGpusAmd(unittest.TestCase):
-    def run_start_gpus(self, text, cards, nvidia=()):
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "gpus", return_value=list(nvidia)), \
+    def run_start_gpus(self, text, cards, nvidia=(), win=False):
+        with mock.patch.object(setup, "WIN", win), mock.patch.object(setup, "gpus", return_value=list(nvidia)), \
                 mock.patch.object(setup, "amd_gpus", return_value=cards):
             return setup.start_gpus(text)
 
@@ -27,6 +27,12 @@ class StartGpusAmd(unittest.TestCase):
 
     def test_all_still_means_every_supported_amd_card(self):
         self.assertEqual(sorted(self.run_start_gpus("all", [amd(0), amd(1)])), [0, 1])
+
+    def test_windows_amd_numbers_are_taken_too(self):
+        """Windows: amd_gpus() answers as the HIP runtime numbers them once the engine is installed - the same
+        numbers the config's "gpu" pair uses - so --gpus on a start names those, not the NVIDIA list."""
+        self.assertEqual(self.run_start_gpus("1,0", [amd(0), amd(1)], win=True), [1, 0])
+        self.assertEqual(sorted(self.run_start_gpus("all", [amd(0), amd(1)], win=True)), [0, 1])
 
     def test_a_card_that_cannot_be_used_is_named(self):
         with self.assertRaises(SystemExit):
