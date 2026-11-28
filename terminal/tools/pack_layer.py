@@ -36,18 +36,50 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 STRATA = REPO.parents[min(1, len(REPO.parents) - 1)]   # the dev layout's default shards (setup.py passes --gguf)
 SHARD1 = STRATA / "Q2_0" / "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
 
-H, FF, NE = 2560, 640, 512
-QK, BLOCK_BYTES = 64, 18          # Q2_0
-ROW_BYTES_GU = H * 2 // 8         # 640 B of codes for one 2,560-wide row
-ROW_BYTES_D = FF * 2 // 8         # 160 B of codes for one 640-wide row
-SCALES_GU = H // QK               # 40 blocks per gate/up row
-SCALES_D = FF // QK               # 10 blocks per down row
-ROLE_BYTES = H * FF * BLOCK_BYTES // QK     # 460,800 B per role per expert
-BLOB_BYTES = 3 * ROLE_BYTES                 # 1,382,400
+QK, BLOCK_BYTES = 64, 18          # Q2_0 (shape-independent: one fp16 scale per 64 weights, 18 bytes/block)
 
-assert BLOB_BYTES == 1_382_400, BLOB_BYTES
-assert 2 * 640 * ROW_BYTES_GU + 2560 * ROW_BYTES_D + 2 * 640 * SCALES_GU * 2 \
-    + 2560 * SCALES_D * 2 == BLOB_BYTES
+# H, FF, NE and everything derived from them used to be fixed at Qwen3.8-Flash-Next's own shape (2560/640/512).
+# `configure()` recomputes all of this for whatever shape the target binary was compiled for
+# (`strata::core::kCompiledGeometry`, read indirectly via --shape at build time) - see tools/strata_pack.py's
+# `build()`, which calls it with the shape read from the GGUF itself before packing. The defaults below keep
+# `python tools/pack_layer.py` runnable standalone against the original dev-layout checkpoint, unchanged.
+H, FF, NE = 2560, 640, 512
+ROW_BYTES_GU = ROW_BYTES_D = SCALES_GU = SCALES_D = ROLE_BYTES = BLOB_BYTES = 0
+OFF: dict[str, int] = {}
+
+
+def configure(h: int, ff: int, ne: int) -> None:
+    """Recompute every shape-derived constant for an arbitrary (H, FF, NE) - the inverse of this file's old
+    hardcoded assertion that only 2560/640/512 was valid.  QK/BLOCK_BYTES are Q2_0's own fixed block geometry,
+    not the model's; H and FF only need to be multiples of QK (one fp16 scale per 64 weights)."""
+    global H, FF, NE, ROW_BYTES_GU, ROW_BYTES_D, SCALES_GU, SCALES_D, ROLE_BYTES, BLOB_BYTES, OFF
+    if h % QK or ff % QK:
+        raise ValueError("H=%d and FF=%d must both be multiples of QK=%d (one Q2_0 scale per %d weights)"
+                          % (h, ff, QK, QK))
+    H, FF, NE = h, ff, ne
+    ROW_BYTES_GU = H * 2 // 8         # codes for one H-wide row
+    ROW_BYTES_D = FF * 2 // 8         # codes for one FF-wide row
+    SCALES_GU = H // QK               # blocks per gate/up row
+    SCALES_D = FF // QK               # blocks per down row
+    ROLE_BYTES = H * FF * BLOCK_BYTES // QK     # bytes per role per expert
+    BLOB_BYTES = 3 * ROLE_BYTES
+    assert 2 * FF * ROW_BYTES_GU + H * ROW_BYTES_D + 2 * FF * SCALES_GU * 2 + H * SCALES_D * 2 == BLOB_BYTES
+    OFF = blob_offsets()
+
+
+def shape_from_gguf(gguf_path, layer: int = 0) -> tuple[int, int, int]:
+    """(H, FF, NE) read from one layer's expert tensors - no architecture-specific metadata key needed. Expert
+    index is the LAST axis of [in, out, experts] (gate/up: [H, FF, NE]; down: [FF, H, NE], the transpose), cross-
+    checked between gate and down so a model that stores them inconsistently is refused rather than mis-packed."""
+    g = GGUFFile(gguf_path)
+    by_name = {t.name: t for t in g.tensors}
+    gate = by_name[f"blk.{layer}.ffn_gate_exps.weight"]
+    down = by_name[f"blk.{layer}.ffn_down_exps.weight"]
+    h, ff, ne = int(gate.shape[0]), int(gate.shape[1]), int(gate.shape[2])
+    if (int(down.shape[0]), int(down.shape[1]), int(down.shape[2])) != (ff, h, ne):
+        raise ValueError("blk.%d: gate_exps is [%d,%d,%d] but down_exps is %s - expected the transpose [FF,H,NE]"
+                          % (layer, h, ff, ne, list(down.shape)))
+    return h, ff, ne
 
 
 def blob_offsets() -> dict[str, int]:
@@ -61,7 +93,7 @@ def blob_offsets() -> dict[str, int]:
             "gate_up_scales": gu_scales, "down_scales": d_scales}
 
 
-OFF = blob_offsets()
+configure(H, FF, NE)   # the original hardcoded shape, so every module-level name below stays valid on import
 
 
 def build(n_layers: int, out_path: pathlib.Path) -> dict:

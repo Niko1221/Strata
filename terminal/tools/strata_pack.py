@@ -243,19 +243,27 @@ def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_
     print("source %s: %d tensors, data at %d" % (gguf.name, len(g.tensors), data_off))
 
     n_layers = 48 if n_layers is None else n_layers
-    man = {
-        "format": "strata-pack", "format_version": FORMAT_VERSION,
-        "source": {"shard1": str(gguf), "shard2": str(SHARD2)},
-        "n_layers": n_layers, "align": ALIGN,
-        "codebooks": {"IQ4NL": [float(x) for x in KV_IQ4NL]},
-        "tensors": {}, "experts": {}, "n_experts_per_layer": PL.NE,
-    }
 
     # ---- experts.bin: delegated to pack_layer so the blob layout has exactly ONE implementation
     # pack_layer reads its own hardcoded SHARD1, so a different --gguf would silently take the expert arena
     # from a different file than the dense tensors.  Refuse rather than produce a mixed-source pack.
     # the expert arena and the dense tensors come from the same file: point pack_layer at it
     PL.SHARD1 = pathlib.Path(gguf).resolve()
+    # The shape used to be fixed at Qwen3.8-Flash-Next's own H/FF/NE (2560/640/512); read it from this GGUF
+    # instead, so this builds a pack for whatever shape the target strata.exe was compiled for (--shape +
+    # overrides at build time, e.g. a synthetic qwen4exp for mechanics testing), not only that one checkpoint.
+    # Before any dict below reads PL.NE/PL.BLOB_BYTES, so they see the real shape, not the module's own default.
+    h, ff, ne = PL.shape_from_gguf(PL.SHARD1)
+    PL.configure(h, ff, ne)
+    print("shape: H=%d FF=%d NE=%d (read from %s)" % (h, ff, ne, pathlib.Path(gguf).name))
+
+    man = {
+        "format": "strata-pack", "format_version": FORMAT_VERSION,
+        "source": {"shard1": str(gguf), "shard2": str(SHARD2)},
+        "n_layers": n_layers, "align": ALIGN,
+        "codebooks": {"IQ4NL": [float(x) for x in KV_IQ4NL]},
+        "tensors": {}, "experts": {}, "n_experts_per_layer": PL.NE, "expert_h": PL.H, "expert_ff": PL.FF,
+    }
     shard2 = pathlib.Path(str(PL.SHARD1).replace("00001-of-00002", "00002-of-00002"))
     man["source"]["shard2"] = str(shard2)
     exp_path = out_dir / "experts.bin"
@@ -370,6 +378,11 @@ def verify_experts(gguf: pathlib.Path, out_dir: pathlib.Path, man: dict, every: 
 def verify(gguf: pathlib.Path, out_dir: pathlib.Path, limit: int | None, expert_every: int) -> int:
     """P1.T3 over the pack: decode it from disk and compare with the source, bit for bit."""
     man = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    # the shape used to be fixed at import time (2560/640/512); a pack built for another shape (expert_h/
+    # expert_ff/n_experts_per_layer, all written by build()) must reconfigure pack_layer before verify_experts
+    # rebuilds blob offsets - otherwise this would silently verify against the wrong geometry
+    if "expert_h" in man:
+        PL.configure(man["expert_h"], man["expert_ff"], man["n_experts_per_layer"])
     # A full verify also reads back the source hash build recorded (absent after --skip-hash, which is how setup
     # builds): a pack compared against a different shard than it was built from is a mismatch, not a decode bug.
     want = (man.get("source") or {}).get("shard1_sha256")

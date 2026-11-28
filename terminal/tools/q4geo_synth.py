@@ -43,6 +43,11 @@ QTYPES = {
     "IQ4_NL": (20, 32, 18, [(0, 0.0003)]),
     "IQ3_S": (21, 256, 110, [(0, 1e-4)]),
     "IQ4_XS": (23, 256, 136, [(0, 1e-5)]),
+    # Strata's own routed-expert encoding (ggml type 42, absent from upstream ggml/gguf-py): one fp16 scale at
+    # byte 0 followed by 16 bytes of 2-bit codes per 64-weight block (tools/pack_layer.py's BB=18, QK=64). Needed
+    # to exercise tools/strata_pack.py's non-native pack path (session_loop(), not the --native/--spec one) on a
+    # synthetic file - ud-q4k and friends only cover the i-quant recipes that iq_pack.py's native path reads.
+    "Q2_0": (42, 64, 18, [(0, 0.001)]),
 }
 
 ROUTER_SCALE = 1.0   # --router-scale: the router's weights times this. Random weights give router logits packed so closely that two
@@ -177,10 +182,14 @@ def recipe_type(recipe: str, role: str, layer: int, s: dict) -> str:
         if role in ("gate", "up"):
             return "IQ4_XS" if first else "IQ3_S"
         return "IQ4_NL"
+    if recipe == "q2_0":              # every expert role Q2_0: tools/strata_pack.py's non-native pack (the only converter
+        if role in ("gate", "up", "down"):      # that reads Q2_0 experts straight from the GGUF without relayout)
+            return "Q2_0"
+        return "Q8_0"
     raise SystemExit(f"unknown recipe {recipe}")
 
 
-RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down", "fused-kq", "fused-iq", "mix-kq"]
+RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down", "fused-kq", "fused-iq", "mix-kq", "q2_0"]
 
 
 def row_ok(ty: str, ne0: int) -> bool:
