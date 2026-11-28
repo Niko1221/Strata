@@ -166,8 +166,21 @@ def _run_shell(command: str, cwd: str, timeout: float, env: dict[str, str]) -> "
     so a hung check would block here until it ended on its own. On Windows the whole tree is killed.
     """
     if os.name != "nt":
-        return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace",
-                              timeout=timeout, env=env)
+        # start_new_session: the shell is its own process-group leader, so the timeout can take the
+        # whole tree down. Killing only the shell (what subprocess.run's timeout does) leaves the
+        # check's own children holding the output pipes, and the run hangs here until they end.
+        with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, errors="replace", start_new_session=True, env=env) as process:
+            try:
+                out, err = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                process.communicate()
+                raise
+            return subprocess.CompletedProcess(command, process.returncode, out, err)
     with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, errors="replace", env=env) as process:
         try:
