@@ -130,6 +130,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_INK_ATTN_PROBE_NEEDLE` | on / off | NVIDIA and AMD | - |
 | `STRATA_INK_DFLASH2_FORCE` | on / off | NVIDIA and AMD | [MODELS.md](MODELS.md) |
 | `STRATA_INK_ELASTIC_1M` | text | NVIDIA and AMD | [INKLING_SM120.md](INKLING_SM120.md) |
+| `STRATA_INK_GGUF_M1_FAST` | on / off | NVIDIA and AMD | - |
 | `STRATA_INK_INTELARC` | text | Intel Arc | - |
 | `STRATA_INK_INTELARC_EXACT` | text | Intel Arc | - |
 | `STRATA_INK_KV_FIRST` | on / off | NVIDIA and AMD | - |
