@@ -44018,6 +44018,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_Q36_ATTN8_GQA",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/qwen35/q36_engine.cu",
+     "line": 662,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "b89c5e56dc",
+   "first_date": "2026-11-28",
+   "since": null,
+   "last_commit": "b89c5e56dc",
+   "last_date": "2026-11-28",
+   "status": "rollback",
+   "owner": "qwen35/q36",
+   "note": "--kv fp8 decode attention: 0 takes the per-head k_attn_part8 instead of the grouped k_attn_part8g (one block per KV head's 8 query heads)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_Q36_BLAS_F32",
    "backends": [
     "cuda-hip"

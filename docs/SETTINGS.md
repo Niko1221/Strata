@@ -445,7 +445,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (138)
+## Switches that go back to earlier behaviour (139)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -552,6 +552,7 @@ version made it the default.
 | `STRATA_PROMPT_ATTN_ESIMD` | number | Intel Arc | v0.2.16 | - |
 | `STRATA_PROMPT_ATTN_OLD` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [NVIDIA_V100.md](NVIDIA_V100.md), [OLDER_GPUS.md](OLDER_GPUS.md), [README.md](bench-results/2026-10-03-v100-prompt-attn/README.md) |
 | `STRATA_Q2_WARP` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |
+| `STRATA_Q36_ATTN8_GQA` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_Q36_CHUNK` | number | NVIDIA and AMD | v0.2.16 | [QWEN36.md](QWEN36.md) |
 | `STRATA_Q36_KEEP_STAGING` | on / off | NVIDIA and AMD | v0.2.17 | - |
 | `STRATA_QFUSE_HC_LOCAL` | text | NVIDIA and AMD | v0.2.16 | - |
