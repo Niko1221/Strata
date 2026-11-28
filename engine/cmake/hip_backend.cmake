@@ -13,6 +13,8 @@ endif()
 set(_strata_hip_validated gfx1100 gfx1103 gfx1151 gfx1201)
 set(_strata_hip_community gfx1101 gfx1150 gfx1200)
 set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1030 gfx1031 gfx1032 gfx1034 gfx1152 gfx1153 gfx1170 gfx1171 gfx1172 gfx1250)   # gfx1103: Radeon 780M iGPU; gfx1150: Strix Point 890M/880M; gfx1151: Strix Halo; gfx1152: Krackan, Radeon 860M / 840M (#1625); ROCm 10.2 adds gfx1153 (Ryzen AI 400), gfx1170/1171/1172 (RDNA3.5+/Medusa), and gfx1250 (wave32/matrix preview)
+# wave64 gfx906 (MI50 / Radeon VII): strata-hy4 only, on its no-WMMA kernels; the other HIP engines assume wave32 (use STRATA_HIP_GFX906 for them)
+set(_strata_hip_hy4_only gfx906)
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
@@ -27,6 +29,8 @@ foreach(_arch IN LISTS _strata_hip_norm)
     message(STATUS "Strata HIP: ${_base} was validated by community reports (docs/AMD_HIP.md)")
   elseif(_base IN_LIST _strata_hip_unvalidated)
     message(WARNING "Strata HIP: ${_base} builds, but it is not validated on a real card yet; please report results")
+  elseif(_base IN_LIST _strata_hip_hy4_only AND STRATA_BUILD_HY4)
+    message(WARNING "Strata HIP: ${_base} is wave64: build only the strata-hy4 target (--target strata-hy4); the other HIP engines assume wave32")
   else()
     message(FATAL_ERROR
       "Strata HIP supports wave32 gfx1100, gfx1101, gfx1200 and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "
