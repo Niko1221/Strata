@@ -31,7 +31,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import time
 import uuid
@@ -42,6 +44,10 @@ from typing import Any, Callable, Iterable, Sequence
 from strata_control import atomic
 
 SCHEMA_VERSION = 1
+
+#: A run id is one uuid4().hex (as journal.py's operation ids are): 32 hex characters. It names a
+#: directory under the store root, so anything wider than this reaches into the filesystem.
+RUN_ID = re.compile(r"[0-9a-f]{32}")
 
 # --------------------------------------------------------------------------- phases and states
 
@@ -160,8 +166,21 @@ def _run_shell(command: str, cwd: str, timeout: float, env: dict[str, str]) -> "
     so a hung check would block here until it ended on its own. On Windows the whole tree is killed.
     """
     if os.name != "nt":
-        return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace",
-                              timeout=timeout, env=env)
+        # start_new_session: the shell is its own process-group leader, so the timeout can take the
+        # whole tree down. Killing only the shell (what subprocess.run's timeout does) leaves the
+        # check's own children holding the output pipes, and the run hangs here until they end.
+        with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, errors="replace", start_new_session=True, env=env) as process:
+            try:
+                out, err = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                process.communicate()
+                raise
+            return subprocess.CompletedProcess(command, process.returncode, out, err)
     with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, errors="replace", env=env) as process:
         try:
@@ -321,6 +340,8 @@ class TimeSkipRun:
     def __init__(self, root: Path, workspace: Path, prompt: str,
                  checks: Sequence[CheckSpec], max_attempts: int = DEFAULT_MAX_ATTEMPTS,
                  run_id: str | None = None, clock: Callable[[], float] = time.time) -> None:
+        if run_id is not None and not RUN_ID.fullmatch(run_id):
+            raise TimeSkipError("a Time-skip run id must be a 32-character hex value")
         self.id = run_id or uuid.uuid4().hex
         self.root = root / self.id
         self.workspace = Path(workspace)
@@ -373,6 +394,8 @@ class TimeSkipRun:
 
     @staticmethod
     def load(root: Path, run_id: str) -> dict[str, Any]:
+        if not RUN_ID.fullmatch(run_id):
+            raise TimeSkipError("a Time-skip run id must be a 32-character hex value")
         p = Path(root) / run_id / "run.json"
         if not p.exists():
             raise TimeSkipError(f"no Time-skip run {run_id}")
@@ -407,7 +430,7 @@ class TimeSkipRun:
 
     def checkpoint(self, label: str, source: Path | None = None, parent: str | None = None) -> Checkpoint:
         """Snapshot a directory and record what it contained."""
-        src = Path(source or (self.workspace if label == "baseline" else self.workspace))
+        src = Path(source or self.workspace)
         # `pending` holds speculative work; the workspace itself is only read here.
         cp_id = f"cp{len(self.checkpoints) + 1}-{label}"
         dest = self.root / "checkpoints" / cp_id
