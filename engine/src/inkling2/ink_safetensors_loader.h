@@ -389,15 +389,17 @@ struct SafetensorsAdapter {
 
             uint64_t off = align64(sec1_total_bytes);
             uint64_t sz  = st_t.end - st_t.begin;
+            const bool widen = strata::core::ink_trunk_wants_f32(name, st_t.shape.size(), wfmt);
+            const uint64_t dst_bytes = widen ? sz * 2 : sz;
             TInfoT ti;
             ti.name = name;
-            ti.fmt = wfmt;
+            ti.fmt = widen ? 101 : wfmt;
             ti.shape = st_t.shape;
             ti.off = off;
-            ti.bytes = sz;
+            ti.bytes = dst_bytes;
             m.trunk[name] = std::move(ti);
-            sec1_items.push_back({name, false, kv.second.first, &st_t, off, sz});
-            sec1_total_bytes = off + sz;
+            sec1_items.push_back({name, false, kv.second.first, &st_t, off, sz, widen ? wfmt : 0});
+            sec1_total_bytes = off + dst_bytes;
         }
 
         if (has_mtp) {

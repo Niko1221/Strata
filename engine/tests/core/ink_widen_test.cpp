@@ -30,6 +30,37 @@ int main() {
     CHECK(!ink_dspark_wants_f32("mask_embed", 2, 102));
     CHECK(!ink_dspark_wants_f32("fuse_weight", 2, 101));
 
+    // raw HF safetensors trunk: non-matmul tensors must widen BF16/F16 -> F32; dense linear projections stay narrow; F32 stays as is
+    CHECK(ink_trunk_wants_f32("model.llm.embed_norm.weight", 1, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.norm.weight", 1, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn_norm.weight", 1, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.mlp_norm.weight", 1, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.5.q_input_norm.weight", 1, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn_sconv.weight", 3, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.mlp_sconv.weight", 3, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn.k_sconv.weight", 3, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.5.attn.k_sconv.static_w", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn.q_l2_clip.scale", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn.rel_l2_clip.scale", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.attn.rel_logits_proj.proj", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.0.mlp.gate.weight", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.6.controllers.attn.down_weight", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.6.controllers.mlp.gain_weight", 2, 102));
+    CHECK(ink_trunk_wants_f32("model.llm.layers.6.controllers.v.forget_weight", 2, 103));
+    CHECK(!ink_trunk_wants_f32("model.llm.embed.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.unembed.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.wq_du.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.wk_dv.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.wv_dv.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.wr_du.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.wo_ud.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.gate_attn.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.attn.attn_sink_proj.weight", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.5.attn.k_sconv.weight_proj", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.5.attn.v_sconv.weight_proj", 2, 102));
+    CHECK(!ink_trunk_wants_f32("model.llm.layers.0.mlp.gate.bias", 1, 101));
+    CHECK(!ink_trunk_wants_f32("model.llm.attn_res.output_query", 1, 101));
+
     // BF16: the high half of the float
     CHECK(widen_one(0x3F80, 102) == 1.0f);
     CHECK(widen_one(0xBF80, 102) == -1.0f);
