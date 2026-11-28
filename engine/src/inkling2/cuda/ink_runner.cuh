@@ -3287,8 +3287,10 @@ struct InkCudaRunner {
         moe_ws.sm120_tc_smallm = ink_rtx5060ti_cfg(m.primary_gpu).sm120_tc_smallm;
         moe_ws.sm120_dev = m.primary_gpu;
         moe_ws.alloc(max_batch, m.all_sf4_vram && moe_ws.sm120_tc_smallm);
-        // Opt-in RTX 5090 pre-packed fused BF16 QKV+R+Gate & BF16 Loop Controllers (OFF by default!)
-        if (rtx5090::pf_attn_on() && !m.ls_active) {
+        // Pre-transpose rel_logits_proj [16, 1024] -> [1024, 8] __half2 (768 KiB total) for fused sm_80+ FlashAttention-2 prefill
+        const bool want_sm80_pf_attn = (m.sm_cc >= 80 && !rtx5090::exact_mode_on() &&
+                                        !(std::getenv("STRATA_INK_FLASH_PF_SM80") && std::getenv("STRATA_INK_FLASH_PF_SM80")[0] == '0'));
+        if ((rtx5090::pf_attn_on() || want_sm80_pf_attn) && !m.ls_active) {
             constexpr size_t kRelElems = (size_t)kInkRelExtent * (kInkDRel / 2); // 1024 * 8 half2
             d_rtx_rel_proj_pool = dalloc<__half2>((size_t)m.man.c.n_phys * kRelElems);
             for (int ip = 0; ip < m.man.c.n_phys; ++ip) {
@@ -3367,7 +3369,8 @@ struct InkCudaRunner {
             INK_CK(cudaStreamSynchronize(st));
         }
         // Pre-allocate O(1)-VRAM Tensor Core prefill attention workspace (~114 MiB fixed forever!)
-        if (!rtx5090::pf_attn_on() && m.sm_cc >= 60 && max_slots <= 4 && max_batch >= 128) {
+        // Skip eager allocation when fused sm_80+ FlashAttention-2 is active (lazily allocated if t2_attn ever triggers).
+        if (!rtx5090::pf_attn_on() && d_rtx_rel_proj_T[0] == nullptr && m.sm_cc >= 60 && max_slots <= 4 && max_batch >= 128) {
             size_t vf = 0, vt = 0;
             INK_CK(ink_cuda_mem_info(&vf, &vt, m.primary_gpu));
             if (vf > (m.all_sf4_vram ? (160ull << 20) : (320ull << 20))) ensure_pf_attn(kInkPfKvTile);
@@ -5006,7 +5009,10 @@ struct InkCudaRunner {
             const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
             dim3 gr(kInkHeads, M);
             const bool t2_attn = (!is_swa && elastic_kv.tier2_active_for_pos(cur_max_pos));
-            const bool use_rtx_pf_attn = (mode == 0 && M >= 128 && !t2_attn && rtx5090::pf_attn_on() && d_rtx_rel_proj_T[ip] != nullptr);
+            static const bool sm80_pf_env_on = !(std::getenv("STRATA_INK_FLASH_PF_SM80") && std::getenv("STRATA_INK_FLASH_PF_SM80")[0] == '0');
+            const bool use_rtx_pf_attn = (mode == 0 && M >= 64 && !t2_attn &&
+                                          (rtx5090::pf_attn_on() || (cur_cc >= 80 && sm80_pf_env_on && !rtx5090::exact_mode_on())) &&
+                                          d_rtx_rel_proj_T[ip] != nullptr);
             const bool want_wo_h2 = (M <= 8 && !t2_attn && fp8_eng.cache_ready && !m.ls_active && fp8_eng.w_attn[ip][5] != nullptr);
             const bool use_fp16_flash = (mode == 0 && M >= 32 && fp8_sm.ready && cur_cc >= 80 && !t2_attn);
             const bool use_mc_fp8rel = false;
