@@ -656,6 +656,127 @@ __global__ void k_attn_part8(const float* q, const int8_t* kc, const int8_t* vc,
     }
 }
 
+/// STRATA_Q36_ATTN8_GQA (default on): the --kv fp8 decode attention takes k_attn_part8g (one block per KV head group).
+static bool attn8_gqa() {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_Q36_ATTN8_GQA");
+        const bool r = !(e && e[0] == '0');
+        std::fprintf(stderr, "strata-q36: fp8 KV decode attention: %s\n", r ? "grouped (k_attn_part8g)" : "per head (k_attn_part8)");
+        return r;
+    }();
+    return on;
+}
+
+/// k_attn_part8 with the G query heads of one KV head in one block (fork, 2026-11-28): each K / V cell is read once for the
+/// group instead of once per query head, K 16 bytes at a time, and the V scale folded into the softmax weights.  Writes
+/// the same pacc / pm / pl as k_attn_part8, so k_attn_merge is unchanged.  STRATA_Q36_ATTN8_GQA=0: the per-head kernel.
+/// grid (n_chunk, nt * HKV), block kChunkCells (= HD = 256); H / HKV == G.
+template <int G>
+__global__ void __launch_bounds__(256) k_attn_part8g(const float* q, const int8_t* kc, const int8_t* vc, const float* ksc,
+                                                     const float* vsc, const int32_t* pos0, int t0, int H, int HKV, int ctx,
+                                                     float scale, int n_chunk, float* pacc, float* pm, float* pl, RowSel rs) {
+    constexpr int HD = 256;
+    static_assert(kChunkCells == HD, "one thread per cell, then one per dimension");
+    __shared__ __align__(16) float qs[G][HD];
+    __shared__ float w[G][kChunkCells];      // softmax weights (times the V scale)
+    __shared__ float red[G][kChunkCells];    // reductions, G at once
+    const int c = blockIdx.x, rk = blockIdx.y;
+    const int tr = rk / HKV, kvh = rk % HKV, t = t0 + tr;
+    const int npos = (rs.cell ? rs.cell[t] : *pos0 + t) + 1;
+    if (rs.kc) {
+        kc = (const int8_t*) rs.kc[rs.slot[t]];
+        vc = (const int8_t*) rs.vc[rs.slot[t]];
+        ksc = rs.ksc[rs.slot[t]];
+        vsc = rs.vsc[rs.slot[t]];
+    }
+    const int p0 = c * kChunkCells;
+    if (p0 >= npos) return;
+    const int j = threadIdx.x;
+#pragma unroll
+    for (int g = 0; g < G; ++g) qs[g][j] = q[((size_t) t * H + kvh * G + g) * HD + j];
+    __syncthreads();
+    const int p = p0 + j;
+    float s[G];
+    if (p < npos) {
+        float a[G];
+#pragma unroll
+        for (int g = 0; g < G; ++g) a[g] = 0.f;
+        const int4* kp = (const int4*) (kc + ((size_t) kvh * ctx + p) * HD);
+#pragma unroll 2
+        for (int i = 0; i < HD / 16; ++i) {
+            const int4 raw = kp[i];
+            const int32_t wd[4] = {raw.x, raw.y, raw.z, raw.w};
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                const float k0 = (float) (int8_t) (wd[u] & 0xff), k1 = (float) (int8_t) ((wd[u] >> 8) & 0xff);
+                const float k2 = (float) (int8_t) ((wd[u] >> 16) & 0xff), k3 = (float) (int8_t) (wd[u] >> 24);
+#pragma unroll
+                for (int g = 0; g < G; ++g) {
+                    const float4 qv = *(const float4*) &qs[g][i * 16 + u * 4];
+                    a[g] += qv.x * k0 + qv.y * k1 + qv.z * k2 + qv.w * k3;
+                }
+            }
+        }
+        const float ks = ksc[(size_t) kvh * ctx + p] * scale;
+#pragma unroll
+        for (int g = 0; g < G; ++g) s[g] = a[g] * ks;
+    } else {
+#pragma unroll
+        for (int g = 0; g < G; ++g) s[g] = -INFINITY;
+    }
+    // max per head
+#pragma unroll
+    for (int g = 0; g < G; ++g) red[g][j] = s[g];
+    __syncthreads();
+    for (int st = kChunkCells / 2; st > 0; st >>= 1) {
+        if (j < st) {
+#pragma unroll
+            for (int g = 0; g < G; ++g) red[g][j] = fmaxf(red[g][j], red[g][j + st]);
+        }
+        __syncthreads();
+    }
+    float m[G];
+#pragma unroll
+    for (int g = 0; g < G; ++g) m[g] = red[g][0];
+    __syncthreads();
+    const float vs = p < npos ? vsc[(size_t) kvh * ctx + p] : 0.f;
+#pragma unroll
+    for (int g = 0; g < G; ++g) {
+        const float e = p < npos ? expf(s[g] - m[g]) : 0.f;
+        red[g][j] = e;
+        w[g][j] = e * vs;
+    }
+    __syncthreads();
+    for (int st = kChunkCells / 2; st > 0; st >>= 1) {
+        if (j < st) {
+#pragma unroll
+            for (int g = 0; g < G; ++g) red[g][j] += red[g][j + st];
+        }
+        __syncthreads();
+    }
+    // values: thread j = dimension j, each cell's byte read once for the group (256 consecutive bytes per cell)
+    const int n = min(kChunkCells, npos - p0);
+    float acc[G];
+#pragma unroll
+    for (int g = 0; g < G; ++g) acc[g] = 0.f;
+    const int8_t* vp = vc + ((size_t) kvh * ctx + p0) * HD + j;
+#pragma unroll 4
+    for (int k = 0; k < n; ++k) {
+        const float v = (float) vp[(size_t) k * HD];
+#pragma unroll
+        for (int g = 0; g < G; ++g) acc[g] += w[g][k] * v;
+    }
+#pragma unroll
+    for (int g = 0; g < G; ++g) {
+        const size_t o = ((size_t) tr * H + kvh * G + g) * n_chunk + c;
+        pacc[o * HD + j] = acc[g];
+        if (j == 0) {
+            pm[o] = m[g];
+            pl[o] = red[g][0];
+        }
+    }
+}
+
 /// k_attn_part with the cache in 4 bits (--kv fp4, q4_0 style): one fp16 scale per 32-value block.
 __global__ void k_attn_part4(const float* q, const int8_t* kc, const int8_t* vc, const __half* ksc, const __half* vsc,
                              const int32_t* pos0, int t0, int H, int HKV, int ctx, float scale, int n_chunk,
@@ -2873,6 +2994,12 @@ struct Engine {
                                                                                 rows_mode ? nullptr : (const __half*) vc[li],
                                                                                 dpos, t0, H, HKV, ctx, 1.0f / sqrtf((float) HD),
                                                                                 n_chunk, pacc, pm, pl, rs);
+                    else if (kv_mode == KV_INT8 && H == 8 * HKV && attn8_gqa())
+                        k_attn_part8g<8><<<dim3(nc, nt * HKV), kChunkCells, 0, st>>>(q, rows_mode ? nullptr : (const int8_t*) kc[li],
+                                                                                    rows_mode ? nullptr : (const int8_t*) vc[li],
+                                                                                    rows_mode ? nullptr : ksc[li],
+                                                                                    rows_mode ? nullptr : vsc[li], dpos, t0, H, HKV,
+                                                                                    ctx, 1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
                     else if (kv_mode == KV_INT8)
                         k_attn_part8<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, rows_mode ? nullptr : (const int8_t*) kc[li],
                                                                                rows_mode ? nullptr : (const int8_t*) vc[li],
