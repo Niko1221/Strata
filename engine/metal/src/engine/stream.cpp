@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -752,13 +753,22 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
 
 // The prompt's buffers as their own anonymous allocation (fresh zero pages), when no region of the arena's slots
 // takes them: no slots are held while a prompt runs, and the arena keeps decoding with all of its slots.
+//
+// prompt_gemm_init (window.cpp) makes this allocation exactly once per process ("if (pg_) return true") and every
+// later prompt's buffers alias the same mmap - so region_bytes_ must stay the allocation's real size, not 0: the
+// first prompt's pages are fresh-zero either way, but hold_region(true)'s memset(region_, 0, region_bytes_) is the
+// only thing that clears a later prompt's share of this memory before it writes its own rows into it. region_bytes_
+// = 0 ("nothing in the arena to empty") was true only for that first prompt and turned every later hold_region(true)
+// into a no-op memset, so the second prompt's GEMM scratch (R, qfull, kcur, vcur, ...) started from whatever the
+// previous prompt had left behind - a cross-request state leak whenever this fallback is reached (a small arena, or
+// a layer-split deployment, with a streaming prompt of --short-read tokens or more).
 uint8_t* ExpertStream::standalone_region(uint64_t bytes) {
     const uint64_t sz = (bytes + PAGE - 1) / PAGE * PAGE;
     void* m = mmap(nullptr, (size_t) sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (m == MAP_FAILED) return nullptr;
     region_slots_.clear();
     region_ = (uint8_t*) m;
-    region_bytes_ = 0;   // fresh zero pages; nothing in the arena to empty
+    region_bytes_ = sz;
     std::fprintf(stderr, "strata metal stream: the arena is small: the prompt's %.2f GB of buffers are their own "
                          "allocation, not a region of its slots\n", bytes / 1e9);
     return region_;
@@ -785,6 +795,10 @@ void ExpertStream::hold_region(bool hold) {
             x.pre = false;
             x.state = 3;
         }
+        // region_bytes_ == 0 here would silently turn this into a no-op and leave the previous prompt's scratch in
+        // place (the bug this guards against: see region()/standalone_region(), both of which must set it to the
+        // allocation's real size, not to how much of it looks "newly" claimed).
+        assert(!region_ || region_bytes_ != 0);
         if (region_) std::memset(region_, 0, (size_t) region_bytes_);
     } else {
         for (int s : region_slots_) {

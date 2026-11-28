@@ -104,6 +104,10 @@ private:
     std::vector<mtl::Buffer> chunks_;
     std::vector<int> region_slots_;
     uint8_t* region_ = nullptr;
+    // How many bytes at region_ hold_region(true) must memset - NOT how much was borrowed from the arena (region()
+    // and standalone_region() both must set this to region_'s real, full size: this allocation is made once per
+    // process and every later prompt reuses it, so a 0 here silently turns every later hold_region(true) into a
+    // no-op memset that leaves the previous prompt's scratch in place for the next one to compute on).
     uint64_t region_bytes_ = 0;
     std::vector<uint32_t> code_;      // slot -> its smap value (chunk << 28 | page)
     std::vector<uint8_t*> host_;      // slot -> its CPU address
