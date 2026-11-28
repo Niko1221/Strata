@@ -18179,6 +18179,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_GGUF_M1_FAST",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
+     "line": 4740,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "bool",
+   "default_state": "off",
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA: opt-in (=1) dedicated M=1 GGUF decode kernels (fused Gate+Up for IQ1_S/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S with warp-broadcast superblock scale and branchless IQ3_XXS signs, and 1-thread-per-block smem-cached IQ4_NL Down). Preserves dp4a<1>'s exact reduction order (bit-identical output); unset/0 keeps the baseline dp4a<1> path unchanged.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_GGUF_MT",
    "backends": [
     "cuda-hip"
