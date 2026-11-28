@@ -1,0 +1,92 @@
+{
+  "engine": "strata-inkling 0.1.70",
+  "release": "v0.2.23",
+  "asset_sha256": "a04fa5501db69950f0bf9bd369fec9619d243158b2705ba10c8b5ec95ec7fc9e",
+  "draft_sha256": "cf7dbb08560dfd99544af0cdbab2915406fc571f516b19aff0fe113b9458d387",
+  "engine_reported_dflash_on": {
+    "off": false,
+    "dflash2": true
+  },
+  "native_draft_off_prefill_decode_tokens_per_sec": [
+    [
+      489.7,
+      97.8
+    ],
+    [
+      488.8,
+      97.8
+    ],
+    [
+      490.4,
+      97.9
+    ]
+  ],
+  "chat": [
+    {
+      "mode": "off",
+      "repeat": 1,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.354875192977488,
+      "end_to_end_tokens_per_second": 94.47364647566235,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    },
+    {
+      "mode": "off",
+      "repeat": 2,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.2801273899967782,
+      "end_to_end_tokens_per_second": 99.99004864689455,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    },
+    {
+      "mode": "off",
+      "repeat": 3,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.282273560995236,
+      "end_to_end_tokens_per_second": 99.82269298343238,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    },
+    {
+      "mode": "dflash2",
+      "repeat": 1,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.051646780979354,
+      "end_to_end_tokens_per_second": 121.71387039363069,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    },
+    {
+      "mode": "dflash2",
+      "repeat": 2,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.0302114390069619,
+      "end_to_end_tokens_per_second": 124.24633929844669,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    },
+    {
+      "mode": "dflash2",
+      "repeat": 3,
+      "arithmetic_ok": true,
+      "weather_tool_ok": true,
+      "completion_tokens": 128,
+      "wall_seconds": 1.028812711010687,
+      "end_to_end_tokens_per_second": 124.41525909439349,
+      "finish_reason": "length",
+      "answer_sha256": "074b12527ff0b19196ec79732cf2f6c7a80c8768144ed919893279c9f1c4c750"
+    }
+  ]
+}
